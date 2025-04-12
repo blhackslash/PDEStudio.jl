@@ -15,11 +15,11 @@ saveData = dirname(@__DIR__) * "/data/"
 saveFigs = dirname(@__DIR__) * "/figures/"
 
 """
-Calculates the hash of a given param dictionary
+Calculates the hash of a given params dictionary
 """
-function calculateHash(param::ParamDictType)
-    sorted_keys = sort(collect(keys(param)))
-    sorted_vals = [param[key] for key = sorted_keys]
+function calculateHash(params::ParamDictType)
+    sorted_keys = sort(collect(keys(params)))
+    sorted_vals = [params[key] for key = sorted_keys]
     stringToHash = join(map(d -> "$d", sorted_vals))
     return bytes2hex(sha256(stringToHash))
 end
@@ -30,7 +30,7 @@ Saves the given simulation mesh in the folder given by saveData with the hash as
 CAUTION: Enabling overwrite will overwrite an existing file with the given simulation mesh!
 """
 function saveSimData(SimData::AbstractSimData; overwrite::Bool = false)
-    hash = calculateHash(SimData.param)
+    hash = calculateHash(SimData.params)
     fileName = saveData * hash *".jld2"
     counter = 0
     while true
@@ -40,7 +40,7 @@ function saveSimData(SimData::AbstractSimData; overwrite::Bool = false)
             break
         else
             SimDataSaved = load(fileName)["SimData"]
-            if !(SimData.param == SimDataSaved.param)
+            if !(SimData.params == SimDataSaved.params)
                 print("Filename already exists! Changing hash...")
                 fileName = saveData * hash * "_$counter.jld2"
             else
@@ -57,10 +57,10 @@ function saveSimData(SimData::AbstractSimData; overwrite::Bool = false)
 end
 
 """
-Returns the filename of the simulation data corresponding to the given param dictionary
+Returns the filename of the simulation data corresponding to the given params dictionary
 """
-function getFileName(param::ParamDictType)
-    hash = calculateHash(param)
+function getFileName(params::ParamDictType)
+    hash = calculateHash(params)
     fileName = hash
     file = saveData * fileName *".jld2"
     counter = 0
@@ -68,7 +68,7 @@ function getFileName(param::ParamDictType)
         counter += 1
         if isfile(file)
             SimDataSaved = load(file)["SimData"]
-            if (param == SimDataSaved.param)
+            if (params == SimDataSaved.params)
                 return fileName
             else
                 fileName = hash * "_$counter"
@@ -81,10 +81,10 @@ function getFileName(param::ParamDictType)
 end
 
 """
-Loads the simulation data corresponding to the given param dictionary as a simulation mesh
+Loads the simulation data corresponding to the given params dictionary as a simulation mesh
 """
-function loadSimData(param::ParamDictType)
-    fileName = saveData * getFileName(param) * ".jld2"
+function loadSimData(params::ParamDictType)
+    fileName = saveData * getFileName(params) * ".jld2"
     return load(fileName)["SimData"]
 end
 function loadSimData(hash::String)
@@ -95,16 +95,16 @@ end
 """
 Loads only the stats field of the simulation mesh
 """
-function getStats(param::ParamDictType)
-    SimData = loadSimData(param)
+function getStats(params::ParamDictType)
+    SimData = loadSimData(params)
     return SimData.stats
 end
 
 """
-Checks if simulation data already exists for the given parameter dictionary
+Checks if simulation data already exists for the given paramseter dictionary
 """
-function doesSimDataExist(param::ParamDictType)
-    try getFileName(param)
+function doesSimDataExist(params::ParamDictType)
+    try getFileName(params)
         return true
     catch e
         return false
@@ -112,7 +112,7 @@ function doesSimDataExist(param::ParamDictType)
 end
 
 """
-Deletes all saved simulation meshes with the given keys and values in its parameter dictionary.
+Deletes all saved simulation meshes with the given keys and values in its paramseter dictionary.
 """
 function deleteSimData(keys::Vector{String}, vals::Vector)
     files = readdir(saveData)
@@ -120,7 +120,7 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
         SimData = load(saveData * file)["SimData"]
         deletion = true
         for (i,key) = enumerate(keys)
-            deletion = deletion && (SimData.param[key] == vals[i]) && (SimData.param[key] isa typeof(vals[i]))
+            deletion = deletion && (SimData.params[key] == vals[i]) && (SimData.params[key] isa typeof(vals[i]))
         end
         if deletion
             println("Saved data is being deleted!")
@@ -130,18 +130,18 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
 end
 
 """
-Changes the parameter dictionary of a simulation mesh from the old values to the new ones. Helpful if unused parameters need to be changed or the type 
+Changes the paramseter dictionary of a simulation mesh from the old values to the new ones. Helpful if unused paramseters need to be changed or the type 
 is wrong (e.g. Int instead of Float). Note that the values are not changed, hence use with caution.
 
 """
-function changeparam(ks::Vector{String}, oldVals::Vector, newVals::Vector)
+function changeparams(ks::Vector{String}, oldVals::Vector, newVals::Vector)
     files = readdir(saveData)
     for file = files
         SimData = load(saveData * file)["SimData"]
         for (i,key) = enumerate(ks)
-            if (key in keys(SimData.param))
-                if SimData.param[key] == oldVals[i]
-                    SimData.param[key] = newVals[i]
+            if (key in keys(SimData.params))
+                if SimData.params[key] == oldVals[i]
+                    SimData.params[key] = newVals[i]
                     saveSimData(SimData; overwrite = true)
                     println("Changed simulation mesh is saved!")
                 end
@@ -151,7 +151,7 @@ function changeparam(ks::Vector{String}, oldVals::Vector, newVals::Vector)
 end
 
 """
-Returns all saved simulation meshes with the given parameters.
+Returns all saved simulation meshes with the given paramseters.
 """
 function getAllSavedMeshes(ks::Vector{String}, vals::Vector)
     res = []
@@ -160,8 +160,8 @@ function getAllSavedMeshes(ks::Vector{String}, vals::Vector)
         SimData = load(saveData * file)["SimData"]
         hit = true
         for (i,key) = enumerate(ks)
-            if (key in keys(SimData.param))
-                hit = hit & (SimData.param[key] == vals[i])
+            if (key in keys(SimData.params))
+                hit = hit & (SimData.params[key] == vals[i])
             else
                 hit = false
             end
@@ -182,7 +182,7 @@ function changeStats(statsName::String, f::Function, simulation::String)
     files = readdir(saveData)
     for file = files
         SimData = load(saveData * file)["SimData"]
-        if SimData.param["simulation"] == simulation
+        if SimData.params["simulation"] == simulation
             if simulation == "PDE"
                 SimData.stats[statsName] = f(SimData.u, SimData.x, SimData.t)
             else
