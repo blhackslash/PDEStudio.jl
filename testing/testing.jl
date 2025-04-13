@@ -216,7 +216,7 @@ show1DSolutionFig(sim_config_1d)
 showDynamicDependence(sim_config_1d)
 println("Visualization launched (call commented out).")
 
-showConvergenceFig(sim_config_1d, "dx", [.05, .1, .5])
+showConvergenceFig3(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)))
 
 #2D Testing
 """
