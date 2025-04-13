@@ -26,3 +26,8 @@ Manifest.toml
 # No tracing of figures and data
 /data/
 /figures/
+
+# No tracing of Data and Figures
+*.jld2
+*.png
+*.csv

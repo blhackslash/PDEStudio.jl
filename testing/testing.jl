@@ -75,6 +75,149 @@ sim_config = SimulationConfig(doTestSimulation, methods_dict, shared_params, "te
 show1DSolutionFig(sim_config)
 showDynamicDependence(sim_config)
 
+# Improved 1D Test
+"""
+Generates SimData1D for testing visualization with time-dependent functions.
+"""
+function doTestSimulation1D(params::ParamDictType)
+
+    # --- Parameters ---
+    dx = params["dx"]       # Spatial step size
+    Lx = params["Lx"]       # Domain length
+    T = params["T"]         # End time
+    dt = params["dt"]       # Time step
+    method = params["method"] # Simulation method name
+
+    # --- Time Vector ---
+    t = collect(0.0:dt:T)
+    num_steps = length(t)
+
+    # --- Spatial Grid (Static) ---
+    x_grid = collect(0.0:dx:Lx)
+    num_points = length(x_grid)
+
+    # Replicate static grid over time
+    x_over_time = [x_grid for _ in 1:num_steps]
+
+    # --- Solution Vector Initialization ---
+    u_over_time = Vector{Vector{Float64}}(undef, num_steps)
+
+    # --- Statistics Initialization ---
+    stats = ParamDictType()
+    stats["max_abs_u"] = Vector{Float64}(undef, num_steps)
+    stats["l1_norm"] = Vector{Float64}(undef, num_steps) # Integral |u| dx approx
+
+    # --- Generate Solution and Stats Over Time ---
+    println("Generating 1D data for method '$method'...")
+    for i = 1:num_steps
+        current_t = t[i]
+        u_snapshot = Vector{Float64}(undef, num_points)
+
+        # --- Method Definitions ---
+        if method == "decaying_sine"
+            A = params["amplitude"]
+            rate = params["decay_rate"]
+            k = params["k"] # Wavenumber
+
+            amplitude_t = A * exp(-rate * current_t)
+            u_snapshot .= amplitude_t .* sin.(k .* x_grid)
+
+            if !haskey(stats, "amplitude"); stats["amplitude"] = zeros(num_steps); end
+            stats["amplitude"][i] = amplitude_t
+
+        elseif method == "moving_gaussian"
+            A = params["amplitude"]
+            v = params["velocity"]
+            w_sq = params["width"]^2
+            x0 = Lx / 4 # Initial position
+
+            center_x_t = mod(x0 + v * current_t, Lx) # Center moves and wraps
+            u_snapshot .= A .* exp.(-((x_grid .- center_x_t).^2) ./ w_sq)
+
+            if !haskey(stats, "peak_position"); stats["peak_position"] = zeros(num_steps); end
+            stats["peak_position"][i] = center_x_t
+            
+        elseif method == "diffusing_gaussian"
+             A = params["amplitude"]
+             D = params["diffusion_coeff"]
+             w0_sq = params["width"]^2 # Initial width squared
+             center_x = Lx / 2
+             
+             # Width squared increases linearly with time
+             current_w_sq = w0_sq + 2 * D * current_t
+             # Amplitude decreases to conserve mass (propto 1/sqrt(width))
+             amplitude_t = A * sqrt(w0_sq / current_w_sq) 
+             
+             u_snapshot .= amplitude_t .* exp.(-((x_grid .- center_x).^2) ./ current_w_sq)
+
+             if !haskey(stats, "gaussian_width"); stats["gaussian_width"] = zeros(num_steps); end
+             stats["gaussian_width"][i] = sqrt(current_w_sq)
+
+        else
+            u_snapshot .= 0.0
+            @warn "Unknown method '$method'. Returning zero solution."
+        end
+
+        # Store snapshot
+        u_over_time[i] = u_snapshot
+
+        # Calculate basic stats for this time step
+        stats["max_abs_u"][i] = isempty(u_snapshot) ? 0.0 : maximum(abs.(u_snapshot))
+        # Approximate L1 norm: sum(|u_i| * dx)
+        stats["l1_norm"][i] = sum(abs.(u_snapshot)) * dx
+
+    end # End loop over time steps
+    println("Finished generating 1D data for method '$method'.")
+
+    # Create SimData1D object
+    sim_data = SimData1D(x_over_time, u_over_time, t, params)
+    sim_data.stats = stats # Add the calculated stats
+
+    return sim_data
+end
+
+# --- Define Parameters and Configuration for 1D ---
+
+shared_params_1d = ParamDict(
+    "dx" => 0.02,  # Spatial step
+    "Lx" => 10.0,  # Domain length
+    "T"  => 4.0,   # End time
+    "dt" => 0.05,  # Time step
+    "amplitude" => 1.5 # Default amplitude
+)
+
+methods_dict_1d = MethodDict(
+    "decaying_sine" => ParamDict(
+        "decay_rate" => 0.5,
+        "k" => 2.0 * pi / 5.0 # Wavelength approx 5
+    ),
+    "moving_gaussian" => ParamDict(
+        "velocity" => 2.0,
+        "width" => 0.5
+    ),
+    "diffusing_gaussian" => ParamDict(
+        "diffusion_coeff" => 0.2,
+        "width" => 0.5 # Initial width
+    )
+)
+
+# Create SimulationConfig
+sim_config_1d = SimulationConfig(
+    doTestSimulation1D, # Use the new 1D function
+    methods_dict_1d,
+    shared_params_1d,
+    "moving_gaussian" # Default method to show initially
+)
+
+# --- Run the 1D Visualization ---
+# Assuming show1DSolutionFig is defined and functional
+println("Starting 1D Visualization...")
+show1DSolutionFig(sim_config_1d) 
+showDynamicDependence(sim_config_1d)
+println("Visualization launched (call commented out).")
+
+showConvergenceFig(sim_config_1d, "dx", [.05, .1, .5])
+
 #2D Testing
 """
 Generates SimData2D for testing visualization. Creates time-dependent
