@@ -109,7 +109,7 @@ function doTestSimulation1D(params::ParamDictType)
 
     # --- Generate Solution and Stats Over Time ---
     println("Generating 1D data for method '$method'...")
-    for i = 1:num_steps
+    _,sim_time,_... = @timed for i = 1:num_steps
         current_t = t[i]
         u_snapshot = Vector{Float64}(undef, num_points)
 
@@ -172,7 +172,7 @@ function doTestSimulation1D(params::ParamDictType)
     # Create SimData1D object
     sim_data = SimData1D(x_over_time, u_over_time, t, params)
     sim_data.stats = stats # Add the calculated stats
-
+    sim_data.stats["time"] = sim_time
     return sim_data
 end
 
@@ -216,7 +216,9 @@ show1DSolutionFig(sim_config_1d)
 showDynamicDependence(sim_config_1d)
 println("Visualization launched (call commented out).")
 
-showConvergenceFig3(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)))
+showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)))
+showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)), "l1_norm")
+showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)), "time", "l1_norm")
 
 #2D Testing
 """
@@ -384,3 +386,4 @@ sim_config_2d = SimulationConfig(
 println("Starting 2D Visualization...")
 show2DSolutionFig(sim_config_2d)
 println("Visualization launched.")
+showConvergencePlot(sim_config_2d, "dt", .05:.05:.2)
