@@ -5,7 +5,9 @@ using ..Utils
 using GLMakie
 using CSV, DataFrames
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot
+
+export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot,
+       show1DSolutionFig_with_animation, show1DSolutionFig_with_animation2
 
 ui_dict = Dict(
     "dashed_lines" => false,
@@ -22,6 +24,8 @@ ui_dict = Dict(
     "legend" => "Legend",
     "x_axis_limit_padding" => 0,
     "y_axis_limit_padding" => 0.1,
+    "animation_fps" => 30,
+    "animation_duration_s" => 10.,
     "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
     "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
     "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
@@ -77,7 +81,7 @@ function createTextBoxes(fig::Makie.Figure, keys::Vector{String}, params_obs::Di
 end
 
 function createSaveFigBox(figControl::Makie.Figure, plot_fig::Makie.Figure, params_obs::Dict{String,Observable})
-    saveBox = Textbox(figControl[end+1, 1], placeholder = "Type name to save")
+    saveBox = Textbox(figControl[end+1, 1], placeholder = "Type name to save current screen")
     save_figures = get_save_path() * "/figures/"
     on(saveBox.stored_string) do s
         name = save_figures * s
@@ -96,7 +100,7 @@ function createSaveFigBox(figControl::Makie.Figure, plot_fig::Makie.Figure, para
 end
 
 function createMethodToggles(fig::Makie.Figure, methods_obs::Observable{Vector{String}}, methods::Vector{String})
-    toLayout = fig[end+1,:] = GridLayout() # 5 hard coded atm can be added to ui_dict
+    toLayout = fig[end+1,1:div(length(methods),5)+2] = GridLayout() # 5 hard coded atm can be added to ui_dict
     for (i,method) = enumerate(methods)
         Label(toLayout[mod1(i,5),1], method)
         if method == methods_obs[][1]
@@ -131,16 +135,20 @@ Creates a Makie figure containing the simulation controls.
 """
 function createControls(plot_fig::Makie.Figure, params_obs::Dict{String,Observable}, methods_obs::Observable{Vector{String}}, methods::Vector{String})
     control_fig = Figure(size=(800,700))
+    Label(control_fig[1,:], "Control Panel", fontsize = 30)
     # Split parameters by type
-    println(params_obs)
     vals = values(params_obs)
     ks = sort(collect(keys(params_obs)))
     mask_to = map(x -> x[] isa Bool, vals)
     mask_tb = map(x -> x[] isa Real, vals) .& .!mask_to
 
     # Create control elements
-    createTextBoxes(control_fig, ks[mask_tb], params_obs)
-    createParameterToggles(control_fig, ks[mask_to], params_obs)
+    if !isempty(mask_tb)
+        createTextBoxes(control_fig, ks[mask_tb], params_obs)
+    end
+    if !isempty(mask_to)
+        createParameterToggles(control_fig, ks[mask_to], params_obs)
+    end
     createMethodToggles(control_fig, methods_obs, methods)
     createSaveFigBox(control_fig, plot_fig, params_obs)
 
@@ -148,296 +156,12 @@ function createControls(plot_fig::Makie.Figure, params_obs::Dict{String,Observab
 end
 
 """
-    show1DSolutionFig(sim_config::SimulationConfig)
-
-Creates an interactive Makie plot showing the 1D solution `u(x)` at different times `t` 
-for various simulation methods.
-
-Uses two figures: one for the plot (`plot_fig`) and one for controls (`control_fig`).
-Allows toggling methods, adjusting parameters, and scrubbing through time with a slider.
-
-# # Arguments
-# - `sim_config::SimulationConfig`: Configuration object containing the simulation 
-#   function (`sim_function`), method definitions (`methods_dict`), shared parameters 
-#   (`shared_params`), default method, and UI overrides (`ui_options`). 
-#   Assumes `sim_function` returns `SimData1D` with `x`, `u`, `t` fields.
-# """
-# function show1DSolutionFig(sim_config::SimulationConfig)
-#     # --- Basic Setup ---
-#     local_ui_dict = deepcopy(ui_dict) # Use a local copy for UI settings
-#     updateUI(local_ui_dict, sim_config.ui_options)
-
-#     # Create the main plotting figure and axis
-#     plot_fig = Figure(size = local_ui_dict["figsize"])
-#     ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)")
-
-#     # --- Parameter Handling ---
-#     # Merge shared and method-specific parameters into a single dictionary
-#     params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-#     # Create observables for each parameter to allow dynamic updates from controls
-#     params_obs = Dict{String,Observable}()
-#     # Use comprehension for cleaner initialization
-#     for (key, val) in params_all; params_obs[key] = Observable(val); end
-
-#     # --- Method Selection Handling ---
-#     methods = collect(keys(sim_config.methods_dict)) # Get list of available methods
-#     # Observable vector storing the names of currently *active* methods (toggled on)
-#     methods_obs = Observable([sim_config.default_method]) 
-#     # Observable tracking the *number* of active methods
-#     method_number = lift(length, methods_obs) 
-
-#     # --- Create Control Figure ---
-#     # Contains parameter sliders/toggles and method selection toggles
-#     control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
-
-#     # --- Time Slider Setup ---
-#     # Label showing the current time selected by the slider
-#     tLabel_text = Observable("t = 0.0") # Use observable for text update
-#     Label(control_fig[end+1,:], text = tLabel_text) # Assign observable to text
-#     # Add slider to the control figure; range will be set dynamically later
-#     # Initialize with a dummy range and start value
-#     tSlider = Slider(control_fig[end+1,:], range = 0.0:1.0, startvalue = 0.0) 
-
-
-#     # --- Data Structures for Plotting ---
-#     # These observables hold the simulation data for *all* active methods.
-#     # xData[i], uData[i], tData[i] store the full time series for method i.
-#     xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-#     uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-#     tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-
-#     # These observables hold the data for the *currently selected time* (from tSlider)
-#     # for each active method. xs[i], us[i] store the u(x) profile at time t for method i.
-#     xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-#     us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-
-#     # --- Lift Block 1: Load/Compute Data & Update Time Slider Range ---
-#     # This code runs whenever the number of active methods changes or any parameter value changes.
-#     lift(method_number, values(params_obs)...) do active_num, _...
-#         println("Updating data based on methods/parameters...")
-
-#         # Resize data structure arrays based on the number of active methods
-#         xData[] = Vector{Observable{Vector{Vector{Float64}}}}(undef, active_num)
-#         uData[] = Vector{Observable{Vector{Vector{Float64}}}}(undef, active_num)
-#         tData[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-#         xs[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-#         us[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        
-#         all_time_points = Set{Float64}() # Collect all unique time points from active methods
-
-#         # --- Loop through active methods to load/compute data ---
-#         for i = 1:active_num 
-#             method = methods_obs[][i] # Get the name of the i-th active method
-
-#             # Reconstruct parameters for the current method using current observable values
-#             current_method_params = Dict{String, Any}() 
-#             for (p_key, p_obs) in params_obs
-#                 if haskey(sim_config.shared_params, p_key) || haskey(sim_config.methods_dict[method], p_key)
-#                      current_method_params[p_key] = p_obs[] # Get current value from observable
-#                 end
-#             end
-#             params = merge(current_method_params, Dict("method" => method)) # Add method name if needed
-
-#             # --- Load or Compute Simulation Data ---
-#             # Replace with your actual data loading/computation logic (e.g., using Utils.loadSimData)
-#             # Example: Using sim_function directly
-#             if !doesSimDataExist(params)
-#                 println("Data is being calculated for method: $method...")
-#                 sim_data = sim_config.sim_function(params)
-#                 saveSimData(sim_data) # Assumes saveSimData exists
-#             else
-#                 println("Loading data for method: $method...")
-#                 sim_data = loadSimData(params) # Assumes loadSimData exists
-#             end
-#             # println("Running/Loading simulation for method: $method")
-#             # sim_data = sim_config.sim_function(params) # Direct call for demo
-#             println("Simulation finished for method: $method")
-            
-#             # --- Store full simulation data in observables ---
-#             xData[][i] = Observable(sim_data.x)
-#             uData[][i] = Observable(sim_data.u)
-#             tData[][i] = Observable(sim_data.t)
-            
-#             # Collect time points for slider range
-#             union!(all_time_points, sim_data.t)
-
-#             # --- Initialize snapshot data (xs, us) for the current slider time ---
-#             # Find the index 'm' closest to the current slider time 't'
-#             current_t = tSlider.value[] # Get slider's current value
-#              # Use findmin to get index of closest time step; handle empty t case
-#             closest_t_index = isempty(sim_data.t) ? 0 : findmin(a -> abs(a - current_t), sim_data.t)[2]
-            
-#             if closest_t_index > 0 && closest_t_index <= length(sim_data.x) && closest_t_index <= length(sim_data.u)
-#                 xs[][i] = Observable(sim_data.x[closest_t_index])
-#                 us[][i] = Observable(sim_data.u[closest_t_index])
-#             else
-#                 # Handle cases where data might be empty or index invalid
-#                 xs[][i] = Observable(Float64[])
-#                 us[][i] = Observable(Float64[])
-#                  if !isempty(sim_data.t) # Only warn if time existed but index was bad
-#                      @warn "Could not get initial snapshot for method '$method' at t=$current_t. Index $closest_t_index invalid."
-#                  end
-#             end
-#         end # --- End loop over active methods ---
-
-#         # --- Update Time Slider Range ---
-#         if !isempty(all_time_points)
-#             sorted_times = sort(collect(all_time_points))
-#              # Set slider range; ensure start/end are distinct if only one time point
-#             tSlider.range = length(sorted_times) > 1 ? (sorted_times[1]:(sorted_times[end]-sorted_times[1])/(length(sorted_times)-1):sorted_times[end]) : (sorted_times[1]:sorted_times[1])
-#              # Clamp current value to the new range and update slider
-#             new_t = clamp(tSlider.value[], sorted_times[1], sorted_times[end])
-#             set_close_to!(tSlider, new_t) 
-#             tLabel_text[] = "t = $(round(new_t, digits=3))" # Update label observable
-#         else
-#             # Handle case where no methods are active or no time points were found
-#             tSlider.range = 0.0:1.0 # Set a default range
-#             set_close_to!(tSlider, 0.0)
-#             tLabel_text[] = "t = 0.0"
-#             println("Warning: No time points found. Setting default time range.")
-#         end
-
-#         # Trigger downstream lifts if needed (usually automatic)
-#         # notify(xs); notify(us) 
-        
-#         println("Data update complete.")
-#     end # --- End Lift Block 1 ---
-
-
-#     # --- Lift Block 2: Update Plot Snapshot When Time Slider Changes ---
-#     # This runs whenever tSlider.value changes.
-#     lift(tSlider.value) do t
-#         # Update the label text directly
-#         tLabel_text[] = "t = $(round(t, digits=3))"
-
-#         # Check if data is available before proceeding
-#         if isempty(xs[]) || isempty(tData[]) || length(xs[]) != length(tData[])
-#              # This might happen briefly if Lift 1 hasn't finished after methods changed
-#              # Or if active_num was 0.
-#              # println("Skipping snapshot update: data not ready.")
-#              return
-#         end
-
-#         # Update the x and u vectors (xs, us) for the currently selected time t
-#         for i = eachindex(xs[]) # Loop through each active method's snapshot data
-#              # Ensure the data observable for this method exists and is valid
-#             if i > length(tData[]) || i > length(xData[]) || i > length(uData[])
-#                  continue # Skip if data is inconsistent
-#             end
-             
-#             current_times = tData[][i][] # Get the full time vector for this method
-            
-#             if isempty(current_times)
-#                  continue # Skip if this method has no time data
-#             end
-
-#              # Find the index 'm' in the *full* time series (tData) closest to the slider time 't'
-#             (_, m) = findmin(a -> abs(a - t), current_times)
-
-#              # Update the snapshot observables (xs[i], us[i]) with data from the full series (xData, uData) at index m
-#              # Ensure index 'm' is valid for xData and uData as well
-#             if m > 0 && m <= length(xData[][i][]) && m <= length(uData[][i][])
-#                 xs[][i][] = xData[][i][][m] # Update the inner observable's value
-#                 us[][i][] = uData[][i][][m] # Update the inner observable's value
-#             else
-#                 # If index is invalid, clear the snapshot (or handle as error)
-#                 xs[][i][] = Float64[]
-#                 us[][i][] = Float64[]
-#                  # @warn "Time index $m invalid for method index $i when updating snapshot at t=$t"
-#             end
-#         end
-#         autolimits!(ax) # Optionally readjust limits whenever time changes
-#     end # --- End Lift Block 2 ---
-
-
-#     # --- Lift Block 3: Redraw Plot ---
-#     # This runs whenever the number of active methods changes or any parameter changes
-#     # (It implicitly depends on xs and us, which are updated by Lift 1 and Lift 2)
-#     lift(method_number, values(params_obs)...) do active_num, _...
-#         println("Updating plot...")
-        
-#         # --- Clear previous plot elements ---
-#         empty!(ax) # Remove previous lines/scatter points
-#         # Remove the old legend object if it exists
-#         for c in contents(plot_fig[1,1]) # Iterate through elements in the grid layout cell
-#             if isa(c, Legend)
-#                 delete!(c) # Delete the legend object
-#             end
-#         end
-
-#         # --- Handle case with no active methods ---
-#         if active_num == 0
-#             println("Plotting skipped: No methods selected.")
-#             # Optionally add a message to the plot
-#             text!(ax, "No methods selected", position = (0.5, 0.5), align = (:center, :center), 
-#                   textsize = local_ui_dict["font_size"], justification = :center)
-#             return # Stop here if nothing to plot
-#         end
-
-#         # --- Plot data for each active method ---
-#         for i = 1:active_num
-#              # Ensure snapshot data exists and is valid before plotting
-#              if i > length(xs[]) || i > length(us[])
-#                  @warn "Snapshot data missing for method index $i during plotting. Skipping."
-#                  continue
-#              end
-             
-#             method = methods_obs[][i] # Get method name for label
-#             plotLabel = method
-
-#             # Get the snapshot data observables for this method
-#             x_snapshot = xs[][i]
-#             u_snapshot = us[][i]
-            
-#             # Check if snapshot data is actually populated
-#             if isempty(x_snapshot[]) || isempty(u_snapshot[])
-#                  # @info "Snapshot data empty for method '$method' at current time. Skipping plot."
-#                  continue # Don't plot if no data for this snapshot
-#             end
-
-#             # --- Apply Plotting Styles ---
-#             color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
-#             line_style = :solid
-#             if local_ui_dict["dashed_lines"]; line_style = local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))]; end
-#             marker_style = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
-            
-#             # --- Plot Lines and/or Scatter Points ---
-#             # Use the snapshot observables directly in plotting functions
-#             if local_ui_dict["show_lines"]
-#                 lines!(ax, x_snapshot, u_snapshot, label = plotLabel, linestyle = line_style, color = color, linewidth=local_ui_dict["linewidth"])
-#             end
-#             if local_ui_dict["show_scatter"]
-#                 scatter!(ax, x_snapshot, u_snapshot, label = plotLabel, marker = marker_style, color = color, markersize=local_ui_dict["markersize"])
-#             end
-#         end # --- End loop over active methods ---
-
-#         # --- Add Legend ---
-#         # Only add legend if at least one method was potentially plotted (active_num > 0 check already done)
-#         Legend(plot_fig[1,1], ax, local_ui_dict["legend"], merge = true, tellheight = false, tellwidth = false,
-#                titlesize = local_ui_dict["font_size"], labelsize = local_ui_dict["label_size"], 
-#                valign = local_ui_dict["vPos"], halign = local_ui_dict["hPos"])
-        
-#         autolimits!(ax) # Adjust axis limits after plotting new data
-#         println("Plot update complete.")
-
-#     end # --- End Lift Block 3 ---
-
-#     # --- Display Figures ---
-#     GLMakie.activate!() # Ensure GLMakie backend is active
-#     display(GLMakie.Screen(), control_fig)
-#     display(GLMakie.Screen(), plot_fig)
-
-#     # Optionally return figures for further interaction
-#     # return control_fig, plot_fig
-# end
-
-"""
-    show1DSolutionFig(sim_config::SimulationConfig) - REVISED for Fixed Global Limits
+show1DSolutionFig(sim_config::SimulationConfig) - REVISED for Fixed Global Limits
 
 Creates an interactive Makie plot for `SimData1D` with globally fixed X and Y limits
 determined by the range of data across all active methods and time steps.
 """
-function show1DSolutionFig(sim_config::SimulationConfig)
+function show1DSolutionFig_old(sim_config::SimulationConfig)
     # --- Basic Setup ---
     local_ui_dict = deepcopy(ui_dict) # Use 1D UI dict
     updateUI(local_ui_dict, sim_config.ui_options)
@@ -681,6 +405,729 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 end
 
 """
+    show1DSolutionFig_with_animation(sim_config::SimulationConfig)
+
+Creates an interactive Makie plot for `SimData1D` with animation playback
+and an option to save the animation as a GIF (which may close the window).
+Saves corresponding parameters to a CSV file.
+Uses closest data point logic for animation frames.
+"""
+function show1DSolutionFig(sim_config::SimulationConfig)
+
+    # --- Basic Setup & UI ---
+    local_ui_dict = deepcopy(ui_dict) # Use the base ui_dict
+    if hasproperty(sim_config, :ui_options) && !isnothing(sim_config.ui_options)
+         updateUI(local_ui_dict, sim_config.ui_options) # Apply specific overrides
+    end
+    plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
+    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)") # Title set dynamically
+
+    # --- Parameter & Method Observables/Controls ---
+    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
+    params_obs = Dict{String,Observable}()
+    for (key, val) in params_all; params_obs[key] = Observable(val); end
+    methods = collect(keys(sim_config.methods_dict))
+    default_method = sim_config.default_method in methods ? sim_config.default_method : (isempty(methods) ? "" : methods[1])
+    methods_obs = Observable(isempty(methods) ? String[] : [default_method])
+    method_number = lift(length, methods_obs)
+
+    # Create standard controls using the helper function
+    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+
+    # --- NEW Max Tracking Control ---
+    # Add Checkbox below the animation/save controls
+    track_max_obs = Observable(false) # Get default from dict
+    cb_track_max = Toggle(control_fig[end+1, :][1,1], active = false)
+    Label(control_fig[end, :][1,2], "Track Maximum") # Span columns
+
+    # Link checkbox state back to observable (no explicit notify needed if lift depends on it)
+    on(cb_track_max.active) do track_state
+        track_max_obs[] = track_state
+    end
+    # --- End Max Tracking Control ---
+
+    # --- Time Slider & Label ---
+    tLabel_text = Observable("t = 0.0")
+    # Add a new row for the time label
+    Label(control_fig[end+1, 1:4], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span controls area
+    # Add a new row for the time slider
+    tSlider = Slider(control_fig[end+1, 1:4], range = 0.0:1.0, startvalue = 0.0) # Span controls area
+
+    # --- Animation and GIF Saving Controls ---
+    # Add a new row, using a grid layout within it for alignment
+    anim_save_controls_row = control_fig[end+1, 1:4] = GridLayout() # Span controls area
+
+    # Animation State/Controls
+    is_animating = Observable(false)
+    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
+    time_range_data = Ref((0.0, 1.0)) # Stores (t_min, t_max) from actual data
+    play_button = Button(anim_save_controls_row[1, 1], label = @lift($is_animating ? "Stop Anim" : "Play Anim")) # Col 1
+
+    # GIF Saving Textbox (Col 2) - with default value
+    gif_save_textbox = Textbox(anim_save_controls_row[1, 2], placeholder = "GIF Name (no ext)", width=150)
+    gif_save_textbox.stored_string = "untitled_anim" # Set default filename
+
+    # GIF Saving Button (Col 3)
+    gif_save_button = Button(anim_save_controls_row[1, 3], label = "Save GIF")
+
+    # Warning Label (Col 4)
+    Label(anim_save_controls_row[1, 4], text="(Window may close!)", fontsize=10, color=:darkgray, halign=:left).padding = (10,0,0,0)
+
+    # Adjust column sizes in the controls row for better spacing
+    colsize!(anim_save_controls_row, 1, Auto()); colsize!(anim_save_controls_row, 3, Auto()); colsize!(anim_save_controls_row, 4, Auto())
+
+
+
+    # --- Data Structures ---
+    # Outer Observable holds Vector of Inner Observables (one per method)
+    xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0)) # Full x data series
+    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0)) # Full u data series
+    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))       # Full t data series
+    xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))           # Snapshot x data for plotting
+    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))           # Snapshot u data for plotting
+    global_xlims = Observable((0.0, 1.0)) # For fixed plot limits
+    global_ylims = Observable((0.0, 1.0)) # For fixed plot limits
+    # --- NEW: Observables for max tracking ---
+    x_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores X position of max U per method
+    u_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores max U value per method
+    # ------------------------------------
+
+    # --- Lift Block 1: Data Loading / Simulation Execution ---
+    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+        println("Lift 1: Running sims / loading data...") # Concise print
+        # Resize outer vectors
+        resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
+        resize!(xs[], active_num); resize!(us[], active_num)
+        resize!(x_at_max_obs[], active_num); resize!(u_at_max_obs[], active_num) # Resize new
+        # Ensure inner observables exist
+        for k in 1:active_num
+             if !isassigned(xData[], k) || !isa(xData[][k], Observable); xData[][k] = Observable(Vector{Vector{Float64}}()); end
+             if !isassigned(uData[], k) || !isa(uData[][k], Observable); uData[][k] = Observable(Vector{Vector{Float64}}()); end
+             if !isassigned(tData[], k) || !isa(tData[][k], Observable); tData[][k] = Observable(Float64[]); end
+             if !isassigned(xs[], k) || !isa(xs[][k], Observable); xs[][k] = Observable(Float64[]); end
+             if !isassigned(us[], k) || !isa(us[][k], Observable); us[][k] = Observable(Float64[]); end
+             if !isassigned(x_at_max_obs[], k) || !isa(x_at_max_obs[][k], Observable); x_at_max_obs[][k] = Observable(NaN); end
+             if !isassigned(u_at_max_obs[], k) || !isa(u_at_max_obs[][k], Observable); u_at_max_obs[][k] = Observable(NaN); end
+        end
+
+        all_time_points = Set{Float64}()
+        g_xmin, g_xmax = Inf, -Inf; g_umin, g_umax = Inf, -Inf
+        found_any_data = false
+        active_methods_now = methods_obs[]
+
+        for i = 1:active_num
+            method = active_methods_now[i]
+            # Assemble params for this method run
+            current_method_params=Dict{String,Any}()
+            shared_keys = keys(sim_config.shared_params)
+            method_keys = haskey(sim_config.methods_dict, method) ? keys(sim_config.methods_dict[method]) : []
+            for (p_key, p_obs) in params_obs
+                if p_key in shared_keys || p_key in method_keys
+                    current_method_params[p_key] = p_obs[]
+                end
+            end
+            params = merge(current_method_params, Dict("method" => method))
+
+            # --- Load or Compute Data ---
+            local sim_data::Union{AbstractSimData, Nothing} = nothing
+            try
+                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
+                if !Utils.doesSimDataExist(params)
+                     println(" Running simulation for method: $method")
+                     sim_data = sim_config.sim_function(params)
+                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
+                else
+                     println(" Loading data for method: $method")
+                     sim_data = Utils.loadSimData(params)
+                end
+            catch e
+                 @warn "Simulation/Load failed for method '$method'" exception=(e, catch_backtrace())
+                 sim_data = nothing
+            end
+            # --------------------------
+
+            # --- Store Data & Update Limits ---
+            if isnothing(sim_data) || !isa(sim_data, SimData1D)
+                 @warn "Invalid SimData1D for '$method'. Assigning empty."
+                 xData[][i][] = Vector{Vector{Float64}}(); uData[][i][] = Vector{Vector{Float64}}(); tData[][i][] = Float64[]
+                 xs[][i][] = Float64[]; us[][i][] = Float64[]
+                 continue # Skip to next method
+            end
+
+            xData[][i][] = sim_data.x
+            uData[][i][] = sim_data.u
+            tData[][i][] = sim_data.t
+            union!(all_time_points, sim_data.t)
+
+            # Update Global Limits Calculation
+            for k in eachindex(sim_data.t)
+                 if k <= length(sim_data.x) && k <= length(sim_data.u)
+                     x_k = sim_data.x[k]; u_k = sim_data.u[k]
+                     if !isempty(x_k) && !isempty(u_k)
+                         found_any_data = true
+                         xmin_k, xmax_k = extrema(x_k); umin_k, umax_k = extrema(u_k)
+                         g_xmin = min(g_xmin, xmin_k); g_xmax = max(g_xmax, xmax_k)
+                         g_umin = min(g_umin, umin_k); g_umax = max(g_umax, umax_k)
+                     end
+                 end
+            end
+            # -----------------------------
+        end # End loop over methods
+
+        # --- Finalize and Apply Global Limits ---
+        if found_any_data; pad_x=get(local_ui_dict,"x_axis_limit_padding",0.05); pad_y=get(local_ui_dict,"y_axis_limit_padding",0.1); xr=g_xmax-g_xmin; xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); yr=g_umax-g_umin; yp=yr≈0 ? 0.1 : (yr*pad_y/2.0); final_xlims=(g_xmin-xp,g_xmax+xp); final_ylims=(g_umin-yp,g_umax+yp); global_xlims[]=final_xlims; global_ylims[]=final_ylims; try; xlims!(ax,final_xlims); ylims!(ax,final_ylims); catch e; @warn "Failed applying limits" e; end; else; global_xlims[]=(0.0,1.0); global_ylims[]=(0.0,1.0); try; xlims!(ax,0.0,1.0); ylims!(ax,0.0,1.0); catch e; @warn "Failed applying default limits" e; end; end
+
+        # --- Update Time Slider Range / Store Data Range ---
+        if !isempty(all_time_points); t_min_data,t_max_data=extrema(all_time_points); time_range_data[]=(t_min_data,t_max_data); sorted_times=sort(collect(all_time_points)); t_len=length(sorted_times); t_range_slider=range(t_min_data,stop=t_max_data,length=max(2,t_len*2+100)); if t_len==1; t_range_slider=range(t_min_data,stop=t_max_data,length=2); end; if tSlider.range[]!=t_range_slider; tSlider.range=t_range_slider; end; current_t_val=clamp(tSlider.value[],t_min_data,t_max_data); set_close_to!(tSlider, current_t_val); else; time_range_data[]=(0.0,1.0); if tSlider.range[]!=(0.0:1.0); tSlider.range=0.0:1.0; end; set_close_to!(tSlider, 0.0); end
+        # Set label AFTER slider value might have been clamped/set
+        tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
+
+        # --- Calculate Initial Snapshot and Max Values ---
+        # Need to do this AFTER slider value is set for this block
+        current_t = tSlider.value[]
+        for i = 1:active_num
+             if i > length(tData[]) || isempty(tData[][i][]) # Check if data was loaded for this method
+                 xs[][i][] = Float64[]; us[][i][] = Float64[]
+                 x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN
+                 continue
+             end
+             t_vec = tData[][i][]; x_vecs = xData[][i][]; u_vecs = uData[][i][]
+             m = findmin(a->abs(a-current_t), t_vec)[2] # Find closest index
+             if 1 <= m <= length(x_vecs) && 1 <= m <= length(u_vecs)
+                 x_init_snap = x_vecs[m]; u_init_snap = u_vecs[m]
+                 xs[][i][] = x_init_snap; us[][i][] = u_init_snap
+                 if !isempty(u_init_snap) # Calc max only if snapshot is valid
+                     try; u_max_val, max_idx = findmax(u_init_snap); if isfinite(u_max_val) && 1 <= max_idx <= length(x_init_snap); x_at_max_obs[][i][] = x_init_snap[max_idx]; u_at_max_obs[][i][] = u_max_val; else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end; catch; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+                 else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+             else # Index m invalid
+                 xs[][i][] = Float64[]; us[][i][] = Float64[]
+                 x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN
+             end
+        end
+        # --- End Initial Snapshot/Max Calculation ---
+        println("Lift 1: Update complete.")
+    end # --- End Lift Block 1 ---
+
+
+    # --- Lift Block 2 (MODIFIED: Calculate and update max observables) ---
+    lift(tSlider.value, xData, uData, tData; ignore_equal_values=false) do t, xd_obs, ud_obs, td_obs
+        # Get inner vectors
+        xd = to_value(xd_obs); ud = to_value(ud_obs); td = to_value(td_obs)
+        active_num = method_number[]
+        # Consistency check (include new observables)
+        if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
+
+        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
+
+        for i = 1:active_num # Iterate through active methods
+             if i > length(xd) || i > length(ud) || i > length(td); continue; end # Index check
+             x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
+
+             local x_snapshot::Vector{Float64} = Float64[]; local u_snapshot::Vector{Float64} = Float64[]
+
+             # Get snapshot using closest time step logic
+             if !isempty(t_vec) && length(t_vec)==length(x_vecs) && length(t_vec)==length(u_vecs)
+                 (_, m) = findmin(a -> abs(a - t), t_vec)
+                 if 1 <= m <= length(x_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; end
+             end
+
+             # Update snapshot observables
+             if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
+
+             # --- Calculate and Update Max Observables ---
+             if !isempty(u_snapshot) && i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[])
+                 try
+                     u_max_val, max_idx = findmax(u_snapshot)
+                     if isfinite(u_max_val) && 1 <= max_idx <= length(x_snapshot)
+                         x_at_max_obs[][i][] = x_snapshot[max_idx]
+                         u_at_max_obs[][i][] = u_max_val
+                     else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+                 catch e; @warn "findmax failed: $e"; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+             else # Empty snapshot or invalid index for max obs
+                 if i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[]); x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+             end
+             # ---------------------------------------------
+        end # End loop over methods
+    end # --- End Lift Block 2 ---
+
+
+    # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---
+    # Trigger depends on method changes, snapshot data, AND track_max toggle
+    lift(method_number, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
+
+        empty!(ax) # Clear previous plots
+        # Clear legend explicitly targeting cell [1, 2]
+        try; existing_legend=filter(c->isa(c, Legend), contents(plot_fig[1, 2])); foreach(delete!, existing_legend); catch e; @warn "Could not clear legend cell: $e"; end
+
+        active_methods = methods_obs[]
+        if active_num == 0; return; end # Nothing to plot
+
+        # Consistency check
+        num_to_plot = min(active_num, length(current_xs_obsvec), length(current_us_obsvec))
+        if num_to_plot != active_num; @warn "Lift 3: Data series mismatch. Plotting $num_to_plot series."; end
+        if num_to_plot <= 0; return; end
+
+        plotted_objects = [] # For legend
+        for i = 1:num_to_plot
+            plotLabel = active_methods[i]
+            # Get styles for this method
+            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
+            marker = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
+            linestyle = get(local_ui_dict, "dashed_lines", false) ? local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))] : :solid
+
+            # Access the snapshot observables for plotting
+            x_snap_obs = current_xs_obsvec[i]
+            u_snap_obs = current_us_obsvec[i]
+
+            # --- Plot main data (Lines/Scatter) ---
+            obj_for_legend = nothing
+            # Use get for ui_dict keys for safety
+            if get(local_ui_dict, "show_lines", true)
+                 l = lines!(ax, x_snap_obs, u_snap_obs; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle)
+                 obj_for_legend = l
+            end
+            if get(local_ui_dict, "show_scatter", true)
+                 s = scatter!(ax, x_snap_obs, u_snap_obs; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel)
+                 # Only add scatter to legend items if lines weren't plotted or legend is empty
+                 if obj_for_legend === nothing; obj_for_legend = s; end
+            end
+            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); end
+            # ------------------------------------
+
+            # --- Plot Max Tracking Line (using observables from arguments) ---
+            if track_max_enabled # Check toggle state passed into lift block
+                # Ensure index i is valid for the max observable vectors passed in
+                if i <= length(current_x_max_obsvec) && i <= length(current_u_max_obsvec)
+                   # Access the observables holding max info for method i from the arguments
+                   x_max_pos_obs = current_x_max_obsvec[i] # This is Observable{Float64}
+                   u_max_val_obs = current_u_max_obsvec[i] # This is Observable{Float64}
+
+                   # Define reactive points for the line segment using lift
+                   start_point = lift(x_max_pos_obs; ignore_equal_values=true) do x_max
+                        Point2f(isfinite(x_max) ? x_max : NaN, 0)
+                   end
+                   end_point = lift(x_max_pos_obs, u_max_val_obs; ignore_equal_values=true) do x_max, u_max
+                        Point2f(isfinite(x_max) && isfinite(u_max) ? x_max : NaN, isfinite(u_max) ? u_max : NaN)
+                   end
+
+                   # Plot the line segment reactively if points are finite
+                   linesegments!(ax, lift((s, e) -> isfinite(s[1]) && isfinite(e[1]) && isfinite(e[2]) ? [s, e] : Point2f[], start_point, end_point);
+                                  color = (color, 0.75), # Use method color, slightly transparent
+                                  linestyle = :dash,
+                                  linewidth = ui_dict["linewidth"]/2)
+               end # End index check
+           end # End if track_max_enabled
+           # --- End Max Tracking Line ---
+
+        end # End loop over methods
+
+        # Add Legend (as before)
+        if !isempty(plotted_objects)
+             try
+                 # Clear just in case before adding new one
+                 for c in contents(plot_fig.layout); if isa(c, Legend) && c.layout_position == (1, 2); delete!(c); end; end
+                 Legend(plot_fig[1, 2], plotted_objects, active_methods[1:num_to_plot], "Methods", tellheight=false)
+                 colsize!(plot_fig.layout, 2, Auto()) # Adjust column width
+             catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end
+        end
+        # Use fixed global limits set in Lift 1 - DO NOT call autolimits!
+    end # --- End Lift Block 3 ---
+
+
+    # --- Animation Button Logic (Using real-time mapping) ---
+    on(play_button.clicks) do _
+        new_state = !is_animating[]
+        if new_state # --- Request Start Animation ---
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+            t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
+            is_animating[] = true
+
+            anim_duration_s = get(local_ui_dict, "animation_duration_s", 5.0) # Use value from dict
+            anim_fps = get(local_ui_dict, "animation_fps", 30)
+            timer_interval = 1.0 / max(1, anim_fps)
+            start_real_time = time()
+            #anim_time_ref = Ref(t_min) # Start animation from the beginning
+
+            function update_frame(timer_handle)
+                # Check if stopped externally
+                if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
+                # Calculate simulation time based on real time elapsed
+                elapsed_real_time = time() - start_real_time
+                cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
+                time_fraction = cycled_elapsed_time / anim_duration_s
+                current_sim_time = t_min + time_fraction * (t_max - t_min)
+                # Update slider value (triggers Lift 2)
+                set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max))
+            end
+
+            println("Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)...")
+            # Start timer immediately, repeat at interval
+            animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
+
+        else # --- Request Stop Animation ---
+            println("Stopping animation...")
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+            is_animating[] = false
+            # Nudge Lift 2 to ensure final state matches slider using non-animating logic
+            set_close_to!(tSlider, tSlider.value[])
+        end
+    end
+    # --- End Animation Button Logic ---
+
+    # --- GIF Saving Button Logic (with CSV parameters) ---
+    on(gif_save_button.clicks) do _
+        base_filename = strip(gif_save_textbox.stored_string[])
+        if isempty(base_filename); @warn "Please enter a filename for the GIF."; return; end
+
+        # Construct full paths using joinpath
+        save_dir = joinpath(get_save_path(), "figures") # Or separate "animations" subdir
+        try mkpath(save_dir) catch e; @warn "Could not create save directory $save_dir: $e"; end
+        gif_filename = joinpath(save_dir, base_filename * ".gif")
+        csv_filename = joinpath(save_dir, base_filename * "_params.csv") # Suffix for clarity
+
+        println("Preparing to save animation to $gif_filename and parameters to $csv_filename...")
+
+        # === Save Parameters to CSV FIRST ===
+        try
+            params_to_save = Pair{String, String}[] # Use String pairs for DataFrame compatibility
+
+            # Include relevant state information about the animation/plot
+            push!(params_to_save, "animation_time_range" => string(time_range_data[]))
+            push!(params_to_save, "animation_duration_s" => string(get(local_ui_dict, "animation_duration_s", 5.0))) # Use the default from this function
+            push!(params_to_save, "animation_fps" => string(get(local_ui_dict, "animation_fps", 30)))
+            push!(params_to_save, "save_trigger_time" => string(round(tSlider.value[], digits=4))) # Record time when save was clicked
+
+            # --- Current interactive parameter values ---
+            push!(params_to_save, "# Interactive Parameters" => "--------------------") # Section header
+
+            # Get current values from params_obs, sorting keys for consistent order
+            interactive_keys = keys(params_obs)
+            sorted_interactive_keys = sort(collect(interactive_keys))
+
+            for p_key in sorted_interactive_keys
+                p_obs = params_obs[p_key] # Get the observable
+                # Add parameter name and its current value (as string)
+                push!(params_to_save, string(p_key) => string(p_obs[]))
+            end
+            # -----------------------------------------
+
+            # Convert to DataFrame
+            df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
+
+            # Write CSV
+            CSV.write(csv_filename, df_to_save)
+            println("Parameters saved to $csv_filename")
+
+        catch e
+            @error "Failed to save parameters to CSV!" exception=(e, catch_backtrace())
+            # Decide whether to continue with GIF saving or return.
+            # Continuing might be okay if only parameter saving failed.
+        end
+        # ===================================
+
+        # Stop interactive animation if running
+        was_animating = is_animating[]
+        if was_animating; if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end; is_animating[] = false; sleep(0.1); end
+
+        # Get parameters for saving GIF
+        t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[]=true; end; return; end
+        duration_s = get(local_ui_dict, "animation_duration_s", 5.0) # Use consistent duration
+        fps = get(local_ui_dict, "animation_fps", 30)
+        n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
+        times_for_gif = range(t_min, t_max, length=n_frames)
+
+        # --- Record the animation ---
+        try
+            println("Recording $n_frames frames at $fps FPS... (Window may close)")
+            # Ensure plot uses the fixed global limits during recording
+            xlims!(ax, global_xlims[]); ylims!(ax, global_ylims[])
+
+            record(plot_fig, gif_filename, times_for_gif; framerate = fps) do t_now
+                # Set slider value -> triggers Lift 2 -> updates xs/us -> triggers Lift 3 redraw
+                set_close_to!(tSlider, t_now)
+                yield() # Allow Makie to process events/redraw before capturing frame
+            end
+            println("Animation saved successfully to $gif_filename")
+
+        catch e; @error "Failed to save GIF animation!" exception=(e, catch_backtrace());
+        finally
+            println("GIF saving process finished.")
+            # Restore state? Leave animation stopped for simplicity.
+        end
+    end
+    # --- End GIF Saving Logic ---
+
+
+    # --- Timer Cleanup on Figure Close ---
+    on(plot_fig.scene.events.window_open) do is_open
+        # Stop timer if figure closes
+        if !is_open && !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; is_animating[] = false; end
+    end
+
+    # --- Display Figures ---
+    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
+    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
+
+    return control_fig, plot_fig
+end
+
+"""
+    show1DSolutionFig_with_animation(sim_config::SimulationConfig)
+
+Creates an interactive Makie plot for `SimData1D` with animation playback
+and an option to save the animation as a GIF.
+Uses closest data point logic for animation frames.
+"""
+function show1DSolutionFig_with_animation2(sim_config::SimulationConfig)
+    # --- Basic Setup & UI ---
+    local_ui_dict = deepcopy(ui_dict)
+    # updateUI(...)
+    plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
+    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)") # Title set dynamically
+
+    # --- Parameter & Method Observables/Controls ---
+    # (Same as before)
+    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
+    params_obs = Dict{String,Observable}()
+    for (key, val) in params_all; params_obs[key] = Observable(val); end
+    methods = collect(keys(sim_config.methods_dict))
+    default_method = sim_config.default_method in methods ? sim_config.default_method : (isempty(methods) ? "" : methods[1])
+    methods_obs = Observable(isempty(methods) ? String[] : [default_method])
+    method_number = lift(length, methods_obs)
+    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+
+    # --- Time Slider & Label ---
+    tLabel_text = Observable("t = 0.0")
+    Label(control_fig[end+1, 1:3], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span 3 columns
+    tSlider = Slider(control_fig[end+1, 1:3], range = 0.0:1.0, startvalue = 0.0) # Span 3 columns
+
+    # --- Animation and GIF Saving Controls ---
+    # Place these controls together in the next row
+    anim_save_controls_row = control_fig[end+1, :] = GridLayout()
+
+    # Animation State/Controls
+    is_animating = Observable(false)
+    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
+    time_range_data = Ref((0.0, 1.0)) # Stores (t_min, t_max)
+    play_button = Button(anim_save_controls_row[1, 1], label = @lift($is_animating ? "Stop Anim" : "Play Anim")) # Col 1
+
+    # GIF Saving Textbox
+    gif_save_textbox = Textbox(anim_save_controls_row[1, 2], placeholder = "GIF Name (no ext)", width=150) # Col 2
+
+    # GIF Saving Button
+    gif_save_button = Button(anim_save_controls_row[1, 3], label = "Save GIF") # Col 3
+
+    # Adjust column sizes maybe
+    # colsize!(control_fig.layout, 1, Auto()); colsize!(control_fig.layout, 3, Auto())
+
+    # --- Data Structures ---
+    # (Same as before: xData, uData, tData, xs, us, global_xlims, global_ylims)
+    xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
+    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
+    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
+    xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
+    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
+    global_xlims = Observable((0.0, 1.0)); global_ylims = Observable((0.0, 1.0))
+
+    # --- Lift Block 1 (Data Loading, Limit Calc, Time Range Update) ---
+    # (Same as previous working version)
+    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+        println("Lift 1: Updating data, calculating global limits...")
+        # (Resize arrays: xData[], uData[], tData[], xs[], us[])
+        resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
+        resize!(xs[], active_num); resize!(us[], active_num)
+        # (Ensure inner observables exist)
+        for k in 1:active_num; if !isassigned(xData[], k) || !isa(xData[][k], Observable); xData[][k] = Observable(Vector{Vector{Float64}}()); end; if !isassigned(uData[], k) || !isa(uData[][k], Observable); uData[][k] = Observable(Vector{Vector{Float64}}()); end; if !isassigned(tData[], k) || !isa(tData[][k], Observable); tData[][k] = Observable(Float64[]); end; if !isassigned(xs[], k) || !isa(xs[][k], Observable); xs[][k] = Observable(Float64[]); end; if !isassigned(us[], k) || !isa(us[][k], Observable); us[][k] = Observable(Float64[]); end; end
+
+        all_time_points = Set{Float64}(); g_xmin, g_xmax = Inf, -Inf; g_umin, g_umax = Inf, -Inf; found_any_data = false
+        active_methods_now = methods_obs[]
+
+        for i = 1:active_num # Loop Methods
+            method = active_methods_now[i]
+            # (Assemble params)
+            current_method_params=Dict{String,Any}(); shared_keys=keys(sim_config.shared_params); method_keys=haskey(sim_config.methods_dict,method) ? keys(sim_config.methods_dict[method]) : []; for (pk,po) in params_obs; if pk in shared_keys || pk in method_keys; current_method_params[pk]=po[]; end; end; params=merge(current_method_params,Dict("method"=>method))
+            local sim_data::Union{AbstractSimData, Nothing} = nothing
+            try; sim_data = sim_config.sim_function(params); catch e; @warn "Sim failed: $method" exception=(e,catch_backtrace()); sim_data=nothing; end
+
+            if isnothing(sim_data) || !isa(sim_data, SimData1D); @warn "Invalid SimData1D for '$method'."; xData[][i][]=[]; uData[][i][]=[]; tData[][i][]=[]; xs[][i][]=[]; us[][i][]=[]; continue; end
+            xData[][i][] = sim_data.x; uData[][i][] = sim_data.u; tData[][i][] = sim_data.t; union!(all_time_points, sim_data.t)
+
+            # (Update Global Limits g_xmin, etc.)
+            for k in eachindex(sim_data.t); if k <= length(sim_data.x) && k <= length(sim_data.u); x_k=sim_data.x[k]; u_k=sim_data.u[k]; if !isempty(x_k) && !isempty(u_k); found_any_data=true; xmin_k, xmax_k = extrema(x_k); umin_k, umax_k = extrema(u_k); g_xmin=min(g_xmin, xmin_k); g_xmax=max(g_xmax, xmax_k); g_umin=min(g_umin, umin_k); g_umax=max(g_umax, umax_k); end; end; end
+        end # End method loop
+
+        # (Finalize and Apply Global Limits)
+        if found_any_data; pad_x = get(local_ui_dict, "x_axis_limit_padding", 0.1); pad_y = get(local_ui_dict, "y_axis_limit_padding", 0.1); xr = g_xmax - g_xmin; xp = xr ≈ 0 ? 0.1 : (xr*pad_x/2.0); yr = g_umax - g_umin; yp = yr ≈ 0 ? 0.1 : (yr*pad_y/2.0); final_xlims = (g_xmin-xp, g_xmax+xp); final_ylims = (g_umin-yp, g_umax+yp); global_xlims[] = final_xlims; global_ylims[] = final_ylims; try; xlims!(ax, final_xlims); ylims!(ax, final_ylims); catch e; @warn "Failed applying limits" e; end; else; global_xlims[] = (0.0, 1.0); global_ylims[] = (0.0, 1.0); try; xlims!(ax, 0.0, 1.0); ylims!(ax, 0.0, 1.0); catch e; @warn "Failed applying default limits" e; end; end
+
+        # (Store Time Range and Update Time Slider)
+        if !isempty(all_time_points); t_min_data, t_max_data = extrema(all_time_points); time_range_data[] = (t_min_data, t_max_data); sorted_times = sort(collect(all_time_points)); t_len = length(sorted_times); t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, t_len*2+100)); if t_len == 1; t_range_slider = range(t_min_data, stop=t_max_data, length=2); end; if tSlider.range[] != t_range_slider; tSlider.range = t_range_slider; end; current_t_val = clamp(tSlider.value[], t_min_data, t_max_data); set_close_to!(tSlider, current_t_val); tLabel_text[] = "t = $(round(current_t_val, digits=3))"; else; time_range_data[] = (0.0, 1.0); if tSlider.range[] != (0.0:1.0); tSlider.range = 0.0:1.0; end; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = 0.0"; end
+
+        println("Lift 1: Update complete.")
+        notify(tSlider.value) # Ensure Lift 2 runs to calculate initial snapshot based on possibly new data
+    end # --- End Lift Block 1 ---
+
+
+    # --- Lift Block 2 (SIMPLIFIED: Always uses closest time step) ---
+    lift(tSlider.value, xData, uData, tData; ignore_equal_values=false) do t, xd_obs, ud_obs, td_obs
+        xd = to_value(xd_obs); ud = to_value(ud_obs); td = to_value(td_obs)
+        num_active = method_number[]
+        if length(xs[])!=num_active || length(us[])!=num_active || length(xd)!=num_active || length(ud)!=num_active || length(td)!=num_active; return; end
+
+        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
+
+        for i = 1:num_active
+             if i > length(xd) || i > length(ud) || i > length(td) continue end
+             x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
+             if isempty(t_vec) || isempty(x_vecs) || isempty(u_vecs) || length(t_vec)!=length(x_vecs) || length(t_vec)!=length(u_vecs)
+                 if i <= length(xs[]) && i <= length(us[]); xs[][i][] = Float64[]; us[][i][] = Float64[]; end; continue
+             end
+             # --- Find index 'm' of the original time step closest to 't' ---
+             (_, m) = findmin(a -> abs(a - t), t_vec)
+             local x_snapshot::Vector{Float64}; local u_snapshot::Vector{Float64}
+             if 1 <= m <= length(x_vecs) && 1 <= m <= length(u_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; else; x_snapshot = Float64[]; u_snapshot = Float64[]; end
+             # --- Update snapshot observables ---
+             if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
+        end # End loop over methods
+    end # --- End Lift Block 2 ---
+
+
+    # --- Lift Block 3 (Plot Management) ---
+    # Trigger depends on method changes AND snapshot data changes
+    lift(method_number, xs, us; ignore_equal_values=true) do active_num, current_xs_obsvec, current_us_obsvec
+        empty!(ax)
+        # (Clear legend as before)
+        for c in contents(plot_fig.layout); if isa(c, Legend); try delete!(c) catch; end; end; end
+        active_methods = methods_obs[]; if active_num == 0; return; end
+        num_to_plot = min(active_num, length(current_xs_obsvec), length(current_us_obsvec)); if num_to_plot <= 0; return; end
+
+        plotted_objects = []
+        for i = 1:num_to_plot
+            plotLabel = active_methods[i]
+            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
+            marker = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
+            linestyle = get(local_ui_dict, "dashed_lines", false) ? local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))] : :solid
+            x_snap_obs = current_xs_obsvec[i]; u_snap_obs = current_us_obsvec[i]
+            obj_for_legend = nothing
+            if get(local_ui_dict, "show_lines", true); l = lines!(ax, x_snap_obs, u_snap_obs; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle); obj_for_legend = l; end
+            if get(local_ui_dict, "show_scatter", true); s = scatter!(ax, x_snap_obs, u_snap_obs; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel); if obj_for_legend === nothing; obj_for_legend = s; end; end
+            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); end
+        end
+        # (Add Legend as before, using try/catch and plot_fig[1, 2])
+         if !isempty(plotted_objects); try; for c in contents(plot_fig.layout); if isa(c, Legend); delete!(c); end; end; Legend(plot_fig[1, 2], plotted_objects, active_methods[1:num_to_plot], "Methods", tellheight=false); colsize!(plot_fig.layout, 2, Auto()); catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end; end
+        # Use fixed global limits set in Lift 1
+    end # --- End Lift Block 3 ---
+
+
+    # --- Animation Button Logic (Using real-time mapping) ---
+    on(play_button.clicks) do _
+        new_state = !is_animating[]
+        if new_state # --- Request Start Animation ---
+             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+             t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
+             is_animating[] = true
+
+             anim_duration_s = get(local_ui_dict, "animation_duration_s", 10.0)
+             anim_fps = get(local_ui_dict, "animation_fps", 30)
+             timer_interval = 1.0 / max(1, anim_fps)
+             start_real_time = time()
+
+             function update_frame(timer_handle)
+                 if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
+                 elapsed_real_time = time() - start_real_time
+                 cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
+                 time_fraction = cycled_elapsed_time / anim_duration_s
+                 current_sim_time = t_min + time_fraction * (t_max - t_min)
+                 set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max)) # Update slider -> triggers Lift 2
+             end
+             println("Starting animation...")
+             animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
+        else # --- Request Stop Animation ---
+            println("Stopping animation...")
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+            is_animating[] = false
+            set_close_to!(tSlider, tSlider.value[]) # Nudge Lift 2
+        end
+    end
+    # --- End Animation Button Logic ---
+
+    # --- NEW GIF Saving Button Logic ---
+    on(gif_save_button.clicks) do _
+        base_filename = strip(gif_save_textbox.stored_string[])
+        if isempty(base_filename)
+            @warn "Please enter a filename for the GIF."
+            return
+        end
+
+        save_dir = joinpath(get_save_path(), "figures")
+        try mkpath(save_dir) catch e; @warn "Could not create save directory $save_dir: $e"; end
+        filename = joinpath(save_dir, base_filename * ".gif")
+
+        println("Preparing to save animation to $filename...")
+
+        # Temporarily stop interactive animation if running
+        was_animating = is_animating[]
+        if was_animating
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+            is_animating[] = false # Set state to stop potential interference
+            sleep(0.1) # Brief pause
+        end
+
+        # Get parameters for saving GIF
+        t_min, t_max = time_range_data[]
+        if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[] = true; end; return; end
+
+        # Use animation parameters from ui_dict for consistency, or define separate ones for GIF
+        duration_s = get(local_ui_dict, "animation_duration_s", 10.0)
+        fps = get(local_ui_dict, "animation_fps", 30)
+        n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
+
+        times_for_gif = range(t_min, t_max, length=n_frames)
+
+        # --- Record the animation ---
+        try
+            println("Recording $n_frames frames at $fps FPS...")
+            # Ensure the plot uses the fixed limits during recording
+            xlims!(ax, global_xlims[])
+            ylims!(ax, global_ylims[])
+
+            record(plot_fig, filename, times_for_gif; framerate = fps) do t_now
+                # For each frame: set slider, which triggers Lift 2, which triggers Lift 3 update
+                set_close_to!(tSlider, t_now)
+                # Wait briefly allows redraw? Needed sometimes for complex plots.
+                sleep(0.005)
+            end
+            println("Animation saved successfully to $filename")
+
+        catch e
+            @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
+        finally
+             # Optional: Restore slider to original position? Or leave at end? Leave at end for now.
+             # Optional: Restart animation if it was running? Simpler to leave stopped.
+             # if was_animating; is_animating[] = true; /* restart timer */ end
+             println("GIF saving finished.")
+        end
+    end
+    # --- End GIF Saving Logic ---
+
+    # --- Timer Cleanup on Figure Close ---
+    on(plot_fig.scene.events.window_open) do is_open
+        if !is_open && !isnothing(animation_timer[])
+            println("Figure closed, stopping animation timer.")
+            try close(animation_timer[]) catch; end; animation_timer[] = nothing
+            is_animating[] = false
+        end
+    end
+    # --- End Cleanup ---
+
+    # --- Display Figures ---
+    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
+    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
+
+    return control_fig, plot_fig
+
+end # --- End Function Definition ---
+
+"""
     showDynamicDependence(sim_config::SimulationConfig)
 
 Creates an interactive Makie plot showing the time evolution of selected statistics 
@@ -838,8 +1285,18 @@ function showDynamicDependence(sim_config::SimulationConfig)
     lift(method_number, selected_stat_index_obs, values(params_obs)...) do active_num, stat_idx, _...
         println("Updating plot...")
         empty!(ax)
-        for c in contents(plot_fig[1,1])
-            if isa(c, Legend); delete!(c); end
+        try
+            target_pos = (1, 2)
+            existing_content = contents(plot_fig[target_pos...]) # Get content at specific position
+            for item in existing_content
+                if isa(item, Legend)
+                    println("Deleting existing Legend at ", target_pos) # Debug print
+                    delete!(item)
+                end
+            end
+        catch e
+            # Ignore errors if position doesn't exist or content access fails initially
+            # @warn "Could not check/clear legend position [1, 2]: $e" # Optional warning
         end
 
         if isempty(stat_keys_obs[]) || active_num == 0 || stat_idx > length(stat_keys_obs[]) || stat_idx < 1
@@ -1127,8 +1584,17 @@ function show2DSolutionFig(sim_config::SimulationConfig)
                 to_delete = filter(x -> isa(x, Union{Legend, Colorbar}), content_list)
                 for elem in to_delete
                     try
-                        delete!(elem); if isa(elem, Colorbar); needs_colorbar_update=true; end
-                    catch e; println("Warning: Failed delete element $(typeof(elem)) - $e"); end
+                        target_pos = (1, 2)
+                        existing_content = contents(plot_fig[target_pos...]) # Get content at specific position
+                        for item in existing_content
+                            if isa(item, Legend)
+                                println("Deleting existing Legend at ", target_pos) # Debug print
+                                delete!(item)
+                            end
+                        end
+                    catch e
+                        println("Warning: Failed delete element $(typeof(elem)) - $e")
+                    end
                 end
             end
         end

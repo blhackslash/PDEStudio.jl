@@ -3,19 +3,6 @@ using IPlotPDESols.Utils
 using IPlotPDESols.MakiePlotting
 using LinearAlgebra: norm 
 
-method1 = MethodDict("method1" => ParamDict("a"=>1.))
-method12 = MethodDict("method1" => ParamDict("a"=>1.), "method2" => ParamDict("b" => 1))
-shared_Dict = ParamDict("c"=>1.)
-simulation_fun(x) = x 
-
-test = mergeMethodDicts(shared_Dict, method12)
-test1 = SimulationConfig(simulation_fun, method1, "method1")
-
-test2 = SimulationConfig(simulation_fun, shared_Dict, method12, "method1")
-
-typeof(method12)
-
-
 # SimDAta tests
 
 x = collect(1.:10.)
@@ -212,6 +199,7 @@ sim_config_1d = SimulationConfig(
 # --- Run the 1D Visualization ---
 # Assuming show1DSolutionFig is defined and functional
 println("Starting 1D Visualization...")
+show1DSolutionFig(sim_config_1d) 
 show1DSolutionFig(sim_config_1d) 
 showDynamicDependence(sim_config_1d)
 println("Visualization launched (call commented out).")
