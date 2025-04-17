@@ -52,6 +52,43 @@ ui_dict2D = Dict(
     "colormaps" => [:viridis, :plasma, :inferno, :magma, :thermal, :coolwarm, :balance, :grays], # Available colormaps
     "axis_limit_padding" => 0.1
 )
+"""
+    assemble_params_for_run(shared_obs, method_obs_collection, method_name)
+
+Constructs a flat parameter dictionary for a simulation run by combining
+current shared parameter values and current method-specific parameter values.
+
+Method-specific parameters override shared parameters if keys conflict.
+"""
+function assemble_params_for_run(
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    method_name::String
+    )::ParamDictType # Assuming ParamDictType = Dict{String, Any}
+
+    # Start with current values of shared parameters
+    current_params = ParamDict()
+    for (key, obs) in shared_params_obs
+        current_params[key] = obs[] # Dereference observable
+    end
+
+    # Get the specific observable dictionary for the requested method
+    if haskey(method_params_collection_obs, method_name)
+        method_specific_obs_dict = method_params_collection_obs[method_name]
+        # Merge/override with current values of method-specific parameters
+        for (key, obs) in method_specific_obs_dict
+             current_params[key] = obs[] # Dereference; overrides shared if key exists
+        end
+    else
+        # This might be expected if a method uses only shared params
+        # @warn "No specific parameters found for method '$method_name' in observable collection."
+    end
+
+    # Add method name itself (optional, but often useful for saving/loading)
+    current_params["method"] = method_name
+
+    return current_params
+end
 
 function updateUI(ui_dict::Dict, ui_input::Dict)
     @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
@@ -1784,7 +1821,14 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
         for i = 1:active_num # Loop Methods
             method = active_methods_now[i]
             # (Assemble params)
-            current_method_params=Dict{String,Any}(); shared_keys=keys(sim_config.shared_params); method_keys=haskey(sim_config.methods_dict,method) ? keys(sim_config.methods_dict[method]) : []; for (pk,po) in params_obs; if pk in shared_keys || pk in method_keys; current_method_params[pk]=po[]; end; end; params=merge(current_method_params,Dict("method"=>method))
+            current_method_params=Dict{String,Any}(); shared_keys=keys(sim_config.shared_params); 
+            method_keys=haskey(sim_config.methods_dict,method) ? keys(sim_config.methods_dict[method]) : []; 
+            for (pk,po) in params_obs; 
+                if pk in shared_keys || pk in method_keys; 
+                    current_method_params[pk]=po[]; 
+                end; 
+            end; 
+            params=merge(current_method_params,Dict("method"=>method))
             local sim_data::Union{AbstractSimData, Nothing}=nothing; try if !Utils.doesSimDataExist(params); println(" Running sim: $method"); sim_data=sim_config.sim_function(params); Utils.saveSimData(sim_data); else; println(" Loading data: $method"); sim_data=Utils.loadSimData(params); end catch e; @warn "Sim/Load failed: $method" exc=e; sim_data=nothing; end
 
             if isnothing(sim_data) || !isa(sim_data, SimData2D); @warn "Invalid SimData2D '$method'."; xData[][i][]=[]; uData[][i][]=[]; tData[][i][]=[]; xs[][i][]=[]; us[][i][]=[]; continue; end

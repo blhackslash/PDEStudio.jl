@@ -49,7 +49,6 @@ mutable struct SimData2D <: AbstractSimData
         new(x, u, t, params, ParamDict())
     end
 end
-
 function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
     merged = copy(shared_params)
     for (_, val) = methods

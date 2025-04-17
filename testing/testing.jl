@@ -372,6 +372,6 @@ sim_config_2d = SimulationConfig(
 
 # --- Run the Visualization ---
 println("Starting 2D Visualization...")
-show2DSolutionFig2(sim_config_2d)
+show2DSolutionFig(sim_config_2d)
 println("Visualization launched.")
 showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "l2_norm_sq", "l2_norm_sq")
