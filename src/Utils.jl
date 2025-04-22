@@ -6,8 +6,8 @@ using SHA
 using CSV, DataFrames
 using JLD2, FileIO
 
-export saveSimData,calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
-       getAllSavedMeshes, changeStats, set_save_path!, get_save_path
+export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
+       getAllSimData, changeStats, set_save_path!, get_save_path
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -283,7 +283,7 @@ end
 """
 Returns all saved simulation meshes with the given paramseters.
 """
-function getAllSavedMeshes(ks::Vector{String}, vals::Vector)
+function getAllSimData(ks::Vector{String}, vals::Vector)
     save_data = get_save_path() * "/data/"
     res = []
     files = readdir(save_data)

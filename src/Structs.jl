@@ -65,7 +65,7 @@ function createSimData(x::Vector{Vector{Float64}}, u::Vector{Vector{Float64}}, t
     SimData1D(x, u, t, params)
 end
 
-function createSimData(x::Vector{Matrix{Float64}}, u::Vector{Matrix{Float64}}, t::Vector{Float64}, params::ParamDictType)
+function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{Vector{Tuple{Float64,Float64}}}, t::Vector{Float64}, params::ParamDictType)
     SimData2D(x, u, t, params)
 end
 

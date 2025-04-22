@@ -7,8 +7,7 @@ using CSV, DataFrames
 using Dates # For timestamp in optional info
 
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot,
-       show1DSolutionFig_with_animation, show1DSolutionFig_with_animation2
+export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot
 
 ui_dict = Dict(
     "dashed_lines" => false,
