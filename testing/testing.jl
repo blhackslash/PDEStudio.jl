@@ -248,7 +248,7 @@ function doTestSimulation2D(params::ParamDictType)
 
     # --- Generate Solution and Stats Over Time ---
     println("Generating data for method '$method'...")
-    for i = 1:num_steps
+    _,sim_time,_... = @timed for i = 1:num_steps
         current_t = t[i]
         u_snapshot = Vector{Float64}(undef, num_points)
         
@@ -323,6 +323,7 @@ function doTestSimulation2D(params::ParamDictType)
         # Approximate L2 norm squared: sum(u_i^2 * dA) -> sum(u_i^2)*(Lx/nx)*(Ly/ny)
         dA = (Lx / (nx - 1)) * (Ly / (ny - 1)) # Area element approximation
         stats["l2_norm_sq"][i] = sum(u_snapshot.^2) * dA
+
         
     end # End loop over time steps
     println("Finished generating data for method '$method'.")
@@ -330,7 +331,7 @@ function doTestSimulation2D(params::ParamDictType)
     # Create SimData2D object
     sim_data = SimData2D(x_over_time, u_over_time, t, params)
     sim_data.stats = stats # Add the calculated stats
-
+    stats["time"] = sim_time
     return sim_data
 end
 
@@ -374,4 +375,5 @@ sim_config_2d = SimulationConfig(
 println("Starting 2D Visualization...")
 show2DSolutionFig(sim_config_2d)
 println("Visualization launched.")
-showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "l2_norm_sq", "l2_norm_sq")
+showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "l2_norm_sq")
+showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "time", "max_u")

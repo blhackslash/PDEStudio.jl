@@ -4,6 +4,7 @@ using ..Structs
 using ..Utils
 using GLMakie
 using CSV, DataFrames
+using Dates # For timestamp in optional info
 
 
 export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot,
@@ -81,7 +82,7 @@ function assemble_params_for_run(
         end
     else
         # This might be expected if a method uses only shared params
-        # @warn "No specific parameters found for method '$method_name' in observable collection."
+        @warn "No specific parameters found for method '$method_name' in observable collection."
     end
 
     # Add method name itself (optional, but often useful for saving/loading)
@@ -103,37 +104,180 @@ function updateUI(ui_dict::Dict, ui_input::Dict)
 end
 
 # Functions for Makie Controls
-function createTextBoxes(fig::Makie.Figure, keys::Vector{String}, params_obs::Dict{String, Observable})
+function createTextBoxes(fig::Makie.Figure, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
     tbLayout = fig[end+1,:] = GridLayout()
     sort!(keys)
     for (i,key) = enumerate(keys)
-        row = mod1(i, 5)
-        col = trunc(Int64, (i-1)/5) + 1
+        col = mod1(i, 5)
+        row = trunc(Int64, (i-1)/5) + 1
         Label(tbLayout[row,2*col-1], key * " = ")
-        tb = Textbox(tbLayout[row,2*col], placeholder = string(to_value(params_obs[key])), validator = typeof(to_value(params_obs[key])))
+        current_val = params_obs[key][]
+        validator = String; if isa(current_val, AbstractFloat); validator = Float64; elseif isa(current_val, Integer); validator = Int; end
+        tb = Textbox(tbLayout[row,2*col], placeholder = string(to_value(params_obs[key])), validator = validator)
         on(tb.stored_string) do s
-            params_obs[key][] = parse(typeof(params_obs[key][]), s)
+            try
+                parsed_val = parse(typeof(current_val), s)
+                # Only update and notify if value actually changed
+                if params_obs[key][] != parsed_val
+                    params_obs[key][] = parsed_val
+                    notifier[] = notifier[] + 1 # <<< INCREMENT NOTIFIER
+                end
+            catch e
+                println("Invalid input '$s' for $key: $e")
+                tb.stored_string = string(params_obs[key][]) # Reset textbox to current value
+            end
         end
     end
 end
 
-function createSaveFigBox(figControl::Makie.Figure, plot_fig::Makie.Figure, params_obs::Dict{String,Observable})
-    saveBox = Textbox(figControl[end+1, 1], placeholder = "Type name to save current screen")
-    save_figures = get_save_path() * "/figures/"
-    on(saveBox.stored_string) do s
-        name = save_figures * s
-        #CairoMakie.activate!(pt_per_unit = 1.5)
-        #CairoMakie.save( name * ".pdf", plot_fig)
-        save(name * ".png", plot_fig)
 
-        ks = sort(collect(keys(params_obs)))
-        vals = map(key -> to_value(params_obs[key]), ks)
-        dataf = DataFrame(ks .=> vals)
-        CSV.write(name * ".csv", dataf)
-        
-        println("Plot saved as $name" * ".png. To change the directory run set_save_path!")
-        
+"""
+    saveParametersToCSV(base_filename, save_dir, shared_params_obs, method_params_collection_obs, methods_obs, optional_info::Dict)
+
+Gathers current parameter values (shared and active method-specific) and saves
+them to a CSV file named based on `base_filename` inside `save_dir`.
+Includes optional context information. Returns true on success, false on failure.
+"""
+function saveParametersToCSV(
+    base_filename::String,
+    save_dir::String,
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    methods_obs::Observable{Vector{String}},
+    optional_info::Dict = Dict{String, Any}() # For context like time, animation settings etc.
+    )::Bool # Indicate success/failure
+
+    if isempty(base_filename)
+        @warn "CSV save skipped: Base filename is empty."
+        return false
     end
+
+    # Construct filename, using a suffix for clarity
+    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+    println("Saving parameters to $csv_filename...")
+
+    try
+        params_to_save = Pair{String, String}[] # Use String pairs for DataFrame
+
+        # --- Add Optional Context Info First ---
+        if !isempty(optional_info)
+            push!(params_to_save, "# Context Info" => "====================")
+            # Sort optional keys for consistent output
+            for key in sort(collect(keys(optional_info)))
+                 push!(params_to_save, string(key) => string(optional_info[key]))
+             end
+        end
+
+        # --- Add Shared Parameters ---
+        push!(params_to_save, "# Shared Parameters" => "====================")
+        shared_keys = sort(collect(keys(shared_params_obs)))
+        if isempty(shared_keys)
+             push!(params_to_save, "(None)" => "")
+        else
+             for p_key in shared_keys
+                if haskey(shared_params_obs, p_key) # Safety check
+                    p_obs = shared_params_obs[p_key]
+                    push!(params_to_save, string(p_key) => string(p_obs[])) # Store value as string
+                end
+            end
+        end
+
+        # --- Add Active Method-Specific Parameters ---
+        push!(params_to_save, "# Method-Specific Parameters" => "==========================")
+        active_methods = sort(methods_obs[]) # Get current active methods
+        if isempty(active_methods)
+             push!(params_to_save, "(No methods active)" => "")
+        else
+            for method_name in active_methods
+                push!(params_to_save, "# Method: $method_name" => "--------------------") # Sub-header
+                if haskey(method_params_collection_obs, method_name)
+                    method_params_obs = method_params_collection_obs[method_name]
+                    if !isempty(method_params_obs)
+                        method_keys = sort(collect(keys(method_params_obs)))
+                        for p_key in method_keys
+                             if haskey(method_params_obs, p_key) # Safety check
+                                p_obs = method_params_obs[p_key]
+                                push!(params_to_save, string(p_key) => string(p_obs[])) # Store value as string
+                            end
+                        end
+                    else
+                         push!(params_to_save, "(No specific parameters defined)" => "")
+                    end
+                else
+                     push!(params_to_save, "(Parameter definition collection not found)" => "")
+                end
+            end # End loop through active methods
+        end
+        # --------------------------------------
+
+        # Convert to DataFrame and write CSV
+        df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
+        CSV.write(csv_filename, df_to_save)
+        println("Parameters successfully saved.")
+        return true # Indicate success
+
+    catch e
+        @error "Failed to save parameters to CSV ($csv_filename)!" exception=(e, catch_backtrace())
+        return false # Indicate failure
+    end
+end
+
+"""
+    createSaveFigBox(target_layout, plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
+
+Creates UI elements to save the current plot_fig as PNG and calls
+saveParametersToCSV to save parameters.
+"""
+function createSaveFigBox(
+    target_layout,
+    plot_fig::Makie.Figure,
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}}, # <<< Pass through
+    methods_obs::Observable{Vector{String}} # <<< Pass through
+    )
+
+    gb = target_layout[1, 1:2] = GridLayout() # Example layout
+    Label(gb[1, 1], "Save PNG+CSV:", halign=:right).padding=(0,5,0,0)
+    saveBox = Textbox(gb[1, 2], placeholder = "Type name (no ext)", width=200)
+    try; colsize!(gb, 1, Auto()); colsize!(gb, 2, Auto()); catch; end
+
+    get_save_dir() = joinpath(Utils.get_save_path(), "figures")
+
+    on(saveBox.stored_string) do s
+         base_name = string(strip(s))
+         
+         if isempty(base_name); println("Save cancelled (empty name)."); return; end
+
+         save_figures_path = get_save_dir()
+         try; mkpath(save_figures_path); catch e; @warn "Could not create dir $save_figures_path: $e"; end
+
+         png_name = joinpath(save_figures_path, base_name * ".png")
+
+         # --- Save PNG ---
+         try
+             Makie.save(png_name, plot_fig)
+             println("Plot saved as $png_name")
+         catch e; @error "Failed to save PNG!" exception=(e, catch_backtrace()); end
+
+         # --- Call reusable function to save Parameters ---
+         optional_info = Dict(
+             "Save Type" => "Static Frame",
+             "Timestamp" => string(Dates.now()) # Use Dates.now()
+             # Add tSlider value if tSlider variable is accessible here?
+             # "Trigger Time (t)" => string(round(tSlider.value[], digits=4))
+         )
+         saveParametersToCSV( # Call the new function
+             base_name,
+             save_figures_path,
+             shared_params_obs,
+             method_params_collection_obs, # Pass it along
+             methods_obs,                  # Pass it along
+             optional_info
+         )
+         # --------------------------------------------------
+
+         #saveBox.stored_string = "" # Clear textbox
+     end # End on event handler
 end
 
 function createMethodCheckboxes(fig::Makie.Figure, methods_obs::Observable{Vector{String}}, methods::Vector{String})
@@ -156,293 +300,109 @@ function createMethodCheckboxes(fig::Makie.Figure, methods_obs::Observable{Vecto
     end
 end
 
-function createParameterToggles(fig::Makie.Figure, keys::Vector{String}, obs_dict::Dict{String, Observable})
+function createParameterToggles(fig::Makie.Figure, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
     ptoLayout = fig[end+1,:] = GridLayout()
     for (i,key) = enumerate(keys)
         Label(ptoLayout[i,1], key)
-        toggleTmp= Toggle(ptoLayout[i,2], active = to_value(obs_dict[key]))
+        toggleTmp= Toggle(ptoLayout[i,2], active = to_value(params_obs[key]))
         on(toggleTmp.active) do active
-            obs_dict[key][] = active[]
+            if params_obs[key][] != active_val
+                params_obs[key][] = active_val # Update observable
+                notifier[] = notifier[] + 1 # <<< INCREMENT NOTIFIER
+            end
         end
     end
 end
 
-"""
-Creates a Makie figure containing the simulation controls.
-"""
-function createControls(plot_fig::Makie.Figure, params_obs::Dict{String,Observable}, methods_obs::Observable{Vector{String}}, methods::Vector{String})
-    control_fig = Figure(size=(800,700))
-    Label(control_fig[1,:], "Control Panel", fontsize = 30)
-    # Split parameters by type
-    vals = values(params_obs)
-    ks = sort(collect(keys(params_obs)))
-    mask_to = map(x -> x[] isa Bool, vals)
-    mask_tb = map(x -> x[] isa Real, vals) .& .!mask_to
 
-    # Create control elements
-    if !isempty(mask_tb)
-        createTextBoxes(control_fig, ks[mask_tb], params_obs)
+"""
+    createControls_Separated(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names)
+
+Creates a Makie control figure using the user's helper functions, separating shared
+and method-specific parameters into sections. Assumes helper functions add their
+own rows to the passed figure using `fig[end+1, ...]`.
+"""
+function createControls(
+    plot_fig::Makie.Figure,                             # Figure for save box action reference
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    methods_obs::Observable{Vector{String}},          # Observable list of ACTIVE methods
+    all_method_names::Vector{String},   # FULL list of possible methods
+    parameter_update_notifier::Observable # Accept notifier                  
+    )
+
+    control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
+    Label(control_fig[1, :], "Control Panel", fontsize = 24, font=:bold, tellwidth=false) # Main title
+
+    current_row_tracker = Ref(1) # Use Ref to track rows across helper calls if needed, although helpers use end+1
+
+    # --- Shared Parameters Section ---
+    if !isempty(shared_params_obs)
+        # Add section title row
+        Label(control_fig[end+1, :], "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+        # Separate keys
+        shared_keys = sort(collect(keys(shared_params_obs)))
+        shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
+        shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
+
+        # Call user's helpers (they will add rows using end+1)
+        if !isempty(shared_other_keys)
+            createTextBoxes(control_fig, shared_other_keys, shared_params_obs, parameter_update_notifier)
+        end
+        if !isempty(shared_bool_keys)
+            createParameterToggles(control_fig, shared_bool_keys, shared_params_obs, parameter_update_notifier)
+        end
     end
-    if !isempty(mask_to)
-        createParameterToggles(control_fig, ks[mask_to], params_obs)
+
+    # --- Method-Specific Parameters Section ---
+    Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+    any_method_specific_params = false
+    # Iterate through ALL possible methods to create sections consistently
+    for method_name in sort(all_method_names)
+        # Check if this method has specific parameter observables defined
+        if haskey(method_params_collection_obs, method_name)
+            method_params_obs = method_params_collection_obs[method_name]
+            if !isempty(method_params_obs)
+                any_method_specific_params = true
+                # Add a sub-header for the method
+                Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
+
+                # Separate keys for this method
+                method_keys = sort(collect(keys(method_params_obs)))
+                method_bool_keys = filter(k -> method_params_obs[k][] isa Bool, method_keys)
+                method_other_keys = filter(k -> !(method_params_obs[k][] isa Bool), method_keys)
+
+                # Call user's helpers for this method's params
+                if !isempty(method_other_keys)
+                    createTextBoxes(control_fig, method_other_keys, method_params_obs, parameter_update_notifier)
+                end
+                if !isempty(method_bool_keys)
+                    createParameterToggles(control_fig, method_bool_keys, method_params_obs, parameter_update_notifier)
+                end
+            end # end if !isempty(method_params_obs)
+        end # end if haskey
+    end # end for method_name
+    if !any_method_specific_params
+         Label(control_fig[end+1, :], "(None)", halign=:center, tellwidth=false).padding = (0,0,5,15)
     end
-    createMethodCheckboxes(control_fig, methods_obs, methods)
-    createSaveFigBox(control_fig, plot_fig, params_obs)
+    # --- Method Selection Section ---
+    Label(control_fig[end+1, :], "Active Methods", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+
+    # Call user's Checkbox helper function
+    createMethodCheckboxes(control_fig, methods_obs, all_method_names)
+
+    # --- Save Box Section ---
+    # Note: This currently only passes shared_params_obs to be saved in the CSV.
+    # Modifying createSaveFigBox would be needed to save method-specific params too.
+    #Label(control_fig[end+1, :], "Save Current View", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+    createSaveFigBox(control_fig[end+1,:], plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
 
     return control_fig
 end
 
-"""
-show1DSolutionFig(sim_config::SimulationConfig) - REVISED for Fixed Global Limits
-
-Creates an interactive Makie plot for `SimData1D` with globally fixed X and Y limits
-determined by the range of data across all active methods and time steps.
-"""
-function show1DSolutionFig_old(sim_config::SimulationConfig)
-    # --- Basic Setup ---
-    local_ui_dict = deepcopy(ui_dict) # Use 1D UI dict
-    updateUI(local_ui_dict, sim_config.ui_options)
-    plot_fig = Figure(size = local_ui_dict["figsize"])
-    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)")
-
-    # --- Parameter & Method Observables ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    for (key, val) in params_all; params_obs[key] = Observable(val); end
-    methods = collect(keys(sim_config.methods_dict))
-    methods_obs = Observable([sim_config.default_method])
-    method_number = lift(length, methods_obs)
-
-    # --- Control Figure & Widgets ---
-    # Assuming createControls takes plot_fig as first arg based on user code
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods) 
-    tLabel_text = Observable("t = 0.0")
-    Label(control_fig[end+1,:], text = tLabel_text) # Label above slider
-    tSlider = Slider(control_fig[end+1,:], range = 0.0:1.0, startvalue = 0.0)
-
-    # --- Data Structures ---
-    xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0)) # Snapshot x
-    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0)) # Snapshot u
-
-    # --- Observables for Global Limits ---
-    global_xlims = Observable((0.0, 1.0))
-    global_ylims = Observable((0.0, 1.0))
-
-    # --- Lift Block 1: Load Data, Calc Global XY Limits, Update Slider ---
-    lift(method_number, values(params_obs)...) do active_num, _...
-        println("Lift 1 (1D): Updating data & calculating global limits...")
-        # Resize arrays
-        xData[] = Vector{Observable{Vector{Vector{Float64}}}}(undef, active_num)
-        uData[] = Vector{Observable{Vector{Vector{Float64}}}}(undef, active_num)
-        tData[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        xs[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        us[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        
-        all_time_points = Set{Float64}()
-        # Global limits tracking
-        g_xmin, g_xmax = Inf, -Inf
-        g_umin, g_umax = Inf, -Inf
-        found_any_data = false
-
-        for i = 1:active_num
-            method = methods_obs[][i]
-            # Parameter setup
-            current_method_params = Dict{String, Any}()
-            for (p_key, p_obs) in params_obs; if haskey(sim_config.shared_params, p_key) || haskey(sim_config.methods_dict[method], p_key); current_method_params[p_key] = p_obs[]; end; end
-            params = merge(current_method_params, Dict("method" => method))
-
-            # Load or Compute Data (Using user's structure)
-            local sim_data::Union{SimData1D, Nothing} = nothing # Ensure type/scope
-            # if !doesSimDataExist(params) # Replace with actual checks
-            #     println("Data calculated for method: $method")
-            #     sim_data = sim_config.sim_function(params)
-            #     # saveSimData(sim_data) 
-            # else
-            #     println("Loading data for method: $method")
-            #     # sim_data = loadSimData(params) 
-            # end
-            # --- Direct call for testing ---
-             println("Running simulation for method: $method")
-             sim_data = sim_config.sim_function(params) # Direct call
-             println("Simulation finished for method: $method")
-            # --- End Data Loading ---
-
-            if isnothing(sim_data) || !isa(sim_data, SimData1D)
-                @warn "Failed to load/compute valid SimData1D for method '$method'. Skipping."
-                # Assign empty observables to prevent errors later
-                 xData[][i] = Observable(Vector{Vector{Float64}}(undef, 0))
-                 uData[][i] = Observable(Vector{Vector{Float64}}(undef, 0))
-                 tData[][i] = Observable(Float64[])
-                 xs[][i] = Observable(Float64[])
-                 us[][i] = Observable(Float64[])
-                continue # Skip to next method
-            end
-            
-            # Store data in observables
-            xData[][i] = Observable(sim_data.x)
-            uData[][i] = Observable(sim_data.u)
-            tData[][i] = Observable(sim_data.t)
-            union!(all_time_points, sim_data.t)
-
-            # --- Update Global X and U Limits ---
-            for k in eachindex(sim_data.t)
-                x_k = sim_data.x[k]
-                u_k = sim_data.u[k]
-                if !isempty(x_k) && !isempty(u_k)
-                    found_any_data = true
-                    # Use extrema for min/max
-                    xmin_k, xmax_k = extrema(x_k)
-                    umin_k, umax_k = extrema(u_k)
-                    # Update global limits
-                    g_xmin = min(g_xmin, xmin_k); g_xmax = max(g_xmax, xmax_k)
-                    g_umin = min(g_umin, umin_k); g_umax = max(g_umax, umax_k)
-                end
-            end
-
-            # Initialize snapshot based on current slider time
-            current_t = tSlider.value[]
-            closest_t_index = isempty(sim_data.t) ? 0 : findmin(a->abs(a-current_t), sim_data.t)[2]
-            if closest_t_index > 0 && closest_t_index <= length(sim_data.x) && closest_t_index <= length(sim_data.u)
-                xs[][i] = Observable(sim_data.x[closest_t_index])
-                us[][i] = Observable(sim_data.u[closest_t_index])
-            else
-                xs[][i] = Observable(Float64[]); us[][i] = Observable(Float64[])
-            end
-        end # End loop over methods
-
-        # --- Finalize and Apply Global Limits ---
-        if found_any_data
-            padding_factor_x = local_ui_dict["x_axis_limit_padding"]
-            padding_factor_y = local_ui_dict["y_axis_limit_padding"]
-            x_range = g_xmax - g_xmin; x_pad = x_range * padding_factor_x / 2.0; x_pad = x_range <= 1e-14 ? 0.1 : x_pad
-            y_range = g_umax - g_umin; y_pad = y_range * padding_factor_y / 2.0; y_pad = y_range <= 1e-14 ? 0.1 : y_pad
-
-            final_xlims = (g_xmin - x_pad, g_xmax + x_pad)
-            final_ylims = (g_umin - y_pad, g_umax + y_pad)
-
-            global_xlims[] = final_xlims
-            global_ylims[] = final_ylims
-
-            try # Apply limits to the existing Axis
-                xlims!(ax, final_xlims)
-                ylims!(ax, final_ylims)
-                # Or: limits!(ax, final_xlims..., final_ylims...)
-                println("Lift 1 (1D): Applied global limits X=$final_xlims, Y=$final_ylims")
-            catch e
-                println("Warning: Failed to apply limits in Lift 1 (1D) - $e")
-            end
-        else # Default limits
-            global_xlims[] = (0.0, 1.0); global_ylims[] = (0.0, 1.0)
-            xlims!(ax, 0.0, 1.0); ylims!(ax, 0.0, 1.0)
-        end
-
-        # --- Update Time Slider Range ---
-        if !isempty(all_time_points)
-            # ... (slider range logic same as before) ...
-            sorted_times = sort(collect(all_time_points)); time_step = length(sorted_times)>1 ? (sorted_times[end]-sorted_times[1]) / (length(sorted_times)-1) : 0.0; t_range = length(sorted_times)>1 ? range(sorted_times[1], stop=sorted_times[end], step=max(eps(Float64), time_step)) : range(sorted_times[1], stop=sorted_times[1], length=1); if time_step == 0 && length(sorted_times) > 1; t_range = range(sorted_times[1], stop=sorted_times[end], length=length(sorted_times)); end; tSlider.range = t_range; new_t = clamp(tSlider.value[], first(t_range), last(t_range)); set_close_to!(tSlider, new_t); tLabel_text[] = "t = $(round(new_t, digits=3))"; 
-        else
-            tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = 0.0"
-        end
-        println("Lift 1 (1D): Data update complete.")
-    end # --- End Lift Block 1 ---
-
-
-    # --- Lift Block 2: Update Snapshot & Title Only ---
-    # Triggered by time slider changes. Updates snapshot data and title.
-    # Limits are fixed by Lift 1, so NO autolimits! here.
-    lift(tSlider.value) do t
-        tLabel_text[] = "t = $(round(t, digits=3))"
-        ax.title = "t=$(round(t, digits=3))" # Update title
-
-        if isempty(xs[]) || isempty(tData[]) || length(xs[]) != length(tData[]); return; end
-
-        # Update snapshot data (xs, us)
-        for i = eachindex(xs[])
-            if i > length(tData[]) || i > length(xData[]) || i > length(uData[]); continue; end
-            current_times = tData[][i][]; if isempty(current_times); continue; end
-            (_, m) = findmin(a -> abs(a - t), current_times)
-            if m > 0 && m <= length(xData[][i][]) && m <= length(uData[][i][])
-                xs[][i][] = xData[][i][][m]; us[][i][] = uData[][i][][m]
-            else
-                xs[][i][] = Float64[]; us[][i][] = Float64[]
-            end
-        end
-        # REMOVED autolimits!(ax) 
-    end # --- End Lift Block 2 ---
-
-
-    # --- Lift Block 3: Redraw Plot ---
-    # Triggered by method or parameter changes. Clears axis, redraws lines/scatter, adds legend.
-    # Limits are fixed by Lift 1, so NO autolimits! here.
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
-        # Optional: Could add global_xlims, global_ylims as dependencies if needed,
-        # but Lift 1 already applies them directly. This lift just needs to redraw.
-        
-        println("Lift 3 (1D): Redrawing plot...")
-        
-        # Clear previous plot elements from the axis
-        empty!(ax) 
-        # Remove old legend from the figure layout
-        for c in contents(plot_fig[1,1]) 
-            if isa(c, Legend); delete!(c); end
-        end
-
-        # Handle case with no active methods
-        if active_num == 0
-            text!(ax, "No methods selected", position = (0.5, 0.5), align = (:center, :center), 
-                  space=:relative, fontsize = local_ui_dict["font_size"])
-            return 
-        end
-
-        # Plot data for each active method
-        for i = 1:active_num
-             if i > length(xs[]) || i > length(us[]) continue end # Safety check
-             
-            method = methods_obs[][i]; plotLabel = method
-            x_snapshot = xs[][i]; u_snapshot = us[][i]
-            
-            if isempty(x_snapshot[]) || isempty(u_snapshot[]) continue end # Skip empty
-
-            # Apply Plotting Styles
-            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
-            line_style = :solid
-            if local_ui_dict["dashed_lines"]; line_style = local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))]; end
-            marker_style = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
-            
-            # Plot Lines and/or Scatter Points
-            if local_ui_dict["show_lines"]
-                lines!(ax, x_snapshot, u_snapshot; label=plotLabel, linestyle=line_style, color=color, linewidth=local_ui_dict["linewidth"])
-            end
-            if local_ui_dict["show_scatter"]
-                scatter!(ax, x_snapshot, u_snapshot; label=plotLabel, marker=marker_style, color=color, markersize=local_ui_dict["markersize"])
-            end
-        end # End loop over active methods
-
-        # Add Legend
-        if active_num > 0 # Only add legend if something was plotted
-             Legend(plot_fig[1,1], ax, local_ui_dict["legend"], merge=true, 
-                    tellheight=false, tellwidth=false, # Place inside axis area
-                    titlesize=local_ui_dict["font_size"], labelsize=local_ui_dict["label_size"], 
-                    valign=local_ui_dict["vPos"], halign=local_ui_dict["hPos"])
-        end
-        
-        # REMOVED autolimits!(ax)
-        
-    end # --- End Lift Block 3 ---
-
-    # --- Display Figures ---
-    GLMakie.activate!() 
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
-
-    return control_fig, plot_fig # Return figures 
-end
 
 """
-    show1DSolutionFig_with_animation(sim_config::SimulationConfig)
+    show1DSolutionFig(sim_config::SimulationConfig)
 
 Creates an interactive Makie plot for `SimData1D` with animation playback
 and an option to save the animation as a GIF (which may close the window).
@@ -459,17 +419,42 @@ function show1DSolutionFig(sim_config::SimulationConfig)
     plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
     ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)") # Title set dynamically
 
-    # --- Parameter & Method Observables/Controls ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    for (key, val) in params_all; params_obs[key] = Observable(val); end
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : (isempty(methods) ? "" : methods[1])
-    methods_obs = Observable(isempty(methods) ? String[] : [default_method])
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
+
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
+
+    all_method_names = collect(keys(sim_config.methods_dict))
+
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
 
-    # Create standard controls using the helper function
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
 
     # --- NEW Max Tracking Control ---
     # Add Checkbox below the animation/save controls
@@ -529,8 +514,10 @@ function show1DSolutionFig(sim_config::SimulationConfig)
     u_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores max U value per method
     # ------------------------------------
 
+        # Flatten the list of ALL observables (shared + all method-specific)
+        all_method_param_observables = collect(Iterators.flatten(values(values(method_params_collection_obs))))
     # --- Lift Block 1: Data Loading / Simulation Execution ---
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
         println("Lift 1: Running sims / loading data...") # Concise print
         # Resize outer vectors
         resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
@@ -555,15 +542,13 @@ function show1DSolutionFig(sim_config::SimulationConfig)
         for i = 1:active_num
             method = active_methods_now[i]
             # Assemble params for this method run
-            current_method_params=Dict{String,Any}()
-            shared_keys = keys(sim_config.shared_params)
-            method_keys = haskey(sim_config.methods_dict, method) ? keys(sim_config.methods_dict[method]) : []
-            for (p_key, p_obs) in params_obs
-                if p_key in shared_keys || p_key in method_keys
-                    current_method_params[p_key] = p_obs[]
-                end
-            end
-            params = merge(current_method_params, Dict("method" => method))
+            # --- Assemble Parameters using Helper ---
+            params = assemble_params_for_run(
+                shared_params_obs,          # Pass the observable dict
+                method_params_collection_obs, # Pass the nested observable dict
+                method
+            )
+            # ------------------------------------
 
             # --- Load or Compute Data ---
             local sim_data::Union{AbstractSimData, Nothing} = nothing
@@ -811,56 +796,37 @@ function show1DSolutionFig(sim_config::SimulationConfig)
     end
     # --- End Animation Button Logic ---
 
-    # --- GIF Saving Button Logic (with CSV parameters) ---
+    # --- GIF Saving Button Logic (using saveParametersToCSV) ---
     on(gif_save_button.clicks) do _
-        base_filename = strip(gif_save_textbox.stored_string[])
-        if isempty(base_filename); @warn "Please enter a filename for the GIF."; return; end
+        base_filename = string(strip(gif_save_textbox.stored_string[]))
+        if isempty(base_filename); @warn "Enter GIF filename."; return; end
 
-        # Construct full paths using joinpath
-        save_dir = joinpath(get_save_path(), "figures") # Or separate "animations" subdir
-        try mkpath(save_dir) catch e; @warn "Could not create save directory $save_dir: $e"; end
+        save_dir = joinpath(Utils.get_save_path(), "figures")
+        try mkpath(save_dir) catch e; @warn "Could not create dir: $e"; end
         gif_filename = joinpath(save_dir, base_filename * ".gif")
-        csv_filename = joinpath(save_dir, base_filename * "_params.csv") # Suffix for clarity
 
-        println("Preparing to save animation to $gif_filename and parameters to $csv_filename...")
+        println("Preparing GIF: $gif_filename and Parameters...")
 
-        # === Save Parameters to CSV FIRST ===
-        try
-            params_to_save = Pair{String, String}[] # Use String pairs for DataFrame compatibility
-
-            # Include relevant state information about the animation/plot
-            push!(params_to_save, "animation_time_range" => string(time_range_data[]))
-            push!(params_to_save, "animation_duration_s" => string(get(local_ui_dict, "animation_duration_s", 5.0))) # Use the default from this function
-            push!(params_to_save, "animation_fps" => string(get(local_ui_dict, "animation_fps", 30)))
-            push!(params_to_save, "save_trigger_time" => string(round(tSlider.value[], digits=4))) # Record time when save was clicked
-
-            # --- Current interactive parameter values ---
-            push!(params_to_save, "# Interactive Parameters" => "--------------------") # Section header
-
-            # Get current values from params_obs, sorting keys for consistent order
-            interactive_keys = keys(params_obs)
-            sorted_interactive_keys = sort(collect(interactive_keys))
-
-            for p_key in sorted_interactive_keys
-                p_obs = params_obs[p_key] # Get the observable
-                # Add parameter name and its current value (as string)
-                push!(params_to_save, string(p_key) => string(p_obs[]))
-            end
-            # -----------------------------------------
-
-            # Convert to DataFrame
-            df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
-
-            # Write CSV
-            CSV.write(csv_filename, df_to_save)
-            println("Parameters saved to $csv_filename")
-
-        catch e
-            @error "Failed to save parameters to CSV!" exception=(e, catch_backtrace())
-            # Decide whether to continue with GIF saving or return.
-            # Continuing might be okay if only parameter saving failed.
-        end
-        # ===================================
+        # === Call reusable function to save Parameters ===
+        anim_info = Dict(
+            "Save Type" => "Animation GIF",
+            "Timestamp" => string(Dates.now()),
+            "Animation Time Range" => string(time_range_data[]),
+            "Animation Duration (s)" => string(get(local_ui_dict, "animation_duration_s", 5.0)),
+            "Animation FPS" => string(get(local_ui_dict, "animation_fps", 30)),
+            "Save Trigger Time (t)" => string(round(tSlider.value[], digits=4))
+            # Add other relevant info?
+        )
+        save_success = saveParametersToCSV( # Call the new function
+                            base_filename,
+                            save_dir,
+                            shared_params_obs,
+                            method_params_collection_obs,
+                            methods_obs,
+                            anim_info
+                    )
+        if !save_success; @warn "Parameter CSV saving failed for $base_filename. Continuing with GIF..."; end
+        # =================================================
 
         # Stop interactive animation if running
         was_animating = is_animating[]
@@ -868,29 +834,22 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 
         # Get parameters for saving GIF
         t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[]=true; end; return; end
-        duration_s = get(local_ui_dict, "animation_duration_s", 5.0) # Use consistent duration
-        fps = get(local_ui_dict, "animation_fps", 30)
-        n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
+        duration_s = get(local_ui_dict, "animation_duration_s", 5.0); fps = get(local_ui_dict, "animation_fps", 30); n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
         times_for_gif = range(t_min, t_max, length=n_frames)
 
         # --- Record the animation ---
         try
             println("Recording $n_frames frames at $fps FPS... (Window may close)")
-            # Ensure plot uses the fixed global limits during recording
-            xlims!(ax, global_xlims[]); ylims!(ax, global_ylims[])
+            xlims!(ax, global_xlims[]); ylims!(ax, global_ylims[]) # Use fixed limits
 
             record(plot_fig, gif_filename, times_for_gif; framerate = fps) do t_now
-                # Set slider value -> triggers Lift 2 -> updates xs/us -> triggers Lift 3 redraw
-                set_close_to!(tSlider, t_now)
-                yield() # Allow Makie to process events/redraw before capturing frame
+                set_close_to!(tSlider, t_now) # Update plot state via Lift 2
+                yield() # Allow Makie to process events and redraw
             end
             println("Animation saved successfully to $gif_filename")
-
         catch e; @error "Failed to save GIF animation!" exception=(e, catch_backtrace());
-        finally
-            println("GIF saving process finished.")
-            # Restore state? Leave animation stopped for simplicity.
-        end
+        finally; println("GIF saving process finished."); end
+        # --------------------------
     end
     # --- End GIF Saving Logic ---
 
@@ -1187,15 +1146,42 @@ function showDynamicDependence(sim_config::SimulationConfig)
     plot_fig = Figure(size = local_ui_dict["figsize"])
     ax = Axis(plot_fig[1,1], xlabel = "Time (t)", ylabel = "Statistic Value")
 
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    [params_obs[key] = Observable(val) for (key, val) = params_all]
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
 
-    methods = collect(keys(sim_config.methods_dict))
-    methods_obs = Observable([sim_config.default_method])
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
+
+    all_method_names = collect(keys(sim_config.methods_dict))
+
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
 
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
 
     # --- Data Structures for Statistics (using Dict{String, Any}) ---
     statsData = Observable(Vector{Observable{Dict{String, Any}}}(undef, 0)) # Stores the full stats dict
@@ -1209,7 +1195,7 @@ function showDynamicDependence(sim_config::SimulationConfig)
     stats_slider = Slider(control_fig[end+1, :], range = 1:1, startvalue = 1)
 
     # --- Lift Block 1: Load Data, Filter Plottable Stat Keys, Update UI ---
-    lift(method_number, values(params_obs)...) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values = true) do active_num, _...
         println("Updating data based on methods/parameters...")
 
         statsData[] = Vector{Observable{Dict{String, Any}}}(undef, active_num)
@@ -1218,25 +1204,44 @@ function showDynamicDependence(sim_config::SimulationConfig)
         first_data_loaded = false
         # Store potential keys temporarily before checking type and intersection
         potential_keys_per_method = Vector{Set{String}}(undef, active_num) 
+        active_methods_now = methods_obs[]
 
         for i = 1:active_num
-            method = methods_obs[][i]
-            current_method_params = Dict{String, Any}()
-            # Get current parameters from observables
-            for (p_key, p_obs) in params_obs
-                 # Check if param belongs to shared or the specific method's params
-                 # This logic assumes methods_dict contains only method-specific overrides/additions
-                if haskey(sim_config.shared_params, p_key) || haskey(sim_config.methods_dict[method], p_key)
-                     current_method_params[p_key] = p_obs[]
-                end
-            end
-            params = merge(current_method_params, Dict("method" => method)) # Add method name if needed
+            method = active_methods_now[i]
+            # Assemble params for this method run
+            # --- Assemble Parameters using Helper ---
+            params = assemble_params_for_run(
+                shared_params_obs,          # Pass the observable dict
+                method_params_collection_obs, # Pass the nested observable dict
+                method
+            )
+            # ------------------------------------
 
-            # --- Load or Compute Simulation Data ---
-            println("Running/Loading simulation for method: $method")
-            # sim_data = loadOrComputeData(sim_config.sim_function, params) # Replace with your logic
-            sim_data = sim_config.sim_function(params) # Direct call for demo
-            println("Simulation finished for method: $method")
+            # --- Load or Compute Data ---
+            local sim_data::Union{AbstractSimData, Nothing} = nothing
+            try
+                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
+                if !Utils.doesSimDataExist(params)
+                     println(" Running simulation for method: $method")
+                     sim_data = sim_config.sim_function(params)
+                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
+                else
+                     println(" Loading data for method: $method")
+                     sim_data = Utils.loadSimData(params)
+                end
+            catch e
+                 @warn "Simulation/Load failed for method '$method'" exception=(e, catch_backtrace())
+                 sim_data = nothing
+            end
+            # --------------------------
+
+            # --- Store Data & Update Limits ---
+            if isnothing(sim_data) || !isa(sim_data, SimData1D)
+                 @warn "Invalid SimData1D for '$method'. Assigning empty."
+                 xData[][i][] = Vector{Vector{Float64}}(); uData[][i][] = Vector{Vector{Float64}}(); tData[][i][] = Float64[]
+                 xs[][i][] = Float64[]; us[][i][] = Float64[]
+                 continue # Skip to next method
+            end
 
             # --- Store Raw Data ---
             statsData[][i] = Observable(sim_data.stats) # Store the Dict{String, Any}
@@ -1319,7 +1324,7 @@ function showDynamicDependence(sim_config::SimulationConfig)
     end
 
     # --- Lift Block 2: Update Plot ---
-    lift(method_number, selected_stat_index_obs, values(params_obs)...) do active_num, stat_idx, _...
+    lift(method_number, selected_stat_index_obs, parameter_update_notifier) do active_num, stat_idx, _...
         println("Updating plot...")
         empty!(ax)
         try
@@ -1738,17 +1743,42 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
     ax = Axis3(plot_fig[1, 2], xlabel="x", ylabel="y", zlabel="Solution (u)") # Title set dynamically
 
 
-    # --- Parameter & Method Observables ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    for (key, val) in params_all; params_obs[key] = Observable(val); end
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : (isempty(methods) ? "" : methods[1])
-    methods_obs = Observable(isempty(methods) ? String[] : [default_method])
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
+
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
+
+    all_method_names = collect(keys(sim_config.methods_dict))
+
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
 
-    # --- Control Figure & Widgets ---
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
     controls_layout = control_fig.layout # Get layout grid
 
     # Time Slider & Label
@@ -1800,7 +1830,7 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
     global_zlims_and_colorrange = Observable((0.0, 1.0)) # Global U range (min, max)
 
     # --- Lift Block 1 (MODIFIED: Store time range) ---
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
         println("Lift 1 (2D): Updating data & global U range...")
         # Resize outer vectors
         resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
@@ -1820,16 +1850,31 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
 
         for i = 1:active_num # Loop Methods
             method = active_methods_now[i]
-            # (Assemble params)
-            current_method_params=Dict{String,Any}(); shared_keys=keys(sim_config.shared_params); 
-            method_keys=haskey(sim_config.methods_dict,method) ? keys(sim_config.methods_dict[method]) : []; 
-            for (pk,po) in params_obs; 
-                if pk in shared_keys || pk in method_keys; 
-                    current_method_params[pk]=po[]; 
-                end; 
-            end; 
-            params=merge(current_method_params,Dict("method"=>method))
-            local sim_data::Union{AbstractSimData, Nothing}=nothing; try if !Utils.doesSimDataExist(params); println(" Running sim: $method"); sim_data=sim_config.sim_function(params); Utils.saveSimData(sim_data); else; println(" Loading data: $method"); sim_data=Utils.loadSimData(params); end catch e; @warn "Sim/Load failed: $method" exc=e; sim_data=nothing; end
+            # --- Assemble Parameters using Helper ---
+            params = assemble_params_for_run(
+                shared_params_obs,          # Pass the observable dict
+                method_params_collection_obs, # Pass the nested observable dict
+                method
+            )
+            # ------------------------------------
+
+            # --- Load or Compute Data ---
+            local sim_data::Union{AbstractSimData, Nothing} = nothing
+            try
+                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
+                if !Utils.doesSimDataExist(params)
+                     println(" Running simulation for method: $method")
+                     sim_data = sim_config.sim_function(params)
+                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
+                else
+                     println(" Loading data for method: $method")
+                     sim_data = Utils.loadSimData(params)
+                end
+            catch e
+                 @warn "Simulation/Load failed for method '$method'" exception=(e, catch_backtrace())
+                 sim_data = nothing
+            end
+            # --------------------------
 
             if isnothing(sim_data) || !isa(sim_data, SimData2D); @warn "Invalid SimData2D '$method'."; xData[][i][]=[]; uData[][i][]=[]; tData[][i][]=[]; xs[][i][]=[]; us[][i][]=[]; continue; end
             # Store Data
@@ -1905,50 +1950,50 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
     end # --- End Lift Block 2 ---
 
 
-# --- Lift Block 3 (Plot Redraw & Configuration) ---
-lift(method_number, plot_as_surface_obs, selected_colormap_obs,
-    global_zlims_and_colorrange, values(params_obs)...;
-    ignore_equal_values=true) do active_num, plot_surface, current_cmap, current_zlims_val, _...
+    # --- Lift Block 3 (Plot Redraw & Configuration) ---
+    lift(method_number, plot_as_surface_obs, selected_colormap_obs,
+        global_zlims_and_colorrange, parameter_update_notifier;
+        ignore_equal_values=true) do active_num, plot_surface, current_cmap, current_zlims_val, _...
 
-    println("Lift 3 (2D): Redrawing plot...")
-    active_methods = methods_obs[] # Define active_methods here
+        println("Lift 3 (2D): Redrawing plot...")
+        active_methods = methods_obs[] # Define active_methods here
 
-    empty!(ax); needs_colorbar_update = false
-    # Clear legend/colorbar robustly
-    try; delete!.(filter(c->isa(c,Legend), contents(plot_fig[1,2]))); catch e; @warn "Could not clear legend: $e"; end
-    try; existing_cb=filter(c->isa(c,Colorbar), contents(plot_fig[1,3])); if !isempty(existing_cb); needs_colorbar_update=true; delete!.(existing_cb); end; catch e; @warn "Could not clear colorbar: $e"; end
+        empty!(ax); needs_colorbar_update = false
+        # Clear legend/colorbar robustly
+        try; delete!.(filter(c->isa(c,Legend), contents(plot_fig[1,2]))); catch e; @warn "Could not clear legend: $e"; end
+        try; existing_cb=filter(c->isa(c,Colorbar), contents(plot_fig[1,3])); if !isempty(existing_cb); needs_colorbar_update=true; delete!.(existing_cb); end; catch e; @warn "Could not clear colorbar: $e"; end
 
-    # --- Configure Axis Appearance ---
-    if plot_surface # Configure for 3D Surface View
-        ax.xlabel = "x"
-        ax.ylabel = "y"
-        ax.zlabel = "Solution (u)"
-        ax.aspect = (1, 1, 0.5) # Adjust Z aspect for better 3D view if needed
-        ax.perspectiveness = 0.5 # Enable perspective
-        # Ensure all elements are potentially visible for 3D
-        ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
-        ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
-        ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = true
-        ax.zlabelvisible = true
-        # Reset elevation/azimuth to a sensible default 3D view, or let user control
-        # ax.elevation = pi/6
-        # ax.azimuth = pi/4
-    else # Configure for 2D Scatter View (Top-Down)
-        ax.xlabel = "x"
-        ax.ylabel = "y"
-        ax.zlabel = "" # Hide Z label text
-        ax.aspect = :data # Use DataAspect for correct XY scaling
-        ax.perspectiveness = 0.0 # Orthographic projection
-        # Ensure only XY grid/ticks/spines are visible
-        ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # <<< Hide Z grid
-        ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = false # <<< Hide Z ticks
-        ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = false # <<< Hide Z spine
-        ax.zlabelvisible = false # Redundant given empty label, but safe
-        # --- Explicitly set Top-Down View ---
-        ax.elevation = pi/2
-        ax.azimuth = 0
-        # ------------------------------------
-    end
+        # --- Configure Axis Appearance ---
+        if plot_surface # Configure for 3D Surface View
+            ax.xlabel = "x"
+            ax.ylabel = "y"
+            ax.zlabel = "Solution (u)"
+            ax.aspect = (1, 1, 0.5) # Adjust Z aspect for better 3D view if needed
+            ax.perspectiveness = 0.5 # Enable perspective
+            # Ensure all elements are potentially visible for 3D
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
+            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
+            ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = true
+            ax.zlabelvisible = true
+            # Reset elevation/azimuth to a sensible default 3D view, or let user control
+            # ax.elevation = pi/6
+            # ax.azimuth = pi/4
+        else # Configure for 2D Scatter View (Top-Down)
+            ax.xlabel = "x"
+            ax.ylabel = "y"
+            ax.zlabel = "" # Hide Z label text
+            ax.aspect = :data # Use DataAspect for correct XY scaling
+            ax.perspectiveness = 0.0 # Orthographic projection
+            # Ensure only XY grid/ticks/spines are visible
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # <<< Hide Z grid
+            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = false # <<< Hide Z ticks
+            ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = false # <<< Hide Z spine
+            ax.zlabelvisible = false # Redundant given empty label, but safe
+            # --- Explicitly set Top-Down View ---
+            ax.elevation = pi/2
+            ax.azimuth = 0
+            # ------------------------------------
+        end
 
     # (Fix Z Limits as before)
     try; zlims!(ax, current_zlims_val...); catch e; @warn "Failed applying zlims in Lift 3" exc=e; end
@@ -2031,62 +2076,93 @@ end # --- End Lift Block 3 ---
     end # --- End Animation Button Logic ---
 
 
-    # --- GIF Saving Button Logic (Copied & Adapted from 1D version) ---
+    # --- GIF Saving Button Logic (Using saveParametersToCSV) ---
     on(gif_save_button.clicks) do _
-        base_filename = strip(gif_save_textbox.stored_string[]); if isempty(base_filename); @warn "Enter GIF filename."; return; end
-        save_dir=joinpath(get_save_path(),"figures"); try mkpath(save_dir) catch e; @warn "Could not create dir: $e"; end
-        gif_filename=joinpath(save_dir,base_filename*".gif"); csv_filename=joinpath(save_dir,base_filename*"_params.csv")
-        println("Preparing 2D GIF: $gif_filename, Params: $csv_filename...")
-
-        # === Save Parameters to CSV ===
-        try
-            params_to_save = Pair{String, String}[]
-            # Add 2D specific info + general animation info
-            push!(params_to_save, "plot_type" => plot_as_surface_obs[] ? "Surface (3D)" : "Scatter (2D)")
-            push!(params_to_save, "colormap" => string(selected_colormap_obs[]))
-            push!(params_to_save, "active_methods" => join(methods_obs[], ", "))
-            push!(params_to_save, "time_range_data" => string(time_range_data[]))
-            push!(params_to_save, "animation_duration_s" => string(get(local_ui_dict, "animation_duration_s", 10.0)))
-            push!(params_to_save, "animation_fps" => string(get(local_ui_dict, "animation_fps", 30)))
-            push!(params_to_save, "save_trigger_time" => string(round(tSlider.value[], digits=4)))
-            push!(params_to_save, "# Interactive Parameters" => "--------------------")
-
-            # --- CORRECTED SORTING ---
-            # 1. Get the keys from the params_obs dictionary
-            interactive_keys = keys(params_obs)
-            # 2. Sort the keys alphabetically
-            sorted_interactive_keys = sort(collect(interactive_keys))
-            # 3. Iterate through the dictionary using the sorted keys
-            for p_key in sorted_interactive_keys
-                p_obs = params_obs[p_key] # Get the observable using the key
-                # Push the key string and the VALUE string
-                push!(params_to_save, string(p_key) => string(p_obs[]))
-            end
-            # -------------------------
-
-            df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
-            CSV.write(csv_filename, df_to_save)
-            println("Parameters saved to $csv_filename")
-        catch e
-            @error "Failed saving params CSV!" exception=(e, catch_backtrace())
+        base_filename = string(strip(gif_save_textbox.stored_string[]))
+        if isempty(base_filename)
+            @warn "Enter GIF filename."
+            return
         end
-        # ========================
 
-        was_animating = is_animating[]; if was_animating; if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end; is_animating[] = false; sleep(0.1); end
-        t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[]=true; end; return; end
-        duration_s = get(local_ui_dict, "animation_duration_s", 10.0); fps = get(local_ui_dict, "animation_fps", 30); n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
+        # Construct paths
+        save_dir = joinpath(Utils.get_save_path(), "figures") # Use Utils module path
+        try mkpath(save_dir) catch e; @warn "Could not create directory $save_dir: $e"; end
+        gif_filename = joinpath(save_dir, base_filename * ".gif")
+        # CSV filename is handled inside the helper function now
+
+        println("Preparing 2D GIF: $gif_filename and Parameters...")
+
+        # === Call reusable function to save Parameters ===
+        # Create context dictionary with 2D-specific info
+        optional_save_info = Dict{String, Any}(
+            "Save Type"                => "Animation GIF (2D)",
+            "Timestamp"                => string(Dates.now()),
+            "Plot Type Request"        => plot_as_surface_obs[] ? "Surface (3D)" : "Scatter (2D)", # State of the toggle
+            "Colormap Selection"       => string(selected_colormap_obs[]), # State of colormap
+            # Methods list will be saved by the helper function based on methods_obs
+            "Animation Time Range"     => string(time_range_data[]),
+            "Animation Duration (s)" => string(get(local_ui_dict, "animation_duration_s", 10.0)), # Use 2D default if different
+            "Animation FPS"            => string(get(local_ui_dict, "animation_fps", 30)),
+            "Save Trigger Time (t)"    => string(round(tSlider.value[], digits=4))
+            # Add any other relevant context here
+        )
+
+        # Call the reusable function
+        # !!! Assumes shared_params_obs and method_params_collection_obs are defined
+        # in the scope of show2DSolutionFig according to the new structure !!!
+        save_success = saveParametersToCSV(
+                        base_filename,
+                        save_dir,
+                        shared_params_obs,            # Pass shared observables
+                        method_params_collection_obs, # Pass method-specific observables collection
+                        methods_obs,                  # Pass active methods observable
+                        optional_save_info
+                    )
+
+        if !save_success
+            @warn "Parameter CSV saving failed for $base_filename. Stopping GIF save."
+            # Decide if you want to stop GIF recording if CSV fails
+            return # Stop GIF recording if CSV fails
+        end
+        # ==============================================
+
+        # --- Proceed with GIF Recording ---
+        # Stop interactive animation if running
+        was_animating = is_animating[]
+        if was_animating
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
+            is_animating[] = false
+            sleep(0.1) # Brief pause
+        end
+
+        # Get parameters for saving GIF
+        t_min, t_max = time_range_data[]
+        if !(t_max > t_min)
+            println("Cannot save GIF: Invalid time range ($t_min, $t_max).")
+            if was_animating; is_animating[]=true; end # Optionally restart animation?
+            return
+        end
+        duration_s = get(local_ui_dict, "animation_duration_s", 10.0) # Use 2D dict default
+        fps = get(local_ui_dict, "animation_fps", 30)
+        n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
         times_for_gif = range(t_min, t_max, length=n_frames)
 
         # --- Record the animation ---
         try
             println("Recording $n_frames frames at $fps FPS... (Window may close)")
-            # Lift 2 handles limits (auto XY, fixed Z) before each frame capture
+            # Note: Lift 2 controls XY autolimits and fixed Z limits per frame
             record(plot_fig, gif_filename, times_for_gif; framerate = fps) do t_now
                 set_close_to!(tSlider, t_now) # Trigger Lift 2 update
-                yield() # Allow redraw processing
+                yield() # Allow Makie to process events and redraw
             end
             println("Animation saved successfully to $gif_filename")
-        catch e; @error "Failed saving GIF!" exc=e; finally; println("GIF saving finished."); end
+        catch e
+            @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
+        finally
+            println("GIF saving process finished.")
+            # Leave animation stopped for simplicity
+        end
+        # -----------------------------
     end
     # --- End GIF Saving Logic ---
 
@@ -2177,21 +2253,42 @@ function showConvergencePlot(
     end
     # ------------------------------------------
 
-    # --- Parameter & Method Observables/Controls ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    # Exclude the key being varied from interactive controls
-    controlled_param_keys = filter(k -> k != key && haskey(params_all, k), keys(params_all))
-    params_obs = Dict{String,Observable}()
-    for p_key in controlled_param_keys; params_obs[p_key] = Observable(params_all[p_key]); end
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
 
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : methods[1]
-    methods_obs = Observable([default_method]) # Observable list of active method names
-    method_number = lift(length, methods_obs)  # Observable count of active methods
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
 
-    # Create standard controls (method toggles, param sliders/boxes)
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+    all_method_names = collect(keys(sim_config.methods_dict))
 
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
+    method_number = lift(length, methods_obs)
+
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
     # --- Convergence Specific Controls ---
     # Store available stat keys (common across all runs)
     stat_keys = Observable([key])
@@ -2242,7 +2339,7 @@ function showConvergencePlot(
 
     # --- Lift 1: Data Loading / Simulation Execution ---
     # Triggered when active methods list or base parameters change.
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
         if active_num == 0
             println("Lift 1: No methods selected. Clearing data.")
             all_method_stats[] = []; all_method_times[] = []; actual_param_values_used[] = []
@@ -2557,16 +2654,42 @@ function showConvergencePlot(
     if isempty(actual_param_values_used); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
     num_params = length(actual_param_values_used)
 
-    # --- Parameter & Method Observables/Controls ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    controlled_param_keys = filter(k -> k != key && haskey(params_all, k), keys(params_all))
-    params_obs = Dict{String,Observable}()
-    for p_key in controlled_param_keys; params_obs[p_key] = Observable(params_all[p_key]); end
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : methods[1]
-    methods_obs = Observable([default_method])
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
+
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
+
+    all_method_names = collect(keys(sim_config.methods_dict))
+
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
+
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
 
 # --- Log Scale Toggles ---
 
@@ -2620,7 +2743,7 @@ function showConvergencePlot(
     y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
 
     # --- Lift 1: Data Loading / Simulation & Initial Snapshot ---
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
         if active_num == 0
             raw_data_store[] = []; y_plot_data_methods[] = []
             is_y_stat_time_dependent[] = true; tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = N/A"
@@ -2633,25 +2756,31 @@ function showConvergencePlot(
 
         # --- Simulation Loop ---
         for i = 1:active_num
-            method_name = methods_obs[][i]
+            method = methods_obs[][i]
             raw_data_for_method = Vector{Tuple{Any, Vector{Float64}}}(undef, num_params)
-            method_specific_params = sim_config.methods_dict[method_name]
-            base_params = merge(sim_config.shared_params, method_specific_params)
-            for (p_key, p_obs) in params_obs; base_params[p_key] = p_obs[]; end
+            base_params = assemble_params_for_run(
+                shared_params_obs,          # Pass the observable dict
+                method_params_collection_obs, # Pass the nested observable dict
+                method
+            )
 
             # === Optional: Threads.@threads for j = 1:num_params ===
             for j = 1:num_params
                 current_value = actual_param_values_used[j]
-                current_params = copy(base_params); current_params[key] = current_value; current_params["method"] = method_name
+                current_params = copy(base_params); 
+                current_params[key] = current_value;
 
                 stat_val_for_run = missing; time_vec_for_run = Float64[]
                 try
                     # --- Run or Load ---
-                    if !doesSimDataExist(current_params)
+                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
+                    if !Utils.doesSimDataExist(current_params)
+                        println(" Running simulation for method: $method")
                         sim_data = sim_config.sim_function(current_params)
-                        saveSimData(sim_data)
+                        Utils.saveSimData(sim_data) # Assumes saveSimData exists
                     else
-                        sim_data = loadSimData(current_params)
+                        println(" Loading data for method: $method")
+                        sim_data = Utils.loadSimData(current_params)
                     end
                     # --- Extract ONLY Needed Data ---
                     if !isnothing(sim_data) && hasproperty(sim_data, :stats) && hasproperty(sim_data, :t) && isa(sim_data.stats, AbstractDict)
@@ -2956,16 +3085,42 @@ function showConvergencePlot(
     if isempty(actual_param_values_used); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
     num_params = length(actual_param_values_used)
 
-    # --- Parameter & Method Observables/Controls ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    controlled_param_keys = filter(k -> k != key && haskey(params_all, k), keys(params_all))
-    params_obs = Dict{String,Observable}()
-    for p_key in controlled_param_keys; params_obs[p_key] = Observable(params_all[p_key]); end
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : methods[1]
-    methods_obs = Observable([default_method])
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
+
+    # --- NEW: Notification Observable ---
+    parameter_update_notifier = Observable(0)
+
+    all_method_names = collect(keys(sim_config.methods_dict))
+
+    # Method selection observable (no change)
+    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
+    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods) # Standard controls
+
+    # --- Call the NEW createControls function ---
+    control_fig = createControls(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        parameter_update_notifier
+    )
+    # -----------------------------------------
 
 # --- Log Scale Toggles ---
 
@@ -3041,7 +3196,7 @@ function showConvergencePlot(
     # --- End Helper Function ---
 
     # --- Lift 1: Data Loading / Simulation & Initial Snapshot ---
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
+    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
         if active_num == 0 # Handle no active methods
             raw_data_store[] = []; x_plot_data_methods[] = []; y_plot_data_methods[] = []
             is_x_stat_time_dependent[] = true; is_y_stat_time_dependent[] = true; is_any_stat_time_dependent[] = true;
@@ -3056,25 +3211,31 @@ function showConvergencePlot(
 
         # --- Simulation Loop ---
         for i = 1:active_num
-            method_name = methods_obs[][i]
+            method = methods_obs[][i]
             raw_data_for_method = Vector{Tuple{Any, Any, Vector{Float64}}}(undef, num_params)
-            # (Assemble base_params)
-            method_specific_params = sim_config.methods_dict[method_name]
-            base_params = merge(sim_config.shared_params, method_specific_params)
-            for (p_key, p_obs) in params_obs; base_params[p_key] = p_obs[]; end
+            base_params = assemble_params_for_run(
+                shared_params_obs,          # Pass the observable dict
+                method_params_collection_obs, # Pass the nested observable dict
+                method
+            )
 
             # === Optional: Threads.@threads for j = 1:num_params ===
             for j = 1:num_params
-                current_value = actual_param_values_used[j] # Use value from pre-calculated vector
-                current_params = copy(base_params); current_params[key] = current_value; current_params["method"] = method_name
+                current_value = actual_param_values_used[j]
+                current_params = copy(base_params); 
+                current_params[key] = current_value;
 
                 stat_x_for_run = missing; stat_y_for_run = missing; time_vec_for_run = Float64[]
-                try # Run or Load
-                    if !doesSimDataExist(current_params)
+                try
+                    # --- Run or Load ---
+                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
+                    if !Utils.doesSimDataExist(current_params)
+                        println(" Running simulation for method: $method")
                         sim_data = sim_config.sim_function(current_params)
-                        saveSimData(sim_data)
+                        Utils.saveSimData(sim_data) # Assumes saveSimData exists
                     else
-                        sim_data = loadSimData(current_params)
+                        println(" Loading data for method: $method")
+                        sim_data = Utils.loadSimData(current_params)
                     end
                     # Extract X, Y stats and times
                     if !isnothing(sim_data) && hasproperty(sim_data, :stats) && hasproperty(sim_data, :t) && isa(sim_data.stats, AbstractDict)
