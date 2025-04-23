@@ -9,6 +9,7 @@ using Dates # For timestamp in optional info
 
 export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot
 
+
 ui_dict = Dict(
     "dashed_lines" => false,
     "show_scatter" => false,
@@ -102,32 +103,120 @@ function updateUI(ui_dict::Dict, ui_input::Dict)
     end
 end
 
+# Add this helper function inside MakiePlotting module or where createControls lives
+function is_const_param(obs::Observable)
+    val = obs[] # Get the value inside the observable
+    return 
+end
+
 # Functions for Makie Controls
-function createTextBoxes(fig::Makie.Figure, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
+
+"""
+Creates Textboxes for non-boolean parameters, arranged in rows.
+Disables Makie's internal validator for non-numeric types (like String)
+to avoid errors, relying on parsing within the callback instead.
+"""
+# Functions for Makie Controls
+function createTextBoxes(
+    fig::Makie.Figure,
+    keys::Vector{String},
+    params_obs::Dict{String, Observable},
+    notifier::Observable
+    )
+
+    # Create a new grid layout in the next row of the parent figure
     tbLayout = fig[end+1,:] = GridLayout()
-    sort!(keys)
-    for (i,key) = enumerate(keys)
-        col = mod1(i, 5)
-        row = trunc(Int64, (i-1)/5) + 1
-        Label(tbLayout[row,2*col-1], key * " = ")
-        current_val = params_obs[key][]
-        validator = String; if isa(current_val, AbstractFloat); validator = Float64; elseif isa(current_val, Integer); validator = Int; end
-        tb = Textbox(tbLayout[row,2*col], placeholder = string(to_value(params_obs[key])), validator = validator)
+    sort!(keys) # Sort keys for consistent order
+
+    if isempty(keys); return; end
+
+    num_items_per_row = 3
+    num_rows_needed = ceil(Int, length(keys) / num_items_per_row)
+    # Pre-allocate grid layout rows/cols if needed, or let it grow dynamically
+    # tbLayout[1:num_rows_needed, 1:(2*num_items_per_row)] = GridLayout() # Example pre-allocation
+
+    for (i, key) in enumerate(keys)
+        # Calculate row and column within tbLayout
+        layout_row = trunc(Int64, (i-1) / num_items_per_row) + 1
+        item_in_row = mod1(i, num_items_per_row)
+        label_col = 2 * item_in_row - 1
+        textbox_col = 2 * item_in_row
+
+        current_val = params_obs[key][] # Get initial value (might be tuple)
+        local validator::Union{Type, Function} # Can be Type or Function
+        label_prefix = ""
+        value_to_display = current_val # Value for placeholder
+
+        # --- Detect :const, Update Observable, Set Validator ---
+        if isa(current_val, Tuple) && length(current_val) == 2 && current_val[1] == :const
+            actual_value = current_val[2]
+            params_obs[key] = Observable(actual_value) # <<< UPDATE OBSERVABLE TO PLAIN VALUE
+            validator = str -> false         # <<< Make textbox non-validating
+            label_prefix = "(fixed) "
+            value_to_display = actual_value  # Display the unwrapped value
+        elseif isa(current_val, AbstractFloat)
+            validator = Float64
+        elseif isa(current_val, Integer)
+            validator = Int
+        elseif isa(current_val, String)
+             validator = str -> true # Allow any string input
+        elseif isa(current_val, Number) # Catch other numbers like Complex
+             @error "Unsupported Number type for parameter '$key'. Treating as read-only."
+             validator = str -> false # Make read-only
+             label_prefix = "(unsupported) "
+        else # Treat anything else as String-like, allow any input
+             @warn "Parameter '$key' type not recognized for specific validation. Allowing any string input."
+             validator = str -> true
+        end
+        # -------------------------------------------------------
+
+        # Create Label
+        Label(tbLayout[layout_row, label_col], label_prefix *key * " = ", halign=:right).padding = (0,5,0,0)            
+
+        # Create Textbox, passing Float64, Int, or Any as the validator
+        tb = Textbox(tbLayout[layout_row, textbox_col],
+                     placeholder = string(value_to_display),
+                     validator = validator, # Pass the determined Type
+                     reset_on_defocus = true
+                     #width = 100
+                     )
+
+        # --- Callback for Textbox Submission ---
         on(tb.stored_string) do s
             try
-                parsed_val = parse(typeof(current_val), s)
-                # Only update and notify if value actually changed
+                target_type = typeof(params_obs[key][])
+                local parsed_val
+
+                if target_type == String
+                    parsed_val = s # Assign string directly
+                else
+                    # Attempt to parse to the target numeric type
+                    parsed_val = parse(target_type, s)
+                end
+
                 if params_obs[key][] != parsed_val
                     params_obs[key][] = parsed_val
-                    notifier[] = notifier[] + 1 # <<< INCREMENT NOTIFIER
+                    notifier[] = notifier[] + 1 # Increment notifier
                 end
             catch e
-                println("Invalid input '$s' for $key: $e")
-                tb.stored_string = string(params_obs[key][]) # Reset textbox to current value
+                println("Invalid input '$s' for parameter '$key' (expected type $target_type): $e")
+                # Reset textbox on error
+                tb.stored_string = string(params_obs[key][])
             end
-        end
+        end # End on
+        # -------------------------------------
+    end # End for loop
+
+    # Optional: Adjust column sizes within tbLayout
+    num_cols_used = 2 * num_items_per_row
+    for c = 1:num_cols_used
+        # Basic auto sizing
+        try; colsize!(tbLayout, c, Auto()); catch; end
     end
-end
+    # Adjust overall row height in parent figure
+    #rowsize!(fig.layout, Makie.current_row(fig.layout), Auto())
+
+end # End function createTextBoxes
 
 
 """
@@ -340,6 +429,8 @@ function createControls(
         # Add section title row
         Label(control_fig[end+1, :], "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
         # Separate keys
+        # --- Filter out keys marked as :const ---
+        # -------------------------------------
         shared_keys = sort(collect(keys(shared_params_obs)))
         shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
         shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
