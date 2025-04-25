@@ -369,13 +369,15 @@ function createSaveFigBox(
 end
 
 function createMethodCheckboxes(fig::Makie.Figure, methods_obs::Observable{Vector{String}}, methods::Vector{String})
-    toLayout = fig[end+1,1:div(length(methods),5)+2] = GridLayout() # 5 hard coded atm can be added to ui_dict
+    toLayout = fig[end+1,1:div(length(methods),5)+1] = GridLayout() # 5 hard coded atm can be added to ui_dict
+
     for (i,method) = enumerate(methods)
-        Label(toLayout[mod1(i,5),1], method)
+        j = div(i-1,5) +1
+        Label(toLayout[mod1(i,5),j*2-1], method)
         if method == methods_obs[][1]
-            tmp = Checkbox(toLayout[mod1(i,5),2], checked = true)
+            tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = true)
         else
-            tmp = Checkbox(toLayout[mod1(i,5),2], checked = false)
+            tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = false)
         end
         on(tmp.checked) do checked 
             if to_value(checked) & !(methods[i] in methods_obs[])
