@@ -183,8 +183,8 @@ function createTextBoxes(
 
         # --- Callback for Textbox Submission ---
         on(tb.stored_string) do s
+            target_type = typeof(params_obs[key][])
             try
-                target_type = typeof(params_obs[key][])
                 local parsed_val
 
                 if target_type == String
@@ -199,6 +199,7 @@ function createTextBoxes(
                     notifier[] = notifier[] + 1 # Increment notifier
                 end
             catch e
+                rethrow(e)
                 println("Invalid input '$s' for parameter '$key' (expected type $target_type): $e")
                 # Reset textbox on error
                 tb.stored_string = string(params_obs[key][])
@@ -613,6 +614,7 @@ function show1DSolutionFig(sim_config::SimulationConfig)
         println("Lift 1: Running sims / loading data...") # Concise print
         # Resize outer vectors
         resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
+        
         resize!(xs[], active_num); resize!(us[], active_num)
         resize!(x_at_max_obs[], active_num); resize!(u_at_max_obs[], active_num) # Resize new
         # Ensure inner observables exist
@@ -692,34 +694,78 @@ function show1DSolutionFig(sim_config::SimulationConfig)
         if found_any_data; pad_x=get(local_ui_dict,"x_axis_limit_padding",0.05); pad_y=get(local_ui_dict,"y_axis_limit_padding",0.1); xr=g_xmax-g_xmin; xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); yr=g_umax-g_umin; yp=yr≈0 ? 0.1 : (yr*pad_y/2.0); final_xlims=(g_xmin-xp,g_xmax+xp); final_ylims=(g_umin-yp,g_umax+yp); global_xlims[]=final_xlims; global_ylims[]=final_ylims; try; xlims!(ax,final_xlims); ylims!(ax,final_ylims); catch e; @warn "Failed applying limits" e; end; else; global_xlims[]=(0.0,1.0); global_ylims[]=(0.0,1.0); try; xlims!(ax,0.0,1.0); ylims!(ax,0.0,1.0); catch e; @warn "Failed applying default limits" e; end; end
 
         # --- Update Time Slider Range / Store Data Range ---
-        if !isempty(all_time_points); t_min_data,t_max_data=extrema(all_time_points); time_range_data[]=(t_min_data,t_max_data); sorted_times=sort(collect(all_time_points)); t_len=length(sorted_times); t_range_slider=range(t_min_data,stop=t_max_data,length=max(2,t_len*2+100)); if t_len==1; t_range_slider=range(t_min_data,stop=t_max_data,length=2); end; if tSlider.range[]!=t_range_slider; tSlider.range=t_range_slider; end; current_t_val=clamp(tSlider.value[],t_min_data,t_max_data); set_close_to!(tSlider, current_t_val); else; time_range_data[]=(0.0,1.0); if tSlider.range[]!=(0.0:1.0); tSlider.range=0.0:1.0; end; set_close_to!(tSlider, 0.0); end
+        if !isempty(all_time_points); 
+            t_min_data,t_max_data=extrema(all_time_points); 
+            time_range_data[]=(t_min_data,t_max_data); 
+            sorted_times=sort(collect(all_time_points)); 
+            t_len=length(sorted_times); 
+            t_range_slider=range(t_min_data,stop=t_max_data,length=max(2,t_len*2+100)); 
+            if t_len==1; 
+                t_range_slider=range(t_min_data,stop=t_max_data,length=2); 
+            end; 
+            if tSlider.range[]!=t_range_slider; 
+                tSlider.range=t_range_slider; 
+            end; 
+            current_t_val=clamp(tSlider.value[],t_min_data,t_max_data); 
+            set_close_to!(tSlider, current_t_val); 
+        else; time_range_data[]=(0.0,1.0); 
+            if tSlider.range[]!=(0.0:1.0); 
+                tSlider.range=0.0:1.0; 
+            end; 
+            set_close_to!(tSlider, 0.0); 
+        end
         # Set label AFTER slider value might have been clamped/set
         tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
 
-        # --- Calculate Initial Snapshot and Max Values ---
-        # Need to do this AFTER slider value is set for this block
-        current_t = tSlider.value[]
-        for i = 1:active_num
-             if i > length(tData[]) || isempty(tData[][i][]) # Check if data was loaded for this method
-                 xs[][i][] = Float64[]; us[][i][] = Float64[]
-                 x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN
-                 continue
-             end
-             t_vec = tData[][i][]; x_vecs = xData[][i][]; u_vecs = uData[][i][]
-             m = findmin(a->abs(a-current_t), t_vec)[2] # Find closest index
-             if 1 <= m <= length(x_vecs) && 1 <= m <= length(u_vecs)
-                 x_init_snap = x_vecs[m]; u_init_snap = u_vecs[m]
-                 xs[][i][] = x_init_snap; us[][i][] = u_init_snap
-                 if !isempty(u_init_snap) # Calc max only if snapshot is valid
-                     try; u_max_val, max_idx = findmax(u_init_snap); if isfinite(u_max_val) && 1 <= max_idx <= length(x_init_snap); x_at_max_obs[][i][] = x_init_snap[max_idx]; u_at_max_obs[][i][] = u_max_val; else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end; catch; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-                 else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-             else # Index m invalid
-                 xs[][i][] = Float64[]; us[][i][] = Float64[]
-                 x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN
-             end
+    # --- Inside Lift Block 1 ---
+    # ... (AFTER simulation loop and Time Slider update) ...
+
+    # --- Calculate ALL Initial Snapshots and Max Values FIRST ---
+    initial_xs_vectors = Vector{Vector{Float64}}(undef, active_num)
+    initial_us_vectors = Vector{Vector{Float64}}(undef, active_num)
+    initial_x_max = fill(NaN, active_num)
+    initial_u_max = fill(NaN, active_num)
+    current_t = tSlider.value[] # Use the final set value
+
+    for i = 1:active_num
+        # Default to empty/NaN
+        x_init_snap = Float64[]; u_init_snap = Float64[]
+        x_max_init = NaN; u_max_init = NaN
+
+        if i <= length(tData[]) && !isempty(tData[][i][]) # Check data loaded
+            t_vec = tData[][i][]; x_vecs = xData[][i][]; u_vecs = uData[][i][]
+            if length(t_vec) == length(x_vecs) && length(t_vec) == length(u_vecs) # Check consistency
+                m = findmin(a->abs(a-current_t), t_vec)[2] # Closest index
+                if 1 <= m <= length(x_vecs) # Check index validity
+                    x_init_snap = x_vecs[m]; u_init_snap = u_vecs[m]
+                    if !isempty(u_init_snap) # Calculate max if valid
+                        try; u_max_val,max_idx=findmax(u_init_snap); if isfinite(u_max_val) && 1<=max_idx<=length(x_init_snap); x_max_init=x_init_snap[max_idx]; u_max_init=u_max_val; end; catch; end
+                    end
+                end
+            else; @warn "Inconsistent time steps vs data in Lift 1 for method $i."; end
         end
-        # --- End Initial Snapshot/Max Calculation ---
-        println("Lift 1: Update complete.")
+        initial_xs_vectors[i] = x_init_snap
+        initial_us_vectors[i] = u_init_snap
+        initial_x_max[i] = x_max_init
+        initial_u_max[i] = u_max_init
+    end
+    # --- End Initial Snapshot/Max Calculation Loop ---
+
+    # --- Update Observables AFTER loop ---
+    # Update max values first
+    for i = 1:active_num
+        if i <= length(x_at_max_obs[]); x_at_max_obs[][i][] = initial_x_max[i]; end
+        if i <= length(u_at_max_obs[]); u_at_max_obs[][i][] = initial_u_max[i]; end
+    end
+    # Then update snapshot values
+    for i = 1:active_num
+        if i <= length(xs[]); xs[][i][] = initial_xs_vectors[i]; end
+        if i <= length(us[]); us[][i][] = initial_us_vectors[i]; end
+    end
+    # --- End Observable Updates ---
+
+    println("Lift 1: Update complete.")
+
     end # --- End Lift Block 1 ---
 
 
@@ -767,7 +813,7 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 
     # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---
     # Trigger depends on method changes, snapshot data, AND track_max toggle
-    lift(method_number, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
+    lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
 
         empty!(ax) # Clear previous plots
         # Clear legend explicitly targeting cell [1, 2]
@@ -797,11 +843,11 @@ function show1DSolutionFig(sim_config::SimulationConfig)
             obj_for_legend = nothing
             # Use get for ui_dict keys for safety
             if get(local_ui_dict, "show_lines", true)
-                 l = lines!(ax, x_snap_obs, u_snap_obs; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle)
+                 l = lines!(ax, x_snap_obs[], u_snap_obs[]; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle)
                  obj_for_legend = l
             end
             if get(local_ui_dict, "show_scatter", true)
-                 s = scatter!(ax, x_snap_obs, u_snap_obs; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel)
+                 s = scatter!(ax, x_snap_obs[], u_snap_obs[]; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel)
                  # Only add scatter to legend items if lines weren't plotted or legend is empty
                  if obj_for_legend === nothing; obj_for_legend = s; end
             end
