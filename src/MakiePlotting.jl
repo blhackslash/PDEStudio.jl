@@ -118,30 +118,25 @@ to avoid errors, relying on parsing within the callback instead.
 """
 # Functions for Makie Controls
 function createTextBoxes(
-    fig::Makie.Figure,
+    current_layout,
     keys::Vector{String},
     params_obs::Dict{String, Observable},
-    notifier::Observable
+    notifier::Observable,
+    header::String
     )
 
     # Create a new grid layout in the next row of the parent figure
-    tbLayout = fig[end+1,:] = GridLayout()
+    Label(current_layout[1,:], header; valign = :top)
     sort!(keys) # Sort keys for consistent order
 
     if isempty(keys); return; end
 
-    num_items_per_row = 3
-    num_rows_needed = ceil(Int, length(keys) / num_items_per_row)
-    # Pre-allocate grid layout rows/cols if needed, or let it grow dynamically
-    # tbLayout[1:num_rows_needed, 1:(2*num_items_per_row)] = GridLayout() # Example pre-allocation
 
     for (i, key) in enumerate(keys)
-        # Calculate row and column within tbLayout
-        layout_row = trunc(Int64, (i-1) / num_items_per_row) + 1
-        item_in_row = mod1(i, num_items_per_row)
-        label_col = 2 * item_in_row - 1
-        textbox_col = 2 * item_in_row
 
+        layout_row = i+1
+        label_col = 1
+        textbox_col = 2
         current_val = params_obs[key][] # Get initial value (might be tuple)
         local validator::Union{Type, Function} # Can be Type or Function
         label_prefix = ""
@@ -171,13 +166,14 @@ function createTextBoxes(
         # -------------------------------------------------------
 
         # Create Label
-        Label(tbLayout[layout_row, label_col], label_prefix *key * " = ", halign=:right).padding = (0,5,0,0)            
+        Label(current_layout[layout_row, label_col], label_prefix *key * " = ", halign=:right).padding = (0,5,0,0)            
 
         # Create Textbox, passing Float64, Int, or Any as the validator
-        tb = Textbox(tbLayout[layout_row, textbox_col],
+        tb = Textbox(current_layout[layout_row, textbox_col],
                      placeholder = string(value_to_display),
                      validator = validator, # Pass the determined Type
-                     reset_on_defocus = true
+                     reset_on_defocus = true,
+                     valign = :top
                      #width = 100
                      )
 
@@ -209,11 +205,11 @@ function createTextBoxes(
     end # End for loop
 
     # Optional: Adjust column sizes within tbLayout
-    num_cols_used = 2 * num_items_per_row
-    for c = 1:num_cols_used
-        # Basic auto sizing
-        try; colsize!(tbLayout, c, Auto()); catch; end
-    end
+    # num_cols_used = 2 * num_items_per_row
+    # for c = 1:num_cols_used
+    #     # Basic auto sizing
+    #     try; colsize!(tbLayout, c, Auto()); catch; end
+    # end
     # Adjust overall row height in parent figure
     #rowsize!(fig.layout, Makie.current_row(fig.layout), Auto())
 
@@ -369,8 +365,9 @@ function createSaveFigBox(
      end # End on event handler
 end
 
-function createMethodCheckboxes(fig::Makie.Figure, methods_obs::Observable{Vector{String}}, methods::Vector{String})
-    toLayout = fig[end+1,1:div(length(methods),5)+1] = GridLayout() # 5 hard coded atm can be added to ui_dict
+function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String})
+    
+    toLayout = cb_layout[end,1:div(length(methods),5)+1] = GridLayout() # 5 hard coded atm can be added to ui_dict
 
     for (i,method) = enumerate(methods)
         j = div(i-1,5) +1
@@ -391,8 +388,8 @@ function createMethodCheckboxes(fig::Makie.Figure, methods_obs::Observable{Vecto
     end
 end
 
-function createParameterToggles(fig::Makie.Figure, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
-    ptoLayout = fig[end+1,:] = GridLayout()
+function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
+    ptoLayout = to_layout[:,:] = GridLayout()
     for (i,key) = enumerate(keys)
         Label(ptoLayout[i,1], key)
         toggleTmp= Toggle(ptoLayout[i,2], active = to_value(params_obs[key]))
@@ -421,44 +418,46 @@ function createControls(
     all_method_names::Vector{String},   # FULL list of possible methods
     parameter_update_notifier::Observable # Accept notifier                  
     )
-
+    column_number = length(all_method_names)+1
+    #row_number = max(length(shared_params_obs), maximum(map(dict -> length(dict), values(method_params_collection_obs)))) + 1
     control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
-    Label(control_fig[1, :], "Control Panel", fontsize = 24, font=:bold, tellwidth=false) # Main title
+    Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false) # Main title
 
-    current_row_tracker = Ref(1) # Use Ref to track rows across helper calls if needed, although helpers use end+1
-
+    tb_layout = control_fig[2, 1:column_number] = GridLayout()
     # --- Shared Parameters Section ---
     if !isempty(shared_params_obs)
-        # Add section title row
-        Label(control_fig[end+1, :], "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+        # The content goes into the layout of the GroupBox   
+        #Label(tb_layout, "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
         # Separate keys
         # --- Filter out keys marked as :const ---
         # -------------------------------------
         shared_keys = sort(collect(keys(shared_params_obs)))
         shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
         shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
-
         # Call user's helpers (they will add rows using end+1)
         if !isempty(shared_other_keys)
-            createTextBoxes(control_fig, shared_other_keys, shared_params_obs, parameter_update_notifier)
+            rows = length(shared_other_keys)+1
+            createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, parameter_update_notifier, "Shared Parameters")
         end
         if !isempty(shared_bool_keys)
-            createParameterToggles(control_fig, shared_bool_keys, shared_params_obs, parameter_update_notifier)
+            row_end = rows + length(shared_bool_keys) + 1
+            createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs, parameter_update_notifier)
         end
     end
 
     # --- Method-Specific Parameters Section ---
-    Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+    #Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
     any_method_specific_params = false
     # Iterate through ALL possible methods to create sections consistently
-    for method_name in sort(all_method_names)
+    for (i,method_name) in enumerate(sort(all_method_names))
         # Check if this method has specific parameter observables defined
         if haskey(method_params_collection_obs, method_name)
             method_params_obs = method_params_collection_obs[method_name]
             if !isempty(method_params_obs)
                 any_method_specific_params = true
+                #tb_layout = control_fig[end, end+1]
                 # Add a sub-header for the method
-                Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
+                #Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
 
                 # Separate keys for this method
                 method_keys = sort(collect(keys(method_params_obs)))
@@ -467,10 +466,12 @@ function createControls(
 
                 # Call user's helpers for this method's params
                 if !isempty(method_other_keys)
-                    createTextBoxes(control_fig, method_other_keys, method_params_obs, parameter_update_notifier)
+                    rows = length(method_other_keys)+1
+                    createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, parameter_update_notifier, method_name)
                 end
                 if !isempty(method_bool_keys)
-                    createParameterToggles(control_fig, method_bool_keys, method_params_obs, parameter_update_notifier)
+                    #row_end = rows + length(method_bool_keys)
+                    createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs, parameter_update_notifier)
                 end
             end # end if !isempty(method_params_obs)
         end # end if haskey
@@ -482,7 +483,8 @@ function createControls(
     Label(control_fig[end+1, :], "Active Methods", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
 
     # Call user's Checkbox helper function
-    createMethodCheckboxes(control_fig, methods_obs, all_method_names)
+    cb_layout = control_fig[end+1, :] = GridLayout()
+    createMethodCheckboxes(cb_layout, methods_obs, all_method_names)
 
     # --- Save Box Section ---
     # Note: This currently only passes shared_params_obs to be saved in the CSV.
