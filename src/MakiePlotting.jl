@@ -394,8 +394,8 @@ function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dic
         Label(ptoLayout[i,1], key)
         toggleTmp= Toggle(ptoLayout[i,2], active = to_value(params_obs[key]))
         on(toggleTmp.active) do active
-            if params_obs[key][] != active_val
-                params_obs[key][] = active_val # Update observable
+            if params_obs[key][] != to_value(active)
+                params_obs[key][] = to_value(active) # Update observable
                 notifier[] = notifier[] + 1 # <<< INCREMENT NOTIFIER
             end
         end
