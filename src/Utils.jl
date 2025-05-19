@@ -119,16 +119,18 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
         counter += 1
         if !isfile(file_name)
             save(file_name, "sim_data", sim_data)
+            println("SimData saved to file $file_name")
             break
         else
             SimDataSaved = load(file_name)["sim_data"]
             if !(sim_data.params == SimDataSaved.params)
-                print("Filename already exists! Changing hash...")
+                println("Filename already exists! Changing hash...")
                 file_name = save_data * hash * "_$counter.jld2"
             else
                 if overwrite
-                    println("Simulation mesh has been overwritten!")
                     save(file_name, "sim_data", sim_data)
+                    @warn "Simulation mesh has been overwritten!"
+                    println("SimData saved to file $file_name")
                 else
                     println("File already exists!")
                 end
@@ -224,6 +226,7 @@ function doesSimDataExist(params::ParamDictType)
         # If getFileName returns successfully, it means a matching file was found
         return true
     catch e
+        #e = nothing
         if isa(e, SimFileNotFoundError)
             # This is the specific error indicating the file wasn't found.
             # This is NOT a bug, it's the expected outcome when data doesn't exist.
@@ -252,7 +255,7 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
             deletion = deletion && (sim_data.params[key] == vals[i]) && (sim_data.params[key] isa typeof(vals[i]))
         end
         if deletion
-            println("Saved data is being deleted!")
+            @warn "Saved data at $file is being deleted!"
             rm(save_data * file)
         end
     end

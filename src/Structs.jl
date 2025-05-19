@@ -16,13 +16,13 @@ MethodDict(args...) = Dict{String, ParamDictType}(args...)
 struct SimulationConfig
     sim_function::Function
     methods_dict::MethodDictType
-    default_method::String
+    default_methods::Vector{String}
     shared_params::ParamDictType
     ui_options::ParamDictType
 
-    function SimulationConfig(sim_function::Function, shared_params::ParamDictType, methods_dict::MethodDictType, default_method::String; ui_options = ParamDict())
-        @assert (default_method in keys(methods_dict)) "Default method is not contained in the given dictionary!"
-        new(sim_function, methods_dict, default_method, shared_params::ParamDictType, ui_options)
+    function SimulationConfig(sim_function::Function, shared_params::ParamDictType, methods_dict::MethodDictType, default_methods::Vector{String}; ui_options = ParamDict())
+        @assert (issubset(Set(default_methods),Set(keys(methods_dict)))) "Default method is not contained in the given dictionary!"
+        new(sim_function, methods_dict, default_methods, shared_params::ParamDictType, ui_options)
     end
 end
 
@@ -66,7 +66,7 @@ function createSimData(x::Vector{Vector{Float64}}, u::Vector{Vector{Float64}}, t
     SimData1D(x, u, t, params, stats)
 end
 
-function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{Vector{Tuple{Float64,Float64}}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
+function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{Vector{Float64}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
     SimData2D(x, u, t, params, stats)
 end
 

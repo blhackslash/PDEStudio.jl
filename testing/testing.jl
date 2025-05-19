@@ -57,12 +57,13 @@ end
 shared_params = ParamDict("dx" => .01)
 methods_dict = MethodDict("test1" => ParamDict(), "test2" => ParamDict("a" => 2.))
 
-sim_config = SimulationConfig(doTestSimulation, methods_dict, shared_params, "test1")
+sim_config = SimulationConfig(doTestSimulation, methods_dict, shared_params, ["test1"])
 
 show1DSolutionFig(sim_config)
 showDynamicDependence(sim_config)
 
 # Improved 1D Test
+
 """
 Generates SimData1D for testing visualization with time-dependent functions.
 """
@@ -157,7 +158,7 @@ function doTestSimulation1D(params::ParamDictType)
     println("Finished generating 1D data for method '$method'.")
 
     # Create SimData1D object
-    sim_data = SimData1D(x_over_time, u_over_time, t, params)
+    sim_data = createSimData(x_over_time, u_over_time, t, params)
     sim_data.stats = stats # Add the calculated stats
     sim_data.stats["time"] = sim_time
     return sim_data
@@ -175,14 +176,17 @@ shared_params_1d = ParamDict(
 
 methods_dict_1d = MethodDict(
     "decaying_sine" => ParamDict(
+        "method" => "decaying_sine",
         "decay_rate" => 0.5,
         "k" => 2.0 * pi / 5.0 # Wavelength approx 5
     ),
     "moving_gaussian" => ParamDict(
+        "method" => "moving_gaussian",
         "velocity" => 2.0,
         "width" => 0.5
     ),
     "diffusing_gaussian" => ParamDict(
+        "method" => "diffusing_gaussian",
         "diffusion_coeff" => 0.2,
         "width" => 0.5 # Initial width
     )
@@ -191,9 +195,9 @@ methods_dict_1d = MethodDict(
 # Create SimulationConfig
 sim_config_1d = SimulationConfig(
     doTestSimulation1D, # Use the new 1D function
-    methods_dict_1d,
     shared_params_1d,
-    "moving_gaussian" # Default method to show initially
+    methods_dict_1d,
+    ["moving_gaussian"] # Default method to show initially
 )
 
 # --- Run the 1D Visualization ---
@@ -329,7 +333,7 @@ function doTestSimulation2D(params::ParamDictType)
     println("Finished generating data for method '$method'.")
 
     # Create SimData2D object
-    sim_data = SimData2D(x_over_time, u_over_time, t, params)
+    sim_data = createSimData(x_over_time, u_over_time, t, params)
     sim_data.stats = stats # Add the calculated stats
     stats["time"] = sim_time
     return sim_data
@@ -349,14 +353,17 @@ shared_params = ParamDict(
 
 methods_dict = MethodDict(
     "gaussian_decay" => ParamDict(
+        "method" => "gaussian_decay",
         "decay_rate" => 0.8
     ),
     "wave_packet" => ParamDict(
+        "method" => "wave_packet",
         "k" => 2.0 * pi / 2.0, # Wavenumber (wavelength approx 2)
         "omega" => 2.0 * pi / 1.0, # Frequency (period approx 1)
         "vx" => 2.5            # Speed in x direction
     ),
     "standing_wave" => ParamDict(
+        "method" => "standing_wave",
         "kx_mode" => 2,      # Mode number in x
         "ky_mode" => 3,      # Mode number in y
         "amp_freq" => 2.0 * pi / 2.5 # Amplitude oscillation period approx 2.5
@@ -365,15 +372,15 @@ methods_dict = MethodDict(
 
 # Create SimulationConfig
 sim_config_2d = SimulationConfig(
-    doTestSimulation2D, 
-    methods_dict, 
+    doTestSimulation2D,
     shared_params, 
-    "gaussian_decay" # Default method to show initially
+    methods_dict,  
+    ["gaussian_decay"] # Default method to show initially
 )
 
 # --- Run the Visualization ---
 println("Starting 2D Visualization...")
-show2DSolutionFig(sim_config_2d)
+show2DSolutionFig(sim_config_2d);
 println("Visualization launched.")
 showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "l2_norm_sq")
 showConvergencePlot(sim_config_2d, "dt", .05:.05:.2, "time", "max_u")

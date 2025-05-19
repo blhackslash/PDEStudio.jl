@@ -86,7 +86,7 @@ function assemble_params_for_run(
     end
 
     # Add method name itself (optional, but often useful for saving/loading)
-    current_params["method"] = method_name
+    #current_params["method"] = method_name
 
     return current_params
 end
@@ -111,6 +111,256 @@ end
 
 # Functions for Makie Controls
 
+
+# Assuming ParamDictType is defined elsewhere, e.g.:
+# const ParamDictType = Dict{String, Any}
+
+# --- Helper 1: For Shared Params (each param is its own nested 2-col grid) ---
+function add_param_as_nested_grid!(parent_cell_for_item, key_name::String, param_obs::Observable, 
+                                    is_toggle::Bool, label_fontsize::Int, p_internal_item_colgap::Int)
+    
+    item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false) 
+    colgap!(item_layout, p_internal_item_colgap) 
+
+    val_check = param_obs[]
+    is_constant_param = isa(val_check, Tuple) && length(val_check) == 2 && val_check[1] == :const
+    actual_value_for_display = is_constant_param ? val_check[2] : val_check
+    
+    Label(item_layout[1,1], 
+            (is_constant_param ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
+            halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
+
+    if is_constant_param
+        Label(item_layout[1,2], string(actual_value_for_display), halign=:left, fontsize=label_fontsize)
+    elseif is_toggle
+        current_bool_val = isa(actual_value_for_display, Bool) ? actual_value_for_display : false
+        tgl = Toggle(item_layout[1,2], active = current_bool_val)
+        on(tgl.active) do active_val
+            if param_obs[] != active_val; param_obs[] = active_val; end
+        end
+    else # Textbox
+        validator_type = if isa(actual_value_for_display, AbstractFloat) Float64
+                            elseif isa(actual_value_for_display, Integer) Int
+                            elseif isa(actual_value_for_display, String) s -> true # Function for String
+                            else (s -> true) # Fallback
+                            end
+        tb = Textbox(item_layout[1,2], placeholder = string(actual_value_for_display), 
+                        validator = validator_type, width = Auto(), reset_on_defocus=true)
+        on(tb.stored_string) do s
+            target_type = typeof(actual_value_for_display)
+            try
+                parsed_val = if target_type == String; s
+                                elseif validator_type == Float64 || validator_type == Int; parse(target_type,s)
+                                else s end # If generic validator, treat as string or handle based on target_type
+                if !is_constant_param && param_obs[] != parsed_val; param_obs[] = parsed_val; end
+            catch e
+                current_display_val = is_constant_param ? param_obs[][2] : param_obs[]
+                tb.stored_string = string(current_display_val) 
+            end
+        end
+    end
+    colsize!(item_layout, 1, Auto()) 
+    colsize!(item_layout, 2, Auto()) 
+end
+
+# Add this to MakiePlotting.txt
+
+# In MakiePlotting.txt
+
+"""
+Clears and populates a given Figure with a title and parameter controls.
+Parameters are laid out in a specified number of columns.
+"""
+function populate_parameter_figure!(
+    #target_fig::Figure,
+    title_str::String,
+    params_obs_dict::Dict{String, Observable}, # Should be Dict{String, Observable}
+    num_param_columns::Int;
+    param_label_fontsize=14,
+    header_fontsize=16,
+    gap_size=10,
+    internal_item_colgap=4
+)
+    #empty!(target_fig.scene) # Clear all previous content and layouts
+    target_fig = Figure(size = (500,500))
+    main_layout = target_fig[1,1] = GridLayout(tellheight=false)
+    rowgap!(main_layout, gap_size)
+
+    # Row 1: Title
+    Label(main_layout[1,1], title_str, font=:bold, fontsize=header_fontsize, 
+          tellwidth=false, halign=:center, padding=(0,0,10,0))
+    rowsize!(main_layout, 1, Auto())
+
+    # Row 2: Parameters or "No parameters" message
+    if isempty(params_obs_dict)
+        Label(main_layout[2,1], "(No parameters for this selection)", 
+              fontsize=param_label_fontsize, halign=:center)
+        rowsize!(main_layout, 2, Auto())
+        Makie.trim!(main_layout)
+        return
+    end
+
+    params_content_layout = main_layout[2,1] = GridLayout(tellheight=false)
+    rowgap!(params_content_layout, gap_size)
+    colgap!(params_content_layout, gap_size)
+
+    sorted_keys = sort(collect(keys(params_obs_dict)))
+    
+    current_row_in_block, current_col_in_block = 1, 1
+    for key in sorted_keys
+        val_check = params_obs_dict[key][]
+        is_fixed_const = isa(val_check, Tuple) && length(val_check) == 2 && val_check[1] == :const
+        actual_val_for_type_check = is_fixed_const ? val_check[2] : val_check
+        is_bool_toggle = isa(actual_val_for_type_check, Bool) && !is_fixed_const
+
+        # Assuming add_param_as_nested_grid! is your working helper from before
+        add_param_as_nested_grid!(
+            params_content_layout[current_row_in_block, current_col_in_block], 
+            key, 
+            params_obs_dict[key], 
+            is_bool_toggle, 
+            param_label_fontsize, 
+            internal_item_colgap
+        )
+        
+        current_col_in_block += 1
+        if current_col_in_block > num_param_columns
+            current_col_in_block = 1
+            current_row_in_block += 1
+        end
+    end
+
+    if !isempty(sorted_keys)
+        actual_num_cols_used = min(num_param_columns, length(sorted_keys))
+        for c_idx in 1:actual_num_cols_used
+            colsize!(params_content_layout, c_idx, Auto())
+        end
+
+        # Calculate the number of rows that actually received content
+        true_num_rows_used = ceil(Int, length(sorted_keys) / num_param_columns)
+        # If length(sorted_keys) is 0, true_num_rows_used will be 0.
+        # If length(sorted_keys) > 0 but less than or equal to num_param_columns, it's 1.
+        # If length(sorted_keys) is (num_param_columns + 1), it's 2.
+        if true_num_rows_used == 0 && !isempty(sorted_keys)
+             true_num_rows_used = 1 # Should not happen if sorted_keys is not empty
+        end
+        
+        # Ensure true_num_rows_used is at least 1 if there are any keys, to avoid 1:0 range
+        if !isempty(sorted_keys) && true_num_rows_used < 1
+            true_num_rows_used = 1
+        end
+
+        for r_idx in 1:true_num_rows_used
+            # By this point, row r_idx should have been populated if true_num_rows_used is correct
+            rowsize!(params_content_layout, r_idx, Auto())
+        end
+    end
+    
+    rowsize!(main_layout, 2, Auto()) 
+    Makie.trim!(main_layout) 
+    GLMakie.display(target_fig.scene)
+end
+
+"""
+Creates a base control figure with common elements:
+Refresh button, method checkboxes, and save box.
+Returns the figure and the update_notifier.
+"""
+function createBaseControlsFigure(
+    plot_fig_ref::Makie.Figure, # For save box action
+    shared_params_obs::Dict{String, Observable}, # For save box data
+    method_params_collection_obs::Dict{String, Dict{String, Observable}}, # For save box data
+    methods_obs::Observable{Vector{String}},
+    all_method_names::Vector{String}
+)
+    base_controls_fig = Figure(size=(500, 600)) # Initial size, will grow as more controls are added
+    #createParameterFigure(shared_params_obs, method_params_collection_obs, all_method_names)
+    fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
+    rowgap!(fig_layout, 15) 
+
+    current_row = 1
+
+    # --- Main "Controls" Label & Refresh Button ---
+    header_layout = fig_layout[current_row, 1] = GridLayout()
+    Label(header_layout[1,1], "Controls", fontsize=20, font=:bold, halign=:center)
+    current_row += 1
+    update_layout = fig_layout[current_row, 1] = GridLayout()
+    update_button = Button(update_layout[1,1], label="Refresh Plot Data", halign=:center, width=180)
+    
+    update_notifier = Observable(0)
+    on(update_button.clicks) do _
+        update_notifier[] += 1
+    end
+    current_row += 1
+
+    # --- Parameter View Selection Menu ---
+    Label(fig_layout[current_row, 1], "View Parameters:", fontsize=16, halign=:left)
+    current_row += 1
+    
+    menu_options = ["Shared Parameters"; all_method_names] # Menu items
+    # Ensure a default selection if possible, or handle no selection
+    default_selection = isempty(menu_options) ? nothing : menu_options[1]
+
+    param_view_menu = Menu(fig_layout[current_row, 1], options = menu_options, default = default_selection)
+    selected_param_key_obs = param_view_menu.selection # This is the Observable for the selected menu item
+    current_row += 1
+
+    # --- Method Selection Checkboxes ---
+    Label(fig_layout[current_row, 1], "Active Methods", fontsize=16, font=:bold, halign=:center)
+    current_row += 1
+    method_checkbox_layout = fig_layout[current_row, 1] = GridLayout()
+    # Adapt createMethodCheckboxes to populate this layout
+    createMethodCheckboxes(method_checkbox_layout, methods_obs, all_method_names) # (source: 46, 47, 48, 61)
+    current_row += 1
+    
+    # --- Save Figure/Data Box ---
+    Label(fig_layout[current_row, 1], "Save View", fontsize=16, font=:bold, halign=:center)
+    current_row += 1
+    save_box_layout = fig_layout[current_row, 1] = GridLayout()
+    # Adapt createSaveFigBox to populate this layout
+    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs) # (source: 37-45, 62)
+    current_row += 1
+
+    # Ensure the fig_layout rows can auto-size based on content added so far
+    for i in 1:current_row-1 # -1 because current_row is ready for the next item
+        try rowsize!(fig_layout, i, Auto()); catch; end
+    end
+    # --- Create the SINGLE Parameter Display Figure ---
+    #params_fig = Figure(size=(700, 500)) # Adjust size as needed
+
+    # --- Listener for Menu Selection to Repopulate the params_fig ---
+    on(selected_param_key_obs) do selected_key
+        if selected_key == "Shared Parameters"
+            populate_parameter_figure!( # Assuming populate_parameter_figure! is defined
+                #params_fig, 
+                "Shared Parameters", 
+                shared_params_obs, 
+                2
+            )
+        elseif haskey(method_params_collection_obs, selected_key)
+            populate_parameter_figure!(
+                #params_fig, 
+                "$selected_key Parameters", 
+                method_params_collection_obs[selected_key], 
+                2
+            )
+        else
+            empty!(params_fig) # Clear if selection is invalid
+            Label(params_fig[1,1], "Select a parameter set to view.", halign=:center)
+        end
+    end
+
+    # --- Initially populate the params_fig ---
+    if param_view_menu.selection[] !== nothing
+        notify(param_view_menu.selection) # Trigger the on listener for initial population
+    else
+        empty!(params_fig[1,1])
+        Label(params_fig[1,1], "Select a parameter set from the Controls window.", halign=:center)
+    end
+    
+    return base_controls_fig, update_notifier
+end
+
 """
 Creates Textboxes for non-boolean parameters, arranged in rows.
 Disables Makie's internal validator for non-numeric types (like String)
@@ -121,7 +371,6 @@ function createTextBoxes(
     current_layout,
     keys::Vector{String},
     params_obs::Dict{String, Observable},
-    notifier::Observable,
     header::String
     )
 
@@ -192,7 +441,6 @@ function createTextBoxes(
 
                 if params_obs[key][] != parsed_val
                     params_obs[key][] = parsed_val
-                    notifier[] = notifier[] + 1 # Increment notifier
                 end
             catch e
                 rethrow(e)
@@ -388,7 +636,7 @@ function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{V
     end
 end
 
-function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dict{String, Observable}, notifier::Observable)
+function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dict{String, Observable})
     ptoLayout = to_layout[:,:] = GridLayout()
     for (i,key) = enumerate(keys)
         Label(ptoLayout[i,1], key)
@@ -396,7 +644,6 @@ function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dic
         on(toggleTmp.active) do active
             if params_obs[key][] != to_value(active)
                 params_obs[key][] = to_value(active) # Update observable
-                notifier[] = notifier[] + 1 # <<< INCREMENT NOTIFIER
             end
         end
     end
@@ -415,14 +662,18 @@ function createControls(
     shared_params_obs::Dict{String, Observable},
     method_params_collection_obs::Dict{String, Dict{String, Observable}},
     methods_obs::Observable{Vector{String}},          # Observable list of ACTIVE methods
-    all_method_names::Vector{String},   # FULL list of possible methods
-    parameter_update_notifier::Observable # Accept notifier                  
+    all_method_names::Vector{String}   # FULL list of possible methods                
     )
+    update_notifier = Observable(0)
     column_number = length(all_method_names)+1
     #row_number = max(length(shared_params_obs), maximum(map(dict -> length(dict), values(method_params_collection_obs)))) + 1
     control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
-    Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false) # Main title
+    Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false, halign = :center) # Main title
+    update_button = Button(control_fig[1,end], label = "Update", halign = :left)
 
+    on(update_button.clicks) do _
+        update_notifier[] += 1
+    end
     tb_layout = control_fig[2, 1:column_number] = GridLayout()
     # --- Shared Parameters Section ---
     if !isempty(shared_params_obs)
@@ -437,11 +688,11 @@ function createControls(
         # Call user's helpers (they will add rows using end+1)
         if !isempty(shared_other_keys)
             rows = length(shared_other_keys)+1
-            createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, parameter_update_notifier, "Shared Parameters")
+            createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, "Shared Parameters")
         end
         if !isempty(shared_bool_keys)
             row_end = rows + length(shared_bool_keys) + 1
-            createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs, parameter_update_notifier)
+            createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs)
         end
     end
 
@@ -467,11 +718,11 @@ function createControls(
                 # Call user's helpers for this method's params
                 if !isempty(method_other_keys)
                     rows = length(method_other_keys)+1
-                    createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, parameter_update_notifier, method_name)
+                    createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, method_name)
                 end
                 if !isempty(method_bool_keys)
                     #row_end = rows + length(method_bool_keys)
-                    createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs, parameter_update_notifier)
+                    createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs)
                 end
             end # end if !isempty(method_params_obs)
         end # end if haskey
@@ -492,7 +743,7 @@ function createControls(
     #Label(control_fig[end+1, :], "Save Current View", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
     createSaveFigBox(control_fig[end+1,:], plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
 
-    return control_fig
+    return control_fig, update_notifier
 end
 
 
@@ -530,24 +781,22 @@ function show1DSolutionFig(sim_config::SimulationConfig)
         method_params_collection_obs[method_name] = inner_obs_dict
     end
 
-    # --- NEW: Notification Observable ---
-    parameter_update_notifier = Observable(0)
 
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
+    #methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
     method_number = lift(length, methods_obs)
 
+
     # --- Call the NEW createControls function ---
-    control_fig = createControls(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names,
-        parameter_update_notifier
+        all_method_names
     )
     # -----------------------------------------
 
@@ -566,13 +815,13 @@ function show1DSolutionFig(sim_config::SimulationConfig)
     # --- Time Slider & Label ---
     tLabel_text = Observable("t = 0.0")
     # Add a new row for the time label
-    Label(control_fig[end+1, 1:4], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span controls area
+    Label(control_fig[end+1, :], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span controls area
     # Add a new row for the time slider
-    tSlider = Slider(control_fig[end+1, 1:4], range = 0.0:1.0, startvalue = 0.0) # Span controls area
+    tSlider = Slider(control_fig[end+1, :], range = 0.0:1.0, startvalue = 0.0) # Span controls area
 
     # --- Animation and GIF Saving Controls ---
     # Add a new row, using a grid layout within it for alignment
-    anim_save_controls_row = control_fig[end+1, 1:4] = GridLayout() # Span controls area
+    anim_save_controls_row = control_fig[end+1, :] = GridLayout() # Span controls area
 
     # Animation State/Controls
     is_animating = Observable(false)
@@ -608,11 +857,9 @@ function show1DSolutionFig(sim_config::SimulationConfig)
     x_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores X position of max U per method
     u_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores max U value per method
     # ------------------------------------
-
-        # Flatten the list of ALL observables (shared + all method-specific)
-        all_method_param_observables = collect(Iterators.flatten(values(values(method_params_collection_obs))))
     # --- Lift Block 1: Data Loading / Simulation Execution ---
-    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
+    lift(update_notifier; ignore_equal_values=true) do _
+        active_num = length(methods_obs[])
         println("Lift 1: Running sims / loading data...") # Concise print
         # Resize outer vectors
         resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
@@ -653,7 +900,7 @@ function show1DSolutionFig(sim_config::SimulationConfig)
                 if !Utils.doesSimDataExist(params)
                      println(" Running simulation for method: $method")
                      sim_data = sim_config.sim_function(params)
-                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
+                     Utils.saveSimData(sim_data;overwrite = true) # Assumes saveSimData exists
                 else
                      println(" Loading data for method: $method")
                      sim_data = Utils.loadSimData(params)
@@ -772,9 +1019,9 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 
 
     # --- Lift Block 2 (MODIFIED: Calculate and update max observables) ---
-    lift(tSlider.value, xData, uData, tData; ignore_equal_values=false) do t, xd_obs, ud_obs, td_obs
+    lift(tSlider.value; ignore_equal_values=false) do t#, xd_obs, ud_obs, td_obs
         # Get inner vectors
-        xd = to_value(xd_obs); ud = to_value(ud_obs); td = to_value(td_obs)
+        xd = to_value(xData); ud = to_value(uData); td = to_value(tData)
         active_num = method_number[]
         # Consistency check (include new observables)
         if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
@@ -815,13 +1062,16 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 
     # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---
     # Trigger depends on method changes, snapshot data, AND track_max toggle
-    lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
-
+    #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
+    lift(update_notifier, tSlider.value) do _...
         empty!(ax) # Clear previous plots
         # Clear legend explicitly targeting cell [1, 2]
         try; existing_legend=filter(c->isa(c, Legend), contents(plot_fig[1, 2])); foreach(delete!, existing_legend); catch e; @warn "Could not clear legend cell: $e"; end
 
         active_methods = methods_obs[]
+        active_num = length(active_methods)
+        current_xs_obsvec = xs[]
+        current_us_obsvec = us[]
         if active_num == 0; return; end # Nothing to plot
 
         # Consistency check
@@ -857,8 +1107,10 @@ function show1DSolutionFig(sim_config::SimulationConfig)
             # ------------------------------------
 
             # --- Plot Max Tracking Line (using observables from arguments) ---
-            if track_max_enabled # Check toggle state passed into lift block
+            if track_max_obs[] # Check toggle state passed into lift block
                 # Ensure index i is valid for the max observable vectors passed in
+                current_x_max_obsvec = x_at_max_obs[]
+                current_u_max_obsvec = u_at_max_obs[]
                 if i <= length(current_x_max_obsvec) && i <= length(current_u_max_obsvec)
                    # Access the observables holding max info for method i from the arguments
                    x_max_pos_obs = current_x_max_obsvec[i] # This is Observable{Float64}
@@ -1008,262 +1260,6 @@ function show1DSolutionFig(sim_config::SimulationConfig)
 end
 
 """
-    show1DSolutionFig_with_animation(sim_config::SimulationConfig)
-
-Creates an interactive Makie plot for `SimData1D` with animation playback
-and an option to save the animation as a GIF.
-Uses closest data point logic for animation frames.
-"""
-function show1DSolutionFig_with_animation2(sim_config::SimulationConfig)
-    # --- Basic Setup & UI ---
-    local_ui_dict = deepcopy(ui_dict)
-    # updateUI(...)
-    plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
-    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)") # Title set dynamically
-
-    # --- Parameter & Method Observables/Controls ---
-    # (Same as before)
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    for (key, val) in params_all; params_obs[key] = Observable(val); end
-    methods = collect(keys(sim_config.methods_dict))
-    default_method = sim_config.default_method in methods ? sim_config.default_method : (isempty(methods) ? "" : methods[1])
-    methods_obs = Observable(isempty(methods) ? String[] : [default_method])
-    method_number = lift(length, methods_obs)
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
-
-    # --- Time Slider & Label ---
-    tLabel_text = Observable("t = 0.0")
-    Label(control_fig[end+1, 1:3], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span 3 columns
-    tSlider = Slider(control_fig[end+1, 1:3], range = 0.0:1.0, startvalue = 0.0) # Span 3 columns
-
-    # --- Animation and GIF Saving Controls ---
-    # Place these controls together in the next row
-    anim_save_controls_row = control_fig[end+1, :] = GridLayout()
-
-    # Animation State/Controls
-    is_animating = Observable(false)
-    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
-    time_range_data = Ref((0.0, 1.0)) # Stores (t_min, t_max)
-    play_button = Button(anim_save_controls_row[1, 1], label = @lift($is_animating ? "Stop Anim" : "Play Anim")) # Col 1
-
-    # GIF Saving Textbox
-    gif_save_textbox = Textbox(anim_save_controls_row[1, 2], placeholder = "GIF Name (no ext)", width=150) # Col 2
-
-    # GIF Saving Button
-    gif_save_button = Button(anim_save_controls_row[1, 3], label = "Save GIF") # Col 3
-
-    # Adjust column sizes maybe
-    # colsize!(control_fig.layout, 1, Auto()); colsize!(control_fig.layout, 3, Auto())
-
-    # --- Data Structures ---
-    # (Same as before: xData, uData, tData, xs, us, global_xlims, global_ylims)
-    xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    global_xlims = Observable((0.0, 1.0)); global_ylims = Observable((0.0, 1.0))
-
-    # --- Lift Block 1 (Data Loading, Limit Calc, Time Range Update) ---
-    # (Same as previous working version)
-    lift(method_number, values(params_obs)...; ignore_equal_values=true) do active_num, _...
-        println("Lift 1: Updating data, calculating global limits...")
-        # (Resize arrays: xData[], uData[], tData[], xs[], us[])
-        resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
-        resize!(xs[], active_num); resize!(us[], active_num)
-        # (Ensure inner observables exist)
-        for k in 1:active_num; if !isassigned(xData[], k) || !isa(xData[][k], Observable); xData[][k] = Observable(Vector{Vector{Float64}}()); end; if !isassigned(uData[], k) || !isa(uData[][k], Observable); uData[][k] = Observable(Vector{Vector{Float64}}()); end; if !isassigned(tData[], k) || !isa(tData[][k], Observable); tData[][k] = Observable(Float64[]); end; if !isassigned(xs[], k) || !isa(xs[][k], Observable); xs[][k] = Observable(Float64[]); end; if !isassigned(us[], k) || !isa(us[][k], Observable); us[][k] = Observable(Float64[]); end; end
-
-        all_time_points = Set{Float64}(); g_xmin, g_xmax = Inf, -Inf; g_umin, g_umax = Inf, -Inf; found_any_data = false
-        active_methods_now = methods_obs[]
-
-        for i = 1:active_num # Loop Methods
-            method = active_methods_now[i]
-            # (Assemble params)
-            current_method_params=Dict{String,Any}(); shared_keys=keys(sim_config.shared_params); method_keys=haskey(sim_config.methods_dict,method) ? keys(sim_config.methods_dict[method]) : []; for (pk,po) in params_obs; if pk in shared_keys || pk in method_keys; current_method_params[pk]=po[]; end; end; params=merge(current_method_params,Dict("method"=>method))
-            local sim_data::Union{AbstractSimData, Nothing} = nothing
-            try; sim_data = sim_config.sim_function(params); catch e; @warn "Sim failed: $method" exception=(e,catch_backtrace()); sim_data=nothing; end
-
-            if isnothing(sim_data) || !isa(sim_data, SimData1D); @warn "Invalid SimData1D for '$method'."; xData[][i][]=[]; uData[][i][]=[]; tData[][i][]=[]; xs[][i][]=[]; us[][i][]=[]; continue; end
-            xData[][i][] = sim_data.x; uData[][i][] = sim_data.u; tData[][i][] = sim_data.t; union!(all_time_points, sim_data.t)
-
-            # (Update Global Limits g_xmin, etc.)
-            for k in eachindex(sim_data.t); if k <= length(sim_data.x) && k <= length(sim_data.u); x_k=sim_data.x[k]; u_k=sim_data.u[k]; if !isempty(x_k) && !isempty(u_k); found_any_data=true; xmin_k, xmax_k = extrema(x_k); umin_k, umax_k = extrema(u_k); g_xmin=min(g_xmin, xmin_k); g_xmax=max(g_xmax, xmax_k); g_umin=min(g_umin, umin_k); g_umax=max(g_umax, umax_k); end; end; end
-        end # End method loop
-
-        # (Finalize and Apply Global Limits)
-        if found_any_data; pad_x = get(local_ui_dict, "x_axis_limit_padding", 0.1); pad_y = get(local_ui_dict, "y_axis_limit_padding", 0.1); xr = g_xmax - g_xmin; xp = xr ≈ 0 ? 0.1 : (xr*pad_x/2.0); yr = g_umax - g_umin; yp = yr ≈ 0 ? 0.1 : (yr*pad_y/2.0); final_xlims = (g_xmin-xp, g_xmax+xp); final_ylims = (g_umin-yp, g_umax+yp); global_xlims[] = final_xlims; global_ylims[] = final_ylims; try; xlims!(ax, final_xlims); ylims!(ax, final_ylims); catch e; @warn "Failed applying limits" e; end; else; global_xlims[] = (0.0, 1.0); global_ylims[] = (0.0, 1.0); try; xlims!(ax, 0.0, 1.0); ylims!(ax, 0.0, 1.0); catch e; @warn "Failed applying default limits" e; end; end
-
-        # (Store Time Range and Update Time Slider)
-        if !isempty(all_time_points); t_min_data, t_max_data = extrema(all_time_points); time_range_data[] = (t_min_data, t_max_data); sorted_times = sort(collect(all_time_points)); t_len = length(sorted_times); t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, t_len*2+100)); if t_len == 1; t_range_slider = range(t_min_data, stop=t_max_data, length=2); end; if tSlider.range[] != t_range_slider; tSlider.range = t_range_slider; end; current_t_val = clamp(tSlider.value[], t_min_data, t_max_data); set_close_to!(tSlider, current_t_val); tLabel_text[] = "t = $(round(current_t_val, digits=3))"; else; time_range_data[] = (0.0, 1.0); if tSlider.range[] != (0.0:1.0); tSlider.range = 0.0:1.0; end; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = 0.0"; end
-
-        println("Lift 1: Update complete.")
-        notify(tSlider.value) # Ensure Lift 2 runs to calculate initial snapshot based on possibly new data
-    end # --- End Lift Block 1 ---
-
-
-    # --- Lift Block 2 (SIMPLIFIED: Always uses closest time step) ---
-    lift(tSlider.value, xData, uData, tData; ignore_equal_values=false) do t, xd_obs, ud_obs, td_obs
-        xd = to_value(xd_obs); ud = to_value(ud_obs); td = to_value(td_obs)
-        num_active = method_number[]
-        if length(xs[])!=num_active || length(us[])!=num_active || length(xd)!=num_active || length(ud)!=num_active || length(td)!=num_active; return; end
-
-        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
-
-        for i = 1:num_active
-             if i > length(xd) || i > length(ud) || i > length(td) continue end
-             x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
-             if isempty(t_vec) || isempty(x_vecs) || isempty(u_vecs) || length(t_vec)!=length(x_vecs) || length(t_vec)!=length(u_vecs)
-                 if i <= length(xs[]) && i <= length(us[]); xs[][i][] = Float64[]; us[][i][] = Float64[]; end; continue
-             end
-             # --- Find index 'm' of the original time step closest to 't' ---
-             (_, m) = findmin(a -> abs(a - t), t_vec)
-             local x_snapshot::Vector{Float64}; local u_snapshot::Vector{Float64}
-             if 1 <= m <= length(x_vecs) && 1 <= m <= length(u_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; else; x_snapshot = Float64[]; u_snapshot = Float64[]; end
-             # --- Update snapshot observables ---
-             if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
-        end # End loop over methods
-    end # --- End Lift Block 2 ---
-
-
-    # --- Lift Block 3 (Plot Management) ---
-    # Trigger depends on method changes AND snapshot data changes
-    lift(method_number, xs, us; ignore_equal_values=true) do active_num, current_xs_obsvec, current_us_obsvec
-        empty!(ax)
-        # (Clear legend as before)
-        for c in contents(plot_fig.layout); if isa(c, Legend); try delete!(c) catch; end; end; end
-        active_methods = methods_obs[]; if active_num == 0; return; end
-        num_to_plot = min(active_num, length(current_xs_obsvec), length(current_us_obsvec)); if num_to_plot <= 0; return; end
-
-        plotted_objects = []
-        for i = 1:num_to_plot
-            plotLabel = active_methods[i]
-            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
-            marker = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
-            linestyle = get(local_ui_dict, "dashed_lines", false) ? local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))] : :solid
-            x_snap_obs = current_xs_obsvec[i]; u_snap_obs = current_us_obsvec[i]
-            obj_for_legend = nothing
-            if get(local_ui_dict, "show_lines", true); l = lines!(ax, x_snap_obs, u_snap_obs; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle); obj_for_legend = l; end
-            if get(local_ui_dict, "show_scatter", true); s = scatter!(ax, x_snap_obs, u_snap_obs; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel); if obj_for_legend === nothing; obj_for_legend = s; end; end
-            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); end
-        end
-        # (Add Legend as before, using try/catch and plot_fig[1, 2])
-         if !isempty(plotted_objects); try; for c in contents(plot_fig.layout); if isa(c, Legend); delete!(c); end; end; Legend(plot_fig[1, 2], plotted_objects, active_methods[1:num_to_plot], "Methods", tellheight=false); colsize!(plot_fig.layout, 2, Auto()); catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end; end
-        # Use fixed global limits set in Lift 1
-    end # --- End Lift Block 3 ---
-
-
-    # --- Animation Button Logic (Using real-time mapping) ---
-    on(play_button.clicks) do _
-        new_state = !is_animating[]
-        if new_state # --- Request Start Animation ---
-             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-             t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
-             is_animating[] = true
-
-             anim_duration_s = get(local_ui_dict, "animation_duration_s", 10.0)
-             anim_fps = get(local_ui_dict, "animation_fps", 30)
-             timer_interval = 1.0 / max(1, anim_fps)
-             start_real_time = time()
-
-             function update_frame(timer_handle)
-                 if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
-                 elapsed_real_time = time() - start_real_time
-                 cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
-                 time_fraction = cycled_elapsed_time / anim_duration_s
-                 current_sim_time = t_min + time_fraction * (t_max - t_min)
-                 set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max)) # Update slider -> triggers Lift 2
-             end
-             println("Starting animation...")
-             animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
-        else # --- Request Stop Animation ---
-            println("Stopping animation...")
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-            is_animating[] = false
-            set_close_to!(tSlider, tSlider.value[]) # Nudge Lift 2
-        end
-    end
-    # --- End Animation Button Logic ---
-
-    # --- NEW GIF Saving Button Logic ---
-    on(gif_save_button.clicks) do _
-        base_filename = strip(gif_save_textbox.stored_string[])
-        if isempty(base_filename)
-            @warn "Please enter a filename for the GIF."
-            return
-        end
-
-        save_dir = joinpath(get_save_path(), "figures")
-        try mkpath(save_dir) catch e; @warn "Could not create save directory $save_dir: $e"; end
-        filename = joinpath(save_dir, base_filename * ".gif")
-
-        println("Preparing to save animation to $filename...")
-
-        # Temporarily stop interactive animation if running
-        was_animating = is_animating[]
-        if was_animating
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-            is_animating[] = false # Set state to stop potential interference
-            sleep(0.1) # Brief pause
-        end
-
-        # Get parameters for saving GIF
-        t_min, t_max = time_range_data[]
-        if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[] = true; end; return; end
-
-        # Use animation parameters from ui_dict for consistency, or define separate ones for GIF
-        duration_s = get(local_ui_dict, "animation_duration_s", 10.0)
-        fps = get(local_ui_dict, "animation_fps", 30)
-        n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
-
-        times_for_gif = range(t_min, t_max, length=n_frames)
-
-        # --- Record the animation ---
-        try
-            println("Recording $n_frames frames at $fps FPS...")
-            # Ensure the plot uses the fixed limits during recording
-            xlims!(ax, global_xlims[])
-            ylims!(ax, global_ylims[])
-
-            record(plot_fig, filename, times_for_gif; framerate = fps) do t_now
-                # For each frame: set slider, which triggers Lift 2, which triggers Lift 3 update
-                set_close_to!(tSlider, t_now)
-                # Wait briefly allows redraw? Needed sometimes for complex plots.
-                sleep(0.005)
-            end
-            println("Animation saved successfully to $filename")
-
-        catch e
-            @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
-        finally
-             # Optional: Restore slider to original position? Or leave at end? Leave at end for now.
-             # Optional: Restart animation if it was running? Simpler to leave stopped.
-             # if was_animating; is_animating[] = true; /* restart timer */ end
-             println("GIF saving finished.")
-        end
-    end
-    # --- End GIF Saving Logic ---
-
-    # --- Timer Cleanup on Figure Close ---
-    on(plot_fig.scene.events.window_open) do is_open
-        if !is_open && !isnothing(animation_timer[])
-            println("Figure closed, stopping animation timer.")
-            try close(animation_timer[]) catch; end; animation_timer[] = nothing
-            is_animating[] = false
-        end
-    end
-    # --- End Cleanup ---
-
-    # --- Display Figures ---
-    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
-    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
-
-    return control_fig, plot_fig
-
-end # --- End Function Definition ---
-
-"""
     showDynamicDependence(sim_config::SimulationConfig)
 
 Creates an interactive Makie plot showing the time evolution of selected statistics 
@@ -1302,24 +1298,18 @@ function showDynamicDependence(sim_config::SimulationConfig)
         method_params_collection_obs[method_name] = inner_obs_dict
     end
 
-    # --- NEW: Notification Observable ---
-    parameter_update_notifier = Observable(0)
-
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
-    method_number = lift(length, methods_obs)
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
 
     # --- Call the NEW createControls function ---
-    control_fig = createControls(
+    control_fig, update_notifier = createControls(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names,
-        parameter_update_notifier
+        all_method_names
     )
     # -----------------------------------------
 
@@ -1335,16 +1325,16 @@ function showDynamicDependence(sim_config::SimulationConfig)
     stats_slider = Slider(control_fig[end+1, :], range = 1:1, startvalue = 1)
 
     # --- Lift Block 1: Load Data, Filter Plottable Stat Keys, Update UI ---
-    lift(method_number, parameter_update_notifier; ignore_equal_values = true) do active_num, _...
+    lift(update_notifier; ignore_equal_values = true) do _
         println("Updating data based on methods/parameters...")
-
+        active_methods_now = methods_obs[]
+        active_num = length(active_methods_now)
         statsData[] = Vector{Observable{Dict{String, Any}}}(undef, active_num)
         tData[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
 
-        first_data_loaded = false
         # Store potential keys temporarily before checking type and intersection
         potential_keys_per_method = Vector{Set{String}}(undef, active_num) 
-        active_methods_now = methods_obs[]
+        
 
         for i = 1:active_num
             method = active_methods_now[i]
@@ -1464,7 +1454,9 @@ function showDynamicDependence(sim_config::SimulationConfig)
     end
 
     # --- Lift Block 2: Update Plot ---
-    lift(method_number, selected_stat_index_obs, parameter_update_notifier) do active_num, stat_idx, _...
+    lift(update_notifier, selected_stat_index_obs) do _, stat_idx
+        #stat_idx = selected_stat_index_obs[]
+        active_num = length(methods_obs[])
         println("Updating plot...")
         empty!(ax)
         try
@@ -1899,24 +1891,20 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
         method_params_collection_obs[method_name] = inner_obs_dict
     end
 
-    # --- NEW: Notification Observable ---
-    parameter_update_notifier = Observable(0)
 
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig = createControls(
+    control_fig, update_notifier = createControls(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names,
-        parameter_update_notifier
+        all_method_names
     )
     # -----------------------------------------
     controls_layout = control_fig.layout # Get layout grid
@@ -1970,7 +1958,8 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
     global_zlims_and_colorrange = Observable((0.0, 1.0)) # Global U range (min, max)
 
     # --- Lift Block 1 (MODIFIED: Store time range) ---
-    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
+    lift(update_notifier; ignore_equal_values=true) do _
+        active_num = length(methods_obs[])
         println("Lift 1 (2D): Updating data & global U range...")
         # Resize outer vectors
         resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
@@ -2091,10 +2080,10 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
 
 
     # --- Lift Block 3 (Plot Redraw & Configuration) ---
-    lift(method_number, plot_as_surface_obs, selected_colormap_obs,
-        global_zlims_and_colorrange, parameter_update_notifier;
-        ignore_equal_values=true) do active_num, plot_surface, current_cmap, current_zlims_val, _...
-
+    lift(update_notifier, plot_as_surface_obs, selected_colormap_obs,
+        global_zlims_and_colorrange;
+        ignore_equal_values=true) do _, plot_surface, current_cmap, current_zlims_val
+        active_num = length(methods_obs[])
         println("Lift 3 (2D): Redrawing plot...")
         active_methods = methods_obs[] # Define active_methods here
 
@@ -2326,429 +2315,6 @@ end # --- End show2DSolutionFig Function ---
 # end # --- End Module MakiePlotting --- # Assuming this is within a module
 
 """
-WARNING! This version is deprecated. It is less stable and has less control 
-         options than the functions with the axis predefined. 
-    showConvergenceFig(sim_config::SimulationConfig,
-                       key::String,
-                       param_values::Union{AbstractVector, AbstractRange};
-                       run_simulations::Bool = true,
-                       force_int_param::Bool = false)
-
-Plots simulation statistics against a varied parameter ('key') for multiple
-selected methods at different times.
-
-Runs the simulation defined in `sim_config` for each *active method* and for
-each value in `param_values` assigned to the parameter `key`. It then plots
-user-selected statistics or the varied parameter against each other, allowing
-exploration via a time slider and method toggles.
-
-# Arguments
-- `sim_config`: Base SimulationConfig defining methods, base params, sim function.
-- `key`: String name of the parameter in `params` to vary.
-- `param_values`: Vector or Range of values to assign to `key`.
-- `run_simulations`: If true (default), runs simulations. False requires load logic.
-- `force_int_param`: If true, attempts `trunc(Int, value)` for the varied parameter.
-"""
-function showConvergencePlot(
-    sim_config::SimulationConfig,
-    key::String,
-    param_values::Union{AbstractVector, AbstractRange};
-    run_simulations::Bool = true,
-    force_int_param::Bool = false
-    )
-
-    # --- Basic Setup & UI ---
-    local_ui_dict = deepcopy(ui_dict)
-    # updateUI(local_ui_dict, sim_config.ui_options) # Apply overrides if needed
-    plot_fig = Figure(size = local_ui_dict["figsize"])
-    ax = Axis(plot_fig[1,1], title="Convergence Plot") # Standard 2D Axis
-
-# --- Log Scale Toggles ---
-
-    # Add Checkboxes to control figure (adjust row/column layout as needed)
-    # Example: Placing them side-by-side in a new row, spanning 2 columns each
-    log_scale_layout = control_fig[end+1, :] = GridLayout() # Span 4 columns for example
-    cb_log_x = Toggle(log_scale_layout[1, 1], active = false) # Span cols 1-2
-    Label(log_scale_layout[1,2], "Log-scale x-axis")
-    cb_log_y = Toggle(log_scale_layout[1, 3], active = false) # Span cols 3-4
-    Label(log_scale_layout[1,4], "Log-scale y-axis")
-
-    # --- Link Log Scale Toggles to Axis Scale ---
-    on(cb_log_x.active) do is_active # is_active is the Bool value
-        new_scale_func = is_active ? log10 : identity
-        # --- CORRECT WAY: Update value inside the observable ---
-        local_ui_dict["x_axis_limit_padding"] = 0
-        ax.xscale[] = new_scale_func
-        # ------------------------------------------------------
-        println("X-Axis scale set to: ", ax.xscale[]) # Debug print shows the function name
-    end
-
-    on(cb_log_y.active) do is_active # is_active is the Bool value
-        new_scale_func = is_active ? log10 : identity
-        # --- CORRECT WAY: Update value inside the observable ---
-        local_ui_dict["y_axis_limit_padding"] = 0
-        ax.yscale[] = new_scale_func
-        # ------------------------------------------------------
-        println("Y-Axis scale set to: ", ax.yscale[])
-    end
-    # ------------------------------------------
-
-    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
-    # Observable dictionary for SHARED parameters
-    shared_params_obs = Dict{String, Observable}()
-    for (key, val) in sim_config.shared_params
-        shared_params_obs[key] = Observable(val)
-    end
-    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
-    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
-    for (method_name, method_params_dict) in sim_config.methods_dict
-        inner_obs_dict = Dict{String, Observable}()
-        for (param_key, param_val) in method_params_dict
-            inner_obs_dict[param_key] = Observable(param_val)
-        end
-        method_params_collection_obs[method_name] = inner_obs_dict
-    end
-
-    # --- NEW: Notification Observable ---
-    parameter_update_notifier = Observable(0)
-
-    all_method_names = collect(keys(sim_config.methods_dict))
-
-    # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
-    method_number = lift(length, methods_obs)
-
-    # --- Call the NEW createControls function ---
-    control_fig = createControls(
-        plot_fig,
-        shared_params_obs,
-        method_params_collection_obs,
-        methods_obs,
-        all_method_names,
-        parameter_update_notifier
-    )
-    # -----------------------------------------
-    # --- Convergence Specific Controls ---
-    # Store available stat keys (common across all runs)
-    stat_keys = Observable([key])
-    x_stat_obs = Observable(key)
-    y_stat_obs = Observable(key)
-
-    # X-Axis Slider Setup
-    Label(control_fig[end+1,:][1,1], "X-Axis:").padding = (0, 10, 0, 0) # Label for the row
-    x_stat_slider = Slider(control_fig[end,:][1,2], startvalue = key, range = stat_keys) # Slider uses string keys directly
-    x_key_display_label = Label(control_fig[end,:][1,3], text = x_stat_obs, halign = :left) # Label shows selected key
-
-
-    # Y-Axis Slider Setup
-    Label(control_fig[end+1,:][1,1], "Y-Axis:").padding = (0, 10, 0, 0) # Label for the row
-    y_stat_slider = Slider(control_fig[end,:][1,2], startvalue = key, range = stat_keys) # Slider uses string keys directly
-    y_key_display_label = Label(control_fig[end,:][1,3], text = y_stat_obs, halign = :left) # Label shows selected key
-    on(x_stat_slider.value) do s
-        if x_stat_obs[] != s # Optional: Nur bei Änderung zuweisen
-            x_stat_obs[] = s
-        end
-    end
-    on(y_stat_slider.value) do s
-        if y_stat_obs[] != s # Optional: Nur bei Änderung zuweisen
-            y_stat_obs[] = s
-        end
-    end
-
-    # Time Slider
-    tLabel_text = Observable("t = 0.0")
-    Label(control_fig[end+1, 1:2], tLabel_text, tellwidth=false).padding = (0, 0, 5, 0)
-    tSlider = Slider(control_fig[end+1, 1:2], range = 0.0:1.0, startvalue = 0.0)
-
-    # --- Data Storage ---
-    num_params = length(param_values)
-    local_param_values = collect(param_values) # Ensure vector
-
-    # Store results nested: [method_idx][param_idx] -> {stats_dict, time_vector}
-    all_method_stats = Observable(Vector{Vector{ParamDictType}}(undef, 0))
-    all_method_times = Observable(Vector{Vector{Vector{Float64}}}(undef, 0))
-    actual_param_values_used = Observable(Vector{Vector{Any}}(undef, 0))
-
-
-
-    # Store plot data: [method_idx] -> Observable{Vector{Float64}}
-    x_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-
-
-    # --- Lift 1: Data Loading / Simulation Execution ---
-    # Triggered when active methods list or base parameters change.
-    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
-        if active_num == 0
-            println("Lift 1: No methods selected. Clearing data.")
-            all_method_stats[] = []; all_method_times[] = []; actual_param_values_used[] = []
-            x_plot_data_methods[] = []; y_plot_data_methods[] = []
-            stat_keys[] = [key]#["Varied Parameter ($key)"]
-            tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0)
-            return # Stop processing if no methods are active
-        end
-
-        println("Lift 1: Updating methods/params. Running/Loading simulations for $active_num method(s)...")
-
-        temp_method_stats = Vector{Vector{ParamDictType}}(undef, active_num)
-        temp_method_times = Vector{Vector{Vector{Float64}}}(undef, active_num)
-        temp_actual_params = Vector{Vector{Any}}(undef, active_num)
-
-        common_stat_keys = Set{String}()
-        first_run_overall = true
-        all_times_union = Set{Float64}()
-        active_methods = methods_obs[]
-
-        for i = 1:active_num # Loop through ACTIVE methods
-            method_name = active_methods[i]
-            println(" Processing Method: $method_name ($i/$active_num)")
-
-            stats_for_method = Vector{ParamDictType}(undef, num_params)
-            times_for_method = Vector{Vector{Float64}}(undef, num_params)
-            params_for_method = Vector{Any}(undef, num_params)
-
-            method_specific_params = sim_config.methods_dict[method_name]
-            base_params = merge(sim_config.shared_params, method_specific_params)
-            for (p_key, p_obs) in params_obs; base_params[p_key] = p_obs[]; end
-
-            Threads.@threads for j = 1:num_params # OPTIONAL: Parallelize parameter loop if sims are independent
-                 # Create thread-local copy? Or ensure sim_function is thread-safe?
-                 # For now, assume serial or thread-safe sim_function
-                local_j = j # Capture loop variable for closure if needed
-
-                raw_value = local_param_values[local_j]
-                current_value = if force_int_param; try trunc(Int, raw_value) catch; raw_value end else raw_value end
-                params_for_method[local_j] = current_value
-
-                current_params = copy(base_params)
-                current_params[key] = current_value
-                current_params["method"] = method_name # Ensure method name is available
-
-                print("  Run $local_j/$num_params: $key = $current_value ... ")
-
-                local sim_data::Union{AbstractSimData, Nothing} = nothing
-                try
-                    if run_simulations
-                        sim_data = sim_config.sim_function(current_params)
-                    else
-                        loadSimData(current_params)
-                    end
-
-                    if isnothing(sim_data) || !hasproperty(sim_data, :stats) || !hasproperty(sim_data, :t) || !isa(sim_data.stats, AbstractDict) || !isa(sim_data.t, AbstractVector)
-                         println("Invalid sim_data. Skipping.")
-                         stats_for_method[local_j] = ParamDictType(); times_for_method[local_j] = Float64[]
-                         # continue # Cannot continue in @threads, need other logic if parallel
-                    else
-                        println("Done.")
-                        stats_for_method[local_j] = sim_data.stats
-                        times_for_method[local_j] = sim_data.t
-                        # Thread safety needed for union! and common_stat_keys update if parallel
-                        # Using locks or atomics, or process results after parallel loop
-                        # Serial version:
-                        union!(all_times_union, sim_data.t)
-                        current_keys = Set{String}()
-                        for (stat_name, stat_val) in sim_data.stats
-                             if isa(stat_val, Vector{<:Real}) && !isempty(stat_val) && length(stat_val) == length(sim_data.t)
-                                push!(current_keys, stat_name)
-                             end
-                        end
-                        # This part needs locking if parallel:
-                        if first_run_overall && !isempty(current_keys)
-                            common_stat_keys = current_keys; first_run_overall = false
-                        elseif !first_run_overall
-                            intersect!(common_stat_keys, current_keys)
-                        end
-                        # End lock section
-                    end
-
-                catch e
-                    println("Failed! Error: $e")
-                    stats_for_method[local_j] = ParamDictType(); times_for_method[local_j] = Float64[]
-                end
-            end # End loop over param_values (j)
-
-            temp_method_stats[i] = stats_for_method
-            temp_method_times[i] = times_for_method
-            temp_actual_params[i] = params_for_method
-        end # End loop over active methods (i)
-
-        println("Finished runs. Updating observables...")
-
-        all_method_stats[] = temp_method_stats
-        println(size(all_method_stats[]), size(all_method_stats[][end]))
-        all_method_times[] = temp_method_times
-        actual_param_values_used[] = temp_actual_params
-
-        # Update stat key options
-        new_axis_keys = [ key; sort(collect(common_stat_keys)) ]
-        println(new_axis_keys)
-
-        if stat_keys[] != new_axis_keys
-             stat_keys[] = new_axis_keys
-             if !(x_stat_obs[] in new_axis_keys) set_close_to!(x_stat_slider, key) end
-             if !(y_stat_obs[] in new_axis_keys) set_close_to!(y_stat_slider, key) end
-             x_stat_slider.range = new_axis_keys
-             y_stat_slider.range = new_axis_keys
-             
-             # Reset menus if current selection is no longer valid
-             # current_x = x_stat_obs[]; #if !(current_x in new_axis_keys); x_stat_menu.selection = new_axis_keys[1]; end
-             # current_y = y_stat_obs[]; default_y = length(new_axis_keys)>1 ? new_axis_keys[2] : new_axis_keys[1]; #if !(current_y in new_axis_keys); y_stat_menu.selection = default_y; end
-        end
-
-        # Update Time Slider Range
-        time_vec = isempty(all_times_union) ? [0.0, 1.0] : sort(collect(all_times_union))
-        t_range = isempty(time_vec) ? (0.0:1.0) : range(first(time_vec), last(time_vec), length=max(100, 2*length(time_vec)))
-        tSlider.range = t_range
-        set_close_to!(tSlider, clamp(tSlider.value[], first(t_range), last(t_range)))
-        tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-
-        # Resize & initialize plot data observables
-        current_x_plot_data = [Observable(zeros(Float64, num_params)) for _ in 1:active_num]
-        current_y_plot_data = [Observable(zeros(Float64, num_params)) for _ in 1:active_num]
-        
-        # Manually trigger update for initial snapshot
-        current_t = tSlider.value[]; current_x_key = x_stat_obs[]; current_y_key = y_stat_obs[]
-        actual_x_key = current_x_key#replace(current_x_key, "Varied Parameter ($key)" => key)
-        actual_y_key = current_y_key#replace(current_y_key, "Varied Parameter ($key)" => key)
-        
-        for i = 1:active_num
-            x_vals = zeros(Float64, num_params); y_vals = zeros(Float64, num_params)
-            method_stats = all_method_stats[][i]; method_times = all_method_times[][i]
-            method_params_used = actual_param_values_used[][i]
-
-            for j = 1:num_params
-                if isempty(method_times[j]) continue end
-                (_, m_ij) = findmin(a -> abs(a - current_t), method_times[j])
-                
-                if actual_x_key == key; x_vals[j] = Float64(method_params_used[j]);
-                elseif haskey(method_stats[j], actual_x_key) && m_ij <= length(method_stats[j][actual_x_key]); x_vals[j] = Float64(method_stats[j][actual_x_key][m_ij]);
-                else x_vals[j] = NaN; end
-                
-                if actual_y_key == key; y_vals[j] = Float64(method_params_used[j]);
-                elseif haskey(method_stats[j], actual_y_key) && m_ij <= length(method_stats[j][actual_y_key]); y_vals[j] = Float64(method_stats[j][actual_y_key][m_ij]);
-                else y_vals[j] = NaN; end
-            end
-            current_x_plot_data[i][] = x_vals # Update inner observable
-            current_y_plot_data[i][] = y_vals # Update inner observable
-        end
-        # Update the outer observables containing the plot data observables
-        x_plot_data_methods[] = current_x_plot_data
-        y_plot_data_methods[] = current_y_plot_data
-        println("Lift 1: Update complete.")
-
-    end 
-    # --- End Lift Block 1 ---
-    # --- Lift Block 2: Snapshot Update ---
-    # Triggered by time, x-stat, or y-stat selection.
-    lift(tSlider.value, x_stat_obs, y_stat_obs; ignore_equal_values=true) do t, x_key, y_key
-        # println("Lift 2: Updating plot data for t=$t, x=$x_key, y=$y_key")
-        active_num = method_number[]
-        tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-        
-        # Ensure consistency between active methods and data storage
-        if length(x_plot_data_methods[]) != active_num || length(y_plot_data_methods[]) != active_num || length(all_method_stats[]) != active_num
-             # This can happen briefly during transitions, wait for Lift 1 & 3 to sync
-             println("Lift 2: Data structures size mismatch. Skipping update.")
-             return 
-        end
-
-        actual_x_key = x_key #replace(x_key, "Varied Parameter ($key)" => key)
-        actual_y_key = y_key #replace(y_key, "Varied Parameter ($key)" => key)
-        println(x_key,y_key)
-        for i = 1:active_num # Loop through currently active methods
-            x_vals = zeros(Float64, num_params); y_vals = zeros(Float64, num_params)
-            # Access data safely based on current active_num
-            method_stats = all_method_stats[][i]; method_times = all_method_times[][i]
-            method_params_used = actual_param_values_used[][i] 
-
-            for j = 1:num_params # Loop through parameter values
-                if isempty(method_times[j]) continue end # Skip if no time data for this run
-                (_, m_ij) = findmin(a -> abs(a - t), method_times[j])
-
-                # Get X value
-                if actual_x_key == key; x_vals[j] = Float64(method_params_used[j]);
-                elseif haskey(method_stats[j], actual_x_key) && m_ij <= length(method_stats[j][actual_x_key]); x_vals[j] = Float64(method_stats[j][actual_x_key][m_ij]);
-                else x_vals[j] = NaN; end
-                # Get Y value
-                if actual_y_key == key; y_vals[j] = Float64(method_params_used[j]);
-                elseif haskey(method_stats[j], actual_y_key) && m_ij <= length(method_stats[j][actual_y_key]); y_vals[j] = Float64(method_stats[j][actual_y_key][m_ij]);
-                else y_vals[j] = NaN; end
-            end
-            # Update the specific inner observable for this method's plot data
-            x_plot_data_methods[][i][] = x_vals 
-            y_plot_data_methods[][i][] = y_vals 
-        end
-
-        ax.xlabel = x_key; ax.ylabel = y_key
-        try; autolimits!(ax); catch e; println("Warning: autolimits! failed - $e"); end
-        
-    end # --- End Lift Block 2 ---
-
-
-    # --- Lift Block 3: Plot Management ---
-    # Triggered when the number of active methods changes.
-    lift(method_number; ignore_equal_values=true) do active_num
-        println("Lift 3: Active method count changed to $active_num. Redrawing plot structure...")
-        
-        empty!(ax) # Clear previous plot objects from axis
-        # Delete old legend from figure
-        for c in contents(plot_fig[1,2]) if isa(c, Legend); delete!(c); end; end
-        
-        active_methods = methods_obs[] 
-
-        if active_num == 0; text!(ax, "No methods selected", position=(0.5, 0.5), align=(:center, :center), space=:relative); return; end
-
-        # Ensure plot data observables match active method count
-        if length(x_plot_data_methods[]) != active_num || length(y_plot_data_methods[]) != active_num
-            @warn "Lift 3: Plot data observable length mismatch. Plot may be incomplete."
-            # Attempt to use the minimum length to avoid index errors
-            num_to_plot = min(active_num, length(x_plot_data_methods[]), length(y_plot_data_methods[]))
-        else
-            num_to_plot = active_num
-        end
-
-        plotted_objects = [] # Store one plot object per method for legend
-        # Create plot objects for each active method
-        for i = 1:num_to_plot 
-            plotLabel = active_methods[i] 
-            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
-            marker = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
-            
-            # Plot using the specific inner observable for this method
-            # Makie handles updates automatically when the inner observable changes
-            l = lines!(ax, x_plot_data_methods[][i], y_plot_data_methods[][i]; 
-                       color=color, linewidth=local_ui_dict["linewidth"], label=plotLabel)
-            scatter!(ax, x_plot_data_methods[][i], y_plot_data_methods[][i]; 
-                         color=color, markersize=local_ui_dict["markersize"], marker=marker, label=plotLabel)
-            push!(plotted_objects, l) # Add line object to list for legend
-        end
-
-        # Add Legend (outside axis)
-        if !isempty(plotted_objects)
-             try
-                 if isempty(contents(plot_fig[1, 2])) # Check target cell
-                      # Provide plot objects and corresponding labels
-                      Legend(plot_fig[1, 2], plotted_objects, active_methods[1:length(plotted_objects)], 
-                             "Methods", tellheight=false, 
-                             titlesize=local_ui_dict["font_size"]-2, labelsize=local_ui_dict["label_size"]-2)
-                      colsize!(plot_fig.layout, 2, Auto()) # Let legend take its space
-                 end
-             catch e; println("Error adding Legend: $e"); end
-        end
-        
-        # Ensure limits are recalculated after adding new plot objects
-        try; autolimits!(ax); catch e; println("Warning: autolimits! failed after redraw - $e"); end
-    end # --- End Lift Block 3 ---
-
-    # --- Display ---
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
-    return plot_fig, control_fig
-
-end
-
-"""
     showConvergencePlot(sim_config::SimulationConfig,
                         key::String,
                         param_values::Union{AbstractVector, AbstractRange},
@@ -2810,24 +2376,19 @@ function showConvergencePlot(
         method_params_collection_obs[method_name] = inner_obs_dict
     end
 
-    # --- NEW: Notification Observable ---
-    parameter_update_notifier = Observable(0)
-
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig = createControls(
+    control_fig, update_notifier = createControls(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names,
-        parameter_update_notifier
+        all_method_names
     )
     # -----------------------------------------
 
@@ -2883,7 +2444,8 @@ function showConvergencePlot(
     y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
 
     # --- Lift 1: Data Loading / Simulation & Initial Snapshot ---
-    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
+    lift(update_notifier; ignore_equal_values=true) do _
+        active_num = length(methods_obs[])
         if active_num == 0
             raw_data_store[] = []; y_plot_data_methods[] = []
             is_y_stat_time_dependent[] = true; tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = N/A"
@@ -3068,7 +2630,8 @@ function showConvergencePlot(
 
 
     # --- Lift 3: Plot Management (Uses constant X-data) ---
-    lift(method_number; ignore_equal_values=true) do active_num
+    lift(update_notifier; ignore_equal_values=true) do _ 
+        active_num = length(methods_obs[])
         # Handles adding/removing plot objects when active methods change
         empty!(ax)
         for c in contents(plot_fig.layout); if isa(c, Legend); delete!(c); end; end # Clear potential legend
@@ -3247,18 +2810,16 @@ function showConvergencePlot(
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
-    default_method = sim_config.default_method in all_method_names ? sim_config.default_method : (isempty(all_method_names) ? "" : all_method_names[1])
-    methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig = createControls(
+    control_fig, update_notifier = createControls(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names,
-        parameter_update_notifier
+        all_method_names
     )
     # -----------------------------------------
 
@@ -3336,7 +2897,8 @@ function showConvergencePlot(
     # --- End Helper Function ---
 
     # --- Lift 1: Data Loading / Simulation & Initial Snapshot ---
-    lift(method_number, parameter_update_notifier; ignore_equal_values=true) do active_num, _...
+    lift(update_notifier; ignore_equal_values=true) do _ 
+        active_num = length(methods_obs[])
         if active_num == 0 # Handle no active methods
             raw_data_store[] = []; x_plot_data_methods[] = []; y_plot_data_methods[] = []
             is_x_stat_time_dependent[] = true; is_y_stat_time_dependent[] = true; is_any_stat_time_dependent[] = true;
@@ -3520,7 +3082,8 @@ function showConvergencePlot(
 
 
     # --- Lift 3: Plot Management (Plots X vs Y) ---
-    lift(method_number; ignore_equal_values=true) do active_num
+    lift(update_notifier; ignore_equal_values=true) do _ 
+        active_num = length(methods_obs[])
         # (Same as previous version - redraws plots using x_plot_data_methods and y_plot_data_methods)
         empty!(ax)
         for c in contents(plot_fig.layout); if isa(c, Legend); delete!(c); end; end
