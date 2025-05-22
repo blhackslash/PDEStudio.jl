@@ -7,7 +7,7 @@ using CSV, DataFrames
 using JLD2, FileIO
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
-       getAllSimData, changeStats, set_save_path!, get_save_path
+       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -327,5 +327,144 @@ function changeStats(statsName::String, f::Function, simulation::String)
         end
     end    
 end
+
+"""
+    string_to_typed_tuple(s::String)::Union{Tuple, Nothing}
+
+Attempts to parse a string representation of a tuple containing elements
+that can be interpreted as Bool, Int, or Float64 into a Julia `Tuple`.
+The types of the elements in the output tuple will reflect the parsed values
+(e.g., could be Tuple{Float64, Bool, Int64}).
+
+The string should be in a format like "(1.0, true, -3)".
+It handles:
+- Leading/trailing whitespace around the string itself.
+- Whitespace around numbers, booleans, and commas within the parentheses.
+- Empty tuple "()".
+- Single-element tuples like "(1.23)", "(true,)", or "(1, )".
+- Multiple elements like "(1.0, false, 2)".
+
+Returns the parsed tuple (e.g., `(1.0, true, -3)`) if successful,
+or `nothing` if the string is not in the expected format or if any
+element cannot be parsed as Bool, Int, or Float64.
+
+# Examples
+```jldoctest
+julia> string_to_typed_tuple("(1.0, true, -3)")
+(1.0, true, -3)
+
+julia> string_to_typed_tuple("( 42,  false )")
+(42, false)
+
+julia> string_to_typed_tuple("(3.14,)")
+(3.14,)
+
+julia> string_to_typed_tuple("()")
+()
+
+julia> string_to_typed_tuple("not a tuple") # returns nothing
+
+julia> string_to_typed_tuple("(1, abc, 3)") # returns nothing
+
+julia> string_to_typed_tuple("(1.0, , 2.0)") # returns nothing
+```
+"""
+function StringToTuple(s::String)::Union{Tuple, Nothing}
+    # Strip leading/trailing whitespace from the whole string
+    s_stripped = strip(s)
+
+    # Check for enclosing parentheses
+    if !startswith(s_stripped, "(") || !endswith(s_stripped, ")")
+        return nothing
+    end
+
+    # Extract content within parentheses
+    if length(s_stripped) < 2 # Should only be true for malformed like "("
+        return nothing
+    end
+    content = s_stripped[begin+1:end-1]
+    
+    # Handle empty tuple case like "()" -> content is ""
+    if isempty(strip(content))
+        return () # Return an empty tuple of type Tuple{}
+    end
+
+    # Split by comma
+    parts_str = split(content, ',')
+    
+    # Handle potential empty string from a trailing comma before the closing parenthesis
+    # e.g., content "1.0," or "1.0, 2.0,"
+    # A robust way to check for trailing comma: if the original content (after stripping outer parens)
+    # ended with a comma, and the last part after split is empty.
+    if endswith(strip(content), ',') && !isempty(parts_str) && isempty(strip(last(parts_str)))
+        # Remove the last empty string part that resulted from a trailing comma
+        pop!(parts_str) 
+    end
+    
+    # If parts_str is now empty but content was not (e.g., content was just "," or ",,"), it's invalid.
+    if isempty(parts_str) && !isempty(content)
+         return nothing
+    end
+
+    elements = Any[] # Store parsed elements of potentially different types
+    for part_s_individual in parts_str
+        stripped_elem_str = strip(part_s_individual)
+        
+        # If a part (after stripping) is empty, it's an invalid format like "(1.0,,2.0)"
+        if isempty(stripped_elem_str)
+            return nothing 
+        end
+        
+        parsed_value::Any = nothing
+        success = false
+
+        # Try parsing as Bool
+        if stripped_elem_str == "true"
+            parsed_value = true
+            success = true
+        elseif stripped_elem_str == "false"
+            parsed_value = false
+            success = true
+        end
+
+        # If not Bool, try parsing as Int
+        if !success
+            try
+                parsed_value = parse(Int, stripped_elem_str)
+                success = true
+            catch e
+                if !(e isa ArgumentError || e isa OverflowError) # OverflowError for too large Ints
+                    rethrow(e) # Other unexpected error
+                end
+                # Not an Int, or too large for Int, proceed to try Float64
+            end
+        end
+
+        # If not Bool or Int, try parsing as Float64
+        if !success
+            try
+                parsed_value = parse(Float64, stripped_elem_str)
+                success = true
+            catch e
+                if !(e isa ArgumentError)
+                    rethrow(e) # Other unexpected error
+                end
+                # Not a Float64 either
+            end
+        end
+
+        if success
+            push!(elements, parsed_value)
+        else
+            # Element could not be parsed as Bool, Int, or Float64
+            return nothing 
+        end
+    end
+
+    return Tuple(elements)
+end
+
+
+
 
 end

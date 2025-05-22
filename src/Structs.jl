@@ -29,24 +29,24 @@ end
 
 mutable struct SimData1D <: AbstractSimData
     x::Vector{Vector{Float64}}
-    u::Vector{Vector{Float64}}
+    u::Vector{T} where T <:Union{Vector{Float64}, Matrix{Float64}}
     t::Vector{Float64}
     params::ParamDictType
     stats::ParamDictType
     
-    function SimData1D(x::Vector{Vector{Float64}}, u::Vector{Vector{Float64}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
+    function SimData1D(x::Vector{Vector{Float64}}, u::Vector{T}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType) where T <: Union{Vector{Float64}, Matrix{Float64}}
         new(x, u, t, params, stats)
     end
 end
 
 mutable struct SimData2D <: AbstractSimData
     x::Vector{Vector{NTuple{2,Float64}}}
-    u::Vector{Vector{Float64}}
+    u::Vector{T} where T <:Union{Vector{Float64}, Matrix{Float64}}
     t::Vector{Float64}
     params::ParamDictType
     stats::ParamDictType
 
-    function SimData2D(x::Vector{Vector{NTuple{2,Float64}}}, u::Vector{Vector{Float64}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
+    function SimData2D(x::Vector{Vector{NTuple{2,Float64}}}, u::Vector{T}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType) where T <: Union{Vector{Float64}, Matrix{Float64}}
         new(x, u, t, params, stats)
     end
 end
@@ -62,11 +62,11 @@ function createSimData(x, u, t, params, stats)
     error("Wrong input types or requested dimension not implemented yet!")
 end
 
-function createSimData(x::Vector{Vector{Float64}}, u::Vector{Vector{Float64}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
+function createSimData(x::Vector{Vector{Float64}}, u::Vector{T}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType) where T <: Union{Vector{Float64}, Matrix{Float64}}
     SimData1D(x, u, t, params, stats)
 end
 
-function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{Vector{Float64}}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType)
+function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{T}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType) where T <: Union{Vector{Float64}, Matrix{Float64}}
     SimData2D(x, u, t, params, stats)
 end
 

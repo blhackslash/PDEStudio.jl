@@ -11,6 +11,7 @@ export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConverge
 
 
 ui_dict = Dict(
+    "system_dimension" => 1,
     "dashed_lines" => false,
     "show_scatter" => false,
     "show_lines" => true,
@@ -70,7 +71,12 @@ function assemble_params_for_run(
     # Start with current values of shared parameters
     current_params = ParamDict()
     for (key, obs) in shared_params_obs
-        current_params[key] = obs[] # Dereference observable
+        val = to_value(obs)
+        if isa(val, Tuple) && length(val) == 2 && val[1] == :const
+            current_params[key] = to_value(val[2])
+        else
+            current_params[key] = val
+        end
     end
 
     # Get the specific observable dictionary for the requested method
@@ -78,7 +84,12 @@ function assemble_params_for_run(
         method_specific_obs_dict = method_params_collection_obs[method_name]
         # Merge/override with current values of method-specific parameters
         for (key, obs) in method_specific_obs_dict
-             current_params[key] = obs[] # Dereference; overrides shared if key exists
+            val = to_value(obs)
+            if isa(val, Tuple) && length(val) == 2 && val[1] == :const
+                current_params[key] = to_value(val[2])
+            else
+                current_params[key] = val
+            end
         end
     else
         # This might be expected if a method uses only shared params
@@ -102,13 +113,6 @@ function updateUI(ui_dict::Dict, ui_input::Dict)
         end
     end
 end
-
-# Add this helper function inside MakiePlotting module or where createControls lives
-function is_const_param(obs::Observable)
-    val = obs[] # Get the value inside the observable
-    return 
-end
-
 # Functions for Makie Controls
 
 
@@ -117,44 +121,51 @@ end
 
 # --- Helper 1: For Shared Params (each param is its own nested 2-col grid) ---
 function add_param_as_nested_grid!(parent_cell_for_item, key_name::String, param_obs::Observable, 
-                                    is_toggle::Bool, label_fontsize::Int, p_internal_item_colgap::Int)
+                                    is_toggle::Bool, is_fixed_const::Bool, label_fontsize::Int, p_internal_item_colgap::Int)
     
     item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false) 
     colgap!(item_layout, p_internal_item_colgap) 
 
-    val_check = param_obs[]
-    is_constant_param = isa(val_check, Tuple) && length(val_check) == 2 && val_check[1] == :const
-    actual_value_for_display = is_constant_param ? val_check[2] : val_check
+    val = param_obs[]
+    is_regular_tuple = isa(val, Tuple)
     
     Label(item_layout[1,1], 
-            (is_constant_param ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
+            (is_fixed_const ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
             halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
 
-    if is_constant_param
-        Label(item_layout[1,2], string(actual_value_for_display), halign=:left, fontsize=label_fontsize)
+    if is_fixed_const
+        Label(item_layout[1,2], string(val), halign=:left, fontsize=label_fontsize)
     elseif is_toggle
-        current_bool_val = isa(actual_value_for_display, Bool) ? actual_value_for_display : false
+        current_bool_val = isa(val, Bool) ? val : false
         tgl = Toggle(item_layout[1,2], active = current_bool_val)
         on(tgl.active) do active_val
             if param_obs[] != active_val; param_obs[] = active_val; end
         end
+    elseif is_regular_tuple
+        validator_type = typeof(val)
+        validator = s -> isa(StringToTuple(s),validator_type)
+        tb = Textbox(item_layout[1,2], placeholder = string(val), 
+                    validator = validator, width = Auto(), reset_on_defocus=true)
+        on(tb.stored_string) do s
+            param_obs[] = StringToTuple(s)
+        end
     else # Textbox
-        validator_type = if isa(actual_value_for_display, AbstractFloat) Float64
-                            elseif isa(actual_value_for_display, Integer) Int
-                            elseif isa(actual_value_for_display, String) s -> true # Function for String
+        validator_type = if isa(val, AbstractFloat) Float64
+                            elseif isa(val, Integer) Int
+                            elseif isa(val, String) s -> true # Function for String
                             else (s -> true) # Fallback
                             end
-        tb = Textbox(item_layout[1,2], placeholder = string(actual_value_for_display), 
+        tb = Textbox(item_layout[1,2], placeholder = string(val), 
                         validator = validator_type, width = Auto(), reset_on_defocus=true)
         on(tb.stored_string) do s
-            target_type = typeof(actual_value_for_display)
+            target_type = typeof(val)
             try
                 parsed_val = if target_type == String; s
                                 elseif validator_type == Float64 || validator_type == Int; parse(target_type,s)
                                 else s end # If generic validator, treat as string or handle based on target_type
-                if !is_constant_param && param_obs[] != parsed_val; param_obs[] = parsed_val; end
+                if !is_fixed_const && param_obs[] != parsed_val; param_obs[] = parsed_val; end
             catch e
-                current_display_val = is_constant_param ? param_obs[][2] : param_obs[]
+                current_display_val = is_fixed_const ? param_obs[][2] : param_obs[]
                 tb.stored_string = string(current_display_val) 
             end
         end
@@ -210,15 +221,20 @@ function populate_parameter_figure!(
     for key in sorted_keys
         val_check = params_obs_dict[key][]
         is_fixed_const = isa(val_check, Tuple) && length(val_check) == 2 && val_check[1] == :const
-        actual_val_for_type_check = is_fixed_const ? val_check[2] : val_check
-        is_bool_toggle = isa(actual_val_for_type_check, Bool) && !is_fixed_const
+        actual_val = is_fixed_const ? val_check[2] : val_check
+        is_bool_toggle = isa(actual_val, Bool) && !is_fixed_const
 
+        # Remove constant flag:
+        if is_fixed_const
+            params_obs_dict[key] = Observable(actual_val)
+        end
         # Assuming add_param_as_nested_grid! is your working helper from before
         add_param_as_nested_grid!(
             params_content_layout[current_row_in_block, current_col_in_block], 
             key, 
             params_obs_dict[key], 
             is_bool_toggle, 
+            is_fixed_const,
             param_label_fontsize, 
             internal_item_colgap
         )
@@ -763,7 +779,7 @@ function show1DSolutionFig(sim_config::SimulationConfig)
          updateUI(local_ui_dict, sim_config.ui_options) # Apply specific overrides
     end
     plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
-    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = "Solution Value (u)") # Title set dynamically
+
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
@@ -799,6 +815,24 @@ function show1DSolutionFig(sim_config::SimulationConfig)
         all_method_names
     )
     # -----------------------------------------
+
+    sys_dim = local_ui_dict["system_dimension"]
+    sel_comp_obs = Observable(1)
+    axis_label = lift(update_notifier) do _; "Solution Value u$(sel_comp_obs[])" end
+
+    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = axis_label) # Title set dynamically
+
+    compLabel_text = lift(sel_comp_obs) do sel_comp
+        sys_dim > 1 ? "Component: $sel_comp / $sys_dim" : "Component: 1 / 1 (Scalar)"
+    end    
+    Label(control_fig[end+1,:], compLabel_text)
+    if sys_dim > 1
+        component_slider = Slider(control_fig[end+1,:], range = 1:sys_dim, startvalue = 1)
+        on(component_slider.value) do val
+            sel_comp_obs[] = round(Int, val)
+        end
+    end
+
 
     # --- NEW Max Tracking Control ---
     # Add Checkbox below the animation/save controls
@@ -920,7 +954,12 @@ function show1DSolutionFig(sim_config::SimulationConfig)
             end
 
             xData[][i][] = sim_data.x
-            uData[][i][] = sim_data.u
+            if sys_dim == 1
+                @assert isa(sim_data.u, Vector{Vector{Float64}}) "System data input found for scalar plotting. Ensure that system_dimension is set correctly!"
+                uData[][i][] = sim_data.u
+            else
+                uData[][i][] = [us[:,sel_comp_obs[]] for us = sim_data.u]
+            end
             tData[][i][] = sim_data.t
             union!(all_time_points, sim_data.t)
 
@@ -1144,7 +1183,7 @@ function show1DSolutionFig(sim_config::SimulationConfig)
                  colsize!(plot_fig.layout, 2, Auto()) # Adjust column width
              catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end
         end
-        # Use fixed global limits set in Lift 1 - DO NOT call autolimits!
+
     end # --- End Lift Block 3 ---
 
 
@@ -1304,7 +1343,7 @@ function showDynamicDependence(sim_config::SimulationConfig)
     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createControls(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -1560,294 +1599,6 @@ function showDynamicDependence(sim_config::SimulationConfig)
 end
 
 """
-    show2DSolutionFig(sim_config::SimulationConfig)
-
-Creates an interactive Makie plot for `SimData2D`.
-
-Features:
-- Reuses Axis3 object for stable interactivity.
-- Auto-scaling XY limits based on current time step.
-- Globally fixed Z limits and Color range based on full dataset.
-- Toggle between 2D scatter plot and 3D surface (meshscatter) plot.
-- Slider to select colormap dynamically.
-- Standard controls for methods, parameters, and time.
-"""
-function show2DSolutionFig_old(sim_config::SimulationConfig)
-    # --- Basic Setup & UI ---
-    local_ui_dict = deepcopy(ui_dict2D)
-    updateUI(local_ui_dict, sim_config.ui_options)
-    plot_fig = Figure(size = local_ui_dict["figsize"])
-
-    # --- Create Axis3 ONCE ---
-    # Always use Axis3; configure appearance dynamically for 2D/3D views.
-    ax = Axis3(plot_fig[1, 1], xlabel="x", ylabel="y", zlabel="Solution (u)")
-
-    # --- Parameter & Method Observables ---
-    params_all = mergeParams(sim_config.shared_params, sim_config.methods_dict)
-    params_obs = Dict{String,Observable}()
-    for (key, val) in params_all; params_obs[key] = Observable(val); end
-    methods = collect(keys(sim_config.methods_dict))
-    methods_obs = Observable([sim_config.default_method])
-    method_number = lift(length, methods_obs)
-
-    # --- Control Figure & Widgets ---
-    control_fig = createControls(plot_fig, params_obs, methods_obs, methods)
-
-    # Time Slider
-    tLabel_text = Observable("t = 0.0")
-    # Place time label above its slider for better layout
-    Label(control_fig[end+1, :], tLabel_text, tellwidth=false) 
-    tSlider = Slider(control_fig[end+1, :], range = 0.0:1.0, startvalue = 0.0)
-
-
-    # Plot Type Toggle
-    plot_toggle_layout = control_fig[end+1, :] = GridLayout()
-    plot_as_surface_obs = Observable(local_ui_dict["plot_as_surface"])
-    Label(plot_toggle_layout[1, 1], "Plot as Surface (3D)")
-    toggle_plot_type = Toggle(plot_toggle_layout[1, 2], active = plot_as_surface_obs[])
-    on(toggle_plot_type.active, update=true) do active_state
-        plot_as_surface_obs[] = active_state
-    end
-
-    # Colormap Slider
-    cmap_layout = control_fig[end+1, :] = GridLayout()
-    available_cmaps = local_ui_dict["colormaps"]
-    default_cmap_idx = findfirst(isequal(local_ui_dict["colormap"]), available_cmaps)
-    if isnothing(default_cmap_idx); default_cmap_idx = 1; end # Fallback
-    selected_colormap_obs = Observable(available_cmaps[default_cmap_idx])
-
-    cmap_slider = Slider(cmap_layout[1, 1],
-                         range = 1:length(available_cmaps),
-                         startvalue = default_cmap_idx)
-    cmap_label = Label(cmap_layout[1, 2], # Place label next to slider
-                       lift(idx -> "$(available_cmaps[idx])", cmap_slider.value),
-                       width=Auto()) # Adjust width
-    on(cmap_slider.value, update=true) do idx
-        selected_colormap_obs[] = available_cmaps[idx] # Update observable on slider change
-    end
-
-    # --- Data Structures ---
-    xData = Observable(Vector{Observable{Vector{Vector{NTuple{2, Float64}}}}}(undef, 0))
-    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0))
-    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    xs = Observable(Vector{Observable{Vector{NTuple{2, Float64}}}}(undef, 0)) # Snapshot coords
-    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))       # Snapshot values
-    global_zlims_and_colorrange = Observable((0.0, 1.0)) # Global U range (min, max)
-
-    # --- Lift Block 1: Data Loading & Global U Range Calculation ---
-    # Triggered by method selection or parameter changes.
-    # Calculates the global range of U across all time/methods.
-    # Loads full data, initializes snapshots, updates time slider range.
-    lift(method_number, values(params_obs)...) do active_num, _...
-        println("Lift 1: Updating data & calculating global U range...")
-        xData[] = Vector{Observable{Vector{Vector{NTuple{2, Float64}}}}}(undef, active_num)
-        uData[] = Vector{Observable{Vector{Vector{Float64}}}}(undef, active_num)
-        tData[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        xs[] = Vector{Observable{Vector{NTuple{2, Float64}}}}(undef, active_num)
-        us[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
-        all_time_points = Set{Float64}()
-        g_umin, g_umax = Inf, -Inf
-        found_any_u_data = false
-
-        for i = 1:active_num
-            method = methods_obs[][i]
-            current_method_params = Dict{String, Any}()
-            for (p_key, p_obs) in params_obs
-                 if haskey(sim_config.shared_params, p_key) || haskey(sim_config.methods_dict[method], p_key)
-                    current_method_params[p_key] = p_obs[]
-                 end
-            end
-            params = merge(current_method_params, Dict("method" => method))
-
-            sim_data::SimData2D = sim_config.sim_function(params)
-            xData[][i] = Observable(sim_data.x); uData[][i] = Observable(sim_data.u)
-            tData[][i] = Observable(sim_data.t); union!(all_time_points, sim_data.t)
-
-            # Update Global U Limits from full sim_data
-            for k in eachindex(sim_data.t)
-                u_k = sim_data.u[k]
-                if !isempty(u_k)
-                    found_any_u_data = true
-                    umin_k, umax_k = extrema(u_k)
-                    g_umin = min(g_umin, umin_k); g_umax = max(g_umax, umax_k)
-                end
-            end
-            # Initialize snapshot based on current slider time
-            current_t = tSlider.value[]
-            closest_t_index = isempty(sim_data.t) ? 0 : findmin(a -> abs(a-current_t), sim_data.t)[2]
-            if closest_t_index > 0 && closest_t_index <= length(sim_data.x) # Check index validity
-                 xs[][i] = Observable(sim_data.x[closest_t_index])
-                 us[][i] = Observable(sim_data.u[closest_t_index])
-            else
-                 xs[][i] = Observable(NTuple{2, Float64}[]); us[][i] = Observable(Float64[])
-            end
-        end
-
-        # Finalize and Store Global Z Limits / Color Range
-        if found_any_u_data
-            padding_factor = local_ui_dict["axis_limit_padding"]
-            z_range = g_umax - g_umin
-            z_pad = z_range * padding_factor / 2.0
-            z_pad = (z_pad <= 1e-6 && z_range <= 1e-6) ? 0.1 : z_pad # Ensure some padding if range is zero or tiny
-            final_zlims = (g_umin - z_pad, g_umax + z_pad)
-            global_zlims_and_colorrange[] = final_zlims
-        else
-            global_zlims_and_colorrange[] = (0.0, 1.0) # Default range
-        end
-        println("Lift 1: Global Z/Color range set to $(global_zlims_and_colorrange[])")
-
-        # Update Time Slider Range
-        if !isempty(all_time_points)
-            sorted_times = sort(collect(all_time_points))
-            time_step = length(sorted_times)>1 ? (sorted_times[end]-sorted_times[1]) / (length(sorted_times)-1) : 0.0
-            t_range = length(sorted_times)>1 ? range(sorted_times[1], stop=sorted_times[end], step=max(eps(Float64), time_step)) : range(sorted_times[1], stop=sorted_times[1], length=1)
-            if time_step == 0 && length(sorted_times) > 1 # Fallback if step is zero
-                 t_range = range(sorted_times[1], stop=sorted_times[end], length=length(sorted_times))
-            end
-            tSlider.range = t_range
-            # Adjust slider position smoothly, update label
-            set_close_to!(tSlider, clamp(tSlider.value[], first(t_range), last(t_range)))
-            tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-        else
-            tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = 0.0"
-        end
-        # Note: No explicit redraw call here; Lift 3 will react to parameter/method changes.
-    end # --- End Lift Block 1 ---
-
-
-    # --- Lift Block 2: Time Slider Updates ---
-    # Triggered only by time slider changes.
-    # Updates snapshot data, title, and applies auto XY limits + fixed Z limits.
-    lift(tSlider.value) do t
-        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
-        if isempty(xs[]) || isempty(tData[]) || length(xs[]) != length(tData[]); return; end
-
-        # Update snapshot data for each active method
-        for i = eachindex(xs[])
-             if i > length(tData[]) || i > length(xData[]) || i > length(uData[]); continue; end
-             current_times = tData[][i][]; if isempty(current_times); continue; end
-             (_, m) = findmin(a -> abs(a - t), current_times)
-             if m > 0 && m <= length(xData[][i][])
-                  xs[][i][] = xData[][i][][m]; us[][i][] = uData[][i][][m]
-             else; xs[][i][] = NTuple{2, Float64}[]; us[][i][] = Float64[]; end
-        end
-
-        # Adjust XY (& Z temporarily) limits, then fix Z limits
-        try; autolimits!(ax); catch e; println("Warning: autolimits! failed - $e"); end
-        try; zlims!(ax, global_zlims_and_colorrange[]...); catch e; println("Warning: Failed to apply fixed zlims in Lift 2! - $e"); end
-
-    end # --- End Lift Block 2 ---
-
-
-    # --- Lift Block 3: Plot Redraw & Configuration ---
-    # Triggered by method, parameter, plot type, or colormap changes.
-    # Clears axis, deletes old elements, configures axis view, fixes Z limits, plots data.
-    lift(method_number, plot_as_surface_obs, selected_colormap_obs,
-         global_zlims_and_colorrange, values(params_obs)...; # Add global limits as dependency
-         ignore_equal_values=true) do active_num, plot_surface, current_cmap, current_zlims_val, _...
-
-        println("Lift 3: Redrawing plot...")
-
-        # Clear axis content & Delete old Legend/Colorbar
-        empty!(ax)
-        needs_colorbar_update = false
-        for (row, col) in [(1, 2), (1, 3)]
-            content_list = contents(plot_fig[row, col]) # Don't search recursively
-            if !isempty(content_list)
-                # Iterate deletion candidates. Only delete direct children.
-                to_delete = filter(x -> isa(x, Union{Legend, Colorbar}), content_list)
-                for elem in to_delete
-                    try
-                        target_pos = (1, 2)
-                        existing_content = contents(plot_fig[target_pos...]) # Get content at specific position
-                        for item in existing_content
-                            if isa(item, Legend)
-                                println("Deleting existing Legend at ", target_pos) # Debug print
-                                delete!(item)
-                            end
-                        end
-                    catch e
-                        println("Warning: Failed delete element $(typeof(elem)) - $e")
-                    end
-                end
-            end
-        end
-
-        # Configure Axis Appearance (title is set by Lift 2)
-        if plot_surface; ax.xlabel="x"; ax.ylabel="y"; ax.zlabel="Solution (u)"; ax.aspect=(1,1,0.5); ax.perspectiveness=0.5; ax.xgridvisible=true; ax.ygridvisible=true; ax.zgridvisible=true; ax.xticklabelsvisible=true; ax.yticklabelsvisible=true; ax.zticklabelsvisible=true; ax.zlabelvisible=true
-        else; ax.xlabel="x"; ax.ylabel="y"; ax.zlabel=""; ax.aspect=(1,1,1); ax.xgridvisible=true; ax.ygridvisible=true; ax.zgridvisible=false; ax.xticklabelsvisible=true; ax.yticklabelsvisible=true; ax.zticklabelsvisible=false; ax.zlabelvisible=false; ax.elevation=pi/2; ax.azimuth=0; ax.perspectiveness=0.0; end
-
-        # Fix Z Limits using the current global value
-        try; zlims!(ax, current_zlims_val...); catch e; println("Warning: Failed apply fixed zlims in Lift 3! - $e"); end
-
-        # Handle no active methods
-        if active_num == 0; text!(ax, "No methods selected", position=Point3f(0.5,0.5,0), align=(:center,:center), space=:relative, fontsize=local_ui_dict["font_size"]); return; end
-
-        # Use Global Color Range
-        color_range = current_zlims_val
-
-        # Plot data
-        plotted_objects = []
-        for i = 1:active_num
-            if i > length(xs[]) || i > length(us[]) continue end
-            method = methods_obs[][i]; plotLabel = method
-            x_snapshot_obs = xs[][i]; u_snapshot_obs = us[][i]
-            if isempty(x_snapshot_obs[]) || isempty(u_snapshot_obs[]) continue end
-
-            # Use lift for points; avoids recalculating points unless snapshot changes
-            points_xyz = lift((x, u) -> [Point3f(x[j][1],x[j][2],u[j]) for j in 1:min(length(x),length(u))], x_snapshot_obs, u_snapshot_obs)
-            points_xy0 = lift(x -> [Point3f(pt[1], pt[2], 0.0f0) for pt in x], x_snapshot_obs)
-            color_values = u_snapshot_obs # Color directly by solution value observable
-
-            plt_obj = nothing
-            marker_size_3d = local_ui_dict["markersize_3d"] # Use consistent var name
-            markersize_2d = local_ui_dict["markersize_2d"]
-            if plot_surface
-                plt_obj = meshscatter!(ax, points_xyz; markersize=marker_size_3d,
-                                       color=color_values, colormap=current_cmap,
-                                       colorrange=color_range, label=plotLabel)
-            else
-                plt_obj = scatter!(ax, points_xy0; markersize=markersize_2d,
-                                   color=color_values, colormap=current_cmap,
-                                   colorrange=color_range, label=plotLabel)
-            end
-            push!(plotted_objects, plt_obj)
-        end
-
-        # Add Legend/Colorbar
-        if !isempty(plotted_objects)
-            try
-                # Add legend if cell is empty
-                if isempty(contents(plot_fig[1, 2]))
-                    Legend(plot_fig[1, 1], ax, local_ui_dict["legend"], merge=true,
-                           tellheight=false, titlesize=local_ui_dict["font_size"],
-                           labelsize=local_ui_dict["label_size"])
-                end
-                # Add colorbar if cell is empty or needs update
-                if isempty(contents(plot_fig[1, 3])) || needs_colorbar_update
-                    Colorbar(plot_fig[1, 3], limits=color_range, colormap=current_cmap, # Use current_cmap
-                             label="Solution (u)", width=25,
-                             ticklabelsize=local_ui_dict["ticklabel_size"])
-                end
-                # Adjust layout (can be outside try block if needed)
-                #colsize!(plot_fig.layout, 1, AxisAspect(1)) # Make plot area square
-                colsize!(plot_fig.layout, 2, Auto())
-                colsize!(plot_fig.layout, 3, Auto())
-            catch e
-                println("Error adding Legend/Colorbar: $e")
-            end
-        end
-
-    end # --- End Lift Block 3 ---
-
-    # --- Display Figures ---
-    GLMakie.activate!()
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
-    #return plot_fig, control_fig # Return figs for potential further use
-end
-
-"""
     show2DSolutionFig(sim_config::SimulationConfig) # Renamed internally for clarity if needed
 
 Creates an interactive Makie plot for `SimData2D` with animation playback
@@ -1899,7 +1650,7 @@ function show2DSolutionFig(sim_config::SimulationConfig) # Keep original name
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createControls(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -2383,7 +2134,7 @@ function showConvergencePlot(
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createControls(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -2814,7 +2565,7 @@ function showConvergencePlot(
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createControls(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
