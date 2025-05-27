@@ -634,9 +634,10 @@ function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{V
     toLayout = cb_layout[end,1:div(length(methods),5)+1] = GridLayout() # 5 hard coded atm can be added to ui_dict
 
     for (i,method) = enumerate(methods)
-        j = div(i-1,5) +1
+        j = div(i-1,5) + 1
         Label(toLayout[mod1(i,5),j*2-1], method)
-        if method == methods_obs[][1]
+        init_methods = methods_obs[]
+        if method in init_methods
             tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = true)
         else
             tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = false)

@@ -59,6 +59,7 @@ function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
 end
 
 function createSimData(x, u, t, params, stats)
+    println("Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t)))
     error("Wrong input types or requested dimension not implemented yet!")
 end
 
