@@ -5,9 +5,12 @@ using ..Structs
 using SHA
 using CSV, DataFrames
 using JLD2, FileIO
+using Base.Threads
+using GLMakie
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
-       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple
+       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, calculateConvergenceData,
+       assembleParams
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -465,6 +468,135 @@ function StringToTuple(s::String)::Union{Tuple, Nothing}
 end
 
 
+"""
+    assembleParams(shared_obs, method_obs_collection, method_name)
 
+Constructs a flat parameter dictionary for a simulation run by combining
+current shared parameter values and current method-specific parameter values.
+
+Method-specific parameters override shared parameters if keys conflict.
+"""
+function assembleParams(
+    shared_params_obs::Union{Dict{String, Observable},ParamDictType},
+    method_params_collection_obs::Union{Dict{String, Dict{String, Observable}},MethodDictType},
+    method_name::String
+    )::ParamDictType # Assuming ParamDictType = Dict{String, Any}
+
+    # Start with current values of shared parameters
+    current_params = ParamDict()
+    for (key, obs) in shared_params_obs
+        val = to_value(obs)
+        if isa(val, Tuple) && length(val) == 2 && val[1] == :const
+            current_params[key] = to_value(val[2])
+        else
+            current_params[key] = val
+        end
+    end
+
+    # Get the specific observable dictionary for the requested method
+    if haskey(method_params_collection_obs, method_name)
+        method_specific_obs_dict = method_params_collection_obs[method_name]
+        # Merge/override with current values of method-specific parameters
+        for (key, obs) in method_specific_obs_dict
+            val = to_value(obs)
+            if isa(val, Tuple) && length(val) == 2 && val[1] == :const
+                current_params[key] = to_value(val[2])
+            else
+                current_params[key] = val
+            end
+        end
+    else
+        # This might be expected if a method uses only shared params
+        @warn "No specific parameters found for method '$method_name' in observable collection."
+    end
+
+    # Add method name itself (optional, but often useful for saving/loading)
+    #current_params["method"] = method_name
+
+    return current_params
+end
+"""
+    calculateConvergenceData(sim_config::SimulationConfig,
+                             key_varied::String,
+                             param_values_for_key::Union{AbstractVector, AbstractRange};
+                             force_int_param::Bool = false)
+
+Runs simulations for each method in `sim_config` across each value in
+`param_values_for_key` (for the `key_varied`) IN PARALLEL.
+Returns a dictionary of results.
+"""
+function calculateConvergenceData(
+    sim_config::SimulationConfig,
+    key_varied::String, # The parameter key being varied (e.g., "N", "CFL")
+    param_values_for_key::Union{AbstractVector, AbstractRange};
+    force_int_param::Bool = false,
+    force_overwrite::Bool = false
+)
+
+    all_method_labels = collect(keys(sim_config.methods_dict)) # These are the UI labels
+    num_methods = length(all_method_labels)
+    num_p_values = length(param_values_for_key)
+
+    # --- Prepare a list of all individual simulation tasks (parameter dictionaries) ---
+    # Each task is a fully specified ParamDictType ready for the sim_function
+    num_tasks = num_methods * num_p_values
+    tasks_params_list = Vector{ParamDictType}(undef, num_tasks)
+    # Store identifiers to map results back correctly
+    task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks) # (method_label, param_value_index)
+
+    task_idx = 0
+    for method_label in all_method_labels
+        # Get base parameters for this method label: shared + method_specific_overrides
+        # This replicates the logic from your IPlotPDESols.assemble_params_for_run
+        # but uses direct values instead of observables.
+        current_method_base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict,method_label)
+
+        for (j, p_val) in enumerate(param_values_for_key)
+            task_idx += 1
+            # Create a specific param dict for this run
+            params_for_this_run = copy(current_method_base_params)
+            # Set the varied parameter
+            params_for_this_run[key_varied] = force_int_param ? trunc(Int64, p_val) : p_val
+
+            # The sim_function (e.g., runBurgersSimulation_for_IPlotPDESols)
+            # will use component keys like "timestepper", "main_gradient" etc.
+            # already present in params_for_this_run from the merge above.
+
+            tasks_params_list[task_idx] = params_for_this_run
+            task_identifiers[task_idx] = (method_label, j)
+        end
+    end
+    # ------------------------------------------------------------------------
+
+    println("Starting parallel calculation of $(num_tasks) convergence simulations...")
+    # --- Parallel Execution ---
+    # WARNING: The effectiveness and correctness of RNG handling inside
+    # runSimulation_for_IPlotPDESols when called in parallel like this needs
+    # careful consideration. If it modifies a shared global RNG, there could be issues.
+    Threads.@threads for i in 1:num_tasks
+        params_for_this_run = tasks_params_list[i]
+        method_label_this_run, p_val_idx = task_identifiers[i]
+        p_val_actual = param_values_for_key[p_val_idx]
+
+        println("Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
+
+        # Call the sim_function (e.g., runBurgersSimulation_for_IPlotPDESols)
+        # It should return only the SimData object or nothing
+        if !doesSimDataExist(params_for_this_run) || force_overwrite
+            sim_data = sim_config.sim_function(params_for_this_run)
+        else
+            sim_data = "skipped"
+            @info "Skipped calculation because existing simulation data was found. If recalculation is wanted, enable force_overwrite!"
+        end
+        if isnothing(sim_data)
+            @warn "Simulation could not run correctly for the method $method_label_this_run and $key_varied = $p_val_actual"
+        elseif !(sim_data == "skipped")
+            saveSimData(sim_data; overwrite = force_overwrite)
+        end
+        println("Thread $(Threads.threadid()): Finished Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
+    end
+
+    println("Convergence data calculation complete.")
+end
 
 end
