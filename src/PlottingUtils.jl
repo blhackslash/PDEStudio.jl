@@ -1,3 +1,5 @@
+using CairoMakie
+
 function updateUI(ui_dict::Dict, ui_input::Dict)
     @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
     for (key, val) in ui_input
@@ -76,7 +78,7 @@ function add_param_as_nested_grid!(parent_cell_for_item, key_name::String, param
             if param_obs[] != active_val; param_obs[] = active_val; end
         end
     elseif is_regular_tuple
-        validator_type = typeof(val)
+        validator_type = Tuple #typeof(val)  # More restrictive alternative
         validator = s -> isa(StringToTuple(s),validator_type)
         tb = Textbox(item_layout[1,2], placeholder = string(val), 
                     validator = validator, width = Auto(), reset_on_defocus=true)
@@ -124,10 +126,11 @@ function populate_parameter_figure!(
     param_label_fontsize=14,
     header_fontsize=16,
     gap_size=10,
-    internal_item_colgap=4
+    internal_item_colgap=4,
+    fig_size = (500,500)
 )
     #empty!(target_fig.scene) # Clear all previous content and layouts
-    target_fig = Figure(size = (500,500))
+    target_fig = Figure(size = fig_size)
     main_layout = target_fig[1,1] = GridLayout(tellheight=false)
     rowgap!(main_layout, gap_size)
 
@@ -224,8 +227,10 @@ function createBaseControlsFigure(
     shared_params_obs::Dict{String, Observable}, # For save box data
     method_params_collection_obs::Dict{String, Dict{String, Observable}}, # For save box data
     methods_obs::Observable{Vector{String}},
-    all_method_names::Vector{String}
+    all_method_names::Vector{String},
+    ui_options_obs::Dict{String, Observable}
 )
+    GLMakie.activate!()
     base_controls_fig = Figure(size=(500, 600)) # Initial size, will grow as more controls are added
     #createParameterFigure(shared_params_obs, method_params_collection_obs, all_method_names)
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
@@ -247,12 +252,12 @@ function createBaseControlsFigure(
     current_row += 1
 
     # --- Parameter View Selection Menu ---
-    Label(fig_layout[current_row, 1], "View Parameters:", fontsize=16, halign=:left)
+    Label(fig_layout[current_row, 1], "View Parameters & Options:", fontsize=16, halign=:left)
     current_row += 1
     
-    menu_options = ["Shared Parameters"; all_method_names] # Menu items
+    menu_options = ["UI Options"; "Shared Parameters"; all_method_names] # Menu items
     # Ensure a default selection if possible, or handle no selection
-    default_selection = isempty(menu_options) ? nothing : menu_options[1]
+    default_selection = isempty(menu_options) ? nothing : menu_options[2]
 
     param_view_menu = Menu(fig_layout[current_row, 1], options = menu_options, default = default_selection)
     selected_param_key_obs = param_view_menu.selection # This is the Observable for the selected menu item
@@ -265,13 +270,13 @@ function createBaseControlsFigure(
     # Adapt createMethodCheckboxes to populate this layout
     createMethodCheckboxes(method_checkbox_layout, methods_obs, all_method_names) # (source: 46, 47, 48, 61)
     current_row += 1
-    
+     
     # --- Save Figure/Data Box ---
     Label(fig_layout[current_row, 1], "Save View", fontsize=16, font=:bold, halign=:center)
     current_row += 1
     save_box_layout = fig_layout[current_row, 1] = GridLayout()
     # Adapt createSaveFigBox to populate this layout
-    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs) # (source: 37-45, 62)
+    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs) # (source: 37-45, 62)
     current_row += 1
 
     # Ensure the fig_layout rows can auto-size based on content added so far
@@ -285,14 +290,14 @@ function createBaseControlsFigure(
     on(selected_param_key_obs) do selected_key
         if selected_key == "Shared Parameters"
             populate_parameter_figure!( # Assuming populate_parameter_figure! is defined
-                #params_fig, 
                 "Shared Parameters", 
-                shared_params_obs, 
+                shared_params_obs,
                 2
             )
+        elseif selected_key == "UI Options"
+            populate_parameter_figure!("UI Style Options", ui_options_obs, 2)
         elseif haskey(method_params_collection_obs, selected_key)
             populate_parameter_figure!(
-                #params_fig, 
                 "$selected_key Parameters", 
                 method_params_collection_obs[selected_key], 
                 2
@@ -519,32 +524,69 @@ function createSaveFigBox(
     plot_fig::Makie.Figure,
     shared_params_obs::Dict{String, Observable},
     method_params_collection_obs::Dict{String, Dict{String, Observable}}, # <<< Pass through
-    methods_obs::Observable{Vector{String}} # <<< Pass through
+    methods_obs::Observable{Vector{String}}, # <<< Pass through
+    ui_options_obs::Dict
     )
 
     gb = target_layout[1, 1:2] = GridLayout() # Example layout
-    Label(gb[1, 1], "Save PNG+CSV:", halign=:right).padding=(0,5,0,0)
+    Label(gb[1, 1], "Save Image+CSV:", halign=:right).padding=(0,5,0,0)
     saveBox = Textbox(gb[1, 2], placeholder = "Type name (no ext)", width=200)
     try; colsize!(gb, 1, Auto()); colsize!(gb, 2, Auto()); catch; end
 
     get_save_dir() = joinpath(Utils.get_save_path(), "figures")
 
+    # --- Modified `on` listener ---
     on(saveBox.stored_string) do s
-         base_name = string(strip(s))
-         
-         if isempty(base_name); println("Save cancelled (empty name)."); return; end
 
-         save_figures_path = get_save_dir()
-         try; mkpath(save_figures_path); catch e; @warn "Could not create dir $save_figures_path: $e"; end
+        base_name = string(strip(s))
+        
+        if isempty(base_name)
+            println("Save cancelled (empty name).")
+            return
+        end
 
-         png_name = joinpath(save_figures_path, base_name * ".png")
+        save_figures_path = get_save_dir()
+        try
+            mkpath(save_figures_path)
+        catch e
+            @warn "Could not create directory $save_figures_path: $e"
+        end
 
-         # --- Save PNG ---
-         try
-             Makie.save(png_name, plot_fig)
-             println("Plot saved as $png_name")
-         catch e; @error "Failed to save PNG!" exception=(e, catch_backtrace()); end
+        # Get the list of formats to save from the ui_options dictionary
+        # Default to only ["png"] if the key is not found.
+        formats_to_save = ui_options_obs["save_formats"][]
+        
+        println("Saving figure in formats: $(join(formats_to_save, ", "))...")
 
+        # --- Save the figure in each requested format ---
+        for format in formats_to_save
+            # Sanitize format string
+            fmt = lowercase(strip(format))
+            if !(fmt in ["png", "pdf", "svg"])
+                @warn "Unsupported save format '$fmt' specified. Skipping."
+                continue
+            end
+
+            # Construct the full filename with the correct extension
+            full_filename = joinpath(save_figures_path, base_name * ".$fmt")
+
+            try
+                # Temporarily activate CairoMakie for vector formats for high-quality output
+                if fmt in ["pdf", "svg"]
+                    CairoMakie.activate!()
+                end
+
+                # Save the figure
+                Makie.save(full_filename, plot_fig)
+                println("Plot saved as $full_filename")
+
+            catch e
+                @error "Failed to save figure in format .$fmt!" exception=(e, catch_backtrace())
+            finally
+                # IMPORTANT: Always reactivate GLMakie to keep the interactive window running
+                GLMakie.activate!()
+            end
+        end # End loop over formats
          # --- Call reusable function to save Parameters ---
          optional_info = Dict(
              "Save Type" => "Static Frame",
@@ -699,3 +741,255 @@ function createControls(
 
     return control_fig, update_notifier
 end
+
+# This function goes into your plotting_helpers.jl file
+"""
+    _parse_legend_position(s::String) -> Tuple{Symbol, Symbol}
+
+Parses a descriptive string like "topright" or "bottomleft" into a
+Tuple of Symbols `(halign, valign)` suitable for Makie's alignment.
+Handles all combinations of top, bottom, left, right, and center.
+"""
+function _parse_legend_position(s_in::String)
+    s = lowercase(s_in)
+
+    if s == "center"
+        return (:center, :center)
+    end
+
+    # Determine vertical alignment
+    valign = if occursin("top", s)
+        :top
+    elseif occursin("bottom", s)
+        :bottom
+    else
+        :center
+    end
+
+    # Determine horizontal alignment
+    halign = if occursin("left", s)
+        :left
+    elseif occursin("right", s)
+        :right
+    else
+        :center
+    end
+
+    return (halign, valign)
+end
+"""
+    create_or_update_legend!(fig::Figure, ax::Axis, plotted_objects::Vector, 
+                             labels::Vector, ui_options::Dict)
+
+Clears any existing Legend from the figure and creates a new one based on the
+position specified in `ui_options["legend_pos"]`.
+
+The position can be:
+- `:detached`: Places the legend in a new column to the right of the axis.
+- A Symbol like `:rt`, `:ct`, `:rb`, etc., or a Tuple like `(:right, :top)`:
+  Places the legend inside the axis at the specified position.
+"""
+function create_or_update_legend!(
+    fig::Figure, 
+    ax::Axis, 
+    plotted_objects::Vector, 
+    labels::Vector, 
+    ui_options_obs::Dict
+)
+   # --- 1. Find and Delete any existing Legend in the Figure ---
+    # We search the main layout for a legend in a separate column (e.g., fig[1,2])
+    # and we also search inside the main axis for an attached legend.
+    # It's crucial to delete from a copy of the contents list as we are modifying it.
+    for elem in copy(contents(fig.layout))
+        if elem isa Legend
+            delete!(elem)
+        end
+    end
+
+    # --- 2. Get Legend Properties from UI Options ---
+    position = ui_options_obs["legend_pos"][]
+    title = ui_options_obs["legend"][]
+
+    if isempty(plotted_objects) || isempty(labels)
+        # If no items, ensure the layout is clean (e.g., no empty legend column)
+        # Check if column 2 exists and is empty, then delete it.
+        try
+            trim!(fig.layout) # trim! is often safer and more general
+        catch e
+            # Ignore if layout is already clean
+        end
+        return
+    end
+
+    # --- 3. Create and Place the New Legend ---
+    try
+        if position == "detached"
+            # For a detached legend, create it in column 2 of the figure's layout.
+            # This assumes the main axis is at fig[1, 1].
+            Legend(fig[1, 2], plotted_objects, labels, title; 
+                   tellheight=false,
+                   titlesize=ui_options_obs["font_size"],
+                   labelsize=ui_options_obs["label_size"]
+            )
+            # Ensure the new column's width is determined by the legend's content
+            colsize!(fig.layout, 2, Auto())
+        else
+            # For an attached legend, create it directly inside the axis `ax`.
+            # Makie correctly interprets position symbols like :rt, :lt, etc.
+            # to place the legend at the corners of the axis.
+            halign, valign = _parse_legend_position(position)
+            Legend(fig[1,1], plotted_objects, labels, title; 
+                   orientation = :vertical, # or :horizontal
+                   tellheight=false, 
+                   tellwidth=false,
+                   # The position is set via halign/valign based on the symbol
+                   halign = halign,
+                   valign = valign,
+                   titlesize=ui_options_obs["font_size"],
+                   labelsize=ui_options_obs["label_size"],
+                   margin=(10, 10, 10, 10)
+            )
+            # After creating an attached legend, ensure the layout is tidy.
+            # If we switched from detached, column 2 might still exist but be empty.
+            trim!(fig.layout)
+            #colsize!(fig.layout, 1, Auto())
+        end
+    catch e
+        @error "Failed to create or update legend." exception=(e, catch_backtrace())
+    end
+end
+
+### Deprecated: ui_option specific figure
+
+# """
+#     add_ui_option_widget!(parent_cell, key_name, obs; kwargs...)
+
+# Creates a UI element (a Label and a widget) for a single UI option. This function
+# is simplified for UI options and does not handle `:const` or complex Tuples.
+# It creates a Toggle for Bools, and a Textbox for Reals and Strings.
+# """
+# function add_ui_option_widget!(
+#     parent_cell_for_item,
+#     key_name::String,
+#     param_obs::Observable;
+#     label_fontsize::Int = 14,
+#     internal_item_colgap::Int = 4
+# )
+#     # This item_layout holds ONLY one label and its corresponding widget
+#     item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false)
+#     colgap!(item_layout, internal_item_colgap)
+
+#     # The current value from the observable
+#     val = param_obs[]
+
+#     # Create the label for the UI option
+#     Label(item_layout[1,1], key_name * " =",
+#           halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
+
+#     # --- Create the appropriate widget based on the value's type ---
+
+#     if isa(val, Bool)
+#         # --- Create a Toggle for Boolean options ---
+#         tgl = Toggle(item_layout[1,2], active = val)
+#         on(tgl.active) do active_val
+#             if param_obs[] != active_val
+#                 param_obs[] = active_val
+#             end
+#         end
+#     else # For Real or String types
+#         # --- Create a Textbox for numeric or string options ---
+#         validator_type = if isa(val, AbstractFloat)
+#             Float64
+#         elseif isa(val, Integer)
+#             Int
+#         else # Default to allowing any string (for String type and fallbacks)
+#             s -> true
+#         end
+
+#         tb = Textbox(item_layout[1,2], placeholder = string(val),
+#                      validator = validator_type, width = Auto(), reset_on_defocus=true)
+
+#         on(tb.stored_string) do s
+#             target_type = typeof(val)
+#             try
+#                 parsed_val = if target_type == String
+#                     s
+#                 elseif validator_type == Float64 || validator_type == Int
+#                     parse(target_type, s)
+#                 else
+#                     s # If validator was a function, treat as string
+#                 end
+
+#                 if param_obs[] != parsed_val
+#                     param_obs[] = parsed_val
+#                 end
+#             catch e
+#                 # On parsing error, reset the textbox to the observable's last valid value
+#                 tb.stored_string = string(param_obs[])
+#             end
+#         end
+#     end
+
+#     # Ensure the layout columns adapt to the content
+#     colsize!(item_layout, 1, Auto())
+#     colsize!(item_layout, 2, Auto())
+# end
+
+# """
+#     create_interactive_ui_options_figure(ui_options_obs::Dict{String, Observable})
+
+# Creates and displays a new interactive figure with widgets to control UI styling options.
+# This version now uses the dedicated `add_ui_option_widget!` helper.
+# """
+# function create_interactive_ui_options_figure(
+#     ui_options_obs::Dict{String, Observable};
+#     num_columns::Int = 2,
+#     figure_size = (500, 600)
+# )
+#     GLMakie.activate!()
+#     ui_fig = Figure(size=figure_size)
+#     Label(ui_fig[1, 1], "UI Styling Options", font=:bold, fontsize=18,
+#           tellwidth=false, halign=:center, padding=(0,0,15,0))
+
+#     options_layout = ui_fig[2, 1] = GridLayout(tellheight=false)
+#     rowgap!(options_layout, 10)
+#     colgap!(options_layout, 15)
+
+#     # Filter keys to only show widgets for simple, editable types
+#     displayable_keys = String[]
+#     for (key, obs) in ui_options_obs
+#         if isAtomic(obs[])
+#             push!(displayable_keys, key)
+#         end
+#     end
+#     sort!(displayable_keys)
+
+#     if isempty(displayable_keys)
+#         Label(options_layout[1,1], "(No editable UI options found)")
+#         display(GLMakie.Screen(), ui_fig); return ui_fig
+#     end
+
+#     # --- Populate the Layout using the new, dedicated helper ---
+#     r, c = 1, 1
+#     for key in displayable_keys
+#         add_ui_option_widget!(
+#             options_layout[r, c],
+#             key,
+#             ui_options_obs[key] # Pass the corresponding observable
+#             # You can pass styling kwargs like label_fontsize here if needed
+#         )
+#         c += 1
+#         if c > num_columns; c = 1; r += 1; end
+#     end
+
+#     # Set final layout sizes
+#     for c_idx in 1:min(num_columns, length(displayable_keys)); colsize!(options_layout, c_idx, Auto()); end
+#     true_num_rows = ceil(Int, length(displayable_keys) / num_columns)
+#     for r_idx in 1:true_num_rows; rowsize!(options_layout, r_idx, Auto()); end
+    
+#     rowsize!(ui_fig.layout, 1, Auto())
+#     rowsize!(ui_fig.layout, 2, Auto())
+
+#     display(GLMakie.Screen(), ui_fig)
+#     return ui_fig
+# end

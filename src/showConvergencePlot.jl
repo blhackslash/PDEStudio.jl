@@ -75,12 +75,13 @@ function showConvergencePlot(
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createBaseControlsFigure(
+    control_fig, update_notifier, legend_pos_obs = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names
+        all_method_names,
+        local_ui_dict
     )
     # -----------------------------------------
 

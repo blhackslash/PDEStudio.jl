@@ -34,8 +34,6 @@ function GetUIStyle(style::Symbol)
         "show_scatter" => false,
         "show_lines" => true,
         "system_dimension" => 1,
-        "hPos" => :right,
-        "vPos" => :top,
         "figsize" => (1280, 800),
         "linewidth" => 5,
         "markersize" => 15,
@@ -43,8 +41,19 @@ function GetUIStyle(style::Symbol)
         "ticklabel_size" => 22,
         "font_size" => 24,
         "legend" => "Legend",
+        "x_axis_limit_padding" => 0,
+        "y_axis_limit_padding" => 0.1,
         "animation_fps" => 30,
         "animation_duration_s" => 10.0,
+        "legend_pos" => "detached",
+        "xgridvisible" => true,
+        "ygridvisible" => true,
+        "xticklabelsvisible" => true,
+        "yticklabelsvisible" => true,
+        "title" => "default",
+        "xlabel" => "default",
+        "ylabel" => "default",
+        "save_formats" => ["png"], # Default to saving only PNG
         "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
         "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
         "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
@@ -60,7 +69,8 @@ function GetUIStyle(style::Symbol)
             "label_size" => 14,
             "ticklabel_size" => 12,
             "font_size" => 14,
-            "figsize" => (600, 450),
+            #"figsize" => (600, 450),
+            "save_formats" => ["png", "pdf", "svg"] # For publication, save all formats
             # You could also add other font settings here
         ))
         return publication_style

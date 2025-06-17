@@ -203,7 +203,7 @@ sim_config_1d = SimulationConfig(
 # --- Run the 1D Visualization ---
 # Assuming show1DSolutionFig is defined and functional
 println("Starting 1D Visualization...")
-show1DSolutionFig(sim_config_1d; ui_options = :publication) 
+show1DSolutionFig(sim_config_1d; ui_options = :default) 
 show1DSolutionFig(sim_config_1d) 
 showDynamicDependence(sim_config_1d)
 println("Visualization launched (call commented out).")

@@ -10,8 +10,12 @@ Uses closest data point logic for animation frames.
 function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :default)
 
     # --- Basic Setup & UI ---
-    local_ui_dict = createUIDict(ui_options)
-    plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 600)))
+    base_ui_dict = createUIDict(ui_options)
+    ui_options_obs = Dict{String, Observable}()
+    for (key, value) in base_ui_dict
+        ui_options_obs[key] = Observable(value)
+    end
+    plot_fig = Figure(size = ui_options_obs["figsize"])
 
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
@@ -45,16 +49,37 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
-        all_method_names
+        all_method_names,
+        ui_options_obs
     )
     # -----------------------------------------
 
-    sys_dim = local_ui_dict["system_dimension"]
+    sys_dim = ui_options_obs["system_dimension"][]
     sel_comp_obs = Observable(1)
     axis_label = lift(update_notifier) do _; "Solution Value u$(sel_comp_obs[])" end
-
-    ax = Axis(plot_fig[1,1], xlabel = "Position (x)", ylabel = axis_label) # Title set dynamically
-
+    axis_title = Observable("t = 0.0")
+    xlabel = lift(ui_options_obs["xlabel"]) do xl
+        if xl == "default" 
+            "Position (x)"
+        else
+            ui_options_obs["xlabel"][]
+        end
+    end
+    ylabel = lift(ui_options_obs["ylabel"], axis_label) do ui_label, ax_l
+        if ui_label == "default" 
+            ax_l
+        else
+            ui_options_obs["ylabel"][]
+        end
+    end
+    axis_title = lift(ui_options_obs["title"], axis_title) do ui_title, ax_t
+        if ui_title == "default" 
+            ax_t
+        else
+            ui_options_obs["title"][]
+        end
+    end    
+    ax = Axis(plot_fig[1,1])
     compLabel_text = lift(sel_comp_obs) do sel_comp
         sys_dim > 1 ? "Component: $sel_comp / $sys_dim" : "Component: 1 / 1 (Scalar)"
     end    
@@ -212,7 +237,32 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         end # End loop over methods
 
         # --- Finalize and Apply Global Limits ---
-        if found_any_data; pad_x=get(local_ui_dict,"x_axis_limit_padding",0.05); pad_y=get(local_ui_dict,"y_axis_limit_padding",0.1); xr=g_xmax-g_xmin; xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); yr=g_umax-g_umin; yp=yr≈0 ? 0.1 : (yr*pad_y/2.0); final_xlims=(g_xmin-xp,g_xmax+xp); final_ylims=(g_umin-yp,g_umax+yp); global_xlims[]=final_xlims; global_ylims[]=final_ylims; try; xlims!(ax,final_xlims); ylims!(ax,final_ylims); catch e; @warn "Failed applying limits" e; end; else; global_xlims[]=(0.0,1.0); global_ylims[]=(0.0,1.0); try; xlims!(ax,0.0,1.0); ylims!(ax,0.0,1.0); catch e; @warn "Failed applying default limits" e; end; end
+        if found_any_data; 
+            pad_x=ui_options_obs["x_axis_limit_padding"][]; pad_y=ui_options_obs["y_axis_limit_padding"][]; 
+            xr=g_xmax-g_xmin; 
+            xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); 
+            yr=g_umax-g_umin; 
+            yp=yr≈0 ? 0.1 : (yr*pad_y/2.0); 
+            final_xlims=(g_xmin-xp,g_xmax+xp); 
+            final_ylims=(g_umin-yp,g_umax+yp); 
+            global_xlims[]=final_xlims; 
+            global_ylims[]=final_ylims; 
+            try; 
+                xlims!(ax,final_xlims); 
+                ylims!(ax,final_ylims); 
+            catch 
+                e; 
+                @warn "Failed applying limits" e; 
+            end; 
+        else; 
+            global_xlims[]=(0.0,1.0); 
+            global_ylims[]=(0.0,1.0); 
+            try; xlims!(ax,0.0,1.0); 
+                ylims!(ax,0.0,1.0); 
+            catch e; 
+                @warn "Failed applying default limits" e; 
+            end; 
+        end
 
         # --- Update Time Slider Range / Store Data Range ---
         if !isempty(all_time_points); 
@@ -298,7 +348,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         # Consistency check (include new observables)
         if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
 
-        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
+        tLabel_text[] = "t = $(round(t, digits=3))"; axis_title[] = "t=$(round(t, digits=3))"
 
         for i = 1:active_num # Iterate through active methods
              if i > length(xd) || i > length(ud) || i > length(td); continue; end # Index check
@@ -337,6 +387,26 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
     lift(update_notifier, tSlider.value) do _...
         empty!(ax) # Clear previous plots
+        width, height = ui_options_obs["figsize"][]
+        resize!(plot_fig, width, height)
+
+        # --- UPDATE AXIS PROPERTIES EXPLICITLY ---
+        # Get current values from the ui_options_obs dictionary.
+        # This is more readable and robust than using ui_vals indices.
+        ax.title = axis_title[]
+        ax.xlabel = xlabel[]
+        ax.ylabel = ylabel[]
+        ax.xgridvisible = ui_options_obs["xgridvisible"][]
+        ax.ygridvisible = ui_options_obs["ygridvisible"][]
+        ax.xticklabelsvisible = ui_options_obs["xticklabelsvisible"][]
+        ax.yticklabelsvisible = ui_options_obs["yticklabelsvisible"][]
+        ax.titlesize = ui_options_obs["font_size"][]
+        ax.xlabelsize = ui_options_obs["label_size"][]
+        ax.ylabelsize = ui_options_obs["label_size"][]
+        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
+        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]        
+
+        #plot_fig.resolution[] = ui_options_obs["figsize"][]
         # Clear legend explicitly targeting cell [1, 2]
         try; existing_legend=filter(c->isa(c, Legend), contents(plot_fig[1, 2])); foreach(delete!, existing_legend); catch e; @warn "Could not clear legend cell: $e"; end
 
@@ -352,12 +422,13 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         if num_to_plot <= 0; return; end
 
         plotted_objects = [] # For legend
+        labels_for_legend = String[]
         for i = 1:num_to_plot
             plotLabel = active_methods[i]
             # Get styles for this method
-            color = local_ui_dict["colors"][mod1(i, length(local_ui_dict["colors"]))]
-            marker = local_ui_dict["markers"][mod1(i, length(local_ui_dict["markers"]))]
-            linestyle = get(local_ui_dict, "dashed_lines", false) ? local_ui_dict["lineStyles"][mod1(i, length(local_ui_dict["lineStyles"]))] : :solid
+            color = ui_options_obs["colors"][][mod1(i, length(ui_options_obs["colors"][]))]
+            marker = ui_options_obs["markers"][][mod1(i, length(ui_options_obs["markers"][]))]
+            linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(i, length(ui_options_obs["lineStyles"][]))] : :solid
 
             # Access the snapshot observables for plotting
             x_snap_obs = current_xs_obsvec[i]
@@ -366,16 +437,16 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             # --- Plot main data (Lines/Scatter) ---
             obj_for_legend = nothing
             # Use get for ui_dict keys for safety
-            if get(local_ui_dict, "show_lines", true)
-                 l = lines!(ax, x_snap_obs[], u_snap_obs[]; color=color, linewidth=get(local_ui_dict,"linewidth", 1.5), label=plotLabel, linestyle=linestyle)
+            if ui_options_obs["show_lines"][]
+                 l = lines!(ax, x_snap_obs[], u_snap_obs[]; color=color, linewidth=ui_options_obs["linewidth"], label=plotLabel, linestyle=linestyle)
                  obj_for_legend = l
             end
-            if get(local_ui_dict, "show_scatter", true)
-                 s = scatter!(ax, x_snap_obs[], u_snap_obs[]; color=color, markersize=get(local_ui_dict,"markersize", 8), marker=marker, label=plotLabel)
+            if ui_options_obs["show_scatter"][]
+                 s = scatter!(ax, x_snap_obs[], u_snap_obs[]; color=color, markersize = ui_options_obs["markersize"], marker=marker, label=plotLabel)
                  # Only add scatter to legend items if lines weren't plotted or legend is empty
                  if obj_for_legend === nothing; obj_for_legend = s; end
             end
-            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); end
+            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); push!(labels_for_legend, plotLabel); end
             # ------------------------------------
 
             # --- Plot Max Tracking Line (using observables from arguments) ---
@@ -406,16 +477,15 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
            # --- End Max Tracking Line ---
 
         end # End loop over methods
-
-        # Add Legend (as before)
-        if !isempty(plotted_objects)
-             try
-                 # Clear just in case before adding new one
-                 for c in contents(plot_fig.layout); if isa(c, Legend) && c.layout_position == (1, 2); delete!(c); end; end
-                 Legend(plot_fig[1, 2], plotted_objects, active_methods[1:num_to_plot], "Methods", tellheight=false)
-                 colsize!(plot_fig.layout, 2, Auto()) # Adjust column width
-             catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end
-        end
+     
+        # --- Replace old legend code with a call to the new centralized function ---
+        create_or_update_legend!(
+            plot_fig,
+            ax,
+            plotted_objects, # The vector of plot objects (lines, scatters)
+            labels_for_legend,  # The vector of strings for the labels
+            ui_options_obs
+        )
 
     end # --- End Lift Block 3 ---
 
@@ -428,8 +498,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
             is_animating[] = true
 
-            anim_duration_s = get(local_ui_dict, "animation_duration_s", 5.0) # Use value from dict
-            anim_fps = get(local_ui_dict, "animation_fps", 30)
+            anim_duration_s = ui_options_obs["animation_duration_s"] # Use value from dict
+            anim_fps = ui_options_obs["animation_fps"][]
             timer_interval = 1.0 / max(1, anim_fps)
             start_real_time = time()
             #anim_time_ref = Ref(t_min) # Start animation from the beginning
@@ -476,8 +546,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             "Save Type" => "Animation GIF",
             "Timestamp" => string(Dates.now()),
             "Animation Time Range" => string(time_range_data[]),
-            "Animation Duration (s)" => string(get(local_ui_dict, "animation_duration_s", 5.0)),
-            "Animation FPS" => string(get(local_ui_dict, "animation_fps", 30)),
+            "Animation Duration (s)" => string(ui_options_obs["animation_duration_s"]),
+            "Animation FPS" => string(ui_options_obs["animation_fps"][]),
             "Save Trigger Time (t)" => string(round(tSlider.value[], digits=4))
             # Add other relevant info?
         )
@@ -498,7 +568,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
         # Get parameters for saving GIF
         t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[]=true; end; return; end
-        duration_s = get(local_ui_dict, "animation_duration_s", 5.0); fps = get(local_ui_dict, "animation_fps", 30); n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
+        duration_s = ui_options_obs["animation_duration_s"][]; fps = ui_options_obs["animation_fps"]; n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
         times_for_gif = range(t_min, t_max, length=n_frames)
 
         # --- Record the animation ---
