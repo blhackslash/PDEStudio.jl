@@ -859,6 +859,139 @@ function create_or_update_legend!(
     end
 end
 
+"""
+    set_axis_styles!(ax, ui_options_obs, final_label_obs)
+
+Applies a set of styles to a given `Axis` object. It now takes a dictionary
+of final, combined observables for the title and labels.
+"""
+function set_axis_styles!(
+    ax::Axis,
+    ui_options_obs::Dict{String, Observable}
+)
+    try
+        
+        # Set other visual properties directly from the ui_options_obs dictionary
+        ax.xgridvisible = ui_options_obs["xgridvisible"][]
+        ax.ygridvisible = ui_options_obs["ygridvisible"][]
+        ax.xticklabelsvisible = ui_options_obs["xticklabelsvisible"][]
+        ax.yticklabelsvisible = ui_options_obs["yticklabelsvisible"][]
+        
+        # Set text sizes
+        ax.titlesize = ui_options_obs["font_size"][]
+        ax.xlabelsize = ui_options_obs["label_size"][]
+        ax.ylabelsize = ui_options_obs["label_size"][]
+        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
+        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]
+    catch e
+        @warn "An error occurred while setting axis styles. A required key might be missing." exception=(e, catch_backtrace())
+    end
+end
+"""
+    set_axis_styles!(ax::Axis3, ui_options_obs, final_label_obs)
+
+Applies styles to a 3D `Axis3` object. It dynamically switches between a 3D
+surface view and a 2D top-down view based on the `plot_as_surface` UI option.
+"""
+function set_axis_styles!(
+    ax::Axis3,
+    ui_options_obs::Dict{String, Observable}
+)
+    try
+        # Check the UI option to decide which mode to use
+        is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+
+        # Set common properties first
+        # ax.title = get(final_label_obs, "title", Observable("Default Title"))[]
+        # ax.xlabel = get(final_label_obs, "xlabel", Observable("x"))[]
+        # ax.ylabel = get(final_label_obs, "ylabel", Observable("y"))[]
+        
+        ax.titlesize = get(ui_options_obs, "font_size", Observable(16))[]
+        ax.xlabelsize = get(ui_options_obs, "label_size", Observable(16))[]
+        ax.ylabelsize = get(ui_options_obs, "label_size", Observable(16))[]
+        ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
+        ax.yticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
+
+        if is_surface_view
+            # --- Configure for 3D Surface View ---
+            ax.zlabelsize = get(ui_options_obs, "label_size", Observable(16))[]
+            ax.zticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
+            
+            ax.aspect = (1, 1, 0.5) # Or lift from a UI option: `ui_options_obs["aspect"][]`
+            ax.perspectiveness = 0.5 # Or lift from a UI option
+
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
+            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
+        else
+            # --- Configure for 2D Top-Down View ---
+            ax.zlabel = "" # Hide Z label
+            ax.zlabelsize = 0 # Ensure it takes no space
+            ax.zticklabelsvisible = false # Hide Z tick labels
+            
+            ax.aspect = :data
+            ax.perspectiveness = 0.0
+            
+            # Set the view to be directly from above
+            ax.elevation = pi/2
+            ax.azimuth = 0
+
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # Hide Z grid
+        end
+
+    catch e
+        @warn "An error occurred while setting 3D axis styles. A required key might be missing." exception=(e, catch_backtrace())
+    end
+end
+"""
+    create_axis_label_observables(ui_options_obs, default_values) -> Dict
+
+Creates a dictionary of final, combined observables for axis labels and titles.
+
+It iterates through a `default_values` dictionary. For each entry, it creates
+a `lift` that combines the user's input from `ui_options_obs` with the
+provided default. If the user's input is "default", the fallback value is used.
+The fallback can be static (e.g., a String) or dynamic (an Observable).
+
+# Arguments
+- `ui_options_obs::Dict{String, Observable}`: The dictionary of raw UI observables.
+- `default_values::Dict{String, Any}`: Maps a UI key (e.g., "xlabel") to its default value.
+
+# Returns
+- `Dict{String, Observable}`: A dictionary mapping UI keys to the final observables
+  that should be used to set axis properties.
+"""
+function create_axis_label_observables(
+    ui_options_obs::Dict{String, Observable},
+    default_values::Dict{String, Any}
+)
+    final_label_obs_dict = Dict{String, Observable}()
+
+    for (key, default_val) in default_values
+        if !haskey(ui_options_obs, key)
+            @warn "UI option key '$key' not found in ui_options_obs. Skipping label creation."
+            continue
+        end
+
+        ui_obs = ui_options_obs[key]
+
+        local final_obs # Ensure it's scoped for the if/else block
+        if isa(default_val, Observable)
+            # Dynamic default: lift on both user input and the default's observable
+            final_obs = lift(ui_obs, default_val) do user_input, dynamic_default
+                user_input == "default" ? dynamic_default : user_input
+            end
+        else # Static default (e.g., a simple String)
+            final_obs = lift(ui_obs) do user_input
+                user_input == "default" ? default_val : user_input
+            end
+        end
+        final_label_obs_dict[key] = final_obs
+    end
+
+    return final_label_obs_dict
+end
+
+
 ### Deprecated: ui_option specific figure
 
 # """

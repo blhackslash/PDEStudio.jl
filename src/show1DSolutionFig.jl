@@ -57,29 +57,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     sys_dim = ui_options_obs["system_dimension"][]
     sel_comp_obs = Observable(1)
     axis_label = lift(update_notifier) do _; "Solution Value u$(sel_comp_obs[])" end
-    axis_title = Observable("t = 0.0")
-    xlabel = lift(ui_options_obs["xlabel"]) do xl
-        if xl == "default" 
-            "Position (x)"
-        else
-            ui_options_obs["xlabel"][]
-        end
-    end
-    ylabel = lift(ui_options_obs["ylabel"], axis_label) do ui_label, ax_l
-        if ui_label == "default" 
-            ax_l
-        else
-            ui_options_obs["ylabel"][]
-        end
-    end
-    axis_title = lift(ui_options_obs["title"], axis_title) do ui_title, ax_t
-        if ui_title == "default" 
-            ax_t
-        else
-            ui_options_obs["title"][]
-        end
-    end    
-    ax = Axis(plot_fig[1,1])
+    axis_title = Observable("t = 0.0") 
+    
     compLabel_text = lift(sel_comp_obs) do sel_comp
         sys_dim > 1 ? "Component: $sel_comp / $sys_dim" : "Component: 1 / 1 (Scalar)"
     end    
@@ -90,7 +69,12 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             sel_comp_obs[] = round(Int, val)
         end
     end
+    default_labels = Dict("xlabel" => "Position (x)",
+                      "ylabel" => axis_label,                        
+                      "title" => axis_title)
+    label_obs = create_axis_label_observables(ui_options_obs, default_labels)
 
+    ax = Axis(plot_fig[1,1], xlabel = label_obs["xlabel"], ylabel = label_obs["ylabel"], title = label_obs["title"])
 
     # --- NEW Max Tracking Control ---
     # Add Checkbox below the animation/save controls
@@ -393,18 +377,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         # --- UPDATE AXIS PROPERTIES EXPLICITLY ---
         # Get current values from the ui_options_obs dictionary.
         # This is more readable and robust than using ui_vals indices.
-        ax.title = axis_title[]
-        ax.xlabel = xlabel[]
-        ax.ylabel = ylabel[]
-        ax.xgridvisible = ui_options_obs["xgridvisible"][]
-        ax.ygridvisible = ui_options_obs["ygridvisible"][]
-        ax.xticklabelsvisible = ui_options_obs["xticklabelsvisible"][]
-        ax.yticklabelsvisible = ui_options_obs["yticklabelsvisible"][]
-        ax.titlesize = ui_options_obs["font_size"][]
-        ax.xlabelsize = ui_options_obs["label_size"][]
-        ax.ylabelsize = ui_options_obs["label_size"][]
-        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
-        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]        
+        set_axis_styles!(ax, ui_options_obs)    
 
         #plot_fig.resolution[] = ui_options_obs["figsize"][]
         # Clear legend explicitly targeting cell [1, 2]

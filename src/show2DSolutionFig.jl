@@ -18,10 +18,12 @@ Features:
 function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :default) # Keep original name
 
     # --- Basic Setup & UI ---
-    local_ui_dict = createUIDict2D(ui_options)
-    plot_fig = Figure(size = get(local_ui_dict, "figsize", (900, 700)))
-    ax = Axis3(plot_fig[1, 2], xlabel="x", ylabel="y", zlabel="Solution (u)") # Title set dynamically
-
+    base_ui_dict = createUIDict2D(ui_options)
+    ui_options_obs = Dict{String, Observable}()
+    for (key, value) in base_ui_dict
+        ui_options_obs[key] = Observable(value)
+    end
+    plot_fig = Figure(size = ui_options_obs["figsize"])
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
@@ -47,13 +49,13 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier, legend_pos_obs = createBaseControlsFigure(
+    control_fig, update_notifier = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
         methods_obs,
         all_method_names,
-        local_ui_dict
+        ui_options_obs
     )
     # -----------------------------------------
     controls_layout = control_fig.layout # Get layout grid
@@ -63,17 +65,53 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     Label(controls_layout[end+1, 1:4], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span controls area
     tSlider = Slider(controls_layout[end+1, 1:4], range = 0.0:1.0, startvalue = 0.0) # Span controls area
 
-    # Plot Type Toggle
-    plot_toggle_layout = controls_layout[end+1, :] = GridLayout() # Span controls area
-    plot_as_surface_obs = Observable(get(local_ui_dict, "plot_as_surface", false))
-    Label(plot_toggle_layout[1, 1], "Plot as Surface (3D)") # Span 2 cols for label
-    toggle_plot_type = Toggle(plot_toggle_layout[1, 2], active = plot_as_surface_obs[]) # Place toggle in col 3
-    on(toggle_plot_type.active) do active_state; plot_as_surface_obs[] = active_state; end
+
+    sys_dim = ui_options_obs["system_dimension"][]
+    sel_comp_obs = Observable(1)
+    axis_title = Observable("t = 0.0") 
+    compLabel_text = lift(sel_comp_obs) do sel_comp
+        sys_dim > 1 ? "Component: $sel_comp / $sys_dim" : "Component: 1 / 1 (Scalar)"
+    end   
+    Label(control_fig[end+1,:], compLabel_text)
+    if sys_dim > 1
+        component_slider = Slider(control_fig[end+1,:], range = 1:sys_dim, startvalue = 1)
+        on(component_slider.value) do val
+            sel_comp_obs[] = round(Int, val)
+        end
+    end
+    # This new observable creates the correct default zlabel based on context
+    dynamic_zlabel_default_obs = lift(sel_comp_obs, ui_options_obs["plot_as_surface"]) do comp, is_surface
+        if is_surface
+            # For a 3D surface plot, the z-axis represents the component's value
+            return "Solution Value u$(comp)"
+        else
+            # For a 2D top-down view, the z-axis is not shown, so the label should be empty.
+            return "" 
+        end
+    end
+    default_labels = Dict("xlabel" => "x",
+                          "ylabel" => "Test",
+                          "zlabel" => dynamic_zlabel_default_obs,
+                          "colorbar_label" => (lift(sel_comp_obs) do sel; "Solution Value u$sel" end),
+                          "title" => axis_title)
+    labels_obs = create_axis_label_observables(ui_options_obs, default_labels)
+    ax = Axis3(plot_fig[1, 2], 
+                xlabel=labels_obs["xlabel"],                
+                ylabel=labels_obs["ylabel"],
+                zlabel=labels_obs["zlabel"],
+                title = labels_obs["title"]) # Title set dynamically
+
+    # # Plot Type Toggle
+    # plot_toggle_layout = controls_layout[end+1, :] = GridLayout() # Span controls area
+    # plot_as_surface_obs = Observable(get(local_ui_dict, "plot_as_surface", false))
+    # Label(plot_toggle_layout[1, 1], "Plot as Surface (3D)") # Span 2 cols for label
+    # toggle_plot_type = Toggle(plot_toggle_layout[1, 2], active = plot_as_surface_obs[]) # Place toggle in col 3
+    # on(toggle_plot_type.active) do active_state; plot_as_surface_obs[] = active_state; end
 
     # Colormap Slider
     cmap_layout = controls_layout[end+1, :] = GridLayout() # Span controls area
-    available_cmaps = get(local_ui_dict, "colormaps", [:viridis])
-    default_cmap = get(local_ui_dict, "colormap", :viridis)
+    available_cmaps = ui_options_obs["colormaps"][]
+    default_cmap =ui_options_obs["colormap"]
     default_cmap_idx = findfirst(isequal(default_cmap), available_cmaps); if isnothing(default_cmap_idx); default_cmap_idx = 1; end
     selected_colormap_obs = Observable(available_cmaps[default_cmap_idx])
     cmap_slider = Slider(cmap_layout[1, 1], range = 1:length(available_cmaps), startvalue = default_cmap_idx) # Slider spans 2 cols
@@ -162,7 +200,7 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
         end # End method loop
 
         # Finalize and Store Global Z Limits / Color Range
-        if found_any_u_data; pad_fac=get(local_ui_dict,"axis_limit_padding",0.1); zr=g_umax-g_umin; zp=zr*pad_fac/2.0; zp=(zp<=1e-6 && zr<=1e-6) ? 0.1 : zp; final_zlims=(g_umin-zp, g_umax+zp); global_zlims_and_colorrange[]=final_zlims; else; global_zlims_and_colorrange[]=(0.0, 1.0); end
+        if found_any_u_data; pad_fac=ui_options_obs["axis_limit_padding"][]; zr=g_umax-g_umin; zp=zr*pad_fac/2.0; zp=(zp<=1e-6 && zr<=1e-6) ? 0.1 : zp; final_zlims=(g_umin-zp, g_umax+zp); global_zlims_and_colorrange[]=final_zlims; else; global_zlims_and_colorrange[]=(0.0, 1.0); end
         println("Lift 1 (2D): Global Z/Color range: $(global_zlims_and_colorrange[])")
 
         # --- Store Time Range and Update Time Slider ---
@@ -197,6 +235,7 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
         # Set slider value now, which might trigger Lift 2 if value changed
         set_close_to!(tSlider, initial_t)
         tLabel_text[] = "t = $(round(initial_t, digits=3))"
+        
 
         println("Lift 1 (2D): Update complete.")
     end # --- End Lift Block 1 ---
@@ -205,7 +244,7 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     # --- Lift Block 2 (Time Slider Updates - Uses Closest Point) ---
     # UNCHANGED from user's original version - it already does what's needed
     lift(tSlider.value) do t
-        tLabel_text[] = "t = $(round(t, digits=3))"; ax.title = "t=$(round(t, digits=3))"
+        tLabel_text[] = "t = $(round(t, digits=3))"; axis_title[] = "t=$(round(t, digits=3))"
         # Consistency check
         active_num = method_number[]
         if isempty(xs[]) || isempty(tData[]) || length(xs[]) != active_num; return; end
@@ -229,9 +268,9 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
 
 
     # --- Lift Block 3 (Plot Redraw & Configuration) ---
-    lift(update_notifier, plot_as_surface_obs, selected_colormap_obs,
+    lift(update_notifier, selected_colormap_obs,
         global_zlims_and_colorrange;
-        ignore_equal_values=true) do _, plot_surface, current_cmap, current_zlims_val
+        ignore_equal_values=true) do _, current_cmap, current_zlims_val
         active_num = length(methods_obs[])
         println("Lift 3 (2D): Redrawing plot...")
         active_methods = methods_obs[] # Define active_methods here
@@ -241,37 +280,7 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
         try; delete!.(filter(c->isa(c,Legend), contents(plot_fig[1,2]))); catch e; @warn "Could not clear legend: $e"; end
         try; existing_cb=filter(c->isa(c,Colorbar), contents(plot_fig[1,3])); if !isempty(existing_cb); needs_colorbar_update=true; delete!.(existing_cb); end; catch e; @warn "Could not clear colorbar: $e"; end
 
-        # --- Configure Axis Appearance ---
-        if plot_surface # Configure for 3D Surface View
-            ax.xlabel = "x"
-            ax.ylabel = "y"
-            ax.zlabel = "Solution (u)"
-            ax.aspect = (1, 1, 0.5) # Adjust Z aspect for better 3D view if needed
-            ax.perspectiveness = 0.5 # Enable perspective
-            # Ensure all elements are potentially visible for 3D
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
-            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
-            ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = true
-            ax.zlabelvisible = true
-            # Reset elevation/azimuth to a sensible default 3D view, or let user control
-            # ax.elevation = pi/6
-            # ax.azimuth = pi/4
-        else # Configure for 2D Scatter View (Top-Down)
-            ax.xlabel = "x"
-            ax.ylabel = "y"
-            ax.zlabel = "" # Hide Z label text
-            ax.aspect = :data # Use DataAspect for correct XY scaling
-            ax.perspectiveness = 0.0 # Orthographic projection
-            # Ensure only XY grid/ticks/spines are visible
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # <<< Hide Z grid
-            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = false # <<< Hide Z ticks
-            ax.xspinesvisible = true; ax.yspinesvisible = true; ax.zspinesvisible = false # <<< Hide Z spine
-            ax.zlabelvisible = false # Redundant given empty label, but safe
-            # --- Explicitly set Top-Down View ---
-            ax.elevation = pi/2
-            ax.azimuth = 0
-            # ------------------------------------
-        end
+        set_axis_styles!(ax, ui_options_obs)
 
     # (Fix Z Limits as before)
     try; zlims!(ax, current_zlims_val...); catch e; @warn "Failed applying zlims in Lift 3" exc=e; end
@@ -296,12 +305,12 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     # (lift points_xyz, points_xy0, color_values - as before)
     points_xyz=lift((x,u)->[Point3f(x[j][1],x[j][2],u[j]) for j in 1:min(length(x),length(u))],x_snapshot_obs,u_snapshot_obs); points_xy0=lift(x->[Point3f(pt[1],pt[2],0.0f0) for pt in x],x_snapshot_obs); color_values=u_snapshot_obs
 
-    plt_obj=nothing; marker_size_3d=local_ui_dict["markersize_3d"]; markersize_2d=local_ui_dict["markersize_2d"]
+    plt_obj=nothing; marker_size_3d=ui_options_obs["markersize_3d"]; markersize_2d=ui_options_obs["markersize_2d"]
     # Plot meshscatter! or scatter!
-    if plot_surface
-        plt_obj = meshscatter!(ax, points_xyz; markersize=marker_size_3d, color=color_values, colormap=current_cmap, colorrange=color_range, label=current_plot_label) # Pass label here
+    if ui_options_obs["plot_as_surface"][]
+        plt_obj = meshscatter!(ax, points_xyz; markersize=ui_options_obs["markersize_3d"], color=color_values, colormap=current_cmap, colorrange=color_range, label=current_plot_label) # Pass label here
     else
-        plt_obj = scatter!(ax, points_xy0; markersize=markersize_2d, color=color_values, colormap=current_cmap, colorrange=color_range, label=current_plot_label) # Pass label here
+        plt_obj = scatter!(ax, points_xy0; markersize=ui_options_obs["markersize_2d"], color=color_values, colormap=current_cmap, colorrange=color_range, label=current_plot_label) # Pass label here
     end
 
     # --- Store object AND label if plot was successful ---
@@ -324,7 +333,15 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
         catch e; @error "Error adding Legend" exc=e; end
     end
     # (Add/update colorbar logic remains the same)
-    if active_num > 0 || needs_colorbar_update; try; delete!.(filter(c->isa(c,Colorbar), contents(plot_fig[1,3]))); Colorbar(plot_fig[1, 3], limits=color_range, colormap=current_cmap, label="Solution (u)", width=25, ticklabelsize=local_ui_dict["ticklabel_size"]); colsize!(plot_fig.layout, 3, Auto()); catch e; @error "Error adding Colorbar" exc=e; end; end
+    if active_num > 0 || needs_colorbar_update; 
+        try; 
+            delete!.(filter(c->isa(c,Colorbar), contents(plot_fig[1,3]))); 
+            Colorbar(plot_fig[1, 3], limits=color_range, colormap=current_cmap, label=labels_obs["colorbar_label"], width=25, ticklabelsize=ui_options_obs["ticklabel_size"]); 
+            colsize!(plot_fig.layout, 3, Auto()); 
+        catch e; 
+            @error "Error adding Colorbar" exc=e; 
+        end; 
+    end
     # ---------------------------------------------
             # --- SET COLUMN SIZES ---
     colsize!(plot_fig.layout, 1, Auto())        # Column 1 (Legend): Size based on content
@@ -340,8 +357,8 @@ end # --- End Lift Block 3 ---
             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[]=nothing; end
             t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
             is_animating[] = true
-            anim_duration_s = get(local_ui_dict, "animation_duration_s", 10.0) # Use 2D dict value
-            anim_fps = get(local_ui_dict, "animation_fps", 30)
+            anim_duration_s = ui_options_obs["animation_duration_s"][] # Use 2D dict value
+            anim_fps = ui_options_obs["animation_fps"][]
             timer_interval = 1.0 / max(1, anim_fps)
             start_real_time = time()
             function update_frame(th); if !is_animating[]; try close(th) catch; end; animation_timer[]=nothing; return; end; ert=time()-start_real_time; cet=mod(ert,anim_duration_s); tf=cet/anim_duration_s; cst=t_min+tf*(t_max-t_min); set_close_to!(tSlider, clamp(cst,t_min,t_max)); end
@@ -375,12 +392,12 @@ end # --- End Lift Block 3 ---
         optional_save_info = Dict{String, Any}(
             "Save Type"                => "Animation GIF (2D)",
             "Timestamp"                => string(Dates.now()),
-            "Plot Type Request"        => plot_as_surface_obs[] ? "Surface (3D)" : "Scatter (2D)", # State of the toggle
+            "Plot Type Request"        => ui_options_obs["plot_as_surface"][] ? "Surface (3D)" : "Scatter (2D)", # State of the toggle
             "Colormap Selection"       => string(selected_colormap_obs[]), # State of colormap
             # Methods list will be saved by the helper function based on methods_obs
             "Animation Time Range"     => string(time_range_data[]),
-            "Animation Duration (s)" => string(get(local_ui_dict, "animation_duration_s", 10.0)), # Use 2D default if different
-            "Animation FPS"            => string(get(local_ui_dict, "animation_fps", 30)),
+            "Animation Duration (s)" => string(ui_options_obs["animation_duration_s"][]), # Use 2D default if different
+            "Animation FPS"            => string(ui_options_obs["animation_fps", 30][]),
             "Save Trigger Time (t)"    => string(round(tSlider.value[], digits=4))
             # Add any other relevant context here
         )
@@ -420,8 +437,8 @@ end # --- End Lift Block 3 ---
             if was_animating; is_animating[]=true; end # Optionally restart animation?
             return
         end
-        duration_s = get(local_ui_dict, "animation_duration_s", 10.0) # Use 2D dict default
-        fps = get(local_ui_dict, "animation_fps", 30)
+        duration_s = ui_options_obs["animation_duration_s"][] # Use 2D dict default
+        fps = ui_options_obs["animation_fps"][]
         n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
         times_for_gif = range(t_min, t_max, length=n_frames)
 
