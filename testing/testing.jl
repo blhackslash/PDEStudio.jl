@@ -208,7 +208,6 @@ show1DSolutionFig(sim_config_1d)
 showDynamicDependence(sim_config_1d)
 println("Visualization launched (call commented out).")
 
-showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)))
 showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)), "l1_norm")
 showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)), "time", "l1_norm")
 
