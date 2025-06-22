@@ -44,7 +44,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createBaseControlsFigure(
+    control_fig, update_notifier, ui_update = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -222,7 +222,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
         # --- Finalize and Apply Global Limits ---
         if found_any_data; 
-            pad_x=ui_options_obs["x_axis_limit_padding"][]; pad_y=ui_options_obs["y_axis_limit_padding"][]; 
+            pad_x=ui_options_obs["xpadding"][]; pad_y=ui_options_obs["ypadding"][]; 
             xr=g_xmax-g_xmin; 
             xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); 
             yr=g_umax-g_umin; 
@@ -369,60 +369,15 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---
     # Trigger depends on method changes, snapshot data, AND track_max toggle
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
-    lift(update_notifier, tSlider.value) do _...
-        empty!(ax) # Clear previous plots
-        width, height = ui_options_obs["figsize"][]
-        resize!(plot_fig, width, height)
+    lift(update_notifier, tSlider.value, ui_update) do _...
 
-        # --- UPDATE AXIS PROPERTIES EXPLICITLY ---
-        # Get current values from the ui_options_obs dictionary.
-        # This is more readable and robust than using ui_vals indices.
-        set_axis_styles!(ax, ui_options_obs)    
-
-        #plot_fig.resolution[] = ui_options_obs["figsize"][]
-        # Clear legend explicitly targeting cell [1, 2]
-        try; existing_legend=filter(c->isa(c, Legend), contents(plot_fig[1, 2])); foreach(delete!, existing_legend); catch e; @warn "Could not clear legend cell: $e"; end
-
-        active_methods = methods_obs[]
-        active_num = length(active_methods)
-        current_xs_obsvec = xs[]
-        current_us_obsvec = us[]
-        if active_num == 0; return; end # Nothing to plot
-
-        # Consistency check
-        num_to_plot = min(active_num, length(current_xs_obsvec), length(current_us_obsvec))
-        if num_to_plot != active_num; @warn "Lift 3: Data series mismatch. Plotting $num_to_plot series."; end
-        if num_to_plot <= 0; return; end
-
-        plotted_objects = [] # For legend
-        labels_for_legend = String[]
-        for i = 1:num_to_plot
-            plotLabel = active_methods[i]
-            # Get styles for this method
-            color = ui_options_obs["colors"][][mod1(i, length(ui_options_obs["colors"][]))]
-            marker = ui_options_obs["markers"][][mod1(i, length(ui_options_obs["markers"][]))]
-            linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(i, length(ui_options_obs["lineStyles"][]))] : :solid
-
-            # Access the snapshot observables for plotting
-            x_snap_obs = current_xs_obsvec[i]
-            u_snap_obs = current_us_obsvec[i]
-
-            # --- Plot main data (Lines/Scatter) ---
-            obj_for_legend = nothing
-            # Use get for ui_dict keys for safety
-            if ui_options_obs["show_lines"][]
-                 l = lines!(ax, x_snap_obs[], u_snap_obs[]; color=color, linewidth=ui_options_obs["linewidth"], label=plotLabel, linestyle=linestyle)
-                 obj_for_legend = l
-            end
-            if ui_options_obs["show_scatter"][]
-                 s = scatter!(ax, x_snap_obs[], u_snap_obs[]; color=color, markersize = ui_options_obs["markersize"], marker=marker, label=plotLabel)
-                 # Only add scatter to legend items if lines weren't plotted or legend is empty
-                 if obj_for_legend === nothing; obj_for_legend = s; end
-            end
-            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); push!(labels_for_legend, plotLabel); end
-            # ------------------------------------
-
-            # --- Plot Max Tracking Line (using observables from arguments) ---
+        create_base_plot_1D!(plot_fig, ax, 
+                             methods_obs[],
+                             xs[],
+                             us[],
+                             ui_options_obs; 
+                             plot_observable = false)        
+        for i = eachindex(methods_obs[])
             if track_max_obs[] # Check toggle state passed into lift block
                 # Ensure index i is valid for the max observable vectors passed in
                 current_x_max_obsvec = x_at_max_obs[]
@@ -451,14 +406,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
         end # End loop over methods
      
-        # --- Replace old legend code with a call to the new centralized function ---
-        create_or_update_legend!(
-            plot_fig,
-            ax,
-            plotted_objects, # The vector of plot objects (lines, scatters)
-            labels_for_legend,  # The vector of strings for the labels
-            ui_options_obs
-        )
 
     end # --- End Lift Block 3 ---
 
@@ -471,7 +418,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
             is_animating[] = true
 
-            anim_duration_s = ui_options_obs["animation_duration_s"] # Use value from dict
+            anim_duration_s = ui_options_obs["animation_duration_s"][] # Use value from dict
             anim_fps = ui_options_obs["animation_fps"][]
             timer_interval = 1.0 / max(1, anim_fps)
             start_real_time = time()

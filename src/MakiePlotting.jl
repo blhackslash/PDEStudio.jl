@@ -7,7 +7,7 @@ using CSV, DataFrames
 using Dates # For timestamp in optional info
 
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot
+export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, GetUIStyle
 
 include("UIStyles.jl")
 include("PlottingUtils.jl")

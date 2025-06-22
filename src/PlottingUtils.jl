@@ -127,7 +127,7 @@ function populate_parameter_figure!(
     header_fontsize=16,
     gap_size=10,
     internal_item_colgap=4,
-    fig_size = (500,500)
+    fig_size = (500,600)
 )
     #empty!(target_fig.scene) # Clear all previous content and layouts
     target_fig = Figure(size = fig_size)
@@ -215,6 +215,76 @@ function populate_parameter_figure!(
     rowsize!(main_layout, 2, Auto()) 
     Makie.trim!(main_layout) 
     GLMakie.display(target_fig.scene)
+end
+
+
+"""
+    create_or_update_selection_menu!(menu_container, current_menu_handle,
+                                     available_options, persistent_selection_obs)
+
+Robustly creates or updates a `Menu` widget within a given container.
+It uses a delete-and-recreate pattern to avoid stability issues with
+dynamically updating menu options.
+
+# Arguments
+- `menu_container::GridLayout`: The layout cell where the menu will be placed.
+- `current_menu_handle::Observable{Union{Nothing, Menu}}`: An observable that holds
+  the handle to the current `Menu` widget, allowing it to be deleted.
+- `available_options::Vector{String}`: The new list of options for the menu.
+- `persistent_selection_obs::Observable{String}`: The observable that holds the
+  currently selected value. This function ensures its value stays valid and
+  links the new menu to it.
+"""
+function create_or_update_selection_menu!(
+    menu_container::GridLayout,
+    current_menu_handle::Observable{Union{Nothing, Menu}},
+    available_options::Vector{String},
+    persistent_selection_obs::Observable{String}
+)
+    # 1. If a menu from a previous run exists, delete it.
+    if !isnothing(current_menu_handle[])
+        try
+            delete!(current_menu_handle[])
+        catch e
+            # Ignore if already deleted or invalid
+        end
+    end
+    # Also clear the container of any other elements (like a "No stats" label).
+    for c in copy(menu_container.content); delete!(c); end
+
+    # 2. Handle the case where there are no options to display.
+    if isempty(available_options)
+        Label(menu_container[1,1], "No options available")
+        current_menu_handle[] = nothing # Ensure handle is cleared
+        return
+    end
+
+    # 3. Determine the correct default selection.
+    # If the currently selected option is still in the new list, keep it.
+    # Otherwise, default to the first option in the new list.
+    new_default = if persistent_selection_obs[] in available_options
+        persistent_selection_obs[]
+    else
+        available_options[1]
+    end
+    # Update the persistent observable to ensure it's in a valid state.
+    persistent_selection_obs[] = new_default
+
+    # 4. Create a brand new Menu widget inside the container.
+    new_menu = Menu(menu_container[1,1],
+                    options = available_options,
+                    default = new_default)
+    
+    # 5. Link this new menu's selection back to our persistent observable.
+    on(new_menu.selection) do selected_key
+        # This check prevents a feedback loop if the update came from the persistent obs.
+        if persistent_selection_obs[] != selected_key
+            persistent_selection_obs[] = selected_key
+        end
+    end
+
+    # 6. Store the handle to the new menu so we can delete it on the next update.
+    current_menu_handle[] = new_menu
 end
 
 """
@@ -315,8 +385,39 @@ function createBaseControlsFigure(
         empty!(params_fig[1,1])
         Label(params_fig[1,1], "Select a parameter set from the Controls window.", halign=:center)
     end
-    
-    return base_controls_fig, update_notifier
+    # create UI update_notifier
+    ui_update = Observable(0)
+    for ui_obs = values(ui_options_obs)
+        on(ui_obs) do _
+            ui_update[] += 1
+        end
+    end
+   # --- GENERIC SELECTION MENU SETUP ---
+   Label(fig_layout[current_row, 1], "Select Plotted Data", fontsize=16, halign=:left)
+   current_row += 1
+   
+   # These are the key observables that form the "interface"
+   y_options = Observable(String[]) # Holds the list of strings for the menu
+   selector = Observable{String}(" ") # Holds the final selected value
+   
+   # This container will hold the menu widget, which will be deleted and recreated
+   menu_container = fig_layout[current_row, 1] = GridLayout()
+   current_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
+   current_row += 1
+
+   # --- REACTIVE LINK: Rebuild the menu whenever the options list changes ---
+   # This `on` block is the core of the generalization. It lives here and handles all
+   # the UI logic for updating the menu.
+   on(y_options) do available_options
+       println("Updating selection menu with new options...")
+       create_or_update_selection_menu!(
+           menu_container,
+           current_menu_handle,
+           y_options[],
+           selector
+       )
+   end
+    return base_controls_fig, update_notifier, ui_update, y_options, selector
 end
 
 """
@@ -991,6 +1092,685 @@ function create_axis_label_observables(
     return final_label_obs_dict
 end
 
+"""
+    plot_reference_lines!(ax, exponents; kwargs...)
+
+Plots reference power-law lines anchored to the corners of the current axis view.
+The sign of each exponent determines the anchor point:
+- Positive exponent `p`: Anchors at the top-right `(xmax, ymax)`.
+- Negative exponent `p`: Anchors at the bottom-right `(xmax, ymin)`.
+
+# Arguments
+- `ax::Axis`: The Makie axis to plot into.
+- `exponents::Union{Tuple, Nothing}`: A tuple of signed exponents.
+
+# Keyword Arguments
+- `label::String`: A single label for all reference lines to group them in the legend.
+- Other keywords are passed to `Makie.lines!`.
+"""
+function plot_reference_lines!(
+    ax::Axis,
+    exponents::Union{Tuple, Nothing};
+    label::String = "Reference Lines",
+    color = :black,
+    linestyle = :dash,
+    kwargs...
+)
+    # --- Input Validation ---
+    if isnothing(exponents) || isempty(exponents)
+        return []
+    end
+
+    # --- Get Current Axis View Limits ---
+    current_limits_nested = ax.limits[]
+    if isnothing(current_limits_nested) || isnothing(current_limits_nested[1]) || isnothing(current_limits_nested[2])
+        @warn "Cannot plot reference lines, axis limits are not yet fully defined."
+        return []
+    end
+    xlims, ylims = current_limits_nested
+    all_limit_values = (xlims..., ylims...)
+    if any(!isfinite, all_limit_values)
+        @warn "Cannot plot reference lines with non-finite axis limits."
+        return []
+    end
+    xmin, xmax = xlims
+    ymin, ymax = ylims
+
+    x_ref_values = range(xmin, xmax, length=100)
+    ref_x = xmax # Anchor x-position is always the rightmost edge
+
+    plotted_lines = []
+    
+    for p_signed in exponents
+        if p_signed == 0; continue; end # Skip zero exponent
+
+        # Determine the anchor point and the absolute power based on the sign
+        local y_anchor, power
+        if p_signed > 0
+            y_anchor = ymax # For increasing trends, anchor at the top
+            power = p_signed
+        else # p_signed < 0
+            y_anchor = ymin # For decreasing trends, anchor at the bottom
+            power = abs(p_signed)
+        end
+
+        if ref_x <= 0 && power != 0
+             @warn "Skipping reference line for exponent $p_signed due to non-positive x-limit."
+             continue
+        end
+
+        # Calculate scaling constant C so that y = C * x^power passes through (ref_x, y_anchor)
+        C = y_anchor / (ref_x^power)
+        y_ref_line = [x > 0 || power >= 0 ? C * x^power : NaN for x in x_ref_values]
+        
+        # Create a single line plot for this exponent
+        line = lines!(ax, x_ref_values, y_ref_line;
+            label = label, # Use the same label for grouping
+            color = (color, 0.65),
+            linestyle = linestyle,
+            kwargs...
+        )
+        
+        push!(plotted_lines, line)
+    end
+
+    return plotted_lines
+end
+
+"""
+    delete_plots_by_label!(ax::Axis, label_to_delete::String)
+
+Finds all plot objects in a given axis that have a specific label
+and deletes them. This version correctly accesses plots via `ax.scene`.
+"""
+function delete_plots_by_label!(ax::Axis, label_to_delete::String)
+    # CORRECT API: Access plots via the axis's scene.
+    # The `ax.scene` contains the list of all plot objects drawn into that axis.
+    plots_to_delete = [p for p in ax.scene.plots if p.label[] == label_to_delete]
+    
+    if !isempty(plots_to_delete)
+        for p in plots_to_delete
+            delete!(ax.scene, p) # Delete from the scene
+        end
+        return true
+    end
+    
+    return false
+end
+
+"""
+    get_axis_limits(data_observables, padding_factor, is_log_scale) -> Tuple
+
+Calculates the min and max limits for an axis from a vector of data observables.
+
+It iterates through all data, finds the overall min/max of finite values,
+and applies a specified padding. It correctly handles linear and log scales
+(for log scales, it ignores non-positive values and applies padding multiplicatively).
+
+# Arguments
+- `data_observables`: A vector of observables, where each observable contains a
+  vector of numeric data (e.g., `Vector{Observable{Vector{Float64}}}`).
+- `padding_factor::Real`: The padding to apply, as a fraction (e.g., 0.1 for 10%).
+- `is_log_scale::Bool`: If true, calculates padding suitable for a log-scaled axis.
+
+# Returns
+- A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`. Returns a
+  default range like `(0.0, 1.0)` if no valid data is found.
+"""
+function get_axis_limits(
+    data_observables::AbstractVector,
+    padding_factor::Real,
+    is_log_scale::Bool
+)
+    min_overall = Inf
+    max_overall = -Inf
+    found_valid_data = false
+
+    for obs in data_observables
+        # Get the vector from the observable
+        data_vec = to_value(obs)
+
+        # Filter for valid data points
+        local valid_data
+        if is_log_scale
+            # For log scale, we can only use positive, finite numbers
+            valid_data = filter(x -> isfinite(x) && x > 0, data_vec)
+        else
+            # For linear scale, any finite number is fine
+            valid_data = filter(isfinite, data_vec)
+        end
+        
+        if !isempty(valid_data)
+            found_valid_data = true
+            min_local, max_local = extrema(valid_data)
+            min_overall = min(min_overall, min_local)
+            max_overall = max(max_overall, max_local)
+        end
+    end
+
+    # If no valid data was found across all observables, return a default range
+    if !found_valid_data
+        return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
+    end
+
+    # Apply padding based on scale type
+    data_range = max_overall - min_overall
+    
+    if is_log_scale
+        # For log scale, padding is multiplicative (a factor)
+        # This prevents issues with log(0) or log(-ve)
+        pad_amount_log = padding_factor
+        final_min = min_overall / (1 + pad_amount_log)
+        final_max = max_overall * (1 + pad_amount_log)
+    else
+        # For linear scale, padding is additive
+        if data_range ≈ 0
+            pad_amount_linear = 0.1 # Default pad for a flat line
+        else
+            pad_amount_linear = data_range * padding_factor / 2.0
+        end
+        final_min = min_overall - pad_amount_linear
+        final_max = max_overall + pad_amount_linear
+    end
+
+    return (final_min, final_max)
+end
+
+function deleteUIOptions!(
+    ui_options_dict::Dict,
+    keys_to_delete::AbstractVector{String}
+)
+    for key in keys_to_delete
+        if haskey(ui_options_dict, key)
+            delete!(ui_options_dict, key)
+        else
+            # Optional: Warn if a key to be deleted doesn't exist.
+            # @warn "Attempted to delete non-existent UI option key: '$key'"
+        end
+    end
+    # The dictionary is modified in-place, so no return is necessary.
+    return nothing
+end
+
+"""
+    set_axis_limits!(ax, x_data_obs, y_data_obs, ui_options_obs)
+
+Calculates and applies appropriate x and y limits to a given axis based on the
+provided data and UI options. This version uses direct dictionary access and
+will error if a required key (e.g., "xlogscale") is missing.
+"""
+function set_axis_limits!(
+    ax::Axis,
+    x_data_obs::AbstractVector,
+    y_data_obs::AbstractVector,
+    ui_options_obs::Dict{String, Observable}
+)
+    try
+        # --- Get the required UI options via direct dictionary access ---
+        x_padding = ui_options_obs["xpadding"][]
+        y_padding = ui_options_obs["ypadding"][]
+        x_is_log = ui_options_obs["xlogscale"][]
+        y_is_log = ui_options_obs["ylogscale"][]
+
+        # --- Calculate X and Y Limits using the existing helper ---
+        final_xlims = get_axis_limits(x_data_obs, x_padding, x_is_log)
+        final_ylims = get_axis_limits(y_data_obs, y_padding, y_is_log)
+
+        # --- Apply the new limits with a redundancy check ---
+        current_ax_lims = ax.limits[]
+        
+        if isnothing(current_ax_lims[1]) || isnothing(current_ax_lims[2]) ||
+           abs(current_ax_lims[1][1] - final_xlims[1]) > 1e-9 || 
+           abs(current_ax_lims[1][2] - final_xlims[2]) > 1e-9 ||
+           abs(current_ax_lims[2][1] - final_ylims[1]) > 1e-9 ||
+           abs(current_ax_lims[2][2] - final_ylims[2]) > 1e-9
+            
+            limits!(ax, final_xlims..., final_ylims...)
+        end
+    catch e
+        # This will catch KeyErrors if an option is missing, or other errors.
+        @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
+    end
+
+    return nothing
+end
+
+"""
+    create_base_plot_1D!(ax, active_methods, xs, us, ui_options_obs; plot_observable)
+
+Handles the core plotting for 1D data series. It clears the axis and plots
+lines and/or scatters for each method based on the provided UI observables.
+
+# Arguments
+- `ax::Axis`: The axis to plot into.
+- `active_methods::Vector{String}`: A list of the names of the methods being plotted.
+- `xs::AbstractVector`: Vector holding the x-coordinate data for each plot.
+- `us::AbstractVector`: Vector holding the u-coordinate data for each plot.
+- `ui_options_obs::Dict{String, Observable}`: The dictionary of UI styling observables.
+
+# Keyword Arguments
+- `plot_observable::Bool=false`: If `true`, the `xs` and `us` data are assumed to
+  be Observables and are passed directly to the plotting functions for full
+  reactivity. If `false` (default), the current *value* inside the observables
+  is plotted, which is suitable for static snapshots.
+"""
+function create_base_plot_1D!(
+    plot_fig::Figure,
+    ax::Axis,
+    active_methods::Vector{String},
+    xs::AbstractVector,
+    us::AbstractVector,
+    ui_options_obs::Dict{String, Observable};
+    plot_observable::Bool = false
+)
+
+    width, height = ui_options_obs["figsize"][]
+    resize!(plot_fig, width, height)
+
+    empty!(ax) # Clear previous plots from the axis
+    ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : 
+    set_axis_styles!(ax, ui_options_obs)
+    ax.xscale[] = ui_options_obs["xlogscale"][] ? log10 : identity
+    ax.yscale[] = ui_options_obs["ylogscale"][] ? log10 : identity
+
+    if isempty(active_methods); return ([], []); end
+
+    plotted_objects = []
+    labels_for_legend = String[]
+    
+    num_to_plot = min(length(active_methods), length(xs), length(us))
+
+    for i = 1:num_to_plot
+        plotLabel = active_methods[i]
+        
+        # Determine whether to plot the observable directly or its value
+        x_data = plot_observable ? xs[i] : to_value(xs[i])
+        u_data = plot_observable ? us[i] : to_value(us[i])
+
+        # Get styles directly from UI observables
+        color = ui_options_obs["colors"][][mod1(i, end)]
+        marker = ui_options_obs["markers"][][mod1(i, end)]
+        linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(i,end)] : :solid
+
+        # Plot main data
+        obj_for_legend = nothing
+        if ui_options_obs["show_lines"][]
+            l = lines!(ax, x_data, u_data; 
+                color=color, linewidth=ui_options_obs["linewidth"], 
+                label=plotLabel, linestyle=linestyle)
+            obj_for_legend = l
+        end
+        if ui_options_obs["show_scatter"][]
+            s = scatter!(ax, x_data, u_data; 
+                color=color, markersize=ui_options_obs["markersize"], 
+                marker=marker, label=plotLabel)
+            if isnothing(obj_for_legend); obj_for_legend = s; end
+        end
+
+        if !isnothing(obj_for_legend)
+            push!(plotted_objects, obj_for_legend)
+            push!(labels_for_legend, plotLabel)
+        end
+    end
+
+
+
+    # --- Replace old legend code with a call to the new centralized function ---
+    create_or_update_legend!(
+        plot_fig,
+        ax,
+        plotted_objects, # The vector of plot objects (lines, scatters)
+        labels_for_legend,  # The vector of strings for the labels
+        ui_options_obs
+    )
+    return nothing
+end
+
+"""
+    _update_minmax(current_min, current_max, new_data_vec, is_log_scale)
+
+Internal helper to update min/max values from a vector of new data.
+For log scale, it only considers positive values.
+"""
+function _update_minmax(current_min, current_max, new_data_vec::AbstractVector{<:Real}, is_log_scale::Bool)
+    valid_data = if is_log_scale
+        filter(x -> isfinite(x) && x > 0, new_data_vec)
+    else
+        filter(isfinite, new_data_vec)
+    end
+    
+    if isempty(valid_data)
+        return current_min, current_max
+    end
+    
+    min_local, max_local = extrema(valid_data)
+    return min(current_min, min_local), max(current_max, max_local)
+end
+"""
+    calculate_padded_global_range(all_methods_data, padding_factor, is_log_scale) -> Tuple
+
+Calculates the global min/max range for a single axis across all data, then applies
+padding suitable for either a linear or log scale.
+
+# Arguments
+- `all_methods_data::Vector{<:Vector{<:Tuple}}`: The raw data structure.
+- `padding_factor::Real`: The padding to apply, as a fraction (e.g., 0.1 for 10%).
+- `is_log_scale::Bool`: If true, calculates padding suitable for a log-scaled axis.
+
+# Returns
+- A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`.
+"""
+function calculate_global_axis_range(
+    all_methods_data::Vector{<:Vector{<:Any}},
+    padding_factor::Real,
+    is_log_scale::Bool
+)
+    min_overall = Inf
+    max_overall = -Inf
+    found_data = false
+
+    for method_data in all_methods_data
+        for (value, time_vector) in method_data
+            if ismissing(value); continue; end
+
+            if isa(value, AbstractVector{<:Real})
+                if !isempty(value)
+                    found_data = true
+                    min_overall, max_overall = _update_minmax(min_overall, max_overall, value, is_log_scale)
+                end
+            elseif isa(value, Real)
+                val_to_check = is_log_scale ? (value > 0 ? value : Inf) : value
+                if isfinite(val_to_check)
+                    found_data = true
+                    min_overall = min(min_overall, val_to_check)
+                    max_overall = max(max_overall, val_to_check)
+                end
+            end
+        end
+    end
+
+    if !found_data
+        print("Hello")
+        return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
+    end
+
+    # --- Apply Padding ---
+    if is_log_scale
+        # For log scale, padding is multiplicative (a factor).
+        pad_amount_log = padding_factor
+        final_min = min_overall / (1 + pad_amount_log)
+        final_max = max_overall * (1 + pad_amount_log)
+    else
+        # For linear scale, padding is additive.
+        data_range = max_overall - min_overall
+        pad_amount_linear = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
+        final_min = min_overall - pad_amount_linear
+        final_max = max_overall + pad_amount_linear
+    end
+
+    return (final_min, final_max)
+end
+
+
+# """
+#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data, all_raw_data)
+
+# Checks if a collection of extracted statistic data is time-dependent and updates
+# the time slider and its label accordingly.
+
+# # Arguments
+# - `is_time_dependent_obs::Observable{Bool}`: The observable to update with the result.
+# - `tSlider::Slider`: The time slider widget to update.
+# - `tLabel::Label`: The label widget for the time slider.
+# - `extracted_data`: A data structure containing the values of a single statistic.
+# - `all_raw_data`: The complete raw data store, used to find all possible time points.
+# """
+# function update_time_dependence!(
+#     is_time_dependent_obs::Observable{Bool},
+#     tSlider::Any,
+#     tLabel::Label,
+#     extracted_data,
+#     all_raw_data
+# )
+#     # --- Time Dependence Check ---
+#     found_vector = false
+#     found_scalar = false
+#     for data_point in Iterators.flatten(extracted_data)
+#         raw_val, _ = data_point
+#         if !ismissing(raw_val)
+#             if isa(raw_val, AbstractVector); found_vector = true;
+#             elseif isa(raw_val, Number); found_scalar = true;
+#             end
+#         end
+#         if found_vector && found_scalar; break; end
+#     end
+#     if found_vector && found_scalar
+#         @warn "Inconsistent data types (scalar and vector) found for the same statistic. Treating as time-dependent."
+#     end
+#     is_td = found_vector
+#     is_time_dependent_obs[] = is_td
+
+#     # --- Update Time Slider UI ---
+#     if is_td
+#         all_times_union = Set{Float64}()
+#         for data_point in Iterators.flatten(all_raw_data)
+#             _, times = data_point
+#             if !isempty(times); union!(all_times_union, times); end
+#         end
+
+#         if !isempty(all_times_union)
+#             time_vec = sort(collect(all_times_union))
+#             t_range = range(extrema(time_vec)..., length=max(2, 200))
+#             if tSlider.range[] != t_range; tSlider.range[] = t_range; end
+#             set_close_to!(tSlider, clamp(tSlider.value[], extrema(t_range)...))
+#             tLabel.text = "t = $(round(tSlider.value[], digits=3))"
+#             tSlider.parent.visible = true
+#         else
+#             tLabel.text = "t = N/A (No time data)"
+#             tSlider.parent.visible = false
+#         end
+#     else
+#         tLabel.text = "t = N/A (Scalar Stat)"
+#         tSlider.parent.visible = false
+#     end
+# end
+
+"""
+    updateData!(extracted_stat_data, all_raw_data, selected_key)
+
+Extracts the data for a selected statistic from a raw data store. This version
+is fully general and handles cases where different methods may have been run
+with a different number of parameter variations.
+"""
+function updateData!(
+    extracted_stat_data::Observable,
+    all_raw_data::Vector{<:Vector{<:Any}},
+    selected_key::String
+)
+    # --- Guard Clauses ---
+    if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
+        extracted_stat_data[] = []
+        return
+    end
+
+    println("Extracting 1D data for statistic: '$selected_key'")
+    
+    active_num = length(all_raw_data)
+    # The new data structure will hold vectors of varying lengths.
+    temp_extracted_data = Vector{Any}(undef, active_num)
+
+    for i in 1:active_num
+        method_data = all_raw_data[i]
+        # Get the number of parameters for THIS SPECIFIC method run.
+        num_params_for_method = length(method_data)
+        
+        # Pre-allocate the vector for this specific method's results.
+        method_results = Vector{Any}(undef, num_params_for_method)
+        
+        for j in 1:num_params_for_method
+            raw_data = method_data[j]
+            # The raw data point is a tuple, e.g., (stats_dict, time_vector)
+            if isa(raw_data, Tuple)
+                stat_val = get(raw_data[1], selected_key, missing)
+                method_results[j] = (stat_val,raw_data[2])
+            else
+                stat_val = get(raw_data, selected_key, missing)
+                method_results[j] = stat_val
+            end
+        end
+        temp_extracted_data[i] = method_results
+    end
+    
+    # Update the observable with the newly extracted data.
+    extracted_stat_data[] = temp_extracted_data
+    notify(extracted_stat_data)
+end
+
+"""
+    update_time_dependence!(is_time_dependent_obs, tSlider, time_slider_container,
+                            persistent_t_obs, extracted_data, all_raw_data)
+
+Checks for time dependence in data and completely manages the time slider UI.
+It uses a robust delete-and-recreate pattern for the slider widget.
+
+# Arguments
+- `is_time_dependent_obs`: An `Observable{Bool}` to store the result of the check.
+- `tSlider`: An `Observable` to hold the handle to the current `Slider` widget.
+- `time_slider_container`: The `GridLayout` where the time UI will be placed.
+- `persistent_t_obs`: A persistent `Observable{<:Real}` that the new slider will update.
+- `extracted_data`: A `Vector{<:Vector}` containing the extracted statistic values.
+- `all_raw_data`: The complete raw data store, needed to get time vectors for the range.
+"""
+function update_time_dependence!(
+    is_time_dependent_obs::Observable{Bool},
+    tSlider::Slider,
+    tLabel::Label,
+    extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}}
+)
+
+    # --- 1. Check for Time Dependence ---
+    found_vector = false
+    
+    # Iterate through the extracted data. Each `val` is now the statistic's
+    # value itself (a Number or a Vector), not a tuple.
+    for method_data in extracted_data
+        for val in method_data
+            if !ismissing(val[1]) && isa(val[1], AbstractVector)
+                found_vector = true
+                break
+            end
+        end
+        if found_vector; break; end
+    end
+    is_td = found_vector
+    is_time_dependent_obs[] = is_td
+
+    # --- 3. Recreate UI Based on Time Dependence ---
+    if is_td
+        all_times_union = Set{Float64}()
+        for data_point in Iterators.flatten(extracted_data)
+            # Assumes time vector is the second element of the tuple
+            if isa(data_point, Tuple) && length(data_point) > 1
+                times = data_point[2]
+                if isa(times, AbstractVector) && !isempty(times)
+                    union!(all_times_union, times)
+                end
+            end
+        end
+        println(is_td)
+        if !isempty(all_times_union)
+            time_vec = sort(collect(all_times_union))
+            t_range = range(extrema(time_vec)..., length=max(2, 200))
+            
+            # Create a new slider, clamping the persistent time value to the new range.
+            tSlider.value[] = clamp(tSlider.value[], extrema(t_range)...)
+            tSlider.range[] = t_range
+            
+            # Link the label text to the persistent time observable
+            on(tSlider.value) do t
+                tLabel.text[] = "t = $(round(t, digits=3))"
+            end
+
+        else
+            tLabel.text[] = "t = N/A (No time data)"
+            tSlider.value[] = 0
+            tSlider.range[] = [0]
+            #new_slider = Slider(time_slider_container[1,1], range = [0], startvalue = 0)
+        end
+    else
+        # --- THIS IS THE CRUCIAL FIX ---
+        # Data is not time-dependent. Create the placeholder label and explicitly
+        # set the slider handle to `nothing`.
+        tLabel.text[] = "t = N/A (Scalar Stat)" 
+        tSlider.value[] = 0
+        tSlider.range[] = [0]
+        #new_slider = Slider(time_slider_container[1,1], range = [0], startvalue = 0)
+    end
+end
+"""
+    calculate_snapshot(extracted_data, t, is_time_dependent) -> Vector{Vector{Float64}}
+
+Calculates a "snapshot" of data at a specific time `t`.
+
+It takes the extracted data for a single statistic, where each data point is a
+tuple containing the value and its corresponding time vector.
+
+# Arguments
+- `extracted_data`: The data for a single statistic, with structure
+  `Vector{Vector{Tuple{Any, Vector{Float64}}}}`.
+- `t::Real`: The current time value from the time slider.
+- `is_time_dependent::Bool`: A flag indicating if the current statistic is a time series.
+
+# Returns
+- A `Vector{Vector{Float64}}` containing the calculated snapshot data, ready for plotting.
+"""
+function calculate_snapshot(
+    extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}},
+    t::Real,
+    is_time_dependent::Bool
+)
+    if isempty(extracted_data)
+        return Vector{Vector{Float64}}()
+    end
+
+    active_num = length(extracted_data)
+    snapshot = Vector{Vector{Float64}}(undef, active_num)
+
+    for i in 1:active_num
+        method_data = extracted_data[i]
+        num_params = length(method_data)
+        y_vals_for_snapshot = Vector{Float64}(undef, num_params)
+
+        for j in 1:num_params
+            if !isassigned(method_data, j); continue; end
+
+            # Destructure the tuple to get both the value and its time vector
+            stat_val, times = method_data[j]
+            final_val = NaN # Default to NaN
+
+            if !ismissing(stat_val)
+                if is_time_dependent && isa(stat_val, AbstractVector)
+                    # For time-dependent data, find the value at the closest time `t`.
+                    if !isempty(times) && !isempty(stat_val)
+                        _, time_idx = findmin(val -> abs(val - t), times)
+                        if time_idx <= length(stat_val)
+                            final_val = Float64(stat_val[time_idx])
+                        end
+                    end
+                elseif !is_time_dependent && isa(stat_val, Number)
+                    final_val = Float64(stat_val)
+                elseif is_time_dependent && isa(stat_val, Number)
+                    # Handle case where a stat is time-dependent overall but this run was scalar
+                    final_val = Float64(stat_val)
+                end
+            end
+            y_vals_for_snapshot[j] = final_val
+        end
+        snapshot[i] = y_vals_for_snapshot
+    end
+    
+    return snapshot
+end
 
 ### Deprecated: ui_option specific figure
 

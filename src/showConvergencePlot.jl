@@ -24,8 +24,7 @@ A time slider is shown only if `y_stat_key` is found to be time-dependent.
 function showConvergencePlot(
     sim_config::SimulationConfig,
     key::String,
-    param_values::Union{AbstractVector, AbstractRange},
-    y_stat_key::String;
+    param_values::Union{AbstractVector, AbstractRange};
     force_int_param::Bool = false,
     initial_calc::Bool = true,
     ui_options::UIType = :default
@@ -38,22 +37,27 @@ function showConvergencePlot(
 
     # --- Basic Setup & UI ---
     base_ui_dict = createUIDict(ui_options)
+    deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
     ui_options_obs = Dict{String, Observable}()
     for (key, value) in base_ui_dict
-        ui_options_obs[key] = Observable(value)
+        if isa(value, Tuple)
+            ui_options_obs[key] = Observable{Tuple}(value)
+        else
+            ui_options_obs[key] = Observable(value)
+        end
     end
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
     # --- CONSTANT X-Axis Data ---
-    actual_param_values_used = try
+    x_vals = try
         force_int_param ? map(v -> trunc(Int64, v), param_values) : collect(param_values)
         #Float64.(vals) # Ensure Float64 for plotting
     catch e
         @error "Could not process param_values for $key." exception=(e, catch_backtrace())
         return plot_fig, Figure() # Return empty figures on error
     end
-    if isempty(actual_param_values_used); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
-    num_params = length(actual_param_values_used)
+    if isempty(x_vals); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
+    num_params = length(x_vals)
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
@@ -78,7 +82,7 @@ function showConvergencePlot(
     method_number = lift(length, methods_obs)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier = createBaseControlsFigure(
+    control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -87,93 +91,69 @@ function showConvergencePlot(
         ui_options_obs
     )
 
-    stats_menu = Menu(control_fig[end+1,:], options = [y_stat_key], default = y_stat_key)
+    # --- Stats Selection Menu & Time Slider ---
+    Label(control_fig[end+1,:], "Statistic to Plot:")
     
+
+    ylabel = lift(selector) do sel
+        string(sel)
+    end
+    title = lift(selector) do sel
+        "Convergence $sel vs $key"
+    end
     # -----------------------------------------
     default_labels = Dict("xlabel" => key,
-                          "ylabel" => stats_menu.selection,                        
-                          "title" => "Convergence: $(stats_menu.selection) vs $key")
+                          "ylabel" => ylabel,                        
+                          "title" => title)
     label_obs = create_axis_label_observables(ui_options_obs, default_labels)
 
 
     ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"])
     
-# --- Log Scale Toggles ---
-
-    # Add Checkboxes to control figure (adjust row/column layout as needed)
-    # Example: Placing them side-by-side in a new row, spanning 2 columns each
-    log_scale_layout = control_fig[end+1, :] = GridLayout() # Span 4 columns for example
-    cb_log_x = Toggle(log_scale_layout[1, 1], active = false) # Span cols 1-2
-    Label(log_scale_layout[1,2], "Log-scale x-axis")
-    cb_log_y = Toggle(log_scale_layout[1, 3], active = false) # Span cols 3-4
-    Label(log_scale_layout[1,4], "Log-scale y-axis")
-
-    # --- Link Log Scale Toggles to Axis Scale ---
-    on(cb_log_x.active) do is_active # is_active is the Bool value
-        new_scale_func = is_active ? log10 : identity
-        # --- CORRECT WAY: Update value inside the observable ---
-        xlims!(ax, (.1,1))
-        ax.xscale[] = new_scale_func
-        # ------------------------------------------------------
-        println("X-Axis scale set to: ", ax.xscale[]) # Debug print shows the function name
-    end
-
-    on(cb_log_y.active) do is_active # is_active is the Bool value
-        new_scale_func = is_active ? log10 : identity
-        # --- CORRECT WAY: Update value inside the observable ---
-        ylims!(ax, (.1,1))
-        ax.yscale[] = new_scale_func
-        # ------------------------------------------------------
-        println("Y-Axis scale set to: ", ax.yscale[])
-    end
-    # ------------------------------------------
-    lift(cb_log_x.active) do is_active
-            # --- Calculate and Set X-Limits ONCE ---
-        min_x_data, max_x_data = extrema(actual_param_values_used)
-        # Get padding factor from ui_dict, default to 0.1 (10%) if not found
-        pad_x_factor = to_value(is_active) ? 0 : ui_options_obs["x_axis_limit_padding"][]
-        x_range = max_x_data - min_x_data
-        x_pad = x_range ≈ 0 ? 0.1 : (x_range * pad_x_factor / 2.0) # Handle zero range
-        final_xlims = (min_x_data - x_pad, max_x_data + x_pad)
-        try; xlims!(ax, final_xlims); catch e; @warn "Failed to set initial xlims" exception=(e, catch_backtrace()); end
-    end
     # --- Time Slider (Always Visible, label changes) ---
     is_y_stat_time_dependent = Observable(true) # Updated in Lift 1
-    tLabel_text = Observable("t = ...")
-    Label(control_fig[end+1, 1:2], tLabel_text, tellwidth=false).padding = (0, 0, 5, 0)
-    tSlider = Slider(control_fig[end+1, 1:2], range = 0.0:1.0, startvalue = 0.0)
+    t_obs = Observable(0.)
+    tLabel = Label(control_fig[end+1,:], "t = 0")
+    tSlider = Slider(control_fig[end+1,:])
 
-   # --- REFACTORED DATA STORAGE ---
-    # 1. Stores the FULL stats dict for each run
+    # --- REFACTORED DATA STORAGE ---
     raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}(undef, 0))
-    # 2. An intermediate store for the currently SELECTED stat's data
-    extracted_stat_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0))
-    # 3. Final plottable snapshot data (as before)
+    extracted_stat_data = Observable{Vector{Vector{Tuple{Any, Vector{Float64}}}}}([Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0)])
     y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-    
     is_y_stat_time_dependent = Observable(true)
     
-    # --- Lift 1: Load ALL Stats Data & Find Common Plottable Keys ---
+ #======================================================================#
+#    LIFT 1: Load ALL Stats & Find Common Plottable Keys for Menu
+#======================================================================#
+
     lift(update_notifier; ignore_equal_values=true) do _
         active_num = length(methods_obs[])
-        # ... (initial empty checks) ...
-        println("Lift 1: Loading all simulation stats...")
+        if active_num == 0
+            raw_data_store[] = []
+            return
+        end
+        println("Lift 1: Loading all simulation stats to find common keys...")
 
-        temp_raw_data = [Vector{Tuple{Dict{String,Any}, Vector{Float64}}}(undef, num_params) for _ in 1:active_num]
+        # A vector of Sets, one for each method, to hold its plottable keys
         sets_of_plottable_keys = [Set{String}() for _ in 1:active_num]
+        # Temporary storage for the full data
+        temp_raw_data = [Vector{Tuple{Dict{String,Any}, Vector{Float64}}}(undef, num_params) for _ in 1:active_num]
 
-        for i = 1:active_num # Loop over methods
+        for i = 1:active_num # Loop over selected methods
             method = methods_obs[][i]
-            base_params = # ... (assemble base_params)
+            base_params = assembleParams(shared_params_obs, method_params_collection_obs, method)
 
-            all_keys_for_this_method = Set{String}()
-            first_run = true
+            # We find the intersection of plottable keys for all runs of a single method
+            # Start with a full set and narrow it down.
+            is_first_run_for_method = true
 
-            for j = 1:num_params # Loop over parameter values
-                current_params = # ... (set current_params[key] = actual_param_values_used[j])
+            for j = 1:num_params # Loop over the convergence parameter values
+                current_params = copy(base_params)
+                current_params[key] = x_vals[j]
                 
                 stats_dict_for_run = Dict{String,Any}(); time_vec_for_run = Float64[]
                 try
+                    # Assumes Utils.loadSimData exists and works
                     sim_data = Utils.loadSimData(current_params)
                     if !isnothing(sim_data) && hasproperty(sim_data, :stats)
                         stats_dict_for_run = sim_data.stats
@@ -181,445 +161,85 @@ function showConvergencePlot(
                             time_vec_for_run = sim_data.t
                         end
                     end
-                catch e; # ...
+                catch e
+                    @warn "Could not load data for method '$method' with '$key'=$(current_params[key])"
                 end
+                
+                # Store the full stats dictionary
                 temp_raw_data[i][j] = (stats_dict_for_run, time_vec_for_run)
                 
-                # On the first run for a method, get all plottable keys.
-                # Then, intersect with keys from subsequent runs to find common ones.
-                current_run_keys = Set(keys(filter(p -> isa(p.second, Union{Number, Vector{<:Real}}), stats_dict_for_run)))
-                if first_run
-                    all_keys_for_this_method = current_run_keys
-                    first_run = false
+                # Filter for keys whose values are plottable (Number or Vector of Reals)
+                current_run_plottable_keys = Set(
+                    keys(filter(p -> isa(p.second, Union{Number, AbstractVector{<:Real}}), stats_dict_for_run))
+                )
+                
+                if is_first_run_for_method
+                    sets_of_plottable_keys[i] = current_run_plottable_keys
+                    is_first_run_for_method = false
                 else
-                    intersect!(all_keys_for_this_method, current_run_keys)
+                    # Keep only the keys that are present in ALL runs for this method
+                    intersect!(sets_of_plottable_keys[i], current_run_plottable_keys)
                 end
             end
-            sets_of_plottable_keys[i] = all_keys_for_this_method
         end
         
-        # Find keys that are common across ALL selected methods
+        # Now, find the keys that are common across ALL selected methods
         common_keys = if !isempty(sets_of_plottable_keys)
             # Start with the keys from the first method, then intersect with the rest
             intersect(sets_of_plottable_keys...) 
         else
             Set{String}()
         end
-        
-        # --- Update the Menu ---
         sorted_keys = sort(collect(common_keys))
-        if isempty(sorted_keys)
-            stats_menu.options[] = ["No common stats found"]
-        else
-            # If the current selection is not in the new list, reset to the first one
-            current_selection = to_value(stats_menu.selection)
-            if !(current_selection in sorted_keys)
-                stats_menu.selection[] = sorted_keys[1]
-            end
-            stats_menu.options[] = sorted_keys
-        end
 
+        y_options[] = sorted_keys
+
+        # Finally, update the main raw data store, which will trigger Lift 2
         raw_data_store[] = temp_raw_data
+        println("Lift 1: Update complete. Found $(length(sorted_keys)) common plottable stats.")
     end
-    # # --- Lift 1: Data Loading / Simulation & Initial Snapshot ---
-    # lift(update_notifier, stats_menu.selection; ignore_equal_values=true) do _, stat
-    #     active_num = length(methods_obs[])
-    #     if active_num == 0
-    #         raw_data_store[] = []; y_plot_data_methods[] = []
-    #         is_y_stat_time_dependent[] = true; tSlider.range = 0.0:1.0; set_close_to!(tSlider, 0.0); tLabel_text[] = "t = N/A"
-    #         return
-    #     end
-    #     println("Lift 1: Running/Loading simulations...")
 
-    #     temp_raw_data = Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, active_num)
-    #     all_times_union = Set{Float64}()
 
-    #     # --- Simulation Loop ---
-    #     for i = 1:active_num
-    #         method = methods_obs[][i]
-    #         raw_data_for_method = Vector{Tuple{Any, Vector{Float64}}}(undef, num_params)
-    #         base_params = assembleParams(
-    #             shared_params_obs,          # Pass the observable dict
-    #             method_params_collection_obs, # Pass the nested observable dict
-    #             method
-    #         )
-    #         # === Optional: Threads.@threads for j = 1:num_params ===
-    #         for j = 1:num_params
-    #             current_value = actual_param_values_used[j]
-    #             current_params = copy(base_params); 
-    #             current_params[key] = current_value;
+    #======================================================================#
+    #    LIFT 2: Extract Selected Stat & Check Time Dependence
+    #======================================================================#
 
-    #             stat_val_for_run = missing; time_vec_for_run = Float64[]
-    #             try
-    #                 # --- Run or Load ---
-    #             # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
-    #                 if !Utils.doesSimDataExist(current_params)
-    #                     println(" Running simulation for method: $method")
-    #                     sim_data = sim_config.sim_function(current_params)
-    #                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
-    #                 else
-    #                     println(" Loading data for method: $method")
-    #                     sim_data = Utils.loadSimData(current_params)
-    #                 end
-    #                 # --- Extract ONLY Needed Data ---
-    #                 if !isnothing(sim_data) && hasproperty(sim_data, :stats) && hasproperty(sim_data, :t) && isa(sim_data.stats, AbstractDict)
-    #                     stat_val_for_run = get(sim_data.stats, y_stat_key, missing)# Use get for safety
-    #                     if isa(sim_data.t, AbstractVector); time_vec_for_run = sim_data.t; union!(all_times_union, time_vec_for_run); end
-    #                 end
-    #             catch e; @error "Sim/Load Error" exception=(e, catch_backtrace()); end
-    #             raw_data_for_method[j] = (stat_val_for_run, time_vec_for_run)
-    #         end # End j loop
-    #         temp_raw_data[i] = raw_data_for_method
-    #     end # End i loop
-    #     # --- End Simulation Loop ---
-
-    #     println("Finished runs. Updating observables...")
-    #     raw_data_store[] = temp_raw_data # Store the collected raw data
-
-    #      # --- Check Time Dependence of y_stat_key (REVISED LOGIC + DEBUG PRINTS) ---
-    #      println("--- Checking time dependence for key: '$y_stat_key' ---")
-    #      found_vector = false        # Ever found a valid Vector?
-    #      found_scalar = false        # Ever found a valid Number?
-    #      found_any_valid = false     # Found the key with a valid type at least once?
-    #      processed_runs_with_key = 0 # Count runs where key was present
- 
-    #      # Iterate through the collected raw data (List per method -> List per param -> Tuple(raw_val, times))
-    #      for (i_meth, method_data_list) in enumerate(temp_raw_data) # Use temp_raw_data from this lift block
-    #          for (j_param, (raw_val, _)) in enumerate(method_data_list) # Unpack the tuple
- 
-    #               # Check if the key was actually present and extracted (value is not missing)
-    #               if !ismissing(raw_val)
-    #                  processed_runs_with_key += 1
-    #                  found_any_valid = true # Mark that we found the key at least once
-    #                  val_type = typeof(raw_val)
-    #                  #print("  Run (Meth $i_meth, Param $j_param): Found '$y_stat_key', Type: $val_type")
- 
-    #                  # Check for recognized types and update flags
-    #                  # Ensure vectors are non-empty and contain numbers
-    #                  if isa(raw_val, AbstractVector) && !isempty(raw_val) && all(isa.(raw_val, Number))
-    #                      found_vector = true; #print(" -> Vector\n")
-    #                  elseif isa(raw_val, Number)
-    #                      found_scalar = true; #print(" -> Scalar\n")
-    #                  else
-    #                      # Key exists but value is not a Number or a valid Vector (e.g., empty Vector, Nothing, String)
-    #                      #print(" -> Other/Empty/Invalid Type\n")
-    #                  end
- 
-    #                  # Optimization: If we've already found both types, we know it's inconsistent
-    #                  if found_vector && found_scalar
-    #                      println("      Inconsistency (Vector & Scalar) detected.")
-    #                      # Optional: break loops early if needed, but completing allows full type survey
-    #                      # break # breaks inner loop
-    #                  end
-    #               # else: raw_val is missing (key wasn't in original stats dict)
-    #               #   println(" Key '$y_stat_key' was missing in this run.") # Optional debug
-    #               end
-    #          end # End inner loop (param values)
-    #          # if found_vector && found_scalar; break; end # Optional: break outer loop
-    #      end # End outer loop (methods)
-    #      println("--- Finished check. Processed $processed_runs_with_key runs containing the key '$y_stat_key' ---")
-    #      println("    Final flags: found_any_valid=$found_any_valid, found_vector=$found_vector, found_scalar=$found_scalar")
- 
-    #      # Determine final is_td based *only* on whether both types were found, or only one.
-    #      local is_td
-    #      if !found_any_valid
-    #           @error "Stat key '$y_stat_key' not found or has no valid data (Number/Vector)! Assuming non-time-dependent."
-    #           is_td = false # Or handle as error? Defaulting to false.
-    #      elseif found_vector && found_scalar # Inconsistent types found across runs
-    #           @warn "Stat key '$y_stat_key' has inconsistent types (scalar/vector)! Treating as time-dependent."
-    #           is_td = true
-    #      elseif found_vector # Only vectors found
-    #           is_td = true
-    #      elseif found_scalar # Only scalars found
-    #           is_td = false
-    #      else
-    #           # This case should ideally not be reached if found_any_valid is true.
-    #           # It might mean the value was present but wasn't Number or valid Vector.
-    #           @warn "Stat key '$y_stat_key' found, but not as Number or valid Vector. Assuming non-time-dependent."
-    #           is_td = false
-    #      end
-    #      is_y_stat_time_dependent[] = is_td # Update the observable
-    #      println("Statistic is time dependent: $is_td")
-    #      # --- End Time Dependence Check ---
- 
-    #      # --- Update Time Slider Range AND Label Text ---
-    #      # (This part uses the is_td determined above - remains the same)
-    #      time_vec = isempty(all_times_union) ? [0.0] : sort(collect(all_times_union))
-    #      t_range = range(extrema(time_vec)..., length=max(2, length(time_vec)*2+80))
-    #      if tSlider.range[] != t_range; tSlider.range = t_range; end
-    #      set_close_to!(tSlider, clamp(tSlider.value[], extrema(t_range)...))
-    #      if is_td; tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"; else; tLabel_text[] = "t = N/A (Scalar Stat)"; end
-
-    #     # --- Calculate Initial Y Plot Data Snapshot ---
-    #     current_y_plot_data = [Observable(fill(NaN, num_params)) for _ in 1:active_num] # Initialize with NaN
-    #     current_t = tSlider.value[]
-
-    #     for i = 1:active_num
-    #         y_vals = fill(NaN, num_params) # Use NaN as default
-    #         raw_method_data = raw_data_store[][i] # Access stored raw data
-
-    #         for j = 1:num_params
-    #              raw_stat_val, times = raw_method_data[j]
-    #              if !ismissing(raw_stat_val)
-    #                  if is_td
-    #                      if isa(raw_stat_val, AbstractVector) && !isempty(times) && !isempty(raw_stat_val)
-    #                          (_, m_ij) = findmin(a -> abs(a - current_t), times)
-    #                          if m_ij <= length(raw_stat_val); y_vals[j] = Float64(raw_stat_val[m_ij]); end
-    #                      elseif isa(raw_stat_val, Number); y_vals[j] = Float64(raw_stat_val); end # Inconsistent case
-    #                  elseif isa(raw_stat_val, Number); y_vals[j] = Float64(raw_stat_val); end
-    #              end
-    #         end
-    #         current_y_plot_data[i][] = y_vals
-    #     end
-    #     y_plot_data_methods[] = current_y_plot_data # Update the observable for plotting
-    #     # --- End Snapshot Calculation ---
-    # end # --- End Lift 1 ---
-    # --- Lift 2: Extract Selected Stat Data & Check Time Dependence ---
-    lift(stats_menu.selection, update_notifier) do selected_key, _
-        all_raw_data = raw_data_store[]
-        if isempty(all_raw_data); return; end
-        println("Lift 2: Extracting data for '$selected_key'")
-        
-        active_num = length(all_raw_data)
-        temp_extracted_data = [Vector{Tuple{Any, Vector{Float64}}}(undef, num_params) for _ in 1:active_num]
-        all_times_union = Set{Float64}()
-        
-        for i in 1:active_num
-            for j in 1:num_params
-                stats_dict, times = all_raw_data[i][j]
-                stat_val = get(stats_dict, selected_key, missing)
-                temp_extracted_data[i][j] = (stat_val, times)
-                union!(all_times_union, times)
-            end
-        end
-        
-         println("--- Checking time dependence for key: '$y_stat_key' ---")
-         found_vector = false        # Ever found a valid Vector?
-         found_scalar = false        # Ever found a valid Number?
-         found_any_valid = false     # Found the key with a valid type at least once?
-         processed_runs_with_key = 0 # Count runs where key was present
- 
-         # Iterate through the collected raw data (List per method -> List per param -> Tuple(raw_val, times))
-         for (i_meth, method_data_list) in enumerate(temp_extracted_data) # Use temp_raw_data from this lift block
-             for (j_param, (raw_val, _)) in enumerate(method_data_list) # Unpack the tuple
- 
-                  # Check if the key was actually present and extracted (value is not missing)
-                  if !ismissing(raw_val)
-                     processed_runs_with_key += 1
-                     found_any_valid = true # Mark that we found the key at least once
-                     val_type = typeof(raw_val)
-                     #print("  Run (Meth $i_meth, Param $j_param): Found '$y_stat_key', Type: $val_type")
- 
-                     # Check for recognized types and update flags
-                     # Ensure vectors are non-empty and contain numbers
-                     if isa(raw_val, AbstractVector) && !isempty(raw_val) && all(isa.(raw_val, Number))
-                         found_vector = true; #print(" -> Vector\n")
-                     elseif isa(raw_val, Number)
-                         found_scalar = true; #print(" -> Scalar\n")
-                     else
-                         # Key exists but value is not a Number or a valid Vector (e.g., empty Vector, Nothing, String)
-                         #print(" -> Other/Empty/Invalid Type\n")
-                     end
- 
-                     # Optimization: If we've already found both types, we know it's inconsistent
-                     if found_vector && found_scalar
-                         println("      Inconsistency (Vector & Scalar) detected.")
-                         # Optional: break loops early if needed, but completing allows full type survey
-                         # break # breaks inner loop
-                     end
-                  # else: raw_val is missing (key wasn't in original stats dict)
-                  #   println(" Key '$y_stat_key' was missing in this run.") # Optional debug
-                  end
-             end # End inner loop (param values)
-             # if found_vector && found_scalar; break; end # Optional: break outer loop
-         end # End outer loop (methods)
-         println("--- Finished check. Processed $processed_runs_with_key runs containing the key '$y_stat_key' ---")
-         println("    Final flags: found_any_valid=$found_any_valid, found_vector=$found_vector, found_scalar=$found_scalar")
- 
-         # Determine final is_td based *only* on whether both types were found, or only one.
-         local is_td
-         if !found_any_valid
-              @error "Stat key '$y_stat_key' not found or has no valid data (Number/Vector)! Assuming non-time-dependent."
-              is_td = false # Or handle as error? Defaulting to false.
-         elseif found_vector && found_scalar # Inconsistent types found across runs
-              @warn "Stat key '$y_stat_key' has inconsistent types (scalar/vector)! Treating as time-dependent."
-              is_td = true
-         elseif found_vector # Only vectors found
-              is_td = true
-         elseif found_scalar # Only scalars found
-              is_td = false
-         else
-              # This case should ideally not be reached if found_any_valid is true.
-              # It might mean the value was present but wasn't Number or valid Vector.
-              @warn "Stat key '$y_stat_key' found, but not as Number or valid Vector. Assuming non-time-dependent."
-              is_td = false
-         end
-         is_y_stat_time_dependent[] = is_td # Update the observable
-         println("Statistic is time dependent: $is_td")
-         # --- End Time Dependence Check ---
- 
-         # --- Update Time Slider Range AND Label Text ---
-         # (This part uses the is_td determined above - remains the same)
-         time_vec = isempty(all_times_union) ? [0.0] : sort(collect(all_times_union))
-         t_range = range(extrema(time_vec)..., length=max(2, length(time_vec)*2+80))
-         if tSlider.range[] != t_range; tSlider.range = t_range; end
-         set_close_to!(tSlider, clamp(tSlider.value[], extrema(t_range)...))
-         if is_td; tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"; else; tLabel_text[] = "t = N/A (Scalar Stat)"; end
-
-        # --- Calculate Initial Y Plot Data Snapshot ---
-        current_y_plot_data = [Observable(fill(NaN, num_params)) for _ in 1:active_num] # Initialize with NaN
-        current_t = tSlider.value[]
-
-        for i = 1:active_num
-            y_vals = fill(NaN, num_params) # Use NaN as default
-            raw_method_data = raw_data_store[][i] # Access stored raw data
-
-            for j = 1:num_params
-                 raw_stat_val, times = raw_method_data[j]
-                 if !ismissing(raw_stat_val)
-                     if is_td
-                         if isa(raw_stat_val, AbstractVector) && !isempty(times) && !isempty(raw_stat_val)
-                             (_, m_ij) = findmin(a -> abs(a - current_t), times)
-                             if m_ij <= length(raw_stat_val); y_vals[j] = Float64(raw_stat_val[m_ij]); end
-                         elseif isa(raw_stat_val, Number); y_vals[j] = Float64(raw_stat_val); end # Inconsistent case
-                     elseif isa(raw_stat_val, Number); y_vals[j] = Float64(raw_stat_val); end
-                 end
-            end
-            current_y_plot_data[i][] = y_vals
-        end
-        y_plot_data_methods[] = current_y_plot_data # Update the observable for plotting
-
-        # --- Update Time Slider ---
-        # ... (your logic to update tSlider.range and tLabel_text based on is_td) ...
-        
-        # --- IMPORTANT: Update the intermediate data store and trigger snapshot calculation ---
-        extracted_stat_data[] = temp_extracted_data
+    lift(selector, update_notifier) do selected_key, _
+        extracted_stat_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0))
+        updateData!(extracted_stat_data, raw_data_store[],selected_key)
+        update_time_dependence!(is_y_stat_time_dependent, tSlider, tLabel, extracted_stat_data[])
+        return nothing
+    end
+    # Set global limits if update_limits is off
+    lift(ui_update, selector) do _...
+        lims = ui_options_obs["update_limits"][] ? nothing : calculate_global_axis_range(extracted_stat_data[], ui_options_obs["ypadding"][], ui_options_obs["ylogscale"][])
+        if !isnothing(lims); ylims!(ax, lims[1], lims[2]); xlims!(ax, x_vals[1], x_vals[end]) end
+        return nothing
     end
 
     # --- Lift 2: Snapshot Update (Simpler) ---
-    lift(tSlider.value; ignore_equal_values=true) do t
-        if !is_y_stat_time_dependent[]; return; end # Only run if time-dependent
-
-        tLabel_text[] = "t = $(round(t, digits=3))"
-        active_num = method_number[]
-        # Consistency check for safety
-        if length(y_plot_data_methods[]) != active_num || length(raw_data_store[]) != active_num || active_num == 0; return; end
-
-        # Recalculate Y snapshot data based on new time t
-        for i = 1:active_num
-            y_vals = fill(NaN, num_params)
-            raw_method_data = raw_data_store[][i] # Get stored raw data
-
-            for j = 1:num_params
-                 raw_stat_val, times = raw_method_data[j]
-                 if !ismissing(raw_stat_val)
-                     # is_td must be true here
-                     if isa(raw_stat_val, AbstractVector) && !isempty(times) && !isempty(raw_stat_val)
-                         (_, m_ij) = findmin(a -> abs(a - t), times)
-                         if m_ij <= length(raw_stat_val); y_vals[j] = Float64(raw_stat_val[m_ij]); end
-                     elseif isa(raw_stat_val, Number); y_vals[j] = Float64(raw_stat_val); end # Inconsistent case
-                 end
-            end
-             # Update the inner observable for this method's Y plot data
-             if i <= length(y_plot_data_methods[]); y_plot_data_methods[][i][] = y_vals; end
-        end
+    lift(tSlider.value, extracted_stat_data; ignore_equal_values=true) do t, _
+        y_plot_data_methods[] = calculate_snapshot(extracted_stat_data[], t,is_y_stat_time_dependent[])
+        return nothing
     end # --- End Lift 2 ---
 
 
     # --- Lift 3: Plot Management (Uses constant X-data) ---
-    lift(update_notifier; ignore_equal_values=true) do _ 
-        active_num = length(methods_obs[])
-        # Handles adding/removing plot objects when active methods change
-        empty!(ax)
-        for c in contents(plot_fig.layout); if isa(c, Legend); delete!(c); end; end # Clear potential legend
-        if active_num == 0; return; end
-        active_methods = methods_obs[]
+    lift(y_plot_data_methods, ui_update; ignore_equal_values=true) do _...
 
-        # Consistency check
-        num_data_series_y = length(y_plot_data_methods[])
-        if num_data_series_y != active_num
-             num_to_plot = min(active_num, num_data_series_y); if num_to_plot <= 0; return; end
-             @warn "Lift 3: Data series mismatch. Plotting $num_to_plot series."
-        else; num_to_plot = active_num; end
+        create_base_plot_1D!(plot_fig, ax, 
+                             methods_obs[],
+                             [x_vals for _ = 1:length(methods_obs[])],
+                             y_plot_data_methods[],
+                             ui_options_obs; 
+                             plot_observable = false)
 
-        plotted_objects = []
-        for i = 1:num_to_plot
-            plotLabel = active_methods[i]
-            color = ui_options_obs["colors"][][mod1(i, length(ui_options_obs["colors"][]))]
-            marker = ui_options_obs["markers"][][mod1(i, length(ui_options_obs["markers"][]))]
-            y_data_obs = y_plot_data_methods[][i] # Get the observable for Y snapshot
+        delete_plots_by_label!(ax, "Reference Lines")
+        plot_reference_lines!(ax, ui_options_obs["reference"][])
+        
 
-            # === Plot using the CONSTANT actual_param_values_used for X ===
-            obj_for_legend = nothing
-
-            show_lines = ui_options_obs["show_lines"][]
-            show_scatter = ui_options_obs["show_scatter"][]
-
-            if show_lines
-                 l = lines!(ax, actual_param_values_used, y_data_obs;
-                       color=color, linewidth= ui_options_obs["linewidth"], label=plotLabel)
-                 obj_for_legend = l
-            end
-            if show_scatter
-                 s = scatter!(ax, actual_param_values_used, y_data_obs;
-                         color=color, markersize=ui_options_obs["markersize"], marker=marker, label=plotLabel)
-                 if obj_for_legend === nothing; obj_for_legend = s; end
-            end
-            if obj_for_legend !== nothing; push!(plotted_objects, obj_for_legend); end
-            # ======================================================
-        end
-
-        # Add Legend
-        if !isempty(plotted_objects)
-             try # Add legend in column 2
-                 for c in contents(plot_fig.layout); if isa(c, Legend); end; end
-                 Legend(plot_fig[1, 2], plotted_objects, active_methods[1:num_to_plot], "Methods", tellheight=false)
-                 colsize!(plot_fig.layout, 2, Auto())
-             catch e; @error "Error adding Legend" exception=(e, catch_backtrace()); end
-        end
-        #autolimits!(ax) # Update limits
     end # --- End Lift 3 ---
 
-        # --- NEW Lift Block 4: Dynamic Y-Limits ---
-    # Triggered whenever the Y plot data snapshot changes
-    lift(y_plot_data_methods, cb_log_y.active, tSlider.value; ignore_equal_values=true) do current_y_data_observables, y_active, _ # Vector{Observable{Vector{Float64}}}
-        ymin_overall = Inf
-        ymax_overall = -Inf
-        found_valid_y = false
-
-        for y_obs in current_y_data_observables # Iterate through observables
-            y_vec = y_obs[] # Get current vector value
-            valid_y = filter(isfinite, y_vec) # Filter NaN/Inf
-            if !isempty(valid_y)
-                ymin_local, ymax_local = extrema(valid_y)
-                ymin_overall = min(ymin_overall, ymin_local)
-                ymax_overall = max(ymax_overall, ymax_local)
-                found_valid_y = true
-            end
-        end
-
-        # Apply padding and set limits
-        if found_valid_y
-            pad_y_factor = to_value(y_active) ? 0 : ui_options_obs["y_axis_limit_padding"][] # Default 10%
-            y_range = ymax_overall - ymin_overall
-            y_pad = y_range ≈ 0 ? 0.1 : (y_range * pad_y_factor / 2.0)
-            final_ylims = (ymin_overall - y_pad, ymax_overall + y_pad)
-        else
-            final_ylims = (0.0, 1.0) # Default if no valid Y data
-        end
-
-        # Set the Y limits (use try-catch for robustness)
-        try
-            current_limits = ax.finallimits[]
-            # Only update if limits actually changed significantly
-            if abs(current_limits.origin[2] - final_ylims[1]) > 1e-9 || abs(current_limits.widths[2] - (final_ylims[2] - final_ylims[1])) > 1e-9
-                 ylims!(ax, final_ylims)
-            end
-        catch e
-            @warn "Failed to set dynamic ylims" exception=(e, catch_backtrace())
-        end
-        return nothing # Lift blocks don't need to return
-    end # --- End Lift Block 4 ---
 
     # --- Display ---
     try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
@@ -677,7 +297,7 @@ function showConvergencePlot(
     # --- Process Varied Parameter Values ---
     # Calculate the actual parameter values used for the varied key ONCE.
     # These are NOT directly plotted unless key == x_stat_key or key == y_stat_key
-    actual_param_values_used = try
+    x_vals = try
         vals = force_int_param ? map(v -> trunc(Int, v), param_values) : collect(param_values)
         # Keep original type if possible, needed if key itself is plotted
         # Float64.(vals) # Convert only if necessary later? Keep as Any[] for now.
@@ -686,8 +306,8 @@ function showConvergencePlot(
         @error "Could not process param_values for $key." exception=(e, catch_backtrace())
         return plot_fig, Figure() # Return empty figures on error
     end
-    if isempty(actual_param_values_used); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
-    num_params = length(actual_param_values_used)
+    if isempty(x_vals); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
+    num_params = length(x_vals)
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
@@ -825,7 +445,7 @@ function showConvergencePlot(
 
             # === Optional: Threads.@threads for j = 1:num_params ===
             for j = 1:num_params
-                current_value = actual_param_values_used[j]
+                current_value = x_vals[j]
                 current_params = copy(base_params); 
                 current_params[key] = current_value;
 

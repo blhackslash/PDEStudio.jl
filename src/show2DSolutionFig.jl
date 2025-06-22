@@ -109,14 +109,14 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     # on(toggle_plot_type.active) do active_state; plot_as_surface_obs[] = active_state; end
 
     # Colormap Slider
-    cmap_layout = controls_layout[end+1, :] = GridLayout() # Span controls area
+    #cmap_layout = controls_layout[end+1, :] = GridLayout() # Span controls area
     available_cmaps = ui_options_obs["colormaps"][]
-    default_cmap =ui_options_obs["colormap"]
+    default_cmap = ui_options_obs["colormap"][]
     default_cmap_idx = findfirst(isequal(default_cmap), available_cmaps); if isnothing(default_cmap_idx); default_cmap_idx = 1; end
     selected_colormap_obs = Observable(available_cmaps[default_cmap_idx])
-    cmap_slider = Slider(cmap_layout[1, 1], range = 1:length(available_cmaps), startvalue = default_cmap_idx) # Slider spans 2 cols
-    cmap_label = Label(cmap_layout[1, 2], lift(idx -> "$(available_cmaps[idx])", cmap_slider.value), width=Auto(), halign=:left) # Label spans 2 cols
-    on(cmap_slider.value) do idx; selected_colormap_obs[] = available_cmaps[idx]; end
+    cmap_menu = Menu(control_fig[end+1, :], options = available_cmaps, default = default_cmap_idx) # Slider spans 2 cols
+    #cmap_label = Label(cmap_layout[1, 2], lift(cmap -> "$cmap", cmap_menu.selection), width=Auto(), halign=:left) # Label spans 2 cols
+    on(cmap_menu.selection) do cmap; selected_colormap_obs[] = cmap end#available_cmaps[idx]; end
 
     # --- Animation and GIF Saving Controls (Copied from 1D version) ---
     anim_save_controls_row = controls_layout[end+1, 1:4] = GridLayout() # Span controls area
