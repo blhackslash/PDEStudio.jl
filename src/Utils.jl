@@ -376,6 +376,8 @@ function StringToTuple(s::String)::Union{Tuple, Nothing}
     # Strip leading/trailing whitespace from the whole string
     s_stripped = strip(s)
 
+    if s_stripped == "()" return () end
+
     # Check for enclosing parentheses
     if !startswith(s_stripped, "(") || !endswith(s_stripped, ")")
         return nothing

@@ -55,7 +55,7 @@ function GetUIStyle(style::Symbol)
         "ylabel" => "default",
         "xlogscale" => false,
         "ylogscale" => false,
-        "reference" => (),
+        "reference" => (1.,),
         "update_limits" => false,
         "save_formats" => ["png"], # Default to saving only PNG
         "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],

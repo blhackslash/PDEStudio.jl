@@ -44,7 +44,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier, ui_update = createBaseControlsFigure(
+    control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -54,21 +54,9 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     )
     # -----------------------------------------
 
-    sys_dim = ui_options_obs["system_dimension"][]
-    sel_comp_obs = Observable(1)
-    axis_label = lift(update_notifier) do _; "Solution Value u$(sel_comp_obs[])" end
+    axis_label = lift(selector) do sel; "Solution Value u$sel" end
     axis_title = Observable("t = 0.0") 
     
-    compLabel_text = lift(sel_comp_obs) do sel_comp
-        sys_dim > 1 ? "Component: $sel_comp / $sys_dim" : "Component: 1 / 1 (Scalar)"
-    end    
-    Label(control_fig[end+1,:], compLabel_text)
-    if sys_dim > 1
-        component_slider = Slider(control_fig[end+1,:], range = 1:sys_dim, startvalue = 1)
-        on(component_slider.value) do val
-            sel_comp_obs[] = round(Int, val)
-        end
-    end
     default_labels = Dict("xlabel" => "Position (x)",
                       "ylabel" => axis_label,                        
                       "title" => axis_title)
@@ -122,40 +110,25 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
     # --- Data Structures ---
     # Outer Observable holds Vector of Inner Observables (one per method)
-    xData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0)) # Full x data series
-    uData = Observable(Vector{Observable{Vector{Vector{Float64}}}}(undef, 0)) # Full u data series
-    tData = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))       # Full t data series
-    xs = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))           # Snapshot x data for plotting
-    us = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))           # Snapshot u data for plotting
-    global_xlims = Observable((0.0, 1.0)) # For fixed plot limits
-    global_ylims = Observable((0.0, 1.0)) # For fixed plot limits
+    xData = Observable(Vector{Vector{Vector{Float64}}}(undef, 0)) # Full x data series
+    uData = Observable(Vector{Vector{<:Union{Vector{Float64}, Matrix{Float64}}}}(undef, 0)) # Full u data series
+    uData_extr = Observable(Vector{Vector{Vector{Float64}}}(undef, 0)) # Full u data series
+    tData = Observable(Vector{Vector{Float64}}(undef, 0))       # Full t data series
+    xs = Observable(Vector{Vector{Float64}}(undef, 0))           # Snapshot x data for plotting
+    us = Observable(Vector{Vector{Float64}}(undef, 0))           # Snapshot u data for plotting
     # --- NEW: Observables for max tracking ---
-    x_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores X position of max U per method
-    u_at_max_obs = Observable(Vector{Observable{Float64}}(undef, 0)) # Stores max U value per method
+    x_at_max_obs = Observable(Vector{Float64}(undef, 0)) # Stores X position of max U per method
+    u_at_max_obs = Observable(Vector{Float64}(undef, 0)) # Stores max U value per method
     # ------------------------------------
     # --- Lift Block 1: Data Loading / Simulation Execution ---
     lift(update_notifier; ignore_equal_values=true) do _
         active_num = length(methods_obs[])
         println("Lift 1: Running sims / loading data...") # Concise print
-        # Resize outer vectors
-        resize!(xData[], active_num); resize!(uData[], active_num); resize!(tData[], active_num)
-        
-        resize!(xs[], active_num); resize!(us[], active_num)
-        resize!(x_at_max_obs[], active_num); resize!(u_at_max_obs[], active_num) # Resize new
-        # Ensure inner observables exist
-        for k in 1:active_num
-             if !isassigned(xData[], k) || !isa(xData[][k], Observable); xData[][k] = Observable(Vector{Vector{Float64}}()); end
-             if !isassigned(uData[], k) || !isa(uData[][k], Observable); uData[][k] = Observable(Vector{Vector{Float64}}()); end
-             if !isassigned(tData[], k) || !isa(tData[][k], Observable); tData[][k] = Observable(Float64[]); end
-             if !isassigned(xs[], k) || !isa(xs[][k], Observable); xs[][k] = Observable(Float64[]); end
-             if !isassigned(us[], k) || !isa(us[][k], Observable); us[][k] = Observable(Float64[]); end
-             if !isassigned(x_at_max_obs[], k) || !isa(x_at_max_obs[][k], Observable); x_at_max_obs[][k] = Observable(NaN); end
-             if !isassigned(u_at_max_obs[], k) || !isa(u_at_max_obs[][k], Observable); u_at_max_obs[][k] = Observable(NaN); end
-        end
 
+        xData_tmp = Vector{Vector{Vector{Float64}}}(undef, active_num)
+        uData_tmp = Vector{Vector{Union{Vector{Float64}, Matrix{Float64}}}}(undef, active_num)
+        tData_tmp = Vector{Vector{Float64}}(undef, active_num)
         all_time_points = Set{Float64}()
-        g_xmin, g_xmax = Inf, -Inf; g_umin, g_umax = Inf, -Inf
-        found_any_data = false
         active_methods_now = methods_obs[]
 
         for i = 1:active_num
@@ -195,175 +168,78 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
                  continue # Skip to next method
             end
 
-            xData[][i][] = sim_data.x
-            if sys_dim == 1
-                @assert isa(sim_data.u, Vector{Vector{Float64}}) "System data input found for scalar plotting. Ensure that system_dimension is set correctly!"
-                uData[][i][] = sim_data.u
-            else
-                uData[][i][] = [us[:,sel_comp_obs[]] for us = sim_data.u]
+            xData_tmp[i] = sim_data.x
+            uData_tmp[i] = sim_data.u
+            tData_tmp[i] = sim_data.t
+            if isa(sim_data.u[1], AbstractVector)
+                y_options[] = [("Component 1 (scalar)",1)]
+            elseif isa(sim_data.u[1], AbstractMatrix)
+                y_options[] = [("Component $j" ,j) for j = 1:length(sim_data.u[1][1,:])]
             end
-            tData[][i][] = sim_data.t
-            union!(all_time_points, sim_data.t)
 
-            # Update Global Limits Calculation
-            for k in eachindex(sim_data.t)
-                 if k <= length(sim_data.x) && k <= length(sim_data.u)
-                     x_k = sim_data.x[k]; u_k = uData[][i][][k]
-                     if !isempty(x_k) && !isempty(u_k)
-                         found_any_data = true
-                         xmin_k, xmax_k = extrema(x_k); umin_k, umax_k = extrema(u_k)
-                         g_xmin = min(g_xmin, xmin_k); g_xmax = max(g_xmax, xmax_k)
-                         g_umin = min(g_umin, umin_k); g_umax = max(g_umax, umax_k)
-                     end
-                 end
-            end
+            union!(all_time_points, sim_data.t)
+            update_time_slider!(tSlider,tLabel_text,all_time_points)
             # -----------------------------
         end # End loop over methods
-
-        # --- Finalize and Apply Global Limits ---
-        if found_any_data; 
-            pad_x=ui_options_obs["xpadding"][]; pad_y=ui_options_obs["ypadding"][]; 
-            xr=g_xmax-g_xmin; 
-            xp=xr≈0 ? 0.1 : (xr*pad_x/2.0); 
-            yr=g_umax-g_umin; 
-            yp=yr≈0 ? 0.1 : (yr*pad_y/2.0); 
-            final_xlims=(g_xmin-xp,g_xmax+xp); 
-            final_ylims=(g_umin-yp,g_umax+yp); 
-            global_xlims[]=final_xlims; 
-            global_ylims[]=final_ylims; 
-            try; 
-                xlims!(ax,final_xlims); 
-                ylims!(ax,final_ylims); 
-            catch 
-                e; 
-                @warn "Failed applying limits" e; 
-            end; 
-        else; 
-            global_xlims[]=(0.0,1.0); 
-            global_ylims[]=(0.0,1.0); 
-            try; xlims!(ax,0.0,1.0); 
-                ylims!(ax,0.0,1.0); 
-            catch e; 
-                @warn "Failed applying default limits" e; 
-            end; 
-        end
-
-        # --- Update Time Slider Range / Store Data Range ---
-        if !isempty(all_time_points); 
-            t_min_data,t_max_data=extrema(all_time_points); 
-            time_range_data[]=(t_min_data,t_max_data); 
-            sorted_times=sort(collect(all_time_points)); 
-            t_len=length(sorted_times); 
-            t_range_slider=range(t_min_data,stop=t_max_data,length=max(2,t_len*2+100)); 
-            if t_len==1; 
-                t_range_slider=range(t_min_data,stop=t_max_data,length=2); 
-            end; 
-            if tSlider.range[]!=t_range_slider; 
-                tSlider.range=t_range_slider; 
-            end; 
-            current_t_val=clamp(tSlider.value[],t_min_data,t_max_data); 
-            set_close_to!(tSlider, current_t_val); 
-        else; time_range_data[]=(0.0,1.0); 
-            if tSlider.range[]!=(0.0:1.0); 
-                tSlider.range=0.0:1.0; 
-            end; 
-            set_close_to!(tSlider, 0.0); 
-        end
-        # Set label AFTER slider value might have been clamped/set
-        tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-
-    # --- Inside Lift Block 1 ---
-    # ... (AFTER simulation loop and Time Slider update) ...
-
-    # --- Calculate ALL Initial Snapshots and Max Values FIRST ---
-    initial_xs_vectors = Vector{Vector{Float64}}(undef, active_num)
-    initial_us_vectors = Vector{Vector{Float64}}(undef, active_num)
-    initial_x_max = fill(NaN, active_num)
-    initial_u_max = fill(NaN, active_num)
-    current_t = tSlider.value[] # Use the final set value
-
-    for i = 1:active_num
-        # Default to empty/NaN
-        x_init_snap = Float64[]; u_init_snap = Float64[]
-        x_max_init = NaN; u_max_init = NaN
-
-        if i <= length(tData[]) && !isempty(tData[][i][]) # Check data loaded
-            t_vec = tData[][i][]; x_vecs = xData[][i][]; u_vecs = uData[][i][]
-            if length(t_vec) == length(x_vecs) && length(t_vec) == length(u_vecs) # Check consistency
-                m = findmin(a->abs(a-current_t), t_vec)[2] # Closest index
-                if 1 <= m <= length(x_vecs) # Check index validity
-                    x_init_snap = x_vecs[m]; u_init_snap = u_vecs[m]
-                    if !isempty(u_init_snap) # Calculate max if valid
-                        try; u_max_val,max_idx=findmax(u_init_snap); if isfinite(u_max_val) && 1<=max_idx<=length(x_init_snap); x_max_init=x_init_snap[max_idx]; u_max_init=u_max_val; end; catch; end
-                    end
-                end
-            else; @warn "Inconsistent time steps vs data in Lift 1 for method $i."; end
-        end
-        initial_xs_vectors[i] = x_init_snap
-        initial_us_vectors[i] = u_init_snap
-        initial_x_max[i] = x_max_init
-        initial_u_max[i] = u_max_init
-    end
-    # --- End Initial Snapshot/Max Calculation Loop ---
-
-    # --- Update Observables AFTER loop ---
-    # Update max values first
-    for i = 1:active_num
-        if i <= length(x_at_max_obs[]); x_at_max_obs[][i][] = initial_x_max[i]; end
-        if i <= length(u_at_max_obs[]); u_at_max_obs[][i][] = initial_u_max[i]; end
-    end
-    # Then update snapshot values
-    for i = 1:active_num
-        if i <= length(xs[]); xs[][i][] = initial_xs_vectors[i]; end
-        if i <= length(us[]); us[][i][] = initial_us_vectors[i]; end
-    end
-    # --- End Observable Updates ---
-
+        xData[] = xData_tmp
+        tData[] = tData_tmp
+        uData[] = uData_tmp
     println("Lift 1: Update complete.")
 
     end # --- End Lift Block 1 ---
+    lift(selector, ui_options_obs, uData) do sel, _, u
+        uData_extr[] = extractU(u, sel);
+        if !ui_options_obs["update_limits"][]
+            ymin, ymax = calculate_global_axis_range(uData_extr[], ui_options_obs["ypadding"][], ui_options_obs["ylogscale"][])
+            xmin, xmax = calculate_global_axis_range(xData[], ui_options_obs["xpadding"][], ui_options_obs["xlogscale"][])
+            ylims!(ax, ymin, ymax)
+            xlims!(ax, xmin, xmax)
+        end
+    end
+    lift(tSlider.value, ui_options_obs) do t, _
+        xs[], us[] = calculate_snapshot(xData[], uData_extr[], tData[], t)
+    end
 
+    # # --- Lift Block 2 (MODIFIED: Calculate and update max observables) ---
+    # lift(tSlider.value; ignore_equal_values=false) do t#, xd_obs, ud_obs, td_obs
+    #     # Get inner vectors
+    #     xd = to_value(xData); ud = to_value(uData); td = to_value(tData)
+    #     active_num = method_number[]
+    #     # Consistency check (include new observables)
+    #     if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
 
-    # --- Lift Block 2 (MODIFIED: Calculate and update max observables) ---
-    lift(tSlider.value; ignore_equal_values=false) do t#, xd_obs, ud_obs, td_obs
-        # Get inner vectors
-        xd = to_value(xData); ud = to_value(uData); td = to_value(tData)
-        active_num = method_number[]
-        # Consistency check (include new observables)
-        if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
+    #     tLabel_text[] = "t = $(round(t, digits=3))"; axis_title[] = "t=$(round(t, digits=3))"
 
-        tLabel_text[] = "t = $(round(t, digits=3))"; axis_title[] = "t=$(round(t, digits=3))"
+    #     for i = 1:active_num # Iterate through active methods
+    #          if i > length(xd) || i > length(ud) || i > length(td); continue; end # Index check
+    #          x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
 
-        for i = 1:active_num # Iterate through active methods
-             if i > length(xd) || i > length(ud) || i > length(td); continue; end # Index check
-             x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
+    #          local x_snapshot::Vector{Float64} = Float64[]; local u_snapshot::Vector{Float64} = Float64[]
 
-             local x_snapshot::Vector{Float64} = Float64[]; local u_snapshot::Vector{Float64} = Float64[]
+    #          # Get snapshot using closest time step logic
+    #          if !isempty(t_vec) && length(t_vec)==length(x_vecs) && length(t_vec)==length(u_vecs)
+    #              (_, m) = findmin(a -> abs(a - t), t_vec)
+    #              if 1 <= m <= length(x_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; end
+    #          end
 
-             # Get snapshot using closest time step logic
-             if !isempty(t_vec) && length(t_vec)==length(x_vecs) && length(t_vec)==length(u_vecs)
-                 (_, m) = findmin(a -> abs(a - t), t_vec)
-                 if 1 <= m <= length(x_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; end
-             end
+    #          # Update snapshot observables
+    #          if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
 
-             # Update snapshot observables
-             if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
-
-             # --- Calculate and Update Max Observables ---
-             if !isempty(u_snapshot) && i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[])
-                 try
-                     u_max_val, max_idx = findmax(u_snapshot)
-                     if isfinite(u_max_val) && 1 <= max_idx <= length(x_snapshot)
-                         x_at_max_obs[][i][] = x_snapshot[max_idx]
-                         u_at_max_obs[][i][] = u_max_val
-                     else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-                 catch e; @warn "findmax failed: $e"; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-             else # Empty snapshot or invalid index for max obs
-                 if i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[]); x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-             end
-             # ---------------------------------------------
-        end # End loop over methods
-    end # --- End Lift Block 2 ---
+    #          # --- Calculate and Update Max Observables ---
+    #          if !isempty(u_snapshot) && i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[])
+    #              try
+    #                  u_max_val, max_idx = findmax(u_snapshot)
+    #                  if isfinite(u_max_val) && 1 <= max_idx <= length(x_snapshot)
+    #                      x_at_max_obs[][i][] = x_snapshot[max_idx]
+    #                      u_at_max_obs[][i][] = u_max_val
+    #                  else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+    #              catch e; @warn "findmax failed: $e"; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+    #          else # Empty snapshot or invalid index for max obs
+    #              if i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[]); x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
+    #          end
+    #          # ---------------------------------------------
+    #     end # End loop over methods
+    # end # --- End Lift Block 2 ---
 
 
     # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---

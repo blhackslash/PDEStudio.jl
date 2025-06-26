@@ -238,8 +238,8 @@ dynamically updating menu options.
 function create_or_update_selection_menu!(
     menu_container::GridLayout,
     current_menu_handle::Observable{Union{Nothing, Menu}},
-    available_options::Vector{String},
-    persistent_selection_obs::Observable{String}
+    available_options::AbstractArray,
+    persistent_selection_obs::Observable
 )
     # 1. If a menu from a previous run exists, delete it.
     if !isnothing(current_menu_handle[])
@@ -265,7 +265,11 @@ function create_or_update_selection_menu!(
     new_default = if persistent_selection_obs[] in available_options
         persistent_selection_obs[]
     else
-        available_options[1]
+        if isAtomic(available_options[1])
+            available_options[1]
+        else
+            available_options[1][2]
+        end
     end
     # Update the persistent observable to ensure it's in a valid state.
     persistent_selection_obs[] = new_default
@@ -397,8 +401,8 @@ function createBaseControlsFigure(
    current_row += 1
    
    # These are the key observables that form the "interface"
-   y_options = Observable(String[]) # Holds the list of strings for the menu
-   selector = Observable{String}(" ") # Holds the final selected value
+   y_options = Observable{AbstractArray}(["1",1]) # Holds the list of strings for the menu
+   selector = Observable{Any}(" ") # Holds the final selected value
    
    # This container will hold the menu widget, which will be deleted and recreated
    menu_container = fig_layout[current_row, 1] = GridLayout()
@@ -1116,56 +1120,60 @@ function plot_reference_lines!(
     linestyle = :dash,
     kwargs...
 )
-    # --- Input Validation ---
+    # --- Input and Axis Validation ---
     if isnothing(exponents) || isempty(exponents)
         return []
     end
 
-    # --- Get Current Axis View Limits ---
     current_limits_nested = ax.limits[]
     if isnothing(current_limits_nested) || isnothing(current_limits_nested[1]) || isnothing(current_limits_nested[2])
-        @warn "Cannot plot reference lines, axis limits are not yet fully defined."
+        @warn "Cannot plot reference lines, axis view limits are not yet set."
         return []
     end
+    
     xlims, ylims = current_limits_nested
-    all_limit_values = (xlims..., ylims...)
-    if any(!isfinite, all_limit_values)
-        @warn "Cannot plot reference lines with non-finite axis limits."
+    
+    # On a log scale, limits must be positive.
+    if any(x -> x <= 0, (xlims..., ylims...))
+        @warn "Cannot plot reference lines on a log-log plot with non-positive axis limits."
         return []
     end
+    
     xmin, xmax = xlims
     ymin, ymax = ylims
 
-    x_ref_values = range(xmin, xmax, length=100)
-    ref_x = xmax # Anchor x-position is always the rightmost edge
+    # For a visually straight line on a log-log plot, we create log-spaced x-values.
+    x_ref_values = 10 .^ range(log10(xmin), log10(xmax), length=100)
+    
+    # The anchor x-position is always the leftmost edge.
+    ref_x = xmin
 
     plotted_lines = []
     
     for p_signed in exponents
-        if p_signed == 0; continue; end # Skip zero exponent
+        if p_signed == 0; continue; end
 
-        # Determine the anchor point and the absolute power based on the sign
-        local y_anchor, power
+        # --- Correctly determine the y-anchor point ---
+        local y_anchor
         if p_signed > 0
-            y_anchor = ymax # For increasing trends, anchor at the top
-            power = p_signed
+            # An O(x^2) line should start low on the left.
+            y_anchor = ymin
         else # p_signed < 0
-            y_anchor = ymin # For decreasing trends, anchor at the bottom
-            power = abs(p_signed)
+            # An O(x^-1) line should start high on the left.
+            y_anchor = ymax
         end
 
-        if ref_x <= 0 && power != 0
-             @warn "Skipping reference line for exponent $p_signed due to non-positive x-limit."
-             continue
-        end
-
-        # Calculate scaling constant C so that y = C * x^power passes through (ref_x, y_anchor)
-        C = y_anchor / (ref_x^power)
-        y_ref_line = [x > 0 || power >= 0 ? C * x^power : NaN for x in x_ref_values]
+        # --- Calculate the line using the power-law formula ---
+        
+        # Calculate scaling constant C so that y = C * x^p passes through (ref_x, y_anchor)
+        C = y_anchor / (ref_x^p_signed)
+        
+        # Calculate the y-values for the reference line using the power law
+        y_ref_line = C .* (x_ref_values .^ p_signed)
         
         # Create a single line plot for this exponent
         line = lines!(ax, x_ref_values, y_ref_line;
-            label = label, # Use the same label for grouping
+            label = label, # Use the same label for grouping in the legend
             color = (color, 0.65),
             linestyle = linestyle,
             kwargs...
@@ -1198,83 +1206,224 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
+#======================================================================#
+#           RECURSIVE MIN/MAX CALCULATION
+#======================================================================#
+
+# --- Base Cases ---
+# For a single number
+_get_val(x::Real) = isfinite(x) ? x : nothing
+# For a vector of numbers
+_get_val(v::AbstractVector{<:Real}) = isempty(v) ? nothing : filter(isfinite, v)
+
+# --- Recursive Helpers ---
 """
-    get_axis_limits(data_observables, padding_factor, is_log_scale) -> Tuple
+    get_min_val(data) -> Union{Real, Nothing}
 
-Calculates the min and max limits for an axis from a vector of data observables.
-
-It iterates through all data, finds the overall min/max of finite values,
-and applies a specified padding. It correctly handles linear and log scales
-(for log scales, it ignores non-positive values and applies padding multiplicatively).
-
-# Arguments
-- `data_observables`: A vector of observables, where each observable contains a
-  vector of numeric data (e.g., `Vector{Observable{Vector{Float64}}}`).
-- `padding_factor::Real`: The padding to apply, as a fraction (e.g., 0.1 for 10%).
-- `is_log_scale::Bool`: If true, calculates padding suitable for a log-scaled axis.
-
-# Returns
-- A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`. Returns a
-  default range like `(0.0, 1.0)` if no valid data is found.
+Recursively finds the minimum finite value in a potentially nested collection
+of vectors and numbers. Returns `nothing` if no finite values are found.
 """
-function get_axis_limits(
-    data_observables::AbstractVector,
-    padding_factor::Real,
-    is_log_scale::Bool
-)
-    min_overall = Inf
-    max_overall = -Inf
-    found_valid_data = false
+function get_min_val(data)
+    # Use multiple dispatch to handle the base cases (a single number or a vector of numbers)
+    # and the recursive case (a vector of other things).
+    _get_min_val(data)
+end
 
-    for obs in data_observables
-        # Get the vector from the observable
-        data_vec = to_value(obs)
+_get_min_val(data::Real) = _get_val(data)
+_get_min_val(data::AbstractVector{<:Real}) = minimum(_get_val(data); init=Inf)
+_get_min_val(data::Tuple{<:AbstractVector,<:Vector}) = minimum(_get_val(data[1]))
+_get_min_val(data::Tuple{<:Real,<:Vector}) = _get_val(data[1])
 
-        # Filter for valid data points
-        local valid_data
-        if is_log_scale
-            # For log scale, we can only use positive, finite numbers
-            valid_data = filter(x -> isfinite(x) && x > 0, data_vec)
-        else
-            # For linear scale, any finite number is fine
-            valid_data = filter(isfinite, data_vec)
-        end
-        
-        if !isempty(valid_data)
-            found_valid_data = true
-            min_local, max_local = extrema(valid_data)
-            min_overall = min(min_overall, min_local)
-            max_overall = max(max_overall, max_local)
-        end
-    end
+function _get_min_val(data::AbstractVector) # Recursive case for nested vectors
+    # Use a generator to recursively call get_min_val on each element,
+    # filtering out `nothing` results before finding the minimum.
+    return minimum((v for v in (get_min_val(d) for d in data) if !isnothing(v)); init=Inf)
+end
 
-    # If no valid data was found across all observables, return a default range
-    if !found_valid_data
-        return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
-    end
+"""
+    get_max_val(data) -> Union{Real, Nothing}
 
-    # Apply padding based on scale type
-    data_range = max_overall - min_overall
+Recursively finds the maximum finite value in a potentially nested collection.
+"""
+function get_max_val(data)
+    _get_max_val(data)
+end
+
+_get_max_val(data::Real) = _get_val(data)
+_get_max_val(data::AbstractVector{<:Real}) = maximum(_get_val(data); init=-Inf)
+_get_max_val(data::Tuple{<:AbstractVector,<:Vector}) = maximum(_get_val(data[1]))
+_get_max_val(data::Tuple{<:Real,<:Vector}) = _get_val(data[1])
+
+function _get_max_val(data::AbstractVector) # Recursive case
+    return maximum((v for v in (get_max_val(d) for d in data) if !isnothing(v)); init=-Inf)
+end
+
+
+#======================================================================#
+#           TOP-LEVEL LIMIT CALCULATION & APPLICATION
+#======================================================================#
+
+"""
+    get_raw_global_range(data) -> Tuple
+
+Uses the recursive helpers to find the raw (min, max) tuple for a given dataset.
+"""
+function get_raw_global_range(data)
+    min_val = get_min_val(data)
+    max_val = get_max_val(data)
+    return (min_val, max_val)
+end
+
+"""
+    calculate_padded_axis_range(raw_limits, padding_factor, is_log_scale) -> Tuple
+
+Takes raw (min, max) limits and applies padding, correctly handling the
+fallback from log to linear scale if the data range is not positive.
+"""
+function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
+    min_raw, max_raw = raw_limits
     
-    if is_log_scale
-        # For log scale, padding is multiplicative (a factor)
-        # This prevents issues with log(0) or log(-ve)
-        pad_amount_log = padding_factor
-        final_min = min_overall / (1 + pad_amount_log)
-        final_max = max_overall * (1 + pad_amount_log)
-    else
-        # For linear scale, padding is additive
-        if data_range ≈ 0
-            pad_amount_linear = 0.1 # Default pad for a flat line
-        else
-            pad_amount_linear = data_range * padding_factor / 2.0
-        end
-        final_min = min_overall - pad_amount_linear
-        final_max = max_overall + pad_amount_linear
+    if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw)
+        return (0.0, 1.0) # Default if no valid data
     end
 
+    # Check for log scale validity. If user wants log but data is not positive,
+    # fall back to linear scale for this calculation.
+    use_log = is_log_scale && (min_raw > 0)
+    
+    if use_log
+        pad = padding_factor
+        final_min = min_raw / (1 + pad)
+        final_max = max_raw * (1 + pad)
+    else
+        if is_log_scale && min_raw <= 0
+            @warn "Log scale requested but data contains non-positive values. Applying linear padding instead."
+        end
+        data_range = max_raw - min_raw
+        pad = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
+        final_min = min_raw - pad
+        final_max = max_raw + pad
+    end
+    
     return (final_min, final_max)
 end
+
+"""
+    set_axis_limits!(ax, x_data, y_data, ui_options_obs)
+
+The main convenience function. It calculates and applies final padded limits
+for both x and y axes, and sets the axis scale based on UI options.
+"""
+function set_axis_limits!(
+    ax::Axis,
+    x_data, # Can be a nested collection
+    y_data, # Can be a nested collection
+    ui_options_obs::Dict{String, Observable}
+)
+    try
+        # --- Get UI Options ---
+        x_padding = ui_options_obs["xpadding"][]
+        y_padding = ui_options_obs["ypadding"][]
+        x_is_log_requested = ui_options_obs["xlogscale"][]
+        y_is_log_requested = ui_options_obs["ylogscale"][]
+
+        # --- Calculate Raw and Padded Limits ---
+        raw_xlims = get_raw_global_range(x_data)
+        raw_ylims = get_raw_global_range(y_data)
+    
+        # --- Set Axis Scale and Limits ---
+        ax.xscale[] = x_is_log_requested && final_xlims[1] > 0 ? log10 : identity
+        ax.yscale[] = y_is_log_requested && final_ylims[1] > 0 ? log10 : identity
+        
+        final_xlims = calculate_padded_axis_range(raw_xlims, x_padding, x_is_log_requested)
+        final_ylims = calculate_padded_axis_range(raw_ylims, y_padding, y_is_log_requested)
+
+        # Apply limits
+        limits!(ax, final_xlims..., final_ylims...)
+        
+    catch e
+        @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
+    end
+    return nothing
+end
+
+# """
+#     get_axis_limits(data_observables, padding_factor, is_log_scale) -> Tuple
+
+# Calculates the min and max limits for an axis from a vector of data observables.
+
+# It iterates through all data, finds the overall min/max of finite values,
+# and applies a specified padding. It correctly handles linear and log scales
+# (for log scales, it ignores non-positive values and applies padding multiplicatively).
+
+# # Arguments
+# - `data_observables`: A vector of observables, where each observable contains a
+#   vector of numeric data (e.g., `Vector{Observable{Vector{Float64}}}`).
+# - `padding_factor::Real`: The padding to apply, as a fraction (e.g., 0.1 for 10%).
+# - `is_log_scale::Bool`: If true, calculates padding suitable for a log-scaled axis.
+
+# # Returns
+# - A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`. Returns a
+#   default range like `(0.0, 1.0)` if no valid data is found.
+# """
+# function get_axis_limits(
+#     data_observables::AbstractVector,
+#     padding_factor::Real,
+#     is_log_scale::Bool
+# )
+#     min_overall = Inf
+#     max_overall = -Inf
+#     found_valid_data = false
+
+#     for obs in data_observables
+#         # Get the vector from the observable
+#         data_vec = to_value(obs)
+
+#         # Filter for valid data points
+#         local valid_data
+#         if is_log_scale
+#             # For log scale, we can only use positive, finite numbers
+#             valid_data = filter(x -> isfinite(x) && x > 0, data_vec)
+#         else
+#             # For linear scale, any finite number is fine
+#             valid_data = filter(isfinite, data_vec)
+#         end
+        
+#         if !isempty(valid_data)
+#             found_valid_data = true
+#             min_local, max_local = extrema(valid_data)
+#             min_overall = min(min_overall, min_local)
+#             max_overall = max(max_overall, max_local)
+#         end
+#     end
+
+#     # If no valid data was found across all observables, return a default range
+#     if !found_valid_data
+#         return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
+#     end
+
+#     # Apply padding based on scale type
+#     data_range = max_overall - min_overall
+    
+#     if is_log_scale
+#         # For log scale, padding is multiplicative (a factor)
+#         # This prevents issues with log(0) or log(-ve)
+#         pad_amount_log = padding_factor
+#         final_min = min_overall / (1 + pad_amount_log)
+#         final_max = max_overall * (1 + pad_amount_log)
+#     else
+#         # For linear scale, padding is additive
+#         if data_range ≈ 0
+#             pad_amount_linear = 0.1 # Default pad for a flat line
+#         else
+#             pad_amount_linear = data_range * padding_factor / 2.0
+#         end
+#         final_min = min_overall - pad_amount_linear
+#         final_max = max_overall + pad_amount_linear
+#     end
+
+#     return (final_min, final_max)
+# end
 
 function deleteUIOptions!(
     ui_options_dict::Dict,
@@ -1292,49 +1441,58 @@ function deleteUIOptions!(
     return nothing
 end
 
-"""
-    set_axis_limits!(ax, x_data_obs, y_data_obs, ui_options_obs)
+# """
+#     set_axis_limits!(ax, x_data_obs, y_data_obs, ui_options_obs)
 
-Calculates and applies appropriate x and y limits to a given axis based on the
-provided data and UI options. This version uses direct dictionary access and
-will error if a required key (e.g., "xlogscale") is missing.
-"""
-function set_axis_limits!(
-    ax::Axis,
-    x_data_obs::AbstractVector,
-    y_data_obs::AbstractVector,
-    ui_options_obs::Dict{String, Observable}
-)
-    try
-        # --- Get the required UI options via direct dictionary access ---
-        x_padding = ui_options_obs["xpadding"][]
-        y_padding = ui_options_obs["ypadding"][]
-        x_is_log = ui_options_obs["xlogscale"][]
-        y_is_log = ui_options_obs["ylogscale"][]
+# Calculates and applies appropriate x and y limits to a given axis based on the
+# provided data and UI options. This version uses direct dictionary access and
+# will error if a required key (e.g., "xlogscale") is missing.
+# """
+# function set_axis_limits!(
+#     ax::Axis,
+#     x_data_obs::AbstractVector,
+#     y_data_obs::AbstractVector,
+#     ui_options_obs::Dict{String, Observable}
+# )
+#     try
+#         # --- Get the required UI options via direct dictionary access ---
+#         x_padding = ui_options_obs["xpadding"][]
+#         y_padding = ui_options_obs["ypadding"][]
+#         x_is_log = ui_options_obs["xlogscale"][]
+#         y_is_log = ui_options_obs["ylogscale"][]
 
-        # --- Calculate X and Y Limits using the existing helper ---
-        final_xlims = get_axis_limits(x_data_obs, x_padding, x_is_log)
-        final_ylims = get_axis_limits(y_data_obs, y_padding, y_is_log)
 
-        # --- Apply the new limits with a redundancy check ---
-        current_ax_lims = ax.limits[]
+#         # --- Calculate X and Y Limits using the existing helper ---
+#         final_xlims = get_axis_limits(x_data_obs, x_padding, x_is_log)
+#         final_ylims = get_axis_limits(y_data_obs, y_padding, y_is_log)
+
+#         # --- Apply the new limits with a redundancy check ---
+#         ax.xscale[] = x_is_log ? (final_xlims[1] > 0 ? log10 : @warn "Logscale not usable!"; identity) : identity
+#         ax.yscale[] = y_is_log ? (final_ylims[1] > 0 ? log10 : @warn "Logscale not usable!"; identity) : identity
+#         current_ax_lims = ax.limits[]
         
-        if isnothing(current_ax_lims[1]) || isnothing(current_ax_lims[2]) ||
-           abs(current_ax_lims[1][1] - final_xlims[1]) > 1e-9 || 
-           abs(current_ax_lims[1][2] - final_xlims[2]) > 1e-9 ||
-           abs(current_ax_lims[2][1] - final_ylims[1]) > 1e-9 ||
-           abs(current_ax_lims[2][2] - final_ylims[2]) > 1e-9
+#         if isnothing(current_ax_lims[1]) || isnothing(current_ax_lims[2]) ||
+#            abs(current_ax_lims[1][1] - final_xlims[1]) > 1e-9 || 
+#            abs(current_ax_lims[1][2] - final_xlims[2]) > 1e-9 ||
+#            abs(current_ax_lims[2][1] - final_ylims[1]) > 1e-9 ||
+#            abs(current_ax_lims[2][2] - final_ylims[2]) > 1e-9
             
-            limits!(ax, final_xlims..., final_ylims...)
-        end
-    catch e
-        # This will catch KeyErrors if an option is missing, or other errors.
-        @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
-    end
+#             limits!(ax, final_xlims..., final_ylims...)
+#         end
+#     catch e
+#         # This will catch KeyErrors if an option is missing, or other errors.
+#         @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
+#     end
 
-    return nothing
+#     return nothing
+# end
+
+function _is_log_save(x::Real)::Bool
+    return x > 0
 end
-
+function _is_log_save(xs::AbstractVector)::Bool
+    return all(map(x -> _is_log_save(x), xs))
+end
 """
     create_base_plot_1D!(ax, active_methods, xs, us, ui_options_obs; plot_observable)
 
@@ -1361,17 +1519,17 @@ function create_base_plot_1D!(
     xs::AbstractVector,
     us::AbstractVector,
     ui_options_obs::Dict{String, Observable};
-    plot_observable::Bool = false
+    plot_observable::Bool = false,
+    is_static = false
 )
 
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
 
     empty!(ax) # Clear previous plots from the axis
-    ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : 
+    is_static || ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : 
     set_axis_styles!(ax, ui_options_obs)
-    ax.xscale[] = ui_options_obs["xlogscale"][] ? log10 : identity
-    ax.yscale[] = ui_options_obs["ylogscale"][] ? log10 : identity
+
 
     if isempty(active_methods); return ([], []); end
 
@@ -1461,7 +1619,7 @@ padding suitable for either a linear or log scale.
 - A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`.
 """
 function calculate_global_axis_range(
-    all_methods_data::Vector{<:Vector{<:Any}},
+    all_methods_data::Vector{<:Vector{<:Tuple{<:Any,<:AbstractVector}}},
     padding_factor::Real,
     is_log_scale::Bool
 )
@@ -1490,7 +1648,6 @@ function calculate_global_axis_range(
     end
 
     if !found_data
-        print("Hello")
         return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
     end
 
@@ -1510,70 +1667,6 @@ function calculate_global_axis_range(
 
     return (final_min, final_max)
 end
-
-
-# """
-#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data, all_raw_data)
-
-# Checks if a collection of extracted statistic data is time-dependent and updates
-# the time slider and its label accordingly.
-
-# # Arguments
-# - `is_time_dependent_obs::Observable{Bool}`: The observable to update with the result.
-# - `tSlider::Slider`: The time slider widget to update.
-# - `tLabel::Label`: The label widget for the time slider.
-# - `extracted_data`: A data structure containing the values of a single statistic.
-# - `all_raw_data`: The complete raw data store, used to find all possible time points.
-# """
-# function update_time_dependence!(
-#     is_time_dependent_obs::Observable{Bool},
-#     tSlider::Any,
-#     tLabel::Label,
-#     extracted_data,
-#     all_raw_data
-# )
-#     # --- Time Dependence Check ---
-#     found_vector = false
-#     found_scalar = false
-#     for data_point in Iterators.flatten(extracted_data)
-#         raw_val, _ = data_point
-#         if !ismissing(raw_val)
-#             if isa(raw_val, AbstractVector); found_vector = true;
-#             elseif isa(raw_val, Number); found_scalar = true;
-#             end
-#         end
-#         if found_vector && found_scalar; break; end
-#     end
-#     if found_vector && found_scalar
-#         @warn "Inconsistent data types (scalar and vector) found for the same statistic. Treating as time-dependent."
-#     end
-#     is_td = found_vector
-#     is_time_dependent_obs[] = is_td
-
-#     # --- Update Time Slider UI ---
-#     if is_td
-#         all_times_union = Set{Float64}()
-#         for data_point in Iterators.flatten(all_raw_data)
-#             _, times = data_point
-#             if !isempty(times); union!(all_times_union, times); end
-#         end
-
-#         if !isempty(all_times_union)
-#             time_vec = sort(collect(all_times_union))
-#             t_range = range(extrema(time_vec)..., length=max(2, 200))
-#             if tSlider.range[] != t_range; tSlider.range[] = t_range; end
-#             set_close_to!(tSlider, clamp(tSlider.value[], extrema(t_range)...))
-#             tLabel.text = "t = $(round(tSlider.value[], digits=3))"
-#             tSlider.parent.visible = true
-#         else
-#             tLabel.text = "t = N/A (No time data)"
-#             tSlider.parent.visible = false
-#         end
-#     else
-#         tLabel.text = "t = N/A (Scalar Stat)"
-#         tSlider.parent.visible = false
-#     end
-# end
 
 """
     updateData!(extracted_stat_data, all_raw_data, selected_key)
@@ -1626,87 +1719,60 @@ function updateData!(
     notify(extracted_stat_data)
 end
 
-"""
-    update_time_dependence!(is_time_dependent_obs, tSlider, time_slider_container,
-                            persistent_t_obs, extracted_data, all_raw_data)
-
-Checks for time dependence in data and completely manages the time slider UI.
-It uses a robust delete-and-recreate pattern for the slider widget.
-
-# Arguments
-- `is_time_dependent_obs`: An `Observable{Bool}` to store the result of the check.
-- `tSlider`: An `Observable` to hold the handle to the current `Slider` widget.
-- `time_slider_container`: The `GridLayout` where the time UI will be placed.
-- `persistent_t_obs`: A persistent `Observable{<:Real}` that the new slider will update.
-- `extracted_data`: A `Vector{<:Vector}` containing the extracted statistic values.
-- `all_raw_data`: The complete raw data store, needed to get time vectors for the range.
-"""
-function update_time_dependence!(
-    is_time_dependent_obs::Observable{Bool},
-    tSlider::Slider,
-    tLabel::Label,
-    extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}}
+function updateData!(
+    extracted_stat_data::Observable,
+    all_raw_data::Vector{<:Union{Dict, Tuple}},
+    selected_key::String
 )
-
-    # --- 1. Check for Time Dependence ---
-    found_vector = false
-    
-    # Iterate through the extracted data. Each `val` is now the statistic's
-    # value itself (a Number or a Vector), not a tuple.
-    for method_data in extracted_data
-        for val in method_data
-            if !ismissing(val[1]) && isa(val[1], AbstractVector)
-                found_vector = true
-                break
-            end
-        end
-        if found_vector; break; end
+    # --- Guard Clauses ---
+    if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
+        extracted_stat_data[] = []
+        return
     end
-    is_td = found_vector
-    is_time_dependent_obs[] = is_td
 
-    # --- 3. Recreate UI Based on Time Dependence ---
-    if is_td
-        all_times_union = Set{Float64}()
-        for data_point in Iterators.flatten(extracted_data)
-            # Assumes time vector is the second element of the tuple
-            if isa(data_point, Tuple) && length(data_point) > 1
-                times = data_point[2]
-                if isa(times, AbstractVector) && !isempty(times)
-                    union!(all_times_union, times)
+    println("Extracting 1D data for statistic: '$selected_key'")
+    println(typeof(all_raw_data))
+    active_num = length(all_raw_data)
+    # The new data structure will hold vectors of varying lengths.
+    method_results = Vector{Any}(undef, active_num)
+
+    for i in 1:active_num
+        raw_data = all_raw_data[i]
+        # The raw data point is a tuple, e.g., (stats_dict, time_vector)
+        if isa(raw_data, Tuple)
+            stat_val = get(raw_data[1], selected_key, missing)
+            method_results[i] = (stat_val,raw_data[2])
+        else
+            stat_val = raw_data[selected_key]
+            method_results[i] = stat_val
+        end
+    end
+    
+    # Update the observable with the newly extracted data.
+    extracted_stat_data[] = method_results
+
+end
+
+"""
+    is_time_dependent(extracted_data) -> Bool
+
+Internal helper that checks if an extracted dataset contains any vectors,
+which signifies time-dependence.
+"""
+function is_time_dependent(extracted_data::Vector)
+    for method_data in extracted_data
+        # This check is crucial to prevent errors on uninitialized data
+        if isassigned(method_data, 1:length(method_data))
+            for val in method_data
+                if !ismissing(val) && isa(val, AbstractVector)
+                    return true # Found a vector, so it's time-dependent
                 end
             end
         end
-        println(is_td)
-        if !isempty(all_times_union)
-            time_vec = sort(collect(all_times_union))
-            t_range = range(extrema(time_vec)..., length=max(2, 200))
-            
-            # Create a new slider, clamping the persistent time value to the new range.
-            tSlider.value[] = clamp(tSlider.value[], extrema(t_range)...)
-            tSlider.range[] = t_range
-            
-            # Link the label text to the persistent time observable
-            on(tSlider.value) do t
-                tLabel.text[] = "t = $(round(t, digits=3))"
-            end
-
-        else
-            tLabel.text[] = "t = N/A (No time data)"
-            tSlider.value[] = 0
-            tSlider.range[] = [0]
-            #new_slider = Slider(time_slider_container[1,1], range = [0], startvalue = 0)
-        end
-    else
-        # --- THIS IS THE CRUCIAL FIX ---
-        # Data is not time-dependent. Create the placeholder label and explicitly
-        # set the slider handle to `nothing`.
-        tLabel.text[] = "t = N/A (Scalar Stat)" 
-        tSlider.value[] = 0
-        tSlider.range[] = [0]
-        #new_slider = Slider(time_slider_container[1,1], range = [0], startvalue = 0)
     end
+    return false # No vectors found
 end
+
 """
     calculate_snapshot(extracted_data, t, is_time_dependent) -> Vector{Vector{Float64}}
 
@@ -1770,6 +1836,729 @@ function calculate_snapshot(
     end
     
     return snapshot
+end
+
+
+#======================================================================#
+#                      1. DATA COMPONENT EXTRACTION
+#======================================================================#
+
+"""
+    extractU(u_data_all_methods, component_index) -> Vector{Vector{Vector{Float64}}}
+
+Extracts a single component's time series data from the full `uData` structure.
+
+This function is robust and handles cases where the solution `u` at each time step
+is either a `Vector` (for 1D single-component systems) or a `Matrix` (for
+multi-component systems).
+
+# Arguments
+- `u_data_all_methods`: The full data structure, which can contain a mix of
+  vectors and matrices. Expected Type: `Vector{<:Vector{<:AbstractArray}}`.
+- `component_index::Int`: The column index of the component to extract.
+
+# Returns
+- A `Vector{Vector{Vector{Float64}}}` containing the extracted data for the
+  specified component, structured as `(method -> run -> time series)`.
+"""
+function extractU(
+    u_data_all_methods::Vector{<:AbstractVector{<:AbstractArray}},
+    component_index::Int
+)
+    # The final data structure for the single extracted component
+    extracted_u = Vector{Vector{Vector{Float64}}}()
+
+    # Loop through each method's data
+    for method_data in u_data_all_methods
+        method_component_data = Vector{Vector{Float64}}()
+        
+        # Loop through each run's data for that method
+        for run_data in method_data
+            
+            local component_time_series::Vector{Float64}
+
+            # --- CASE DISTINCTION to handle VecOrMat ---
+            if isa(run_data, AbstractMatrix)
+                # --- Handle the Matrix case (e.g., time x components) ---
+                if component_index > size(run_data, 2)
+                    @warn "Component index $component_index is out of bounds for a Matrix with $(size(run_data, 2)) components. Defaulting to component 1."
+                    component_time_series = run_data[:, 1]
+                else
+                    component_time_series = run_data[:, component_index]
+                end
+            elseif isa(run_data, AbstractVector)
+                # --- Handle the Vector case (assumed to be for component 1) ---
+                if component_index == 1
+                    component_time_series = run_data
+                else
+                    # It's a 1D solution, but a component > 1 was requested. Return empty.
+                    @warn "Component index $component_index requested for a single-component (Vector) solution. Returning empty data for this run."
+                    component_time_series = Float64[]
+                end
+            else
+                @warn "Unsupported data structure of type `$(typeof(run_data))` found in uData. Skipping."
+                component_time_series = Float64[]
+            end
+            
+            push!(method_component_data, component_time_series)
+        end
+        push!(extracted_u, method_component_data)
+    end
+
+    return extracted_u
+end
+
+#======================================================================#
+#                      2. GLOBAL LIMIT CALCULATION (CORRECTED)
+#======================================================================#
+
+"""Internal helper to update min/max, handling log scale for filtering."""
+function _update_minmax(current_min, current_max, new_data, is_log_scale)
+    valid_data = if is_log_scale
+        filter(x -> isfinite(x) && x > 0, new_data)
+    else
+        filter(isfinite, new_data)
+    end
+    if isempty(valid_data); return current_min, current_max; end
+    min_local, max_local = extrema(valid_data)
+    return min(current_min, min_local), max(current_max, max_local)
+end
+
+# --- CORRECTED Method for FULL TIME-SERIES data (1D) ---
+"""
+    calculate_global_axis_range(data, padding_factor, is_log_scale) -> Tuple
+
+Calculates the global padded min/max range for a 1D dataset (like `u` or 1D `x`).
+This version correctly iterates over the data structure.
+"""
+function calculate_global_axis_range(
+    data::Vector{<:Vector{<:Vector{<:Real}}},
+    padding_factor::Real,
+    is_log_scale::Bool
+)
+    min_overall, max_overall = Inf, -Inf
+    found = false
+    # CORRECTED LOOP: Iterate only two levels deep. `run_data` is now the Vector.
+    for method_data in data, run_data in method_data
+        if !isempty(run_data)
+            found = true
+            min_overall, max_overall = _update_minmax(min_overall, max_overall, run_data, is_log_scale)
+        end
+    end
+    
+    if !found; return is_log_scale ? (0.1, 10.0) : (0.0, 1.0); end
+    
+    # Apply padding
+    if is_log_scale
+        pad = padding_factor
+        return (min_overall / (1 + pad), max_overall * (1 + pad))
+    else
+        data_range = max_overall - min_overall
+        pad = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
+        return (min_overall - pad, max_overall + pad)
+    end
+end
+
+# --- CORRECTED Method for 2D data ---
+"""
+    calculate_global_axis_range(data, padding_factors, is_log_scales) -> Tuple{Tuple, Tuple}
+
+Calculates the global padded min/max for a 2D dataset (like 2D `x`).
+"""
+function calculate_global_axis_range(
+    data::Vector{<:Vector{<:Vector{<:NTuple{2}}}},
+    padding_factors::Tuple{Real, Real},
+    is_log_scales::Tuple{Bool, Bool}
+)
+    xmin, xmax = Inf, -Inf
+    ymin, ymax = Inf, -Inf
+    found = false
+    # CORRECTED LOOP: Iterate only two levels deep. `run_data` is the Vector of Tuples.
+    for method_data in data, run_data in method_data
+        if !isempty(run_data)
+            found = true
+            x_coords = first.(run_data)
+            y_coords = last.(run_data)
+            xmin, xmax = _update_minmax(xmin, xmax, x_coords, is_log_scales[1])
+            ymin, ymax = _update_minmax(ymin, ymax, y_coords, is_log_scales[2])
+        end
+    end
+
+    if !found; return ((0.0, 1.0), (0.0, 1.0)); end
+
+    # Apply padding for x-axis
+    x_range = xmax - xmin
+    x_pad = x_range ≈ 0 ? 0.1 : (x_range * padding_factors[1] / 2.0)
+    final_xlims = (xmin - x_pad, xmax + x_pad)
+
+    # Apply padding for y-axis
+    y_range = ymax - ymin
+    y_pad = y_range ≈ 0 ? 0.1 : (y_range * padding_factors[2] / 2.0)
+    final_ylims = (ymin - y_pad, ymax + y_pad)
+    
+    return (final_xlims, final_ylims)
+end
+
+#======================================================================#
+#              FINAL, ROBUST SNAPSHOT CALCULATION
+#======================================================================#
+
+# --- Base Case 1: For a single time-dependent data series ---
+# This function is the "workhorse". It knows how to get a snapshot from one
+# vector of data points vs. one vector of times.
+# function calculate_snapshot(
+#     series_data::AbstractVector{<:Real},
+#     series_times::AbstractVector{<:Real},
+#     t_snapshot::Real
+# )
+#     # If there are no times or data for this specific run, return an empty version
+#     # of whatever the data series contains (e.g., empty Vector{Float64}).
+#     if isempty(series_times) || isempty(series_data)
+#         return eltype(series_data)()
+#     end
+    
+#     # findmin returns (minimum_value, index). We only need the index.
+#     _, time_idx = findmin(t -> abs(t - t_snapshot), series_times)
+    
+#     # Safely return the data at the found index.
+#     return (1 <= time_idx <= length(series_data)) ? series_data[time_idx] : eltype(series_data)()
+# end
+# # #======================================================================#
+# # #                      3. SNAPSHOT CALCULATION
+# # #======================================================================#
+# function calculate_snapshot(
+#     x_data::Vector,
+#     u_data::Vector,
+#     t_data::Vector,
+#     t_snapshot::Real
+# )
+
+#     # Pre-allocate the output vectors for the snapshots
+#     x_snapshots = calculate_snapshot(x_data, t_data, t_snapshot)
+#     u_snapshots = calculate_snapshot(u_data, t_data, t_snapshot)
+#     return x_snapshots, u_snapshots
+# end
+# function calculate_snapshot(
+#     x_data::Vector,
+#     t_data::Vector,
+#     t_snapshot::Real
+# )
+#     num_methods = length(x_data)
+#     if num_methods != length(t_data)
+#         @warn "Inconsistent number of methods between x, u, and t data. Cannot calculate snapshot."
+#         return ([], [])
+#     end
+
+#     # Pre-allocate the output vectors for the snapshots
+#     x_snapshots = Vector{AbstractVector}(undef, num_methods)
+
+#     for i in 1:num_methods
+#         # For each method, call the single-series version of calculate_snapshot
+#         # with its own specific time vector.
+#         x_snap = calculate_snapshot(
+#             x_data[i],
+#             t_data[i],
+#             t_snapshot
+#         )
+#         x_snapshots[i] = x_snap
+#     end
+
+#     return x_snapshots
+# end
+
+# function calculate_snapshot(
+#     x_series::Vector{<:AbstractVector{<:Real}},
+#     t_series::Vector{<:AbstractVector{<:Real}},
+#     t_snapshot::Real
+# )
+#     num_runs = length(x_series)
+#     if num_runs != length(t_series)
+#         @warn "Time and Data have a different number of runs! Returning empty snapshot."
+#         return []
+#     end
+
+#     # Determine the element type of the output vector (e.g., Float64 or NTuple{2,Float64})
+#     # We find the first non-empty data series to determine the type.
+#     element_type = Any
+#     for series in x_series
+#         if !isempty(series)
+#             element_type = eltype(series)
+#             break
+#         end
+#     end
+
+#     # Pre-allocate the output vector for the snapshots
+#     x_snap = Vector{Union{Missing, element_type}}(undef, num_runs)
+
+#     # Correctly iterate with `i` as the index and `ts` as the time vector
+#     for i in 1:num_runs
+#         ts = t_series[i]
+#         xs = x_series[i]
+
+#         # --- THIS IS THE FIX ---
+#         # If the time series for this run is empty, we can't find a snapshot.
+#         # Assign `missing` to this slot and continue to the next run.
+#         if isempty(ts) || isempty(xs)
+#             x_snap[i] = missing
+#             continue
+#         end
+
+#         # Find the index of the time step closest to t_snapshot
+#         _, m = findmin(t -> abs(t - t_snapshot), ts)
+        
+#         # Assign the data point at that time index
+#         if 1 <= m <= length(xs)
+#             x_snap[i] = xs[m]
+#         else
+#             x_snap[i] = missing
+#         end
+#     end
+    
+#     # Return the snapshot, filtering out any missing values that couldn't be calculated.
+#     # This ensures the plotting function only receives valid data.
+#     return filter(!ismissing, x_snap)
+# end
+
+
+
+# # --- VERSION 2: For method-specific time vectors (the new function) ---
+# """
+#     calculate_snapshot(x_data, u_data, t_data, t_snapshot) -> Tuple
+
+# Calculates a data snapshot for multiple methods, where each method can have its
+# own independent time vector.
+
+# # Arguments
+# - `x_data`: Vector where each element is the x-series for a method (`Vector{<:Vector{<:AbstractVector}}`).
+# - `u_data`: Vector where each element is the u-series for a method (`Vector{<:Vector{<:AbstractVector}}`).
+# - `t_data`: Vector where each element is the time vector for a method (`Vector{<:Vector{<:Real}}`).
+# - `t_snapshot`: The current time value from the slider.
+
+# # Returns
+# - A `Tuple` containing `(x_snapshots, u_snapshots)`, where each is a vector of the
+#   data for that specific time snapshot.
+# """
+# function calculate_snapshot(
+#     x_data::Vector{<:Vector{<:Real}},
+#     t_data::Any,
+#     t_snapshot::Real
+# )
+#     return x_data
+# end
+# function calculate_snapshot(
+#     x_series::Vector{<:AbstractVector},
+#     t_series::Vector{<:Real},
+#     t_snapshot::Real
+# )
+    
+#     # Find the index of the time step closest to t_snapshot
+#     _, time_idx = findmin(t -> abs(t - t_snapshot), t_series)
+    
+#     # Return the corresponding x and u vectors
+#     x_snap = (1 <= time_idx <= length(x_series)) ? x_series[time_idx] : eltype(x_series)()
+    
+#     return x_snap
+# end
+
+
+
+"""
+    is_time_dependent(extracted_data) -> Bool
+
+Checks if a collection of extracted statistic data is time-dependent.
+It iterates through the data and returns `true` if it finds any value that is
+an AbstractVector, which signifies a time series.
+"""
+function is_time_dependent(extracted_data::Vector{<:Vector})
+    # Use indexed loops for safety against #undef entries
+    for i in eachindex(extracted_data)
+        if isassigned(extracted_data, i)
+            for val in extracted_data[i]
+                if !ismissing(val) && isa(val, AbstractVector)
+                    return true # Found a vector, so it's time-dependent
+                end
+            end
+        end
+    end
+    return false # No vectors found, so it's time-independent
+end
+
+
+
+"""
+    update_time_slider!(tSlider, tLabel_text, time_range_data, all_time_points)
+
+Updates the range and value of a time slider based on the union of all
+available time points from a dataset. Also updates a corresponding label text observable.
+"""
+function update_time_slider!(
+    tSlider::Slider,
+    tLabel_text::Observable{String},
+    all_time_points::Set{Float64}
+)
+
+    if !isempty(all_time_points)
+        t_min_data, t_max_data = extrema(all_time_points)
+        
+        # Create a dense range for smooth sliding
+        t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, 500))
+        
+        if tSlider.range[] != t_range_slider
+            tSlider.range[] = t_range_slider
+        end
+        
+        current_t_val = clamp(tSlider.value[], t_min_data, t_max_data)
+        set_close_to!(tSlider, current_t_val)
+    else
+        # Default behavior if no time data is found
+        if tSlider.range[] != [0]
+            tSlider.range[] = [0]
+        end
+        set_close_to!(tSlider, 0)
+    end
+    
+    tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
+    return nothing
+end
+# """
+#     extractStats!(extracted_stat_data_obs, all_raw_stats, selected_key)
+
+# Extracts the data for a selected statistic from the raw data store, which is
+# structured as a Vector of Vectors of Dictionaries.
+
+# This function modifies the `extracted_stat_data_obs` observable in-place.
+# """
+# function extractStats!(
+#     extracted_stat_data_obs::Observable,
+#     all_raw_stats::Vector{<:Vector{<:Dict}},
+#     selected_key::String
+# )
+#     # --- Guard Clauses ---
+#     if isempty(all_raw_stats) || selected_key == "calculating..." || selected_key == "No common stats"
+#         extracted_stat_data_obs[] = []
+#         return
+#     end
+
+#     println("Extracting data for statistic: '$selected_key'")
+    
+#     num_methods = length(all_raw_stats)
+#     # The new data structure will hold only the extracted values.
+#     temp_vec_data = [Vector{Vector{Float64}}(undef, length(all_raw_stats[i])) for i in 1:num_methods]
+#     temp_scalar_data = [Vector{Float64}(undef, length(all_raw_stats[i])) for i in 1:num_methods]
+#     foundvec = false
+#     foundscalar = false
+#     for i in 1:num_methods
+#         method_data = all_raw_stats[i]
+#         for j in eachindex(method_data)
+#             stats_dict = method_data[j]
+#             # Use `get` for safety, defaulting to `missing` if a stat wasn't computed for a run.
+#             stat_val = stats_dict[selected_key]
+#             if isa(stat_val, Vector{<:Real})
+#                 temp_vec_data[i][j] = stat_val
+#                 foundvec = true
+#             elseif isa(stat_val, Real)
+#                 temp_scalar_data[i][j] = stat_val
+#                 temp_vec_data[i][j] = [stat_val]
+#                 foundscalar = true
+#             else
+#                 @error "Unsupported stat-data found!"
+#             end
+#         end
+#     end
+#     if foundvec
+#         if foundscalar
+#             @warn "Inconsistent time dependence found! Ignoring time independent values" 
+#         end
+#         extracted_stat_data_obs[] = temp_vec_data;
+#     else
+#         extracted_stat_data_obs[] = temp_scalar_data;
+#     end
+# end
+
+
+#======================================================================#
+#              1. `extractStats!` FOR TUPLE DATA
+#======================================================================#
+
+#======================================================================#
+#              1. RECURSIVE `extractStats` FUNCTION
+#======================================================================#
+
+# --- Base Case: We've drilled down to the Tuple containing the Dict and the time vector. ---
+# This is the "workhorse" that performs the actual extraction.
+function extractStats(
+    run_data::Tuple{<:Dict, <:AbstractVector},
+    selected_key::String
+)
+    stats_dict, times = run_data
+    # Use `get` for safety, defaulting to `missing` if the key isn't in this run's stats.
+    stat_val = stats_dict[selected_key]
+    # Return the new tuple with the extracted value and its original time vector.
+    return (stat_val, times)
+end
+
+# --- Recursive Case: For any collection of runs/methods ---
+# This function takes a vector (e.g., of methods, or of runs), iterates
+# through it, and calls `extractStats` on each element.
+function extractStats(
+    all_series_data::Vector,
+    selected_key::String
+)
+    # This handles any level of nesting (e.g., Vector{Vector{...}})
+    
+    num_series = length(all_series_data)
+    # Pre-allocate the output vector. It will have the same nesting structure as the input.
+    extracted = Vector{Any}(undef, num_series)
+
+    # Use an indexed loop with an `isassigned` check for robustness.
+    for i in 1:num_series
+        extracted[i] = extractStats(all_series_data[i], selected_key)
+    end
+
+    return filter(!ismissing, extracted)
+end
+
+
+
+
+#======================================================================#
+#         2. `update_time_dependence!` FOR TUPLE DATA
+#======================================================================#
+
+"""
+    update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
+
+Checks for time dependence by inspecting the first element of each data tuple.
+"""
+function update_time_dependence!(
+    is_time_dependent_obs::Observable{Bool},
+    tSlider::Slider,
+    tLabel::Label,
+    extracted_data::Vector{<:Vector{<:Tuple}}
+)
+    found_vector = false
+    # Use indexed loops for safety against #undef entries
+    for i in eachindex(extracted_data)
+        if isassigned(extracted_data, i)
+            for j in eachindex(extracted_data[i])
+                if isassigned(extracted_data[i], j)
+                    # Destructure the tuple to get the value
+                    val, _ = extracted_data[i][j]
+                    if !ismissing(val) && isa(val, AbstractVector)
+                        found_vector = true
+                        break
+                    end
+                end
+            end
+        end
+        if found_vector; break; end
+    end
+    is_td = found_vector
+    is_time_dependent_obs[] = is_td
+
+    # Update Time Slider UI
+    if is_td
+        all_times_union = Set{Float64}()
+        for method_data in extracted_data, data_point in method_data
+            # Destructure to get the time vector (second element)
+            _, times = data_point
+            if isa(times, AbstractVector) && !isempty(times)
+                union!(all_times_union, times)
+            end
+        end
+        # ... (rest of your slider update logic using all_times_union)
+    else
+        tLabel.text[] = "t = N/A (Scalar Stat)"
+        tSlider.range[] = [0]
+        tSlider.value[] = 0
+    end
+end
+
+"""
+    update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
+
+Checks for time dependence by inspecting the first element of each data tuple.
+"""
+function update_time_dependence!(
+    is_td::Bool,
+    tSlider::Slider,
+    tLabel::Label,
+    extracted_data::Vector{<:Vector{<:Tuple}}
+)
+    # Update Time Slider UI
+    if is_td
+        all_times_union = Set{Float64}()
+        for method_data in extracted_data, data_point in method_data
+            # Destructure to get the time vector (second element)
+            _, times = data_point
+            if isa(times, AbstractVector) && !isempty(times)
+                union!(all_times_union, times)
+            end
+        end
+        # ... (rest of your slider update logic using all_times_union)
+    else
+        tLabel.text[] = "t = N/A (Scalar Stat)"
+        tSlider.range[] = [0]
+        tSlider.value[] = 0
+    end
+end
+# --- Base Case: We've drilled down to the Tuple containing the data and the time vector. ---
+"""
+    get_all_times(run_data::Tuple) -> Set{Float64}
+
+The base case for the recursive time extraction. It checks if the first element
+of the tuple (the statistic's value) is a vector. If so, it returns the time
+vector; otherwise, it returns an empty set.
+"""
+function get_all_times(run_data::Tuple)
+    value, times = run_data
+    # Only return the time vector if the corresponding value is also a vector (i.e., time-dependent).
+    if isa(value, AbstractVector) && isa(times, AbstractVector{<:Real})
+        return Set(times)
+    else
+        return Set{Float64}() # Return an empty set for scalar stats
+    end
+end
+
+# --- Recursive Case: For any collection of runs/methods ---
+"""
+    get_all_times(all_series_data::Vector) -> Set{Float64}
+
+The recursive step. It takes a vector (e.g., of methods, or of runs),
+iterates through its elements, and calls `get_all_times` on each one,
+collecting all the results into a single Set.
+"""
+function get_all_times(all_series_data::Vector)
+    # This handles any level of nesting (e.g., Vector{Vector{...}})
+    
+    # Start with an empty set to collect all time points
+    times_union = Set{Float64}()
+
+    # Use an indexed loop with an `isassigned` check for robustness.
+    for i in 1:length(all_series_data)
+        if isassigned(all_series_data, i)
+            # RECURSIVE CALL: Julia's multiple dispatch will call this same function
+            # if the element is another Vector, or the base case if it's a Tuple.
+            union!(times_union, get_all_times(all_series_data[i]))
+        end
+    end
+
+    return times_union
+end
+
+
+#======================================================================#
+#               2. GENERALIZED `update_time_slider!`
+#======================================================================#
+
+"""
+    update_time_slider!(tSlider, tLabel_text, tData)
+
+Updates the range and value of a time slider based on a potentially nested
+collection of time data by calling the recursive `get_all_times` helper.
+"""
+function update_time_slider!(
+    tSlider::Slider,
+    extracted_data::AbstractVector # Can be Vector{Vector{...}}, etc.
+)
+    # Call the recursive helper to get a flat set of all relevant time points.
+    all_time_points = get_all_times(extracted_data)
+
+    if !isempty(all_time_points)
+        t_min_data, t_max_data = extrema(all_time_points)
+        
+        # Create a dense range for smooth sliding
+        t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, 500))
+        
+        if tSlider.range[] != t_range_slider
+            tSlider.range[] = t_range_slider
+        end
+        
+        current_t_val = clamp(tSlider.value[], t_min_data, t_max_data)
+        set_close_to!(tSlider, current_t_val)
+    else
+        # Default behavior if no time-dependent data is found
+        if tSlider.range[] != [0]
+            tSlider.range[] = [0]
+        end
+        set_close_to!(tSlider, 0)
+    end
+    
+    return nothing
+end
+#======================================================================#
+#              3. `calculate_snapshot` FOR TUPLE DATA
+#======================================================================#
+
+#======================================================================#
+#              FINAL, ROBUST SNAPSHOT CALCULATION
+#======================================================================#
+
+# --- Base Case 1: For a single time-dependent run ---
+# This is the "workhorse". It takes a single tuple of (value_vector, time_vector)
+# and finds the value at the closest time `t`.
+function calculate_snapshot(
+    run_data::Tuple{<:AbstractVector, <:AbstractVector},
+    t_snapshot::Real
+)
+    series_data, series_times = run_data
+    
+    if isempty(series_times) || isempty(series_data)
+        return eltype(series_data)() # Return an empty vector of the correct type
+    end
+    
+    _, time_idx = findmin(t -> abs(t - t_snapshot), series_times)
+    
+    return (1 <= time_idx <= length(series_data)) ? series_data[time_idx] : eltype(series_data)()
+end
+
+# --- Base Case 2: For a single time-independent (scalar) run ---
+# If the data is just a number, it doesn't change with time, so we just return it.
+function calculate_snapshot(run_data::Tuple{<:Real, <:AbstractVector}, t_snapshot::Real)
+    scalar_data, _ = run_data # We ignore the time vector for scalar stats
+    return scalar_data
+end
+
+
+# --- Recursive Case: For any collection of runs/methods ---
+# This function takes a vector (e.g., of methods), iterates through it, and calls
+# the appropriate `calculate_snapshot` method for each element.
+function calculate_snapshot(
+    all_series_data::Vector,
+    t_snapshot::Real
+)
+    num_series = length(all_series_data)
+    snapshots = Vector{Any}(undef, num_series)
+
+    # Use an indexed loop with an `isassigned` check for robustness against #undef errors.
+    for i in 1:num_series
+        if isassigned(all_series_data, i)
+            # RECURSIVE CALL: Julia's multiple dispatch will call the correct version of
+            # `calculate_snapshot` based on the type of the element `all_series_data[i]`.
+            # If it's another Vector, this function calls itself.
+            # If it's a Tuple, it calls one of the base cases above.
+            snapshots[i] = calculate_snapshot(all_series_data[i], t_snapshot)
+        else
+            snapshots[i] = missing
+        end
+    end
+
+    return filter(!ismissing, snapshots)
+end
+
+# --- Top-Level Convenience Function for X and U data ---
+"""
+    calculate_snapshot(x_data, u_data, t_data, t_snapshot) -> Tuple
+
+The main entry point for calculating snapshots for both x and u data.
+This version assumes `x_data` and `u_data` contain the necessary time info
+and no longer requires a separate `t_data` argument.
+"""
+function calculate_snapshot(x_data, u_data, t_snapshot::Real)
+    # The recursive helper function is called for both x and u data.
+    x_snapshots = calculate_snapshot(x_data, t_snapshot)
+    u_snapshots = calculate_snapshot(u_data, t_snapshot)
+    return (x_snapshots, u_snapshots)
 end
 
 ### Deprecated: ui_option specific figure

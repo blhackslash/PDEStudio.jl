@@ -1,253 +1,253 @@
 
-# """
-#     showConvergencePlot(sim_config::SimulationConfig,
-#                         key::String,
-#                         param_values::Union{AbstractVector, AbstractRange},
-#                         y_stat_key::String;
-#                         run_simulations::Bool = true,
-#                         force_int_param::Bool = false)
+"""
+    showConvergencePlot(sim_config::SimulationConfig,
+                        key::String,
+                        param_values::Union{AbstractVector, AbstractRange},
+                        y_stat_key::String;
+                        run_simulations::Bool = true,
+                        force_int_param::Bool = false)
 
-# Plots a specific simulation statistic against a varied parameter.
+Plots a specific simulation statistic against a varied parameter.
 
-# Runs simulations varying `key` over `param_values` for active methods.
-# Plots `param_values` (X-axis) vs. the statistic `y_stat_key` (Y-axis).
-# A time slider is shown only if `y_stat_key` is found to be time-dependent.
+Runs simulations varying `key` over `param_values` for active methods.
+Plots `param_values` (X-axis) vs. the statistic `y_stat_key` (Y-axis).
+A time slider is shown only if `y_stat_key` is found to be time-dependent.
 
-# # Arguments
-# - `sim_config`: Base SimulationConfig defining methods, base params, sim function.
-# - `key`: String name of the parameter to vary (plots on X-axis).
-# - `param_values`: Vector or Range of values for `key`.
-# - `y_stat_key`: String name of the statistic to plot on the Y-axis.
-# - `run_simulations`: If true (default), runs simulations. Assumes `loadSimData` otherwise.
-# - `force_int_param`: If true, attempts `trunc(Int, value)` for the varied parameter `key`.
-# """
-# function showConvergencePlot(
-#     sim_config::SimulationConfig,
-#     key::String,
-#     param_values::Union{AbstractVector, AbstractRange};
-#     force_int_param::Bool = false,
-#     initial_calc::Bool = true,
-#     ui_options::UIType = :default
-#     )
+# Arguments
+- `sim_config`: Base SimulationConfig defining methods, base params, sim function.
+- `key`: String name of the parameter to vary (plots on X-axis).
+- `param_values`: Vector or Range of values for `key`.
+- `y_stat_key`: String name of the statistic to plot on the Y-axis.
+- `run_simulations`: If true (default), runs simulations. Assumes `loadSimData` otherwise.
+- `force_int_param`: If true, attempts `trunc(Int, value)` for the varied parameter `key`.
+"""
+function showConvergencePlot(
+    sim_config::SimulationConfig,
+    key::String,
+    param_values::Union{AbstractVector, AbstractRange};
+    force_int_param::Bool = false,
+    initial_calc::Bool = true,
+    ui_options::UIType = :default
+    )
 
-#     # Runs the simulation for the initial values
-#     if initial_calc
-#         calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, force_overwrite = false)
-#     end
+    # Runs the simulation for the initial values
+    if initial_calc
+        calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, force_overwrite = false)
+    end
 
-#     # --- Basic Setup & UI ---
-#     base_ui_dict = createUIDict(ui_options)
-#     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
-#     ui_options_obs = Dict{String, Observable}()
-#     for (key, value) in base_ui_dict
-#         if isa(value, Tuple)
-#             ui_options_obs[key] = Observable{Tuple}(value)
-#         else
-#             ui_options_obs[key] = Observable(value)
-#         end
-#     end
-#     plot_fig = Figure(size = ui_options_obs["figsize"])
+    # --- Basic Setup & UI ---
+    base_ui_dict = createUIDict(ui_options)
+    deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
+    ui_options_obs = Dict{String, Observable}()
+    for (key, value) in base_ui_dict
+        if isa(value, Tuple)
+            ui_options_obs[key] = Observable{Tuple}(value)
+        else
+            ui_options_obs[key] = Observable(value)
+        end
+    end
+    plot_fig = Figure(size = ui_options_obs["figsize"])
 
-#     # --- CONSTANT X-Axis Data ---
-#     x_vals = try
-#         force_int_param ? map(v -> trunc(Int64, v), param_values) : collect(param_values)
-#         #Float64.(vals) # Ensure Float64 for plotting
-#     catch e
-#         @error "Could not process param_values for $key." exception=(e, catch_backtrace())
-#         return plot_fig, Figure() # Return empty figures on error
-#     end
-#     if isempty(x_vals); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
-#     num_params = length(x_vals)
+    # --- CONSTANT X-Axis Data ---
+    x_vals = try
+        force_int_param ? map(v -> trunc(Int64, v), param_values) : collect(param_values)
+        #Float64.(vals) # Ensure Float64 for plotting
+    catch e
+        @error "Could not process param_values for $key." exception=(e, catch_backtrace())
+        return plot_fig, Figure() # Return empty figures on error
+    end
+    if isempty(x_vals); @warn "Empty parameter values provided."; return plot_fig, Figure(); end
+    num_params = length(x_vals)
 
-#     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
-#     # Observable dictionary for SHARED parameters
-#     shared_params_obs = Dict{String, Observable}()
-#     for (key, val) in sim_config.shared_params
-#         shared_params_obs[key] = Observable(val)
-#     end
-#     # NESTED Observable dictionary for METHOD-SPECIFIC parameters
-#     method_params_collection_obs = Dict{String, Dict{String, Observable}}()
-#     for (method_name, method_params_dict) in sim_config.methods_dict
-#         inner_obs_dict = Dict{String, Observable}()
-#         for (param_key, param_val) in method_params_dict
-#             inner_obs_dict[param_key] = Observable(param_val)
-#         end
-#         method_params_collection_obs[method_name] = inner_obs_dict
-#     end
+    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
+    # Observable dictionary for SHARED parameters
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        shared_params_obs[key] = Observable(val)
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            inner_obs_dict[param_key] = Observable(param_val)
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
 
-#     all_method_names = collect(keys(sim_config.methods_dict))
+    all_method_names = collect(keys(sim_config.methods_dict))
 
-#     # Method selection observable (no change)
-#     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
-#     method_number = lift(length, methods_obs)
+    # Method selection observable (no change)
+    methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
+    method_number = lift(length, methods_obs)
 
-#     # --- Call the NEW createControls function ---
-#     control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
-#         plot_fig,
-#         shared_params_obs,
-#         method_params_collection_obs,
-#         methods_obs,
-#         all_method_names,
-#         ui_options_obs
-#     )
+    # --- Call the NEW createControls function ---
+    control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
+        plot_fig,
+        shared_params_obs,
+        method_params_collection_obs,
+        methods_obs,
+        all_method_names,
+        ui_options_obs
+    )
 
-#     # --- Stats Selection Menu & Time Slider ---
-#     Label(control_fig[end+1,:], "Statistic to Plot:")
+    # --- Stats Selection Menu & Time Slider ---
+    Label(control_fig[end+1,:], "Statistic to Plot:")
     
 
-#     ylabel = lift(selector) do sel
-#         string(sel)
-#     end
-#     title = lift(selector) do sel
-#         "Convergence $sel vs $key"
-#     end
-#     # -----------------------------------------
-#     default_labels = Dict("xlabel" => key,
-#                           "ylabel" => ylabel,                        
-#                           "title" => title)
-#     label_obs = create_axis_label_observables(ui_options_obs, default_labels)
+    ylabel = lift(selector) do sel
+        string(sel)
+    end
+    title = lift(selector) do sel
+        "Convergence $sel vs $key"
+    end
+    # -----------------------------------------
+    default_labels = Dict("xlabel" => key,
+                          "ylabel" => ylabel,                        
+                          "title" => title)
+    label_obs = create_axis_label_observables(ui_options_obs, default_labels)
 
 
-#     ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"])
+    ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"])
     
-#     # --- Time Slider (Always Visible, label changes) ---
-#     is_y_stat_time_dependent = Observable(true) # Updated in Lift 1
-#     tLabel = Label(control_fig[end+1,:], "t = 0")
-#     tSlider = Slider(control_fig[end+1,:])
+    # --- Time Slider (Always Visible, label changes) ---
+    is_y_stat_time_dependent = Observable(true) # Updated in Lift 1
+    tLabel = Label(control_fig[end+1,:], "t = 0")
+    tSlider = Slider(control_fig[end+1,:])
 
-#     # --- REFACTORED DATA STORAGE ---
-#     raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}(undef, 0))
-#     extracted_stat_data = Observable{Vector{Vector{Tuple{Any, Vector{Float64}}}}}([Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0)])
-#     y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
-#     is_y_stat_time_dependent = Observable(true)
+    # --- REFACTORED DATA STORAGE ---
+    raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}(undef, 0))
+    extracted_stat_data = Observable{Vector{Vector{Tuple{Any, Vector{Float64}}}}}([Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0)])
+    y_plot_data_methods = Observable(Vector{Observable{Vector{Float64}}}(undef, 0))
+    is_y_stat_time_dependent = Observable(true)
     
-#  #======================================================================#
-# #    LIFT 1: Load ALL Stats & Find Common Plottable Keys for Menu
-# #======================================================================#
+ #======================================================================#
+#    LIFT 1: Load ALL Stats & Find Common Plottable Keys for Menu
+#======================================================================#
 
-#     lift(update_notifier; ignore_equal_values=true) do _
-#         active_num = length(methods_obs[])
-#         if active_num == 0
-#             raw_data_store[] = []
-#             return
-#         end
-#         println("Lift 1: Loading all simulation stats to find common keys...")
+    lift(update_notifier; ignore_equal_values=true) do _
+        active_num = length(methods_obs[])
+        if active_num == 0
+            raw_data_store[] = []
+            return
+        end
+        println("Lift 1: Loading all simulation stats to find common keys...")
 
-#         # A vector of Sets, one for each method, to hold its plottable keys
-#         sets_of_plottable_keys = [Set{String}() for _ in 1:active_num]
-#         # Temporary storage for the full data
-#         temp_raw_data = [Vector{Tuple{Dict{String,Any}, Vector{Float64}}}(undef, num_params) for _ in 1:active_num]
+        # A vector of Sets, one for each method, to hold its plottable keys
+        sets_of_plottable_keys = [Set{String}() for _ in 1:active_num]
+        # Temporary storage for the full data
+        temp_raw_data = [Vector{Tuple{Dict{String,Any}, Vector{Float64}}}(undef, num_params) for _ in 1:active_num]
 
-#         for i = 1:active_num # Loop over selected methods
-#             method = methods_obs[][i]
-#             base_params = assembleParams(shared_params_obs, method_params_collection_obs, method)
+        for i = 1:active_num # Loop over selected methods
+            method = methods_obs[][i]
+            base_params = assembleParams(shared_params_obs, method_params_collection_obs, method)
 
-#             # We find the intersection of plottable keys for all runs of a single method
-#             # Start with a full set and narrow it down.
-#             is_first_run_for_method = true
+            # We find the intersection of plottable keys for all runs of a single method
+            # Start with a full set and narrow it down.
+            is_first_run_for_method = true
 
-#             for j = 1:num_params # Loop over the convergence parameter values
-#                 current_params = copy(base_params)
-#                 current_params[key] = x_vals[j]
+            for j = 1:num_params # Loop over the convergence parameter values
+                current_params = copy(base_params)
+                current_params[key] = x_vals[j]
                 
-#                 stats_dict_for_run = Dict{String,Any}(); time_vec_for_run = Float64[]
-#                 try
-#                     # Assumes Utils.loadSimData exists and works
-#                     sim_data = Utils.loadSimData(current_params)
-#                     if !isnothing(sim_data) && hasproperty(sim_data, :stats)
-#                         stats_dict_for_run = sim_data.stats
-#                         if hasproperty(sim_data, :t) && isa(sim_data.t, AbstractVector)
-#                             time_vec_for_run = sim_data.t
-#                         end
-#                     end
-#                 catch e
-#                     @warn "Could not load data for method '$method' with '$key'=$(current_params[key])"
-#                 end
+                stats_dict_for_run = Dict{String,Any}(); time_vec_for_run = Float64[]
+                try
+                    # Assumes Utils.loadSimData exists and works
+                    sim_data = Utils.loadSimData(current_params)
+                    if !isnothing(sim_data) && hasproperty(sim_data, :stats)
+                        stats_dict_for_run = sim_data.stats
+                        if hasproperty(sim_data, :t) && isa(sim_data.t, AbstractVector)
+                            time_vec_for_run = sim_data.t
+                        end
+                    end
+                catch e
+                    @warn "Could not load data for method '$method' with '$key'=$(current_params[key])"
+                end
                 
-#                 # Store the full stats dictionary
-#                 temp_raw_data[i][j] = (stats_dict_for_run, time_vec_for_run)
+                # Store the full stats dictionary
+                temp_raw_data[i][j] = (stats_dict_for_run, time_vec_for_run)
                 
-#                 # Filter for keys whose values are plottable (Number or Vector of Reals)
-#                 current_run_plottable_keys = Set(
-#                     keys(filter(p -> isa(p.second, Union{Number, AbstractVector}), stats_dict_for_run))
-#                 )
+                # Filter for keys whose values are plottable (Number or Vector of Reals)
+                current_run_plottable_keys = Set(
+                    keys(filter(p -> isa(p.second, Union{Number, AbstractVector}), stats_dict_for_run))
+                )
                 
-#                 if is_first_run_for_method
-#                     sets_of_plottable_keys[i] = current_run_plottable_keys
-#                     is_first_run_for_method = false
-#                 else
-#                     # Keep only the keys that are present in ALL runs for this method
-#                     intersect!(sets_of_plottable_keys[i], current_run_plottable_keys)
-#                 end
-#             end
-#         end
+                if is_first_run_for_method
+                    sets_of_plottable_keys[i] = current_run_plottable_keys
+                    is_first_run_for_method = false
+                else
+                    # Keep only the keys that are present in ALL runs for this method
+                    intersect!(sets_of_plottable_keys[i], current_run_plottable_keys)
+                end
+            end
+        end
         
-#         # Now, find the keys that are common across ALL selected methods
-#         common_keys = if !isempty(sets_of_plottable_keys)
-#             # Start with the keys from the first method, then intersect with the rest
-#             intersect(sets_of_plottable_keys...) 
-#         else
-#             Set{String}()
-#         end
-#         sorted_keys = sort(collect(common_keys))
+        # Now, find the keys that are common across ALL selected methods
+        common_keys = if !isempty(sets_of_plottable_keys)
+            # Start with the keys from the first method, then intersect with the rest
+            intersect(sets_of_plottable_keys...) 
+        else
+            Set{String}()
+        end
+        sorted_keys = sort(collect(common_keys))
 
-#         y_options[] = sorted_keys
+        y_options[] = sorted_keys
 
-#         # Finally, update the main raw data store, which will trigger Lift 2
-#         raw_data_store[] = temp_raw_data
-#         println("Lift 1: Update complete. Found $(length(sorted_keys)) common plottable stats.")
-#     end
-
-
-#     #======================================================================#
-#     #    LIFT 2: Extract Selected Stat & Check Time Dependence
-#     #======================================================================#
-
-#     lift(selector, update_notifier) do selected_key, _
-#         extracted_stat_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0))
-#         updateData!(extracted_stat_data, raw_data_store[],selected_key)
-#         update_time_dependence!(is_y_stat_time_dependent, tSlider, tLabel, extracted_stat_data[])
-#         return nothing
-#     end
-#     # Set global limits if update_limits is off
-#     lift(ui_update, selector) do _...
-#         lims = ui_options_obs["update_limits"][] ? nothing : calculate_global_axis_range(extracted_stat_data[], ui_options_obs["ypadding"][], ui_options_obs["ylogscale"][])
-#         if !isnothing(lims); ylims!(ax, lims[1], lims[2]); xlims!(ax, x_vals[1], x_vals[end]) end
-#         return nothing
-#     end
-
-#     # --- Lift 2: Snapshot Update (Simpler) ---
-#     lift(tSlider.value, extracted_stat_data; ignore_equal_values=true) do t, _
-#         y_plot_data_methods[] = calculate_snapshot(extracted_stat_data[], t,is_y_stat_time_dependent[])
-#         return nothing
-#     end # --- End Lift 2 ---
+        # Finally, update the main raw data store, which will trigger Lift 2
+        raw_data_store[] = temp_raw_data
+        println("Lift 1: Update complete. Found $(length(sorted_keys)) common plottable stats.")
+    end
 
 
-#     # --- Lift 3: Plot Management (Uses constant X-data) ---
-#     lift(y_plot_data_methods, ui_update; ignore_equal_values=true) do _...
+    #======================================================================#
+    #    LIFT 2: Extract Selected Stat & Check Time Dependence
+    #======================================================================#
 
-#         create_base_plot_1D!(plot_fig, ax, 
-#                              methods_obs[],
-#                              [x_vals for _ = 1:length(methods_obs[])],
-#                              y_plot_data_methods[],
-#                              ui_options_obs; 
-#                              plot_observable = false)
+    lift(selector, update_notifier) do selected_key, _
+        extracted_stat_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}(undef, 0))
+        updateData!(extracted_stat_data, raw_data_store[],selected_key)
+        update_time_dependence!(is_y_stat_time_dependent, tSlider, tLabel, extracted_stat_data[])
+        return nothing
+    end
+    # Set global limits if update_limits is off
+    lift(ui_update, selector) do _...
+        lims = ui_options_obs["update_limits"][] ? nothing : calculate_global_axis_range(extracted_stat_data[], ui_options_obs["ypadding"][], ui_options_obs["ylogscale"][])
+        if !isnothing(lims); ylims!(ax, lims[1], lims[2]); xlims!(ax, x_vals[1], x_vals[end]) end
+        return nothing
+    end
 
-#         delete_plots_by_label!(ax, "Reference Lines")
-#         if ui_options_obs["xlogscale"][] && ui_options_obs["ylogscale"][]
-#             plot_reference_lines!(ax, ui_options_obs["reference"][])
-#         end
+    # --- Lift 2: Snapshot Update (Simpler) ---
+    lift(tSlider.value, extracted_stat_data; ignore_equal_values=true) do t, _
+        y_plot_data_methods[] = calculate_snapshot(extracted_stat_data[], t,is_y_stat_time_dependent[])
+        return nothing
+    end # --- End Lift 2 ---
+
+
+    # --- Lift 3: Plot Management (Uses constant X-data) ---
+    lift(y_plot_data_methods, ui_update; ignore_equal_values=true) do _...
+
+        create_base_plot_1D!(plot_fig, ax, 
+                             methods_obs[],
+                             [x_vals for _ = 1:length(methods_obs[])],
+                             y_plot_data_methods[],
+                             ui_options_obs; 
+                             plot_observable = false)
+
+        delete_plots_by_label!(ax, "Reference Lines")
+        if ui_options_obs["xlogscale"][] && ui_options_obs["ylogscale"][]
+            plot_reference_lines!(ax, ui_options_obs["reference"][])
+        end
         
-#         return nothing
-#     end # --- End Lift 3 ---
+        return nothing
+    end # --- End Lift 3 ---
 
 
-#     # --- Display ---
-#     try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
-#     try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
+    # --- Display ---
+    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
+    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
 
-#     return plot_fig, control_fig
-# end
+    return plot_fig, control_fig
+end
 
 """
     showConvergencePlot(sim_config::SimulationConfig,
@@ -694,164 +694,3 @@ function showConvergencePlot(
 
     return plot_fig, control_fig
 end # --- End Function ---
-
-
-# This is the new, fully generalized showConvergencePlot function.
-
-"""
-    showConvergencePlot(sim_config, key, param_values; x_stat_key, y_stat_key, kwargs...)
-
-Creates a fully interactive plot that can show any simulation statistic against
-any other statistic, or against the varied parameter `key`.
-
-It loads all statistics from all simulation runs, populates two menus to select
-the X and Y axis variables, and reactively updates the plot.
-"""
-function showConvergencePlot(
-    sim_config::SimulationConfig,
-    key::String,
-    param_values::Union{AbstractVector, AbstractRange};
-    x_stat_key::Union{String, Nothing} = nothing,
-    y_stat_key::Union{String, Nothing} = nothing,
-    force_int_param::Bool = false,
-    initial_calc::Bool = true,
-    ui_options::UIType = :default
-)
-    # --- Initial Setup ---
-    if initial_calc; calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, force_overwrite = false); end
-    GLMakie.activate!()
-    base_ui_dict = createUIDict(ui_options)
-    ui_options_obs = Dict{String,Observable}(k => Observable(v) for (k,v) in base_ui_dict)
-    plot_fig = Figure(size = (ui_options_obs["figsize"]))
-    x_vals = force_int_param ? map(v -> trunc(Int64, v), param_values) : collect(param_values)
-
-    # --- Parameter & Method Observables ---
-    shared_params_obs = Dict{String,Observable}(k => Observable(v) for (k,v) in sim_config.shared_params)
-    method_params_collection_obs = Dict{String,Dict{String, Observable}}(m => Dict(k=>Observable(v) for (k,v) in p) for (m,p) in sim_config.methods_dict)
-    all_method_names = collect(keys(sim_config.methods_dict))
-    methods_obs = Observable(filter(m -> m in all_method_names, sim_config.default_methods))
-    
-    # --- Control Figure Setup ---
-    control_fig, update_notifier, ui_update, y_options_obs, selected_y_key_obs = 
-        createBaseControlsFigure(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names,ui_options_obs)
-
-    Label(control_fig[end+1, :], "X-Axis Statistic:")
-    x_menu_container = control_fig[end+1,:] = GridLayout()
-    x_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
-    selected_x_key_obs = Observable(isnothing(x_stat_key) ? key : x_stat_key)
-
-    # --- Reactive Axis Labels ---
-    reactive_title = lift((x,y) -> "Convergence: $y vs $x", selected_x_key_obs, selected_y_key_obs)
-    default_labels = Dict{String,Any}("xlabel" => selected_x_key_obs, "ylabel" => selected_y_key_obs, "title" => reactive_title)
-    label_obs = create_axis_label_observables(ui_options_obs, default_labels)
-    ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"])
-
-    # --- Time Slider, Log Toggles, etc. ---
-    tSlider = Slider(control_fig[end+2,:], range = 0:0)
-
-    tLabel_text = lift(tSlider.value, tSlider.range) do val, range; 
-        if range == [0]
-            "t = N/A"
-        else
-            "t = $(round(val; digits = 4))"
-        end 
-    end
-    Label(control_fig[end-1,:], tLabel_text)
-    # ... (Your log toggle setup) ...
-
-    # --- DATA STORAGE (using the tuple structure) ---
-    raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}())
-    extracted_x_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}())
-    extracted_y_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}())
-
-    # --- DATA LOADING AND MENU POPULATION ---
-    lift(update_notifier) do _
-        println("Data Loading: Loading all stats and populating menus...")
-        active_num = length(methods_obs[])
-        num_params = length(x_vals)
-        sets_of_plottable_keys = [Set{String}() for _ in 1:active_num]
-        temp_raw_data = [Vector{Tuple{Dict{String, Any}, Vector{<:Real}}}(undef, num_params) for _ in 1:active_num]
-
-        for i in 1:active_num
-            method = methods_obs[][i]
-            base_params = assembleParams(shared_params_obs, method_params_collection_obs, method)
-            is_first_run_for_method = true
-            for j in 1:num_params
-                current_params = copy(base_params)
-                current_params[key] = x_vals[j]
-                
-                stats_dict_for_run = Dict{String,Any}()
-                try
-                    sim_data = Utils.loadSimData(current_params)
-                    if !isnothing(sim_data) && hasproperty(sim_data, :stats)
-                        stats_dict_for_run = sim_data.stats
-                    end
-                    time_vec_for_run = sim_data.t
-                    stats_dict_for_run[key] = x_vals[j]
-                    temp_raw_data[i][j] = (stats_dict_for_run, time_vec_for_run)
-                catch e
-                    rethrow(e)
-                    @warn "Could not load data for method '$method' with '$key'=$(current_params[key])"
-                end
-                
-                current_run_plottable_keys = Set(keys(filter(p -> isa(p.second, Union{Number, AbstractVector}), stats_dict_for_run)))
-                if is_first_run_for_method
-                    sets_of_plottable_keys[i] = current_run_plottable_keys
-                    is_first_run_for_method = false
-                else
-                    intersect!(sets_of_plottable_keys[i], current_run_plottable_keys)
-                end
-            end
-        end
-        raw_data_store[] = temp_raw_data
-        common_keys = if !isempty(sets_of_plottable_keys); intersect(sets_of_plottable_keys...); else Set{String}(); end
-        sorted_keys = sort(collect(common_keys))
-        
-        create_or_update_selection_menu!(x_menu_container, x_menu_handle, sorted_keys, selected_x_key_obs)
-        y_options_obs[] = sorted_keys
-        
-        if isnothing(y_stat_key) && !isempty(sorted_keys)
-            selected_y_key_obs[] = sorted_keys[2]
-        elseif !isnothing(y_stat_key) && y_stat_key in sorted_keys
-            selected_y_key_obs[] = y_stat_key
-        end
-
-        
-    end
-
-    # --- DATA EXTRACTION ---
-    lift(selected_x_key_obs, selected_y_key_obs, raw_data_store) do x_key, y_key, all_raw_data
-        if isempty(all_raw_data); return; end
-        extracted_x_data[] = extractStats(all_raw_data, x_key)
-        extracted_y_data[] = extractStats(all_raw_data, y_key)
-        set_axis_limits!(ax, extracted_x_data[], extracted_y_data[], ui_options_obs)
-        return nothing
-    end
-
-    # --- TIME DEPENDENCE ANALYSIS ---
-    lift(extracted_x_data, extracted_y_data) do x_data, y_data
-        update_time_slider!(tSlider, [x_data, y_data])
-        return nothing
-    end
-
-    # --- FINAL PLOTTING LIFT ---
-    lift(tSlider.value, extracted_x_data, extracted_y_data, ui_update) do t, x_data, y_data, _
-        if isempty(x_data) || isempty(y_data); return; end
-           
-        x_snapshot, y_snapshot = calculate_snapshot(x_data, y_data, t)
-        create_base_plot_1D!(
-            plot_fig, ax, methods_obs[], x_snapshot, y_snapshot, ui_options_obs
-        )
-        
-        delete_plots_by_label!(ax, "Reference Lines")
-        if ui_options_obs["xlogscale"][] && ui_options_obs["ylogscale"][]
-            plot_reference_lines!(ax, get(ui_options_obs, "reference", Observable(()))[])
-        end
-        return nothing
-    end
-    # --- Final Steps ---
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
-
-    return plot_fig, control_fig
-end

@@ -29,7 +29,7 @@ end
 
 mutable struct SimData1D <: AbstractSimData
     x::Vector{Vector{Float64}}
-    u::Vector{T} where T <:Union{Vector{Float64}, Matrix{Float64}}
+    u::Vector{VecOrMat}
     t::Vector{Float64}
     params::ParamDictType
     stats::ParamDictType
@@ -41,7 +41,7 @@ end
 
 mutable struct SimData2D <: AbstractSimData
     x::Vector{Vector{NTuple{2,Float64}}}
-    u::Vector{T} where T <:Union{Vector{Float64}, Matrix{Float64}}
+    u::Vector{VecOrMat}
     t::Vector{Float64}
     params::ParamDictType
     stats::ParamDictType

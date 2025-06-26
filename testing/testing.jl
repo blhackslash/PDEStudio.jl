@@ -212,7 +212,7 @@ ui_options = GetUIStyle(:default)
 ui_options["reference"] = (1.,2.)
 ui_options["ylogscale"] = false
 ui_options["update_limits"] = false
-showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)); ui_options = ui_options)
+showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1));y_stat_key = "dx", ui_options = ui_options, initial_calc = true)
 showConvergencePlot(sim_config_1d, "dx", 10 .^ (collect(-1:.2:1)), "time", "l1_norm")
 
 #2D Testing
