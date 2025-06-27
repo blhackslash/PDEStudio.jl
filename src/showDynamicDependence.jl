@@ -62,9 +62,6 @@ function showDynamicDependence(sim_config::SimulationConfig, ui_options::UIType 
         ui_options_obs
     )
     # -----------------------------------------
-
-    # --- Stats Selection Menu & Time Slider ---
-    Label(control_fig[end+1,:], "Statistic to Plot:")
     
 
     ylabel = lift(selector) do sel

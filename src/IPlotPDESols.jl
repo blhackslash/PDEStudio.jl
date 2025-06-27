@@ -4,7 +4,7 @@ export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConverge
        calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,
-       AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData
+       AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames
 
 include("Structs.jl")
 using .Structs

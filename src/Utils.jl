@@ -10,7 +10,7 @@ using GLMakie
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, calculateConvergenceData,
-       assembleParams
+       assembleParams, allMethodNames
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -601,4 +601,7 @@ function calculateConvergenceData(
     println("Convergence data calculation complete.")
 end
 
+function allMethodNames(config::SimulationConfig)
+    return collect(keys(config.methods_dict))
+end
 end

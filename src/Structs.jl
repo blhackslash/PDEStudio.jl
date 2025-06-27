@@ -20,9 +20,10 @@ struct SimulationConfig
     shared_params::ParamDictType
     #ui_options::ParamDictType
 
-    function SimulationConfig(sim_function::Function, shared_params::ParamDictType, methods_dict::MethodDictType, default_methods::Vector{String})
-        @assert (issubset(Set(default_methods),Set(keys(methods_dict)))) "Default method is not contained in the given dictionary!"
-        new(sim_function, methods_dict, default_methods, shared_params::ParamDictType)
+    function SimulationConfig(sim_function::Function, shared_params::ParamDictType, methods_dict::MethodDictType, default_methods::Union{Vector{String}, String})
+        methods = isa(default_methods, String) ? (default_methods == "all" ? collect(keys(methods_dict)) : [default_methods]) : default_methods
+        @assert (issubset(Set(methods),Set(keys(methods_dict)))) "Default method is not contained in the given dictionary!"
+        new(sim_function, methods_dict, methods, shared_params::ParamDictType)
     end
 end
 

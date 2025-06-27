@@ -643,6 +643,9 @@ function createSaveFigBox(
     # --- Modified `on` listener ---
     on(saveBox.stored_string) do s
 
+        #original_update_state = ui_options_obs["update_limits"][]
+        # Turn off auto-limiting. This prevents the plot from resetting.
+        #ui_options_obs["update_limits"][] = false
         base_name = string(strip(s))
         
         if isempty(base_name)
@@ -679,10 +682,13 @@ function createSaveFigBox(
                 # Temporarily activate CairoMakie for vector formats for high-quality output
                 if fmt in ["pdf", "svg"]
                     CairoMakie.activate!()
+                    CairoMakie.save(full_filename, plot_fig, update = false)
+                else
+                    GLMakie.save(full_filename, plot_fig, update = false)
                 end
 
                 # Save the figure
-                Makie.save(full_filename, plot_fig)
+                
                 println("Plot saved as $full_filename")
 
             catch e
@@ -708,7 +714,7 @@ function createSaveFigBox(
              optional_info
          )
          # --------------------------------------------------
-
+        #ui_options_obs["update_limits"][] = original_update_state
          #saveBox.stored_string = "" # Clear textbox
      end # End on event handler
 end
@@ -751,101 +757,101 @@ function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dic
 end
 
 
-"""
-    createControls_Separated(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names)
+# """
+#     createControls_Separated(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names)
 
-Creates a Makie control figure using the user's helper functions, separating shared
-and method-specific parameters into sections. Assumes helper functions add their
-own rows to the passed figure using `fig[end+1, ...]`.
-"""
-function createControls(
-    plot_fig::Makie.Figure,                             # Figure for save box action reference
-    shared_params_obs::Dict{String, Observable},
-    method_params_collection_obs::Dict{String, Dict{String, Observable}},
-    methods_obs::Observable{Vector{String}},          # Observable list of ACTIVE methods
-    all_method_names::Vector{String}   # FULL list of possible methods                
-    )
-    update_notifier = Observable(0)
-    column_number = length(all_method_names)+1
-    #row_number = max(length(shared_params_obs), maximum(map(dict -> length(dict), values(method_params_collection_obs)))) + 1
-    control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
-    Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false, halign = :center) # Main title
-    update_button = Button(control_fig[1,end], label = "Update", halign = :left)
+# Creates a Makie control figure using the user's helper functions, separating shared
+# and method-specific parameters into sections. Assumes helper functions add their
+# own rows to the passed figure using `fig[end+1, ...]`.
+# """
+# function createControls(
+#     plot_fig::Makie.Figure,                             # Figure for save box action reference
+#     shared_params_obs::Dict{String, Observable},
+#     method_params_collection_obs::Dict{String, Dict{String, Observable}},
+#     methods_obs::Observable{Vector{String}},          # Observable list of ACTIVE methods
+#     all_method_names::Vector{String}   # FULL list of possible methods                
+#     )
+#     update_notifier = Observable(0)
+#     column_number = length(all_method_names)+1
+#     #row_number = max(length(shared_params_obs), maximum(map(dict -> length(dict), values(method_params_collection_obs)))) + 1
+#     control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
+#     Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false, halign = :center) # Main title
+#     update_button = Button(control_fig[1,end], label = "Update", halign = :left)
 
-    on(update_button.clicks) do _
-        update_notifier[] += 1
-    end
-    tb_layout = control_fig[2, 1:column_number] = GridLayout()
-    # --- Shared Parameters Section ---
-    if !isempty(shared_params_obs)
-        # The content goes into the layout of the GroupBox   
-        #Label(tb_layout, "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-        # Separate keys
-        # --- Filter out keys marked as :const ---
-        # -------------------------------------
-        shared_keys = sort(collect(keys(shared_params_obs)))
-        shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
-        shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
-        # Call user's helpers (they will add rows using end+1)
-        if !isempty(shared_other_keys)
-            rows = length(shared_other_keys)+1
-            createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, "Shared Parameters")
-        end
-        if !isempty(shared_bool_keys)
-            row_end = rows + length(shared_bool_keys) + 1
-            createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs)
-        end
-    end
+#     on(update_button.clicks) do _
+#         update_notifier[] += 1
+#     end
+#     tb_layout = control_fig[2, 1:column_number] = GridLayout()
+#     # --- Shared Parameters Section ---
+#     if !isempty(shared_params_obs)
+#         # The content goes into the layout of the GroupBox   
+#         #Label(tb_layout, "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+#         # Separate keys
+#         # --- Filter out keys marked as :const ---
+#         # -------------------------------------
+#         shared_keys = sort(collect(keys(shared_params_obs)))
+#         shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
+#         shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
+#         # Call user's helpers (they will add rows using end+1)
+#         if !isempty(shared_other_keys)
+#             rows = length(shared_other_keys)+1
+#             createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, "Shared Parameters")
+#         end
+#         if !isempty(shared_bool_keys)
+#             row_end = rows + length(shared_bool_keys) + 1
+#             createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs)
+#         end
+#     end
 
-    # --- Method-Specific Parameters Section ---
-    #Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-    any_method_specific_params = false
-    # Iterate through ALL possible methods to create sections consistently
-    for (i,method_name) in enumerate(sort(all_method_names))
-        # Check if this method has specific parameter observables defined
-        if haskey(method_params_collection_obs, method_name)
-            method_params_obs = method_params_collection_obs[method_name]
-            if !isempty(method_params_obs)
-                any_method_specific_params = true
-                #tb_layout = control_fig[end, end+1]
-                # Add a sub-header for the method
-                #Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
+#     # --- Method-Specific Parameters Section ---
+#     #Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+#     any_method_specific_params = false
+#     # Iterate through ALL possible methods to create sections consistently
+#     for (i,method_name) in enumerate(sort(all_method_names))
+#         # Check if this method has specific parameter observables defined
+#         if haskey(method_params_collection_obs, method_name)
+#             method_params_obs = method_params_collection_obs[method_name]
+#             if !isempty(method_params_obs)
+#                 any_method_specific_params = true
+#                 #tb_layout = control_fig[end, end+1]
+#                 # Add a sub-header for the method
+#                 #Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
 
-                # Separate keys for this method
-                method_keys = sort(collect(keys(method_params_obs)))
-                method_bool_keys = filter(k -> method_params_obs[k][] isa Bool, method_keys)
-                method_other_keys = filter(k -> !(method_params_obs[k][] isa Bool), method_keys)
+#                 # Separate keys for this method
+#                 method_keys = sort(collect(keys(method_params_obs)))
+#                 method_bool_keys = filter(k -> method_params_obs[k][] isa Bool, method_keys)
+#                 method_other_keys = filter(k -> !(method_params_obs[k][] isa Bool), method_keys)
 
-                # Call user's helpers for this method's params
-                if !isempty(method_other_keys)
-                    rows = length(method_other_keys)+1
-                    createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, method_name)
-                end
-                if !isempty(method_bool_keys)
-                    #row_end = rows + length(method_bool_keys)
-                    createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs)
-                end
-            end # end if !isempty(method_params_obs)
-        end # end if haskey
-    end # end for method_name
-    if !any_method_specific_params
-         Label(control_fig[end+1, :], "(None)", halign=:center, tellwidth=false).padding = (0,0,5,15)
-    end
-    # --- Method Selection Section ---
-    Label(control_fig[end+1, :], "Active Methods", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+#                 # Call user's helpers for this method's params
+#                 if !isempty(method_other_keys)
+#                     rows = length(method_other_keys)+1
+#                     createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, method_name)
+#                 end
+#                 if !isempty(method_bool_keys)
+#                     #row_end = rows + length(method_bool_keys)
+#                     createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs)
+#                 end
+#             end # end if !isempty(method_params_obs)
+#         end # end if haskey
+#     end # end for method_name
+#     if !any_method_specific_params
+#          Label(control_fig[end+1, :], "(None)", halign=:center, tellwidth=false).padding = (0,0,5,15)
+#     end
+#     # --- Method Selection Section ---
+#     Label(control_fig[end+1, :], "Active Methods", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
 
-    # Call user's Checkbox helper function
-    cb_layout = control_fig[end+1, :] = GridLayout()
-    createMethodCheckboxes(cb_layout, methods_obs, all_method_names)
+#     # Call user's Checkbox helper function
+#     cb_layout = control_fig[end+1, :] = GridLayout()
+#     createMethodCheckboxes(cb_layout, methods_obs, all_method_names)
 
-    # --- Save Box Section ---
-    # Note: This currently only passes shared_params_obs to be saved in the CSV.
-    # Modifying createSaveFigBox would be needed to save method-specific params too.
-    #Label(control_fig[end+1, :], "Save Current View", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-    createSaveFigBox(control_fig[end+1,:], plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
+#     # --- Save Box Section ---
+#     # Note: This currently only passes shared_params_obs to be saved in the CSV.
+#     # Modifying createSaveFigBox would be needed to save method-specific params too.
+#     #Label(control_fig[end+1, :], "Save Current View", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
+#     createSaveFigBox(control_fig[end+1,:], plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
 
-    return control_fig, update_notifier
-end
+#     return control_fig, update_notifier
+# end
 
 # This function goes into your plotting_helpers.jl file
 """
@@ -1231,8 +1237,7 @@ end
 
 _get_min_val(data::Real) = _get_val(data)
 _get_min_val(data::AbstractVector{<:Real}) = minimum(_get_val(data); init=Inf)
-_get_min_val(data::Tuple{<:AbstractVector,<:Vector}) = minimum(_get_val(data[1]))
-_get_min_val(data::Tuple{<:Real,<:Vector}) = _get_val(data[1])
+_get_min_val(data::Tuple{<:Any,<:Vector}) = _get_min_val(data[1])
 
 function _get_min_val(data::AbstractVector) # Recursive case for nested vectors
     # Use a generator to recursively call get_min_val on each element,
@@ -1251,8 +1256,7 @@ end
 
 _get_max_val(data::Real) = _get_val(data)
 _get_max_val(data::AbstractVector{<:Real}) = maximum(_get_val(data); init=-Inf)
-_get_max_val(data::Tuple{<:AbstractVector,<:Vector}) = maximum(_get_val(data[1]))
-_get_max_val(data::Tuple{<:Real,<:Vector}) = _get_val(data[1])
+_get_max_val(data::Tuple{<:Any,<:Vector}) = _get_max_val(data[1])
 
 function _get_max_val(data::AbstractVector) # Recursive case
     return maximum((v for v in (get_max_val(d) for d in data) if !isnothing(v)); init=-Inf)
@@ -1332,9 +1336,9 @@ function set_axis_limits!(
         raw_ylims = get_raw_global_range(y_data)
     
         # --- Set Axis Scale and Limits ---
-        ax.xscale[] = x_is_log_requested && final_xlims[1] > 0 ? log10 : identity
-        ax.yscale[] = y_is_log_requested && final_ylims[1] > 0 ? log10 : identity
-        
+        ax.xscale[] = x_is_log_requested && raw_xlims[1] > 0 ? log10 : identity
+        ax.yscale[] = y_is_log_requested && raw_ylims[1] > 0 ? log10 : identity
+
         final_xlims = calculate_padded_axis_range(raw_xlims, x_padding, x_is_log_requested)
         final_ylims = calculate_padded_axis_range(raw_ylims, y_padding, y_is_log_requested)
 
@@ -1346,84 +1350,6 @@ function set_axis_limits!(
     end
     return nothing
 end
-
-# """
-#     get_axis_limits(data_observables, padding_factor, is_log_scale) -> Tuple
-
-# Calculates the min and max limits for an axis from a vector of data observables.
-
-# It iterates through all data, finds the overall min/max of finite values,
-# and applies a specified padding. It correctly handles linear and log scales
-# (for log scales, it ignores non-positive values and applies padding multiplicatively).
-
-# # Arguments
-# - `data_observables`: A vector of observables, where each observable contains a
-#   vector of numeric data (e.g., `Vector{Observable{Vector{Float64}}}`).
-# - `padding_factor::Real`: The padding to apply, as a fraction (e.g., 0.1 for 10%).
-# - `is_log_scale::Bool`: If true, calculates padding suitable for a log-scaled axis.
-
-# # Returns
-# - A `Tuple{Float64, Float64}` representing `(limit_min, limit_max)`. Returns a
-#   default range like `(0.0, 1.0)` if no valid data is found.
-# """
-# function get_axis_limits(
-#     data_observables::AbstractVector,
-#     padding_factor::Real,
-#     is_log_scale::Bool
-# )
-#     min_overall = Inf
-#     max_overall = -Inf
-#     found_valid_data = false
-
-#     for obs in data_observables
-#         # Get the vector from the observable
-#         data_vec = to_value(obs)
-
-#         # Filter for valid data points
-#         local valid_data
-#         if is_log_scale
-#             # For log scale, we can only use positive, finite numbers
-#             valid_data = filter(x -> isfinite(x) && x > 0, data_vec)
-#         else
-#             # For linear scale, any finite number is fine
-#             valid_data = filter(isfinite, data_vec)
-#         end
-        
-#         if !isempty(valid_data)
-#             found_valid_data = true
-#             min_local, max_local = extrema(valid_data)
-#             min_overall = min(min_overall, min_local)
-#             max_overall = max(max_overall, max_local)
-#         end
-#     end
-
-#     # If no valid data was found across all observables, return a default range
-#     if !found_valid_data
-#         return is_log_scale ? (0.1, 10.0) : (0.0, 1.0)
-#     end
-
-#     # Apply padding based on scale type
-#     data_range = max_overall - min_overall
-    
-#     if is_log_scale
-#         # For log scale, padding is multiplicative (a factor)
-#         # This prevents issues with log(0) or log(-ve)
-#         pad_amount_log = padding_factor
-#         final_min = min_overall / (1 + pad_amount_log)
-#         final_max = max_overall * (1 + pad_amount_log)
-#     else
-#         # For linear scale, padding is additive
-#         if data_range ≈ 0
-#             pad_amount_linear = 0.1 # Default pad for a flat line
-#         else
-#             pad_amount_linear = data_range * padding_factor / 2.0
-#         end
-#         final_min = min_overall - pad_amount_linear
-#         final_max = max_overall + pad_amount_linear
-#     end
-
-#     return (final_min, final_max)
-# end
 
 function deleteUIOptions!(
     ui_options_dict::Dict,
@@ -1441,58 +1367,83 @@ function deleteUIOptions!(
     return nothing
 end
 
-# """
-#     set_axis_limits!(ax, x_data_obs, y_data_obs, ui_options_obs)
-
-# Calculates and applies appropriate x and y limits to a given axis based on the
-# provided data and UI options. This version uses direct dictionary access and
-# will error if a required key (e.g., "xlogscale") is missing.
-# """
-# function set_axis_limits!(
-#     ax::Axis,
-#     x_data_obs::AbstractVector,
-#     y_data_obs::AbstractVector,
-#     ui_options_obs::Dict{String, Observable}
-# )
-#     try
-#         # --- Get the required UI options via direct dictionary access ---
-#         x_padding = ui_options_obs["xpadding"][]
-#         y_padding = ui_options_obs["ypadding"][]
-#         x_is_log = ui_options_obs["xlogscale"][]
-#         y_is_log = ui_options_obs["ylogscale"][]
-
-
-#         # --- Calculate X and Y Limits using the existing helper ---
-#         final_xlims = get_axis_limits(x_data_obs, x_padding, x_is_log)
-#         final_ylims = get_axis_limits(y_data_obs, y_padding, y_is_log)
-
-#         # --- Apply the new limits with a redundancy check ---
-#         ax.xscale[] = x_is_log ? (final_xlims[1] > 0 ? log10 : @warn "Logscale not usable!"; identity) : identity
-#         ax.yscale[] = y_is_log ? (final_ylims[1] > 0 ? log10 : @warn "Logscale not usable!"; identity) : identity
-#         current_ax_lims = ax.limits[]
-        
-#         if isnothing(current_ax_lims[1]) || isnothing(current_ax_lims[2]) ||
-#            abs(current_ax_lims[1][1] - final_xlims[1]) > 1e-9 || 
-#            abs(current_ax_lims[1][2] - final_xlims[2]) > 1e-9 ||
-#            abs(current_ax_lims[2][1] - final_ylims[1]) > 1e-9 ||
-#            abs(current_ax_lims[2][2] - final_ylims[2]) > 1e-9
-            
-#             limits!(ax, final_xlims..., final_ylims...)
-#         end
-#     catch e
-#         # This will catch KeyErrors if an option is missing, or other errors.
-#         @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
-#     end
-
-#     return nothing
-# end
-
 function _is_log_save(x::Real)::Bool
     return x > 0
 end
 function _is_log_save(xs::AbstractVector)::Bool
     return all(map(x -> _is_log_save(x), xs))
 end
+
+"""
+    plot_extrema_lines!(ax, x_snapshot, u_snapshot, ui_options_obs, method_index)
+
+Calculates and plots vertical dashed lines for the maximum and/or minimum of a
+single data snapshot, based on boolean toggles in the UI options.
+
+# Arguments
+- `ax::Axis`: The axis to plot into.
+- `x_snapshot::AbstractVector`: The x-coordinates for a single method's snapshot.
+- `u_snapshot::AbstractVector`: The u-coordinates for a single method's snapshot.
+- `ui_options_obs::Dict{String, Observable}`: The dictionary of UI styling observables.
+  It checks for the keys "track_max" and "track_min".
+- `method_index::Int`: The index of the current method, used to select the correct color.
+"""
+function plot_extrema_lines!(
+    ax::Axis,
+    x_snapshot::AbstractVector,
+    u_snapshot::AbstractVector,
+    ui_options_obs::Dict{String, Observable},
+    method_index::Int
+)
+    # --- Check which lines to plot from UI options ---
+    # Use `get` with a default of `false` to safely handle missing keys.
+    track_max = get(ui_options_obs, "track_max", Observable(false))[]
+    track_min = get(ui_options_obs, "track_min", Observable(false))[]
+
+    # If neither is enabled, do nothing.
+    if !track_max && !track_min
+        return nothing
+    end
+
+    # --- Find valid data once ---
+    valid_indices = findall(isfinite, u_snapshot)
+    if isempty(valid_indices)
+        return nothing
+    end
+    
+    # Get common styling options
+    color = ui_options_obs["colors"][][mod1(method_index, end)]
+    linewidth = ui_options_obs["linewidth"][]
+
+    # --- Plot Maximum Line if enabled ---
+    if track_max
+        u_max, idx_in_valid = findmax(u_snapshot[valid_indices])
+        original_idx = valid_indices[idx_in_valid]
+        x_at_max = x_snapshot[original_idx]
+        
+        linesegments!(ax, [Point2f(x_at_max, 0), Point2f(x_at_max, u_max)];
+            color = (color, 0.75),
+            linestyle = :dash,
+            linewidth = linewidth / 2
+        )
+    end
+
+    # --- Plot Minimum Line if enabled ---
+    if track_min
+        u_min, idx_in_valid = findmin(u_snapshot[valid_indices])
+        original_idx = valid_indices[idx_in_valid]
+        x_at_min = x_snapshot[original_idx]
+
+        linesegments!(ax, [Point2f(x_at_min, 0), Point2f(x_at_min, u_min)];
+            color = (color, 0.75),
+            linestyle = :dot, # Use a different linestyle for min to distinguish
+            linewidth = linewidth / 2
+        )
+    end
+    
+    return nothing
+end
+
 """
     create_base_plot_1D!(ax, active_methods, xs, us, ui_options_obs; plot_observable)
 
@@ -1564,7 +1515,7 @@ function create_base_plot_1D!(
                 marker=marker, label=plotLabel)
             if isnothing(obj_for_legend); obj_for_legend = s; end
         end
-
+        plot_extrema_lines!(ax, x_data, u_data, ui_options_obs, i)
         if !isnothing(obj_for_legend)
             push!(plotted_objects, obj_for_legend)
             push!(labels_for_legend, plotLabel)
@@ -1667,177 +1618,6 @@ function calculate_global_axis_range(
 
     return (final_min, final_max)
 end
-
-"""
-    updateData!(extracted_stat_data, all_raw_data, selected_key)
-
-Extracts the data for a selected statistic from a raw data store. This version
-is fully general and handles cases where different methods may have been run
-with a different number of parameter variations.
-"""
-function updateData!(
-    extracted_stat_data::Observable,
-    all_raw_data::Vector{<:Vector{<:Any}},
-    selected_key::String
-)
-    # --- Guard Clauses ---
-    if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
-        extracted_stat_data[] = []
-        return
-    end
-
-    println("Extracting 1D data for statistic: '$selected_key'")
-    
-    active_num = length(all_raw_data)
-    # The new data structure will hold vectors of varying lengths.
-    temp_extracted_data = Vector{Any}(undef, active_num)
-
-    for i in 1:active_num
-        method_data = all_raw_data[i]
-        # Get the number of parameters for THIS SPECIFIC method run.
-        num_params_for_method = length(method_data)
-        
-        # Pre-allocate the vector for this specific method's results.
-        method_results = Vector{Any}(undef, num_params_for_method)
-        
-        for j in 1:num_params_for_method
-            raw_data = method_data[j]
-            # The raw data point is a tuple, e.g., (stats_dict, time_vector)
-            if isa(raw_data, Tuple)
-                stat_val = get(raw_data[1], selected_key, missing)
-                method_results[j] = (stat_val,raw_data[2])
-            else
-                stat_val = get(raw_data, selected_key, missing)
-                method_results[j] = stat_val
-            end
-        end
-        temp_extracted_data[i] = method_results
-    end
-    
-    # Update the observable with the newly extracted data.
-    extracted_stat_data[] = temp_extracted_data
-    notify(extracted_stat_data)
-end
-
-function updateData!(
-    extracted_stat_data::Observable,
-    all_raw_data::Vector{<:Union{Dict, Tuple}},
-    selected_key::String
-)
-    # --- Guard Clauses ---
-    if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
-        extracted_stat_data[] = []
-        return
-    end
-
-    println("Extracting 1D data for statistic: '$selected_key'")
-    println(typeof(all_raw_data))
-    active_num = length(all_raw_data)
-    # The new data structure will hold vectors of varying lengths.
-    method_results = Vector{Any}(undef, active_num)
-
-    for i in 1:active_num
-        raw_data = all_raw_data[i]
-        # The raw data point is a tuple, e.g., (stats_dict, time_vector)
-        if isa(raw_data, Tuple)
-            stat_val = get(raw_data[1], selected_key, missing)
-            method_results[i] = (stat_val,raw_data[2])
-        else
-            stat_val = raw_data[selected_key]
-            method_results[i] = stat_val
-        end
-    end
-    
-    # Update the observable with the newly extracted data.
-    extracted_stat_data[] = method_results
-
-end
-
-"""
-    is_time_dependent(extracted_data) -> Bool
-
-Internal helper that checks if an extracted dataset contains any vectors,
-which signifies time-dependence.
-"""
-function is_time_dependent(extracted_data::Vector)
-    for method_data in extracted_data
-        # This check is crucial to prevent errors on uninitialized data
-        if isassigned(method_data, 1:length(method_data))
-            for val in method_data
-                if !ismissing(val) && isa(val, AbstractVector)
-                    return true # Found a vector, so it's time-dependent
-                end
-            end
-        end
-    end
-    return false # No vectors found
-end
-
-"""
-    calculate_snapshot(extracted_data, t, is_time_dependent) -> Vector{Vector{Float64}}
-
-Calculates a "snapshot" of data at a specific time `t`.
-
-It takes the extracted data for a single statistic, where each data point is a
-tuple containing the value and its corresponding time vector.
-
-# Arguments
-- `extracted_data`: The data for a single statistic, with structure
-  `Vector{Vector{Tuple{Any, Vector{Float64}}}}`.
-- `t::Real`: The current time value from the time slider.
-- `is_time_dependent::Bool`: A flag indicating if the current statistic is a time series.
-
-# Returns
-- A `Vector{Vector{Float64}}` containing the calculated snapshot data, ready for plotting.
-"""
-function calculate_snapshot(
-    extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}},
-    t::Real,
-    is_time_dependent::Bool
-)
-    if isempty(extracted_data)
-        return Vector{Vector{Float64}}()
-    end
-
-    active_num = length(extracted_data)
-    snapshot = Vector{Vector{Float64}}(undef, active_num)
-
-    for i in 1:active_num
-        method_data = extracted_data[i]
-        num_params = length(method_data)
-        y_vals_for_snapshot = Vector{Float64}(undef, num_params)
-
-        for j in 1:num_params
-            if !isassigned(method_data, j); continue; end
-
-            # Destructure the tuple to get both the value and its time vector
-            stat_val, times = method_data[j]
-            final_val = NaN # Default to NaN
-
-            if !ismissing(stat_val)
-                if is_time_dependent && isa(stat_val, AbstractVector)
-                    # For time-dependent data, find the value at the closest time `t`.
-                    if !isempty(times) && !isempty(stat_val)
-                        _, time_idx = findmin(val -> abs(val - t), times)
-                        if time_idx <= length(stat_val)
-                            final_val = Float64(stat_val[time_idx])
-                        end
-                    end
-                elseif !is_time_dependent && isa(stat_val, Number)
-                    final_val = Float64(stat_val)
-                elseif is_time_dependent && isa(stat_val, Number)
-                    # Handle case where a stat is time-dependent overall but this run was scalar
-                    final_val = Float64(stat_val)
-                end
-            end
-            y_vals_for_snapshot[j] = final_val
-        end
-        snapshot[i] = y_vals_for_snapshot
-    end
-    
-    return snapshot
-end
-
 
 #======================================================================#
 #                      1. DATA COMPONENT EXTRACTION
@@ -1999,290 +1779,6 @@ function calculate_global_axis_range(
     return (final_xlims, final_ylims)
 end
 
-#======================================================================#
-#              FINAL, ROBUST SNAPSHOT CALCULATION
-#======================================================================#
-
-# --- Base Case 1: For a single time-dependent data series ---
-# This function is the "workhorse". It knows how to get a snapshot from one
-# vector of data points vs. one vector of times.
-# function calculate_snapshot(
-#     series_data::AbstractVector{<:Real},
-#     series_times::AbstractVector{<:Real},
-#     t_snapshot::Real
-# )
-#     # If there are no times or data for this specific run, return an empty version
-#     # of whatever the data series contains (e.g., empty Vector{Float64}).
-#     if isempty(series_times) || isempty(series_data)
-#         return eltype(series_data)()
-#     end
-    
-#     # findmin returns (minimum_value, index). We only need the index.
-#     _, time_idx = findmin(t -> abs(t - t_snapshot), series_times)
-    
-#     # Safely return the data at the found index.
-#     return (1 <= time_idx <= length(series_data)) ? series_data[time_idx] : eltype(series_data)()
-# end
-# # #======================================================================#
-# # #                      3. SNAPSHOT CALCULATION
-# # #======================================================================#
-# function calculate_snapshot(
-#     x_data::Vector,
-#     u_data::Vector,
-#     t_data::Vector,
-#     t_snapshot::Real
-# )
-
-#     # Pre-allocate the output vectors for the snapshots
-#     x_snapshots = calculate_snapshot(x_data, t_data, t_snapshot)
-#     u_snapshots = calculate_snapshot(u_data, t_data, t_snapshot)
-#     return x_snapshots, u_snapshots
-# end
-# function calculate_snapshot(
-#     x_data::Vector,
-#     t_data::Vector,
-#     t_snapshot::Real
-# )
-#     num_methods = length(x_data)
-#     if num_methods != length(t_data)
-#         @warn "Inconsistent number of methods between x, u, and t data. Cannot calculate snapshot."
-#         return ([], [])
-#     end
-
-#     # Pre-allocate the output vectors for the snapshots
-#     x_snapshots = Vector{AbstractVector}(undef, num_methods)
-
-#     for i in 1:num_methods
-#         # For each method, call the single-series version of calculate_snapshot
-#         # with its own specific time vector.
-#         x_snap = calculate_snapshot(
-#             x_data[i],
-#             t_data[i],
-#             t_snapshot
-#         )
-#         x_snapshots[i] = x_snap
-#     end
-
-#     return x_snapshots
-# end
-
-# function calculate_snapshot(
-#     x_series::Vector{<:AbstractVector{<:Real}},
-#     t_series::Vector{<:AbstractVector{<:Real}},
-#     t_snapshot::Real
-# )
-#     num_runs = length(x_series)
-#     if num_runs != length(t_series)
-#         @warn "Time and Data have a different number of runs! Returning empty snapshot."
-#         return []
-#     end
-
-#     # Determine the element type of the output vector (e.g., Float64 or NTuple{2,Float64})
-#     # We find the first non-empty data series to determine the type.
-#     element_type = Any
-#     for series in x_series
-#         if !isempty(series)
-#             element_type = eltype(series)
-#             break
-#         end
-#     end
-
-#     # Pre-allocate the output vector for the snapshots
-#     x_snap = Vector{Union{Missing, element_type}}(undef, num_runs)
-
-#     # Correctly iterate with `i` as the index and `ts` as the time vector
-#     for i in 1:num_runs
-#         ts = t_series[i]
-#         xs = x_series[i]
-
-#         # --- THIS IS THE FIX ---
-#         # If the time series for this run is empty, we can't find a snapshot.
-#         # Assign `missing` to this slot and continue to the next run.
-#         if isempty(ts) || isempty(xs)
-#             x_snap[i] = missing
-#             continue
-#         end
-
-#         # Find the index of the time step closest to t_snapshot
-#         _, m = findmin(t -> abs(t - t_snapshot), ts)
-        
-#         # Assign the data point at that time index
-#         if 1 <= m <= length(xs)
-#             x_snap[i] = xs[m]
-#         else
-#             x_snap[i] = missing
-#         end
-#     end
-    
-#     # Return the snapshot, filtering out any missing values that couldn't be calculated.
-#     # This ensures the plotting function only receives valid data.
-#     return filter(!ismissing, x_snap)
-# end
-
-
-
-# # --- VERSION 2: For method-specific time vectors (the new function) ---
-# """
-#     calculate_snapshot(x_data, u_data, t_data, t_snapshot) -> Tuple
-
-# Calculates a data snapshot for multiple methods, where each method can have its
-# own independent time vector.
-
-# # Arguments
-# - `x_data`: Vector where each element is the x-series for a method (`Vector{<:Vector{<:AbstractVector}}`).
-# - `u_data`: Vector where each element is the u-series for a method (`Vector{<:Vector{<:AbstractVector}}`).
-# - `t_data`: Vector where each element is the time vector for a method (`Vector{<:Vector{<:Real}}`).
-# - `t_snapshot`: The current time value from the slider.
-
-# # Returns
-# - A `Tuple` containing `(x_snapshots, u_snapshots)`, where each is a vector of the
-#   data for that specific time snapshot.
-# """
-# function calculate_snapshot(
-#     x_data::Vector{<:Vector{<:Real}},
-#     t_data::Any,
-#     t_snapshot::Real
-# )
-#     return x_data
-# end
-# function calculate_snapshot(
-#     x_series::Vector{<:AbstractVector},
-#     t_series::Vector{<:Real},
-#     t_snapshot::Real
-# )
-    
-#     # Find the index of the time step closest to t_snapshot
-#     _, time_idx = findmin(t -> abs(t - t_snapshot), t_series)
-    
-#     # Return the corresponding x and u vectors
-#     x_snap = (1 <= time_idx <= length(x_series)) ? x_series[time_idx] : eltype(x_series)()
-    
-#     return x_snap
-# end
-
-
-
-"""
-    is_time_dependent(extracted_data) -> Bool
-
-Checks if a collection of extracted statistic data is time-dependent.
-It iterates through the data and returns `true` if it finds any value that is
-an AbstractVector, which signifies a time series.
-"""
-function is_time_dependent(extracted_data::Vector{<:Vector})
-    # Use indexed loops for safety against #undef entries
-    for i in eachindex(extracted_data)
-        if isassigned(extracted_data, i)
-            for val in extracted_data[i]
-                if !ismissing(val) && isa(val, AbstractVector)
-                    return true # Found a vector, so it's time-dependent
-                end
-            end
-        end
-    end
-    return false # No vectors found, so it's time-independent
-end
-
-
-
-"""
-    update_time_slider!(tSlider, tLabel_text, time_range_data, all_time_points)
-
-Updates the range and value of a time slider based on the union of all
-available time points from a dataset. Also updates a corresponding label text observable.
-"""
-function update_time_slider!(
-    tSlider::Slider,
-    tLabel_text::Observable{String},
-    all_time_points::Set{Float64}
-)
-
-    if !isempty(all_time_points)
-        t_min_data, t_max_data = extrema(all_time_points)
-        
-        # Create a dense range for smooth sliding
-        t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, 500))
-        
-        if tSlider.range[] != t_range_slider
-            tSlider.range[] = t_range_slider
-        end
-        
-        current_t_val = clamp(tSlider.value[], t_min_data, t_max_data)
-        set_close_to!(tSlider, current_t_val)
-    else
-        # Default behavior if no time data is found
-        if tSlider.range[] != [0]
-            tSlider.range[] = [0]
-        end
-        set_close_to!(tSlider, 0)
-    end
-    
-    tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-    return nothing
-end
-# """
-#     extractStats!(extracted_stat_data_obs, all_raw_stats, selected_key)
-
-# Extracts the data for a selected statistic from the raw data store, which is
-# structured as a Vector of Vectors of Dictionaries.
-
-# This function modifies the `extracted_stat_data_obs` observable in-place.
-# """
-# function extractStats!(
-#     extracted_stat_data_obs::Observable,
-#     all_raw_stats::Vector{<:Vector{<:Dict}},
-#     selected_key::String
-# )
-#     # --- Guard Clauses ---
-#     if isempty(all_raw_stats) || selected_key == "calculating..." || selected_key == "No common stats"
-#         extracted_stat_data_obs[] = []
-#         return
-#     end
-
-#     println("Extracting data for statistic: '$selected_key'")
-    
-#     num_methods = length(all_raw_stats)
-#     # The new data structure will hold only the extracted values.
-#     temp_vec_data = [Vector{Vector{Float64}}(undef, length(all_raw_stats[i])) for i in 1:num_methods]
-#     temp_scalar_data = [Vector{Float64}(undef, length(all_raw_stats[i])) for i in 1:num_methods]
-#     foundvec = false
-#     foundscalar = false
-#     for i in 1:num_methods
-#         method_data = all_raw_stats[i]
-#         for j in eachindex(method_data)
-#             stats_dict = method_data[j]
-#             # Use `get` for safety, defaulting to `missing` if a stat wasn't computed for a run.
-#             stat_val = stats_dict[selected_key]
-#             if isa(stat_val, Vector{<:Real})
-#                 temp_vec_data[i][j] = stat_val
-#                 foundvec = true
-#             elseif isa(stat_val, Real)
-#                 temp_scalar_data[i][j] = stat_val
-#                 temp_vec_data[i][j] = [stat_val]
-#                 foundscalar = true
-#             else
-#                 @error "Unsupported stat-data found!"
-#             end
-#         end
-#     end
-#     if foundvec
-#         if foundscalar
-#             @warn "Inconsistent time dependence found! Ignoring time independent values" 
-#         end
-#         extracted_stat_data_obs[] = temp_vec_data;
-#     else
-#         extracted_stat_data_obs[] = temp_scalar_data;
-#     end
-# end
-
-
-#======================================================================#
-#              1. `extractStats!` FOR TUPLE DATA
-#======================================================================#
-
-#======================================================================#
-#              1. RECURSIVE `extractStats` FUNCTION
-#======================================================================#
 
 # --- Base Case: We've drilled down to the Tuple containing the Dict and the time vector. ---
 # This is the "workhorse" that performs the actual extraction.
@@ -2320,88 +1816,6 @@ end
 
 
 
-
-#======================================================================#
-#         2. `update_time_dependence!` FOR TUPLE DATA
-#======================================================================#
-
-"""
-    update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
-
-Checks for time dependence by inspecting the first element of each data tuple.
-"""
-function update_time_dependence!(
-    is_time_dependent_obs::Observable{Bool},
-    tSlider::Slider,
-    tLabel::Label,
-    extracted_data::Vector{<:Vector{<:Tuple}}
-)
-    found_vector = false
-    # Use indexed loops for safety against #undef entries
-    for i in eachindex(extracted_data)
-        if isassigned(extracted_data, i)
-            for j in eachindex(extracted_data[i])
-                if isassigned(extracted_data[i], j)
-                    # Destructure the tuple to get the value
-                    val, _ = extracted_data[i][j]
-                    if !ismissing(val) && isa(val, AbstractVector)
-                        found_vector = true
-                        break
-                    end
-                end
-            end
-        end
-        if found_vector; break; end
-    end
-    is_td = found_vector
-    is_time_dependent_obs[] = is_td
-
-    # Update Time Slider UI
-    if is_td
-        all_times_union = Set{Float64}()
-        for method_data in extracted_data, data_point in method_data
-            # Destructure to get the time vector (second element)
-            _, times = data_point
-            if isa(times, AbstractVector) && !isempty(times)
-                union!(all_times_union, times)
-            end
-        end
-        # ... (rest of your slider update logic using all_times_union)
-    else
-        tLabel.text[] = "t = N/A (Scalar Stat)"
-        tSlider.range[] = [0]
-        tSlider.value[] = 0
-    end
-end
-
-"""
-    update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
-
-Checks for time dependence by inspecting the first element of each data tuple.
-"""
-function update_time_dependence!(
-    is_td::Bool,
-    tSlider::Slider,
-    tLabel::Label,
-    extracted_data::Vector{<:Vector{<:Tuple}}
-)
-    # Update Time Slider UI
-    if is_td
-        all_times_union = Set{Float64}()
-        for method_data in extracted_data, data_point in method_data
-            # Destructure to get the time vector (second element)
-            _, times = data_point
-            if isa(times, AbstractVector) && !isempty(times)
-                union!(all_times_union, times)
-            end
-        end
-        # ... (rest of your slider update logic using all_times_union)
-    else
-        tLabel.text[] = "t = N/A (Scalar Stat)"
-        tSlider.range[] = [0]
-        tSlider.value[] = 0
-    end
-end
 # --- Base Case: We've drilled down to the Tuple containing the data and the time vector. ---
 """
     get_all_times(run_data::Tuple) -> Set{Float64}
@@ -2498,7 +1912,22 @@ end
 # This is the "workhorse". It takes a single tuple of (value_vector, time_vector)
 # and finds the value at the closest time `t`.
 function calculate_snapshot(
-    run_data::Tuple{<:AbstractVector, <:AbstractVector},
+    run_data::Tuple{<:AbstractVector{<:Real}, <:AbstractVector},
+    t_snapshot::Real
+)
+    series_data, series_times = run_data
+    
+    if isempty(series_times) || isempty(series_data)
+        return eltype(series_data)() # Return an empty vector of the correct type
+    end
+    
+    _, time_idx = findmin(t -> abs(t - t_snapshot), series_times)
+    
+    return (1 <= time_idx <= length(series_data)) ? series_data[time_idx] : eltype(series_data)()
+end
+
+function calculate_snapshot(
+    run_data::Tuple{<:AbstractVector{<:AbstractVector}, <:AbstractVector},
     t_snapshot::Real
 )
     series_data, series_times = run_data
@@ -2561,137 +1990,314 @@ function calculate_snapshot(x_data, u_data, t_snapshot::Real)
     return (x_snapshots, u_snapshots)
 end
 
-### Deprecated: ui_option specific figure
 
 # """
-#     add_ui_option_widget!(parent_cell, key_name, obs; kwargs...)
+#     is_time_dependent(extracted_data) -> Bool
 
-# Creates a UI element (a Label and a widget) for a single UI option. This function
-# is simplified for UI options and does not handle `:const` or complex Tuples.
-# It creates a Toggle for Bools, and a Textbox for Reals and Strings.
+# Checks if a collection of extracted statistic data is time-dependent.
+# It iterates through the data and returns `true` if it finds any value that is
+# an AbstractVector, which signifies a time series.
 # """
-# function add_ui_option_widget!(
-#     parent_cell_for_item,
-#     key_name::String,
-#     param_obs::Observable;
-#     label_fontsize::Int = 14,
-#     internal_item_colgap::Int = 4
-# )
-#     # This item_layout holds ONLY one label and its corresponding widget
-#     item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false)
-#     colgap!(item_layout, internal_item_colgap)
-
-#     # The current value from the observable
-#     val = param_obs[]
-
-#     # Create the label for the UI option
-#     Label(item_layout[1,1], key_name * " =",
-#           halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
-
-#     # --- Create the appropriate widget based on the value's type ---
-
-#     if isa(val, Bool)
-#         # --- Create a Toggle for Boolean options ---
-#         tgl = Toggle(item_layout[1,2], active = val)
-#         on(tgl.active) do active_val
-#             if param_obs[] != active_val
-#                 param_obs[] = active_val
-#             end
-#         end
-#     else # For Real or String types
-#         # --- Create a Textbox for numeric or string options ---
-#         validator_type = if isa(val, AbstractFloat)
-#             Float64
-#         elseif isa(val, Integer)
-#             Int
-#         else # Default to allowing any string (for String type and fallbacks)
-#             s -> true
-#         end
-
-#         tb = Textbox(item_layout[1,2], placeholder = string(val),
-#                      validator = validator_type, width = Auto(), reset_on_defocus=true)
-
-#         on(tb.stored_string) do s
-#             target_type = typeof(val)
-#             try
-#                 parsed_val = if target_type == String
-#                     s
-#                 elseif validator_type == Float64 || validator_type == Int
-#                     parse(target_type, s)
-#                 else
-#                     s # If validator was a function, treat as string
+# function is_time_dependent(extracted_data::Vector{<:Vector})
+#     # Use indexed loops for safety against #undef entries
+#     for i in eachindex(extracted_data)
+#         if isassigned(extracted_data, i)
+#             for val in extracted_data[i]
+#                 if !ismissing(val) && isa(val, AbstractVector)
+#                     return true # Found a vector, so it's time-dependent
 #                 end
-
-#                 if param_obs[] != parsed_val
-#                     param_obs[] = parsed_val
-#                 end
-#             catch e
-#                 # On parsing error, reset the textbox to the observable's last valid value
-#                 tb.stored_string = string(param_obs[])
 #             end
 #         end
 #     end
-
-#     # Ensure the layout columns adapt to the content
-#     colsize!(item_layout, 1, Auto())
-#     colsize!(item_layout, 2, Auto())
+#     return false # No vectors found, so it's time-independent
 # end
 
-# """
-#     create_interactive_ui_options_figure(ui_options_obs::Dict{String, Observable})
 
-# Creates and displays a new interactive figure with widgets to control UI styling options.
-# This version now uses the dedicated `add_ui_option_widget!` helper.
+
 # """
-# function create_interactive_ui_options_figure(
-#     ui_options_obs::Dict{String, Observable};
-#     num_columns::Int = 2,
-#     figure_size = (500, 600)
+#     update_time_slider!(tSlider, tLabel_text, time_range_data, all_time_points)
+
+# Updates the range and value of a time slider based on the union of all
+# available time points from a dataset. Also updates a corresponding label text observable.
+# """
+# function update_time_slider!(
+#     tSlider::Slider,
+#     tLabel_text::Observable{String},
+#     all_time_points::Set{Float64}
 # )
-#     GLMakie.activate!()
-#     ui_fig = Figure(size=figure_size)
-#     Label(ui_fig[1, 1], "UI Styling Options", font=:bold, fontsize=18,
-#           tellwidth=false, halign=:center, padding=(0,0,15,0))
 
-#     options_layout = ui_fig[2, 1] = GridLayout(tellheight=false)
-#     rowgap!(options_layout, 10)
-#     colgap!(options_layout, 15)
-
-#     # Filter keys to only show widgets for simple, editable types
-#     displayable_keys = String[]
-#     for (key, obs) in ui_options_obs
-#         if isAtomic(obs[])
-#             push!(displayable_keys, key)
+#     if !isempty(all_time_points)
+#         t_min_data, t_max_data = extrema(all_time_points)
+        
+#         # Create a dense range for smooth sliding
+#         t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, 500))
+        
+#         if tSlider.range[] != t_range_slider
+#             tSlider.range[] = t_range_slider
 #         end
+        
+#         current_t_val = clamp(tSlider.value[], t_min_data, t_max_data)
+#         set_close_to!(tSlider, current_t_val)
+#     else
+#         # Default behavior if no time data is found
+#         if tSlider.range[] != [0]
+#             tSlider.range[] = [0]
+#         end
+#         set_close_to!(tSlider, 0)
 #     end
-#     sort!(displayable_keys)
-
-#     if isempty(displayable_keys)
-#         Label(options_layout[1,1], "(No editable UI options found)")
-#         display(GLMakie.Screen(), ui_fig); return ui_fig
-#     end
-
-#     # --- Populate the Layout using the new, dedicated helper ---
-#     r, c = 1, 1
-#     for key in displayable_keys
-#         add_ui_option_widget!(
-#             options_layout[r, c],
-#             key,
-#             ui_options_obs[key] # Pass the corresponding observable
-#             # You can pass styling kwargs like label_fontsize here if needed
-#         )
-#         c += 1
-#         if c > num_columns; c = 1; r += 1; end
-#     end
-
-#     # Set final layout sizes
-#     for c_idx in 1:min(num_columns, length(displayable_keys)); colsize!(options_layout, c_idx, Auto()); end
-#     true_num_rows = ceil(Int, length(displayable_keys) / num_columns)
-#     for r_idx in 1:true_num_rows; rowsize!(options_layout, r_idx, Auto()); end
     
-#     rowsize!(ui_fig.layout, 1, Auto())
-#     rowsize!(ui_fig.layout, 2, Auto())
-
-#     display(GLMakie.Screen(), ui_fig)
-#     return ui_fig
+#     tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
+#     return nothing
 # end
+
+# #======================================================================#
+# #         2. `update_time_dependence!` FOR TUPLE DATA
+# #======================================================================#
+
+# """
+#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
+
+# Checks for time dependence by inspecting the first element of each data tuple.
+# """
+# function update_time_dependence!(
+#     is_time_dependent_obs::Observable{Bool},
+#     tSlider::Slider,
+#     tLabel::Label,
+#     extracted_data::Vector{<:Vector{<:Tuple}}
+# )
+#     found_vector = false
+#     # Use indexed loops for safety against #undef entries
+#     for i in eachindex(extracted_data)
+#         if isassigned(extracted_data, i)
+#             for j in eachindex(extracted_data[i])
+#                 if isassigned(extracted_data[i], j)
+#                     # Destructure the tuple to get the value
+#                     val, _ = extracted_data[i][j]
+#                     if !ismissing(val) && isa(val, AbstractVector)
+#                         found_vector = true
+#                         break
+#                     end
+#                 end
+#             end
+#         end
+#         if found_vector; break; end
+#     end
+#     is_td = found_vector
+#     is_time_dependent_obs[] = is_td
+
+#     # Update Time Slider UI
+#     if is_td
+#         all_times_union = Set{Float64}()
+#         for method_data in extracted_data, data_point in method_data
+#             # Destructure to get the time vector (second element)
+#             _, times = data_point
+#             if isa(times, AbstractVector) && !isempty(times)
+#                 union!(all_times_union, times)
+#             end
+#         end
+#         # ... (rest of your slider update logic using all_times_union)
+#     else
+#         tLabel.text[] = "t = N/A (Scalar Stat)"
+#         tSlider.range[] = [0]
+#         tSlider.value[] = 0
+#     end
+# end
+
+# """
+#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
+
+# Checks for time dependence by inspecting the first element of each data tuple.
+# """
+# function update_time_dependence!(
+#     is_td::Bool,
+#     tSlider::Slider,
+#     tLabel::Label,
+#     extracted_data::Vector{<:Vector{<:Tuple}}
+# )
+#     # Update Time Slider UI
+#     if is_td
+#         all_times_union = Set{Float64}()
+#         for method_data in extracted_data, data_point in method_data
+#             # Destructure to get the time vector (second element)
+#             _, times = data_point
+#             if isa(times, AbstractVector) && !isempty(times)
+#                 union!(all_times_union, times)
+#             end
+#         end
+#         # ... (rest of your slider update logic using all_times_union)
+#     else
+#         tLabel.text[] = "t = N/A (Scalar Stat)"
+#         tSlider.range[] = [0]
+#         tSlider.value[] = 0
+#     end
+# end
+# """
+#     updateData!(extracted_stat_data, all_raw_data, selected_key)
+
+# Extracts the data for a selected statistic from a raw data store. This version
+# is fully general and handles cases where different methods may have been run
+# with a different number of parameter variations.
+# """
+# function updateData!(
+#     extracted_stat_data::Observable,
+#     all_raw_data::Vector{<:Vector{<:Any}},
+#     selected_key::String
+# )
+#     # --- Guard Clauses ---
+#     if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
+#         extracted_stat_data[] = []
+#         return
+#     end
+
+#     println("Extracting 1D data for statistic: '$selected_key'")
+    
+#     active_num = length(all_raw_data)
+#     # The new data structure will hold vectors of varying lengths.
+#     temp_extracted_data = Vector{Any}(undef, active_num)
+
+#     for i in 1:active_num
+#         method_data = all_raw_data[i]
+#         # Get the number of parameters for THIS SPECIFIC method run.
+#         num_params_for_method = length(method_data)
+        
+#         # Pre-allocate the vector for this specific method's results.
+#         method_results = Vector{Any}(undef, num_params_for_method)
+        
+#         for j in 1:num_params_for_method
+#             raw_data = method_data[j]
+#             # The raw data point is a tuple, e.g., (stats_dict, time_vector)
+#             if isa(raw_data, Tuple)
+#                 stat_val = get(raw_data[1], selected_key, missing)
+#                 method_results[j] = (stat_val,raw_data[2])
+#             else
+#                 stat_val = get(raw_data, selected_key, missing)
+#                 method_results[j] = stat_val
+#             end
+#         end
+#         temp_extracted_data[i] = method_results
+#     end
+    
+#     # Update the observable with the newly extracted data.
+#     extracted_stat_data[] = temp_extracted_data
+#     notify(extracted_stat_data)
+# end
+
+# function updateData!(
+#     extracted_stat_data::Observable,
+#     all_raw_data::Vector{<:Union{Dict, Tuple}},
+#     selected_key::String
+# )
+#     # --- Guard Clauses ---
+#     if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
+#         extracted_stat_data[] = []
+#         return
+#     end
+
+#     println("Extracting 1D data for statistic: '$selected_key'")
+#     println(typeof(all_raw_data))
+#     active_num = length(all_raw_data)
+#     # The new data structure will hold vectors of varying lengths.
+#     method_results = Vector{Any}(undef, active_num)
+
+#     for i in 1:active_num
+#         raw_data = all_raw_data[i]
+#         # The raw data point is a tuple, e.g., (stats_dict, time_vector)
+#         if isa(raw_data, Tuple)
+#             stat_val = get(raw_data[1], selected_key, missing)
+#             method_results[i] = (stat_val,raw_data[2])
+#         else
+#             stat_val = raw_data[selected_key]
+#             method_results[i] = stat_val
+#         end
+#     end
+    
+#     # Update the observable with the newly extracted data.
+#     extracted_stat_data[] = method_results
+
+# end
+
+# """
+#     is_time_dependent(extracted_data) -> Bool
+
+# Internal helper that checks if an extracted dataset contains any vectors,
+# which signifies time-dependence.
+# """
+# function is_time_dependent(extracted_data::Vector)
+#     for method_data in extracted_data
+#         # This check is crucial to prevent errors on uninitialized data
+#         if isassigned(method_data, 1:length(method_data))
+#             for val in method_data
+#                 if !ismissing(val) && isa(val, AbstractVector)
+#                     return true # Found a vector, so it's time-dependent
+#                 end
+#             end
+#         end
+#     end
+#     return false # No vectors found
+# end
+
+# """
+#     calculate_snapshot(extracted_data, t, is_time_dependent) -> Vector{Vector{Float64}}
+
+# Calculates a "snapshot" of data at a specific time `t`.
+
+# It takes the extracted data for a single statistic, where each data point is a
+# tuple containing the value and its corresponding time vector.
+
+# # Arguments
+# - `extracted_data`: The data for a single statistic, with structure
+#   `Vector{Vector{Tuple{Any, Vector{Float64}}}}`.
+# - `t::Real`: The current time value from the time slider.
+# - `is_time_dependent::Bool`: A flag indicating if the current statistic is a time series.
+
+# # Returns
+# - A `Vector{Vector{Float64}}` containing the calculated snapshot data, ready for plotting.
+# """
+# function calculate_snapshot(
+#     extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}},
+#     t::Real,
+#     is_time_dependent::Bool
+# )
+#     if isempty(extracted_data)
+#         return Vector{Vector{Float64}}()
+#     end
+
+#     active_num = length(extracted_data)
+#     snapshot = Vector{Vector{Float64}}(undef, active_num)
+
+#     for i in 1:active_num
+#         method_data = extracted_data[i]
+#         num_params = length(method_data)
+#         y_vals_for_snapshot = Vector{Float64}(undef, num_params)
+
+#         for j in 1:num_params
+#             if !isassigned(method_data, j); continue; end
+
+#             # Destructure the tuple to get both the value and its time vector
+#             stat_val, times = method_data[j]
+#             final_val = NaN # Default to NaN
+
+#             if !ismissing(stat_val)
+#                 if is_time_dependent && isa(stat_val, AbstractVector)
+#                     # For time-dependent data, find the value at the closest time `t`.
+#                     if !isempty(times) && !isempty(stat_val)
+#                         _, time_idx = findmin(val -> abs(val - t), times)
+#                         if time_idx <= length(stat_val)
+#                             final_val = Float64(stat_val[time_idx])
+#                         end
+#                     end
+#                 elseif !is_time_dependent && isa(stat_val, Number)
+#                     final_val = Float64(stat_val)
+#                 elseif is_time_dependent && isa(stat_val, Number)
+#                     # Handle case where a stat is time-dependent overall but this run was scalar
+#                     final_val = Float64(stat_val)
+#                 end
+#             end
+#             y_vals_for_snapshot[j] = final_val
+#         end
+#         snapshot[i] = y_vals_for_snapshot
+#     end
+    
+#     return snapshot
+# end
+

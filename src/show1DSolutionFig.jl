@@ -54,15 +54,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     )
     # -----------------------------------------
 
-    axis_label = lift(selector) do sel; "Solution Value u$sel" end
-    axis_title = Observable("t = 0.0") 
-    
-    default_labels = Dict("xlabel" => "Position (x)",
-                      "ylabel" => axis_label,                        
-                      "title" => axis_title)
-    label_obs = create_axis_label_observables(ui_options_obs, default_labels)
-
-    ax = Axis(plot_fig[1,1], xlabel = label_obs["xlabel"], ylabel = label_obs["ylabel"], title = label_obs["title"])
 
     # --- NEW Max Tracking Control ---
     # Add Checkbox below the animation/save controls
@@ -79,9 +70,26 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     # --- Time Slider & Label ---
     tLabel_text = Observable("t = 0.0")
     # Add a new row for the time label
-    Label(control_fig[end+1, :], text = tLabel_text, tellwidth=false).padding = (0, 0, 5, 0) # Span controls area
-    # Add a new row for the time slider
-    tSlider = Slider(control_fig[end+1, :], range = 0.0:1.0, startvalue = 0.0) # Span controls area
+    # --- Time Slider, Log Toggles, etc. ---
+    tSlider = Slider(control_fig[end+2,:], range = 0:0)
+
+    tLabel_text = lift(tSlider.value, tSlider.range) do val, range; 
+        if range == [0]
+            "t = N/A"
+        else
+            "t = $(round(val; digits = 4))"
+        end 
+    end
+    Label(control_fig[end-1,:], tLabel_text)
+    axis_label = lift(selector) do sel; "Solution Value $sel" end
+    axis_title = @lift("t = " * string(round($(tSlider.value),digits = 3)))
+    
+    default_labels = Dict("xlabel" => "Position (x)",
+                      "ylabel" => axis_label,                        
+                      "title" => axis_title)
+    label_obs = create_axis_label_observables(ui_options_obs, default_labels)
+
+    ax = Axis(plot_fig[1,1], xlabel = label_obs["xlabel"], ylabel = label_obs["ylabel"], title = label_obs["title"])
 
     # --- Animation and GIF Saving Controls ---
     # Add a new row, using a grid layout within it for alignment
@@ -109,26 +117,20 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
 
     # --- Data Structures ---
+    datatype = Vector{Vector{Float64}}
     # Outer Observable holds Vector of Inner Observables (one per method)
-    xData = Observable(Vector{Vector{Vector{Float64}}}(undef, 0)) # Full x data series
-    uData = Observable(Vector{Vector{<:Union{Vector{Float64}, Matrix{Float64}}}}(undef, 0)) # Full u data series
-    uData_extr = Observable(Vector{Vector{Vector{Float64}}}(undef, 0)) # Full u data series
-    tData = Observable(Vector{Vector{Float64}}(undef, 0))       # Full t data series
-    xs = Observable(Vector{Vector{Float64}}(undef, 0))           # Snapshot x data for plotting
-    us = Observable(Vector{Vector{Float64}}(undef, 0))           # Snapshot u data for plotting
-    # --- NEW: Observables for max tracking ---
-    x_at_max_obs = Observable(Vector{Float64}(undef, 0)) # Stores X position of max U per method
-    u_at_max_obs = Observable(Vector{Float64}(undef, 0)) # Stores max U value per method
+    xData = Observable(Vector{Tuple{datatype, Vector{Float64}}}(undef, 0)) # Full x data series
+    uData = Observable(Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, 0)) # Full u data series
+    uData_extr = Observable(Vector{Tuple{datatype, Vector{Float64}}}(undef, 0)) # Full u data series
+
     # ------------------------------------
     # --- Lift Block 1: Data Loading / Simulation Execution ---
     lift(update_notifier; ignore_equal_values=true) do _
         active_num = length(methods_obs[])
         println("Lift 1: Running sims / loading data...") # Concise print
 
-        xData_tmp = Vector{Vector{Vector{Float64}}}(undef, active_num)
-        uData_tmp = Vector{Vector{Union{Vector{Float64}, Matrix{Float64}}}}(undef, active_num)
-        tData_tmp = Vector{Vector{Float64}}(undef, active_num)
-        all_time_points = Set{Float64}()
+        xData_tmp = Vector{Tuple{datatype, Vector{Float64}}}(undef, active_num)
+        uData_tmp = Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, active_num)
         active_methods_now = methods_obs[]
 
         for i = 1:active_num
@@ -160,129 +162,46 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             end
             # --------------------------
 
-            # --- Store Data & Update Limits ---
-            if isnothing(sim_data) || !isa(sim_data, SimData1D)
-                 @warn "Invalid SimData1D for '$method'. Assigning empty."
-                 xData[][i][] = Vector{Vector{Float64}}(); uData[][i][] = Vector{Vector{Float64}}(); tData[][i][] = Float64[]
-                 xs[][i][] = Float64[]; us[][i][] = Float64[]
-                 continue # Skip to next method
-            end
 
-            xData_tmp[i] = sim_data.x
-            uData_tmp[i] = sim_data.u
-            tData_tmp[i] = sim_data.t
+            xData_tmp[i] = (sim_data.x, sim_data.t)
+            
             if isa(sim_data.u[1], AbstractVector)
-                y_options[] = [("Component 1 (scalar)",1)]
+                key = "u"
+                y_options[] = [key]
+                uData_tmp[i] = (Dict(key => sim_data.u), sim_data.t)
             elseif isa(sim_data.u[1], AbstractMatrix)
-                y_options[] = [("Component $j" ,j) for j = 1:length(sim_data.u[1][1,:])]
+                y_options[] = ["u_$j" for j = 1:length(sim_data.u[1][1,:])]
+                uData_tmp[i] = (Dict("u_$j" => sim_data.u for j = 1:length(sim_data.u[1][1,:])))
             end
 
-            union!(all_time_points, sim_data.t)
-            update_time_slider!(tSlider,tLabel_text,all_time_points)
+            
             # -----------------------------
         end # End loop over methods
+        
         xData[] = xData_tmp
-        tData[] = tData_tmp
         uData[] = uData_tmp
+        update_time_slider!(tSlider,xData[])
     println("Lift 1: Update complete.")
 
     end # --- End Lift Block 1 ---
-    lift(selector, ui_options_obs, uData) do sel, _, u
-        uData_extr[] = extractU(u, sel);
-        if !ui_options_obs["update_limits"][]
-            ymin, ymax = calculate_global_axis_range(uData_extr[], ui_options_obs["ypadding"][], ui_options_obs["ylogscale"][])
-            xmin, xmax = calculate_global_axis_range(xData[], ui_options_obs["xpadding"][], ui_options_obs["xlogscale"][])
-            ylims!(ax, ymin, ymax)
-            xlims!(ax, xmin, xmax)
-        end
+    lift(selector, uData) do sel, u
+        if isempty(u); return; end
+        uData_extr[] = extractStats(u, sel);
+        set_axis_limits!(ax, xData[], uData_extr[], ui_options_obs)
+        return nothing
+
     end
-    lift(tSlider.value, ui_options_obs) do t, _
-        xs[], us[] = calculate_snapshot(xData[], uData_extr[], tData[], t)
-    end
-
-    # # --- Lift Block 2 (MODIFIED: Calculate and update max observables) ---
-    # lift(tSlider.value; ignore_equal_values=false) do t#, xd_obs, ud_obs, td_obs
-    #     # Get inner vectors
-    #     xd = to_value(xData); ud = to_value(uData); td = to_value(tData)
-    #     active_num = method_number[]
-    #     # Consistency check (include new observables)
-    #     if length(xs[])!=active_num || length(us[])!=active_num || length(xd)!=active_num || length(ud)!=active_num || length(td)!=active_num || length(x_at_max_obs[])!=active_num || length(u_at_max_obs[])!=active_num; return; end
-
-    #     tLabel_text[] = "t = $(round(t, digits=3))"; axis_title[] = "t=$(round(t, digits=3))"
-
-    #     for i = 1:active_num # Iterate through active methods
-    #          if i > length(xd) || i > length(ud) || i > length(td); continue; end # Index check
-    #          x_vecs = xd[i][]; u_vecs = ud[i][]; t_vec = td[i][]
-
-    #          local x_snapshot::Vector{Float64} = Float64[]; local u_snapshot::Vector{Float64} = Float64[]
-
-    #          # Get snapshot using closest time step logic
-    #          if !isempty(t_vec) && length(t_vec)==length(x_vecs) && length(t_vec)==length(u_vecs)
-    #              (_, m) = findmin(a -> abs(a - t), t_vec)
-    #              if 1 <= m <= length(x_vecs); x_snapshot = x_vecs[m]; u_snapshot = u_vecs[m]; end
-    #          end
-
-    #          # Update snapshot observables
-    #          if i <= length(xs[]) && i <= length(us[]); xs[][i][] = x_snapshot; us[][i][] = u_snapshot; end
-
-    #          # --- Calculate and Update Max Observables ---
-    #          if !isempty(u_snapshot) && i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[])
-    #              try
-    #                  u_max_val, max_idx = findmax(u_snapshot)
-    #                  if isfinite(u_max_val) && 1 <= max_idx <= length(x_snapshot)
-    #                      x_at_max_obs[][i][] = x_snapshot[max_idx]
-    #                      u_at_max_obs[][i][] = u_max_val
-    #                  else; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-    #              catch e; @warn "findmax failed: $e"; x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-    #          else # Empty snapshot or invalid index for max obs
-    #              if i <= length(x_at_max_obs[]) && i <= length(u_at_max_obs[]); x_at_max_obs[][i][] = NaN; u_at_max_obs[][i][] = NaN; end
-    #          end
-    #          # ---------------------------------------------
-    #     end # End loop over methods
-    # end # --- End Lift Block 2 ---
-
-
-    # --- Lift Block 3 (Plot Management - ADDED Max Tracking) ---
-    # Trigger depends on method changes, snapshot data, AND track_max toggle
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
-    lift(update_notifier, tSlider.value, ui_update) do _...
+    lift(xData, uData_extr, tSlider.value, ui_update) do x_data, u_data, t, _
 
+        x_snapshot, y_snapshot = calculate_snapshot(x_data, u_data, t)
         create_base_plot_1D!(plot_fig, ax, 
                              methods_obs[],
-                             xs[],
-                             us[],
+                             x_snapshot,
+                             y_snapshot,
                              ui_options_obs; 
                              plot_observable = false)        
-        for i = eachindex(methods_obs[])
-            if track_max_obs[] # Check toggle state passed into lift block
-                # Ensure index i is valid for the max observable vectors passed in
-                current_x_max_obsvec = x_at_max_obs[]
-                current_u_max_obsvec = u_at_max_obs[]
-                if i <= length(current_x_max_obsvec) && i <= length(current_u_max_obsvec)
-                   # Access the observables holding max info for method i from the arguments
-                   x_max_pos_obs = current_x_max_obsvec[i] # This is Observable{Float64}
-                   u_max_val_obs = current_u_max_obsvec[i] # This is Observable{Float64}
-
-                   # Define reactive points for the line segment using lift
-                   start_point = lift(x_max_pos_obs; ignore_equal_values=true) do x_max
-                        Point2f(isfinite(x_max) ? x_max : NaN, 0)
-                   end
-                   end_point = lift(x_max_pos_obs, u_max_val_obs; ignore_equal_values=true) do x_max, u_max
-                        Point2f(isfinite(x_max) && isfinite(u_max) ? x_max : NaN, isfinite(u_max) ? u_max : NaN)
-                   end
-
-                   # Plot the line segment reactively if points are finite
-                   linesegments!(ax, lift((s, e) -> isfinite(s[1]) && isfinite(e[1]) && isfinite(e[2]) ? [s, e] : Point2f[], start_point, end_point);
-                                  color = (color, 0.75), # Use method color, slightly transparent
-                                  linestyle = :dash,
-                                  linewidth = ui_dict["linewidth"]/2)
-               end # End index check
-           end # End if track_max_enabled
-           # --- End Max Tracking Line ---
-
-        end # End loop over methods
      
-
     end # --- End Lift Block 3 ---
 
 
@@ -291,7 +210,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         new_state = !is_animating[]
         if new_state # --- Request Start Animation ---
             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-            t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
+            t_min, t_max = (tSlider.range[][1], tSlider.range[][end]); 
+            if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
             is_animating[] = true
 
             anim_duration_s = ui_options_obs["animation_duration_s"][] # Use value from dict
