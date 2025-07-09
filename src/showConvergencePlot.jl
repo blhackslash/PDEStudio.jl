@@ -782,7 +782,12 @@ function showConvergencePlot(
                 
                 stats_dict_for_run = Dict{String,Any}()
                 try
-                    sim_data = Utils.loadSimData(current_params)
+                    if !doesSimDataExist(current_params)
+                        sim_data = sim_config.sim_function(current_params)
+                        saveSimData(sim_data)
+                    else
+                        sim_data = Utils.loadSimData(current_params)
+                    end
                     if !isnothing(sim_data) && hasproperty(sim_data, :stats)
                         stats_dict_for_run = sim_data.stats
                     end
@@ -824,7 +829,9 @@ function showConvergencePlot(
         if isempty(all_raw_data); return; end
         extracted_x_data[] = extractStats(all_raw_data, x_key)
         extracted_y_data[] = extractStats(all_raw_data, y_key)
-        set_axis_limits!(ax, extracted_x_data[], extracted_y_data[], ui_options_obs)
+        if !ui_options_obs["update_limits"][]
+            set_axis_limits!(ax, extracted_x_data[], extracted_y_data[], ui_options_obs)
+        end
         return nothing
     end
 

@@ -25,21 +25,7 @@ function show2DSolutionFig(sim_config::SimulationConfig, ui_options::UIType = :d
     end
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
-    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
-    # Observable dictionary for SHARED parameters
-    shared_params_obs = Dict{String, Observable}()
-    for (key, val) in sim_config.shared_params
-        shared_params_obs[key] = Observable(val)
-    end
-    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
-    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
-    for (method_name, method_params_dict) in sim_config.methods_dict
-        inner_obs_dict = Dict{String, Observable}()
-        for (param_key, param_val) in method_params_dict
-            inner_obs_dict[param_key] = Observable(param_val)
-        end
-        method_params_collection_obs[method_name] = inner_obs_dict
-    end
+    shared_params_obs, method_params_collection_obs = create_parameter_observables(sim_config)
 
 
     all_method_names = collect(keys(sim_config.methods_dict))

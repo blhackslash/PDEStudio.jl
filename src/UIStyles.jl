@@ -39,14 +39,16 @@ function GetUIStyle(style::Symbol)
         "linewidth" => 5,
         "markersize" => 15,
         "label_size" => 24,
+        "title_size" => 26,
         "ticklabel_size" => 22,
         "font_size" => 24,
-        "legend" => "Legend",
+        "legend" => "Methods",
+        "sort_legend" => true,
         "xpadding" => 0,
         "ypadding" => 0.1,
         "animation_fps" => 30,
         "animation_duration_s" => 10.0,
-        "legend_pos" => "detached",
+        "legend_pos" => "righttop",
         "xgridvisible" => true,
         "ygridvisible" => true,
         "xticklabelsvisible" => true,
@@ -71,10 +73,12 @@ function GetUIStyle(style::Symbol)
         publication_style = deepcopy(default_style)
         merge!(publication_style, Dict{String, Any}(
             "linewidth" => 2.5,
+            "title_size" => 14,
+            "legend_pos" => "righttop",
             "label_size" => 14,
             "ticklabel_size" => 12,
             "font_size" => 14,
-            #"figsize" => (600, 450),
+            "figsize" => (700, 550),
             "save_formats" => ["png", "pdf", "svg"] # For publication, save all formats
             # You could also add other font settings here
         ))

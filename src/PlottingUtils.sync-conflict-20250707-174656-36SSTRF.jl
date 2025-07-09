@@ -935,33 +935,36 @@ function create_or_update_legend!(
 
     # --- 3. Create and Place the New Legend ---
     try
-        title_str = ui_options_obs["legend"][]
-        final_title = isempty(strip(title_str)) ? nothing : title_str
-
         if position == "detached"
             # For a detached legend, create it in column 2 of the figure's layout.
-            Legend(fig[1, 2], plotted_objects, labels, final_title; # <-- Use final_title
-                tellheight=false,
-                titlesize=ui_options_obs["font_size"][], # Use [] to get value
-                labelsize=ui_options_obs["font_size"][]
+            # This assumes the main axis is at fig[1, 1].
+            Legend(fig[1, 2], plotted_objects, labels, title; 
+                   tellheight=false,
+                   titlesize=ui_options_obs["font_size"],
+                   labelsize=ui_options_obs["label_size"]
             )
             # Ensure the new column's width is determined by the legend's content
             colsize!(fig.layout, 2, Auto())
         else
-            # For an attached legend, create it directly inside the axis's grid position
+            # For an attached legend, create it directly inside the axis `ax`.
+            # Makie correctly interprets position symbols like :rt, :lt, etc.
+            # to place the legend at the corners of the axis.
             halign, valign = _parse_legend_position(position)
-            Legend(fig[1,1], plotted_objects, labels, final_title; # <-- Use final_title
-                orientation = :vertical,
-                tellheight=false, 
-                tellwidth=false,
-                halign = halign,
-                valign = valign,
-                titlesize=ui_options_obs["font_size"][],
-                labelsize=ui_options_obs["font_size"][],
-                margin=(10, 10, 10, 10)
+            Legend(fig[1,1], plotted_objects, labels, title; 
+                   orientation = :vertical, # or :horizontal
+                   tellheight=false, 
+                   tellwidth=false,
+                   # The position is set via halign/valign based on the symbol
+                   halign = halign,
+                   valign = valign,
+                   titlesize=ui_options_obs["font_size"],
+                   labelsize=ui_options_obs["label_size"],
+                   margin=(10, 10, 10, 10)
             )
-            # After creating an attached legend, trim the layout to remove empty columns
+            # After creating an attached legend, ensure the layout is tidy.
+            # If we switched from detached, column 2 might still exist but be empty.
             trim!(fig.layout)
+            #colsize!(fig.layout, 1, Auto())
         end
     catch e
         @error "Failed to create or update legend." exception=(e, catch_backtrace())
@@ -987,7 +990,7 @@ function set_axis_styles!(
         ax.yticklabelsvisible = ui_options_obs["yticklabelsvisible"][]
         
         # Set text sizes
-        ax.titlesize = ui_options_obs["title_size"][]
+        ax.titlesize = ui_options_obs["font_size"][]
         ax.xlabelsize = ui_options_obs["label_size"][]
         ax.ylabelsize = ui_options_obs["label_size"][]
         ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
@@ -1015,7 +1018,7 @@ function set_axis_styles!(
         # ax.xlabel = get(final_label_obs, "xlabel", Observable("x"))[]
         # ax.ylabel = get(final_label_obs, "ylabel", Observable("y"))[]
         
-        ax.titlesize = get(ui_options_obs, "title_size", Observable(16))[]
+        ax.titlesize = get(ui_options_obs, "font_size", Observable(16))[]
         ax.xlabelsize = get(ui_options_obs, "label_size", Observable(16))[]
         ax.ylabelsize = get(ui_options_obs, "label_size", Observable(16))[]
         ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
@@ -1198,7 +1201,7 @@ and deletes them. This version correctly accesses plots via `ax.scene`.
 function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     # CORRECT API: Access plots via the axis's scene.
     # The `ax.scene` contains the list of all plot objects drawn into that axis.
-    plots_to_delete = [p for p in ax.scene.plots if haskey(p,:label) && p.label[] == label_to_delete]
+    plots_to_delete = [p for p in ax.scene.plots if p.label[] == label_to_delete]
     
     if !isempty(plots_to_delete)
         for p in plots_to_delete
@@ -1333,15 +1336,15 @@ function set_axis_limits!(
         raw_xlims = get_raw_global_range(x_data)
         raw_ylims = get_raw_global_range(y_data)
     
+        # --- Set Axis Scale and Limits ---
+        ax.xscale[] = x_is_log_requested && raw_xlims[1] > 0 ? log10 : identity
+        ax.yscale[] = y_is_log_requested && raw_ylims[1] > 0 ? log10 : identity
 
         final_xlims = calculate_padded_axis_range(raw_xlims, x_padding, x_is_log_requested)
         final_ylims = calculate_padded_axis_range(raw_ylims, y_padding, y_is_log_requested)
 
         # Apply limits
-        try limits!(ax, final_xlims..., final_ylims...) catch e; end
-        # --- Set Axis Scale and Limits ---
-        ax.xscale[] = final_xlims[1] > 0 && x_is_log_requested ? log10 : identity
-        ax.yscale[] = final_ylims[1] > 0 && y_is_log_requested ? log10 : identity
+        limits!(ax, final_xlims..., final_ylims...)
         
     catch e
         @error "Failed to set dynamic axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
@@ -1443,11 +1446,23 @@ function plot_extrema_lines!(
 end
 
 """
-    create_base_plot_1D!(...)
+    create_base_plot_1D!(ax, active_methods, xs, us, ui_options_obs; plot_observable)
 
-Handles the core plotting for 1D data series. This version uses a pre-calculated
-permutation vector to draw plots in a sorted order (e.g., "Analytic" first)
-while maintaining a consistent styling order for colors and markers.
+Handles the core plotting for 1D data series. It clears the axis and plots
+lines and/or scatters for each method based on the provided UI observables.
+
+# Arguments
+- `ax::Axis`: The axis to plot into.
+- `active_methods::Vector{String}`: A list of the names of the methods being plotted.
+- `xs::AbstractVector`: Vector holding the x-coordinate data for each plot.
+- `us::AbstractVector`: Vector holding the u-coordinate data for each plot.
+- `ui_options_obs::Dict{String, Observable}`: The dictionary of UI styling observables.
+
+# Keyword Arguments
+- `plot_observable::Bool=false`: If `true`, the `xs` and `us` data are assumed to
+  be Observables and are passed directly to the plotting functions for full
+  reactivity. If `false` (default), the current *value* inside the observables
+  is plotted, which is suitable for static snapshots.
 """
 function create_base_plot_1D!(
     plot_fig::Figure,
@@ -1457,43 +1472,35 @@ function create_base_plot_1D!(
     us::AbstractVector,
     ui_options_obs::Dict{String, Observable};
     plot_observable::Bool = false,
-    is_static::Bool = false
+    is_static = false
 )
-    # --- Setup and Styling (as before) ---
+
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
-    empty!(ax)
-    is_static || ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : set_axis_styles!(ax, ui_options_obs)
 
-    if isempty(active_methods); return nothing; end
+    empty!(ax) # Clear previous plots from the axis
+    is_static || ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : 
+    set_axis_styles!(ax, ui_options_obs)
 
-    # --- 1. Create the Sorting Permutation ---
-    # Define the sorting key function.
-    sort_key(label) = ((contains(lowercase(label), "analytic")) ? 0 : 1, label)
-    # `sortperm` returns a vector of indices that would sort the original vector.
-    # E.g., if active_methods is ["B", "Analytic", "A"], p will be [2, 3, 1].
-    p = ui_options_obs["sort_legend"][] ? sortperm(active_methods, by = sort_key) : 1:length(active_methods)
 
-    # --- 2. Plot in the Sorted Order ---
+    if isempty(active_methods); return ([], []); end
+
     plotted_objects = []
     labels_for_legend = String[]
     
-    # The main loop now iterates through the permutation vector `p`.
-    # `plot_idx` will be 1, 2, 3... for consistent styling.
-    # `data_idx` will be the sorted index, e.g., 2, 3, 1... for accessing data.
-    for (plot_idx, data_idx) in enumerate(p)
-        # Safety check
-        if data_idx > length(xs) || data_idx > length(us); continue; end
+    num_to_plot = min(length(active_methods), length(xs), length(us))
 
-        # Use `data_idx` to get the correctly sorted label and data.
-        plotLabel = active_methods[data_idx]
-        x_data = plot_observable ? xs[data_idx] : to_value(xs[data_idx])
-        u_data = plot_observable ? us[data_idx] : to_value(us[data_idx])
+    for i = 1:num_to_plot
+        plotLabel = active_methods[i]
+        
+        # Determine whether to plot the observable directly or its value
+        x_data = plot_observable ? xs[i] : to_value(xs[i])
+        u_data = plot_observable ? us[i] : to_value(us[i])
 
-        # Use `plot_idx` to get consistent styling.
-        color = ui_options_obs["colors"][][mod1(plot_idx, end)]
-        marker = ui_options_obs["markers"][][mod1(plot_idx, end)]
-        linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(plot_idx,end)] : :solid
+        # Get styles directly from UI observables
+        color = ui_options_obs["colors"][][mod1(i, end)]
+        marker = ui_options_obs["markers"][][mod1(i, end)]
+        linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(i,end)] : :solid
 
         # Plot main data
         obj_for_legend = nothing
@@ -1509,27 +1516,23 @@ function create_base_plot_1D!(
                 marker=marker, label=plotLabel)
             if isnothing(obj_for_legend); obj_for_legend = s; end
         end
-        
-        # Call extrema tracking with the correct data and styling index
-        plot_extrema_lines!(ax, x_data, u_data, ui_options_obs, plot_idx)
-        
+        plot_extrema_lines!(ax, x_data, u_data, ui_options_obs, i)
         if !isnothing(obj_for_legend)
             push!(plotted_objects, obj_for_legend)
             push!(labels_for_legend, plotLabel)
         end
     end
 
-    # --- 3. Create the Legend ---
-    # The `plotted_objects` and `labels_for_legend` are now already in the desired
-    # sorted order, so no extra sorting is needed here.
+
+
+    # --- Replace old legend code with a call to the new centralized function ---
     create_or_update_legend!(
         plot_fig,
         ax,
-        plotted_objects,
-        labels_for_legend,
+        plotted_objects, # The vector of plot objects (lines, scatters)
+        labels_for_legend,  # The vector of strings for the labels
         ui_options_obs
     )
-    
     return nothing
 end
 
@@ -1952,17 +1955,6 @@ function calculate_snapshot(run_data::Tuple{<:Real, <:AbstractVector}, t_snapsho
     return scalar_data
 end
 
-# Conversion case from any
-function calculate_snapshot(run_data::Tuple{Any, <:AbstractVector}, t_snapshot::Real)
-    data = run_data[1]
-    if data isa AbstractVector
-        return calculate_snapshot(([d for d = data], run_data[2]), t_snapshot)
-    elseif data isa Real
-        return calculate_snapshot((data, run_data[2]), t_snapshot)
-    else
-        @error "Unsupported Type $(typeof(data)) found in the run_data!"
-    end
-end
 
 # --- Recursive Case: For any collection of runs/methods ---
 # This function takes a vector (e.g., of methods), iterates through it, and calls
@@ -2005,53 +1997,6 @@ function calculate_snapshot(x_data, u_data, t_snapshot::Real)
     return (x_snapshots, u_snapshots)
 end
 
-
-"""
-    create_parameter_observables(sim_config) -> Tuple
-
-Creates the observable dictionaries for both shared and method-specific
-parameters from a `SimulationConfig` object.
-
-It correctly handles `Tuple` types to ensure type stability for the observables,
-which is important for Makie's widgets.
-
-# Arguments
-- `sim_config::SimulationConfig`: The simulation configuration containing the
-  parameter dictionaries.
-
-# Returns
-- A `Tuple` containing:
-    - `shared_params_obs::Dict{String, Observable}`
-    - `method_params_collection_obs::Dict{String, Dict{String, Observable}}`
-"""
-function create_parameter_observables(sim_config)
-    # --- Create Observable dictionary for SHARED parameters ---
-    shared_params_obs = Dict{String, Observable}()
-    for (key, val) in sim_config.shared_params
-        # Explicitly type the observable for tuples to help Makie's Textbox
-        if isa(val, Tuple)
-            shared_params_obs[key] = Observable{Tuple}(val)
-        else
-            shared_params_obs[key] = Observable(val)
-        end
-    end
-
-    # --- Create NESTED Observable dictionary for METHOD-SPECIFIC parameters ---
-    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
-    for (method_name, method_params_dict) in sim_config.methods_dict
-        inner_obs_dict = Dict{String, Observable}()
-        for (param_key, param_val) in method_params_dict
-            if isa(param_val, Tuple)
-                inner_obs_dict[param_key] = Observable{Tuple}(param_val)
-            else
-                inner_obs_dict[param_key] = Observable(param_val)
-            end
-        end
-        method_params_collection_obs[method_name] = inner_obs_dict
-    end
-
-    return shared_params_obs, method_params_collection_obs
-end
 
 # """
 #     is_time_dependent(extracted_data) -> Bool

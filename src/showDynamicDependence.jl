@@ -15,7 +15,7 @@ statistics across methods.
   `AbstractSimData` object with non-empty `t::Vector{Float64}` and 
   `stats::Dict{String, Any}` fields.
 """
-function showDynamicDependence(sim_config::SimulationConfig, ui_options::UIType = :default)
+function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType = :default)
     # --- Standard Setup ---
     base_ui_dict = createUIDict(ui_options)
     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
@@ -31,21 +31,7 @@ function showDynamicDependence(sim_config::SimulationConfig, ui_options::UIType 
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
 
-    # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
-    # Observable dictionary for SHARED parameters
-    shared_params_obs = Dict{String, Observable}()
-    for (key, val) in sim_config.shared_params
-        shared_params_obs[key] = Observable(val)
-    end
-    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
-    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
-    for (method_name, method_params_dict) in sim_config.methods_dict
-        inner_obs_dict = Dict{String, Observable}()
-        for (param_key, param_val) in method_params_dict
-            inner_obs_dict[param_key] = Observable(param_val)
-        end
-        method_params_collection_obs[method_name] = inner_obs_dict
-    end
+    shared_params_obs, method_params_collection_obs = create_parameter_observables(sim_config)
 
     all_method_names = collect(keys(sim_config.methods_dict))
 
@@ -151,7 +137,7 @@ function showDynamicDependence(sim_config::SimulationConfig, ui_options::UIType 
             else
                  @warn "Method '$method' produced empty or invalid stats. Skipping stats processing."
             end
-            println("hello", plottable_keys_this_method)
+            #println("hello", plottable_keys_this_method)
             potential_keys_per_method[i] = plottable_keys_this_method
         end # End loop over methods
 
@@ -172,7 +158,7 @@ function showDynamicDependence(sim_config::SimulationConfig, ui_options::UIType 
     end # End of lift block 1
 
     lift(selector, update_notifier) do sel, _ 
-        updateData!(yData, statsData[], sel)
+        yData[] = extractStats(statsData[], sel)
         return nothing
     end
 

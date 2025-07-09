@@ -20,7 +20,29 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
-    shared_params_obs, method_params_collection_obs = create_parameter_observables(sim_config)
+    shared_params_obs = Dict{String, Observable}()
+    for (key, val) in sim_config.shared_params
+        if isa(val, Tuple)
+            shared_params_obs[key] = Observable{Tuple}(val)
+        else
+            shared_params_obs[key] = Observable(val)
+        end
+    end
+    # NESTED Observable dictionary for METHOD-SPECIFIC parameters
+    method_params_collection_obs = Dict{String, Dict{String, Observable}}()
+    for (method_name, method_params_dict) in sim_config.methods_dict
+        inner_obs_dict = Dict{String, Observable}()
+        for (param_key, param_val) in method_params_dict
+            if isa(param_val, Tuple)
+                inner_obs_dict[param_key] = Observable{Tuple}(param_val)
+            else
+                inner_obs_dict[param_key] = Observable(param_val)
+            end
+        end
+        method_params_collection_obs[method_name] = inner_obs_dict
+    end
+
+
     all_method_names = collect(keys(sim_config.methods_dict))
 
     # Method selection observable (no change)
@@ -50,11 +72,11 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         if range == [0]
             "t = N/A"
         else
-            "t = $(round(val; digits = 3))"
+            "t = $(round(val; digits = 4))"
         end 
     end
     Label(control_fig[end-1,:], tLabel_text)
-    axis_label = lift(selector) do sel; "Solution Value ($sel)" end
+    axis_label = lift(selector) do sel; "Solution Value $sel" end
     axis_title = @lift("t = " * string(round($(tSlider.value),digits = 3)))
     
     default_labels = Dict("xlabel" => "Position (x)",
