@@ -1,4 +1,5 @@
 using CairoMakie
+using Printf
 
 function updateUI(ui_dict::Dict, ui_input::Dict)
     @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
@@ -91,7 +92,8 @@ function add_param_as_nested_grid!(parent_cell_for_item, key_name::String, param
                             elseif isa(val, String) s -> true # Function for String
                             else (s -> true) # Fallback
                             end
-        tb = Textbox(item_layout[1,2], placeholder = string(val), 
+        placeholder_string = isempty(strip(string(val))) ? "empty" : string(val)
+        tb = Textbox(item_layout[1,2], placeholder = placeholder_string, 
                         validator = validator_type, width = Auto(), reset_on_defocus=true)
         on(tb.stored_string) do s
             target_type = typeof(val)
@@ -325,12 +327,12 @@ function createBaseControlsFigure(
         update_notifier[] += 1
     end
     current_row += 1
-
+    all_method_sorted = sort!(all_method_names)
     # --- Parameter View Selection Menu ---
     Label(fig_layout[current_row, 1], "View Parameters & Options:", fontsize=16, halign=:left)
     current_row += 1
     
-    menu_options = ["UI Options"; "Shared Parameters"; all_method_names] # Menu items
+    menu_options = ["UI Options"; "Shared Parameters"; all_method_sorted] # Menu items
     # Ensure a default selection if possible, or handle no selection
     default_selection = isempty(menu_options) ? nothing : menu_options[2]
 
@@ -343,7 +345,7 @@ function createBaseControlsFigure(
     current_row += 1
     method_checkbox_layout = fig_layout[current_row, 1] = GridLayout()
     # Adapt createMethodCheckboxes to populate this layout
-    createMethodCheckboxes(method_checkbox_layout, methods_obs, all_method_names) # (source: 46, 47, 48, 61)
+    createMethodCheckboxes(method_checkbox_layout, methods_obs, all_method_sorted) # (source: 46, 47, 48, 61)
     current_row += 1
      
     # --- Save Figure/Data Box ---
@@ -541,6 +543,7 @@ function saveParametersToCSV(
     shared_params_obs::Dict{String, Observable},
     method_params_collection_obs::Dict{String, Dict{String, Observable}},
     methods_obs::Observable{Vector{String}},
+    ui_options_obs::Dict{String, Observable},
     optional_info::Dict = Dict{String, Any}() # For context like time, animation settings etc.
     )::Bool # Indicate success/failure
 
@@ -606,7 +609,20 @@ function saveParametersToCSV(
             end # End loop through active methods
         end
         # --------------------------------------
-
+        # --- NEW: Add UI Options ---
+        push!(params_to_save, "# UI Options" => "====================")
+        ui_keys = sort(collect(keys(ui_options_obs)))
+        if isempty(ui_keys)
+            push!(params_to_save, "(None)" => "")
+        else
+            for ui_key in ui_keys
+                if haskey(ui_options_obs, ui_key)
+                    # Get the value from the observable and convert to string
+                    push!(params_to_save, string(ui_key) => string(ui_options_obs[ui_key][]))
+                end
+            end
+        end
+        # ---------------------------
         # Convert to DataFrame and write CSV
         df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
         CSV.write(csv_filename, df_to_save)
@@ -655,6 +671,7 @@ function createSaveFigBox(
         end
 
         save_figures_path = get_save_dir()
+        if ui_options_obs["create_savefolder"][]; save_figures_path *= "/$base_name" end
         try
             mkpath(save_figures_path)
         catch e
@@ -712,6 +729,7 @@ function createSaveFigBox(
              shared_params_obs,
              method_params_collection_obs, # Pass it along
              methods_obs,                  # Pass it along
+             ui_options_obs,
              optional_info
          )
          # --------------------------------------------------
@@ -992,6 +1010,44 @@ function set_axis_styles!(
         ax.ylabelsize = ui_options_obs["label_size"][]
         ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
         ax.yticklabelsize = ui_options_obs["ticklabel_size"][]
+
+        # --- NEW: Set Tick Positions ---
+        xtick_count = ui_options_obs["xtick_count"][]
+        ytick_count = ui_options_obs["ytick_count"][]
+        
+        # Use a tick count of 0 as a signal to use Makie's automatic default.
+        if xtick_count > 0
+            ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(xtick_count)) : LinearTicks(xtick_count)
+        end
+        if ytick_count > 0
+            ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ytick_count)) : LinearTicks(ytick_count)
+        end
+
+        # --- Set X-Axis Scale and Tick Formatting ---
+        x_offset = ui_options_obs["xscale_offset"][]
+        if x_offset != 0.0
+            #ax.xscale = identity
+            ax.xtickformat = tick_values -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", tick_values)
+        else
+            xformat = ui_options_obs["xtickformat"][]
+            ax.xtickformat = xformat == "default" ? Makie.automatic : xformat
+        end
+
+        # --- Set Y-Axis Scale and Tick Formatting ---
+        y_offset = ui_options_obs["yscale_offset"][]
+        if y_offset != 0.0
+            #ax.yscale = identity
+            ax.ytickformat = tick_values -> map(tick_values) do y
+                deviation = y - y_offset
+                offset_str = string(round(y_offset, sigdigits=3))
+                # --- THIS IS THE FIX FOR THE SIGN ---
+                sign_str = deviation < 0 ? "-" : "+"
+                "$(offset_str) $(sign_str) $(@sprintf("%.1e", abs(deviation)))"
+            end
+        else
+            yformat = ui_options_obs["ytickformat"][]
+            ax.ytickformat = yformat == "default" ? Makie.automatic : yformat
+        end
     catch e
         @warn "An error occurred while setting axis styles. A required key might be missing." exception=(e, catch_backtrace())
     end
@@ -1463,7 +1519,8 @@ function create_base_plot_1D!(
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
     empty!(ax)
-    is_static || ui_options_obs["update_limits"][] ? set_axis_limits!(ax, xs, us, ui_options_obs) : set_axis_styles!(ax, ui_options_obs)
+    if is_static || ui_options_obs["update_limits"][]; set_axis_limits!(ax, xs, us, ui_options_obs) end
+    set_axis_styles!(ax, ui_options_obs)
 
     if isempty(active_methods); return nothing; end
 
@@ -2053,6 +2110,18 @@ function create_parameter_observables(sim_config)
     return shared_params_obs, method_params_collection_obs
 end
 
+function create_ui_observables(ui_options)
+    ui_options_obs = Dict{String, Observable}()
+    for (key, val) in ui_options
+        # Explicitly type the observable for tuples to help Makie's Textbox
+        if isa(val, Tuple)
+            ui_options_obs[key] = Observable{Tuple}(val)
+        else
+            ui_options_obs[key] = Observable(val)
+        end
+    end
+    return ui_options_obs
+end
 # """
 #     is_time_dependent(extracted_data) -> Bool
 

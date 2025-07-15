@@ -11,10 +11,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
     # --- Basic Setup & UI ---
     base_ui_dict = createUIDict(ui_options)
-    ui_options_obs = Dict{String, Observable}()
-    for (key, value) in base_ui_dict
-        ui_options_obs[key] = Observable(value)
-    end
+    ui_options_obs = create_ui_observables(base_ui_dict)
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
 

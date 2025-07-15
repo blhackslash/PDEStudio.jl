@@ -721,7 +721,7 @@ function showConvergencePlot(
     if initial_calc; calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, force_overwrite = false); end
     GLMakie.activate!()
     base_ui_dict = createUIDict(ui_options)
-    ui_options_obs = Dict{String,Observable}(k => Observable(v) for (k,v) in base_ui_dict)
+    ui_options_obs = create_ui_observables(base_ui_dict)
     plot_fig = Figure(size = (ui_options_obs["figsize"]))
     x_vals = force_int_param ? map(v -> trunc(Int64, v), param_values) : collect(param_values)
 
@@ -739,6 +739,7 @@ function showConvergencePlot(
     x_menu_container = control_fig[end+1,:] = GridLayout()
     x_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
     selected_x_key_obs = Observable(isnothing(x_stat_key) ? key : x_stat_key)
+    
 
     # --- Reactive Axis Labels ---
     reactive_title = lift((x,y) -> "Convergence: $y vs $x", selected_x_key_obs, selected_y_key_obs)
@@ -764,6 +765,7 @@ function showConvergencePlot(
     extracted_x_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}())
     extracted_y_data = Observable(Vector{Vector{Tuple{Any, Vector{Float64}}}}())
 
+    firstrun = Observable(true)
     # --- DATA LOADING AND MENU POPULATION ---
     lift(update_notifier) do _
         println("Data Loading: Loading all stats and populating menus...")
@@ -814,12 +816,15 @@ function showConvergencePlot(
         
         create_or_update_selection_menu!(x_menu_container, x_menu_handle, sorted_keys, selected_x_key_obs)
         y_options_obs[] = sorted_keys
-        
-        if isnothing(y_stat_key) && !isempty(sorted_keys)
-            selected_y_key_obs[] = sorted_keys[2]
-        elseif !isnothing(y_stat_key) && y_stat_key in sorted_keys
-            selected_y_key_obs[] = y_stat_key
+        if firstrun[]
+            selected_y_key_obs[] = isnothing(y_stat_key) ? sorted_keys[2] : y_stat_key
+            firstrun[] = false
         end
+        # if isnothing(y_stat_key) && !isempty(sorted_keys) && !(selected_y_key_obs[] in sorted_keys)
+        #     selected_y_key_obs[] = sorted_keys[2]
+        # elseif !isnothing(y_stat_key) && y_stat_key in sorted_keys
+        #     selected_y_key_obs[] = y_stat_key
+        # end
 
         
     end
@@ -856,9 +861,9 @@ function showConvergencePlot(
         end
         return nothing
     end
+    
     # --- Final Steps ---
     display(GLMakie.Screen(), control_fig)
     display(GLMakie.Screen(), plot_fig)
-
     return plot_fig, control_fig
 end

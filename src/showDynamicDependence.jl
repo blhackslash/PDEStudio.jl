@@ -19,14 +19,7 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
     # --- Standard Setup ---
     base_ui_dict = createUIDict(ui_options)
     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
-    ui_options_obs = Dict{String, Observable}()
-    for (key, value) in base_ui_dict
-        if isa(value, Tuple)
-            ui_options_obs[key] = Observable{Tuple}(value)
-        else
-            ui_options_obs[key] = Observable(value)
-        end
-    end
+    ui_options_obs = create_ui_observables(base_ui_dict)
 
     plot_fig = Figure(size = ui_options_obs["figsize"])
 

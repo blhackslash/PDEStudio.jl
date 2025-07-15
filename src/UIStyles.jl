@@ -48,11 +48,17 @@ function GetUIStyle(style::Symbol)
         "ypadding" => 0.1,
         "animation_fps" => 30,
         "animation_duration_s" => 10.0,
-        "legend_pos" => "righttop",
+        "legend_pos" => "detached",
         "xgridvisible" => true,
         "ygridvisible" => true,
         "xticklabelsvisible" => true,
         "yticklabelsvisible" => true,
+        "xtick_count" => 0,
+        "ytick_count" => 0,
+        "xtickformat" => "default",
+        "ytickformat" => "default",
+        "xscale_offset" => 0.,
+        "yscale_offset" => 0.,
         "title" => "default",
         "xlabel" => "default",
         "ylabel" => "default",
@@ -61,9 +67,10 @@ function GetUIStyle(style::Symbol)
         "reference" => (1.,),
         "update_limits" => false,
         "save_formats" => ["png"], # Default to saving only PNG
+        "create_savefolder" => true,
         "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
         "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
-        "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
+        "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
     )
 
     if style == :default
@@ -77,6 +84,8 @@ function GetUIStyle(style::Symbol)
             "legend_pos" => "righttop",
             "label_size" => 14,
             "ticklabel_size" => 12,
+            "title" => "",
+            "legend" => "",
             "font_size" => 14,
             "figsize" => (700, 550),
             "save_formats" => ["png", "pdf", "svg"] # For publication, save all formats
