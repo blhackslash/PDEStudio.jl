@@ -484,9 +484,20 @@ function assembleParams(
     method_name::String
     )::ParamDictType # Assuming ParamDictType = Dict{String, Any}
 
+    method_specific_obs_dict = haskey(method_params_collection_obs, method_name) ? method_params_collection_obs[method_name] : nothing
+    # --- CORRECTED: Safely get the list of keys to ignore from the observable ---
+    ignore_keys = String[] # Default to an empty list
+    if haskey(method_specific_obs_dict, "ignore")
+        # Get the value from the "ignore" observable
+        val = to_value(method_specific_obs_dict["ignore"])
+        if val isa AbstractVector{<:AbstractString}
+            ignore_keys = val
+        end
+    end
     # Start with current values of shared parameters
     current_params = ParamDict()
     for (key, obs) in shared_params_obs
+        if key in ignore_keys; continue end
         val = to_value(obs)
         if isa(val, Tuple) && length(val) == 2 && val[1] == :const
             current_params[key] = to_value(val[2])
@@ -496,8 +507,7 @@ function assembleParams(
     end
 
     # Get the specific observable dictionary for the requested method
-    if haskey(method_params_collection_obs, method_name)
-        method_specific_obs_dict = method_params_collection_obs[method_name]
+    if !isnothing(method_specific_obs_dict)
         # Merge/override with current values of method-specific parameters
         for (key, obs) in method_specific_obs_dict
             val = to_value(obs)
