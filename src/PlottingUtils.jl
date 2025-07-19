@@ -1,5 +1,6 @@
 using CairoMakie
 using Printf
+using Statistics
 
 function updateUI(ui_dict::Dict, ui_input::Dict)
     @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
@@ -1498,6 +1499,38 @@ function plot_extrema_lines!(
     return nothing
 end
 
+#======================================================================#
+#           NEW INTERNAL HELPER FOR OUTLIER DETECTION
+#======================================================================#
+
+"""
+    _find_outlier_indices(y_data, ui_options_obs) -> Vector{Int}
+
+Identifies the indices of extreme outliers in a vector using a tunable IQR method.
+The threshold is controlled by the "outlier_threshold" key in `ui_options_obs`.
+"""
+function _find_outlier_indices(
+    y_data::AbstractVector,
+    threshold::Real
+)
+    if length(y_data) < 5; return Int[]; end
+
+    finite_y_data = filter(isfinite, y_data)
+    if length(finite_y_data) < 5; return Int[]; end
+
+    q1 = quantile(finite_y_data, 0.25)
+    q3 = quantile(finite_y_data, 0.75)
+    iqr = q3 - q1
+    
+    # Define the valid range using the tunable threshold
+    lower_bound = q1 - threshold * iqr
+    upper_bound = q3 + threshold * iqr
+    
+    # Find the indices of the original vector that are outliers
+    return findall(y -> isfinite(y) && (y < lower_bound || y > upper_bound), y_data)
+end
+
+
 """
     create_base_plot_1D!(...)
 
@@ -1515,12 +1548,15 @@ function create_base_plot_1D!(
     plot_observable::Bool = false,
     is_static::Bool = false
 )
+
+    # Defining variables
+    mark_outliers = ui_options_obs["mark_outliers"][]
+    remove_outliers = ui_options_obs["remove_outliers"][]
+
     # --- Setup and Styling (as before) ---
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
     empty!(ax)
-    if is_static || ui_options_obs["update_limits"][]; set_axis_limits!(ax, xs, us, ui_options_obs) end
-    set_axis_styles!(ax, ui_options_obs)
 
     if isempty(active_methods); return nothing; end
 
@@ -1552,6 +1588,18 @@ function create_base_plot_1D!(
         marker = ui_options_obs["markers"][][mod1(plot_idx, end)]
         linestyle = ui_options_obs["dashed_lines"][] ? ui_options_obs["lineStyles"][][mod1(plot_idx,end)] : :solid
 
+        if mark_outliers || remove_outliers
+            outlier_indices = _find_outlier_indices(u_data, ui_options_obs["outlier_threshold"][])
+            if mark_outliers 
+                outlier_x_positions = x_data[outlier_indices]
+                color = ui_options_obs["colors"][][mod1(plot_idx, end)]
+                vlines!(ax, outlier_x_positions; color=(color, 0.4), linestyle=:dot, linewidth=ui_options_obs["linewidth"][]/1.5)
+            end
+            if remove_outliers
+                us[data_idx][outlier_indices] .= NaN
+            end
+        end
+
         # Plot main data
         obj_for_legend = nothing
         if ui_options_obs["show_lines"][]
@@ -1576,6 +1624,8 @@ function create_base_plot_1D!(
         end
     end
 
+    if is_static || ui_options_obs["update_limits"][]; set_axis_limits!(ax, xs, us, ui_options_obs) end
+    set_axis_styles!(ax, ui_options_obs)
     # --- 3. Create the Legend ---
     # The `plotted_objects` and `labels_for_legend` are now already in the desired
     # sorted order, so no extra sorting is needed here.

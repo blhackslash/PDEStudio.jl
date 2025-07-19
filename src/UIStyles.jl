@@ -44,7 +44,7 @@ function GetUIStyle(style::Symbol)
         "font_size" => 24,
         "legend" => "Methods",
         "sort_legend" => true,
-        "xpadding" => 0,
+        "xpadding" => 0.,
         "ypadding" => 0.1,
         "animation_fps" => 30,
         "animation_duration_s" => 10.0,
@@ -68,6 +68,9 @@ function GetUIStyle(style::Symbol)
         "update_limits" => false,
         "save_formats" => ["png"], # Default to saving only PNG
         "create_savefolder" => true,
+        "mark_outliers" => false,
+        "remove_outliers" => false,
+        "outlier_threshold" => 1.5,
         "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
         "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
         "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal), (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
@@ -80,6 +83,7 @@ function GetUIStyle(style::Symbol)
         publication_style = deepcopy(default_style)
         merge!(publication_style, Dict{String, Any}(
             "linewidth" => 2.5,
+            "markersize" => 10,
             "title_size" => 14,
             "legend_pos" => "righttop",
             "label_size" => 14,

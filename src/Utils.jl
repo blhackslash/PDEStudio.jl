@@ -7,6 +7,7 @@ using CSV, DataFrames
 using JLD2, FileIO
 using Base.Threads
 using GLMakie
+using ProgressMeter 
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, calculateConvergenceData,
@@ -52,7 +53,7 @@ function set_save_path!(path::String)
         @warn "Save path does not exist: $abs_path. Attempting to create..."
         try
             mkpath(abs_path)
-            println("Created save directory: $abs_path")
+            @info "Created save directory: $abs_path"
             path_ok = true
         catch e
             @error "Failed to create save directory: $abs_path. Error: $e"
@@ -66,7 +67,7 @@ function set_save_path!(path::String)
 
     if path_ok
         _SAVE_ROOT_PATH[] = abs_path # Update the path stored in the Ref
-        println("Module save root path set to: $(_SAVE_ROOT_PATH[])")
+        @info "Module save root path set to: $(_SAVE_ROOT_PATH[])"
 
         # Create standard subdirectories
         for subdir in ["figures", "data"]
@@ -74,7 +75,7 @@ function set_save_path!(path::String)
             if !isdir(subdir_path)
                 try
                     mkpath(subdir_path)
-                    println("Created subdirectory: $subdir_path")
+                    @info "Created subdirectory: $subdir_path"
                 catch e
                     @error "Failed to create subdirectory: $subdir_path. Error: $e"
                     # Warn but continue, maybe saving to base path will still work
@@ -122,20 +123,20 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
         counter += 1
         if !isfile(file_name)
             save(file_name, "sim_data", sim_data)
-            println("SimData saved to file $file_name")
+            @info "SimData saved to file $file_name"
             break
         else
             SimDataSaved = load(file_name)["sim_data"]
             if !(sim_data.params == SimDataSaved.params)
-                println("Filename already exists! Changing hash...")
+                @info "Filename already exists! Changing hash..."
                 file_name = save_data * hash * "_$counter.jld2"
             else
                 if overwrite
                     save(file_name, "sim_data", sim_data)
                     @warn "Simulation mesh has been overwritten!"
-                    println("SimData saved to file $file_name")
+                    @info "SimData saved to file $file_name"
                 else
-                    println("File already exists!")
+                    @info "File already exists!"
                 end
                 break
             end 
@@ -168,11 +169,11 @@ function getFileName(params::ParamDictType)
             try # Add inner try-catch for loading/comparison errors
                 sim_data_saved = load(file)["sim_data"]
                 if (params == sim_data_saved.params)
-                    println("Found matching file: ", file) # Debug print
+                    @info "Found matching file: ", file # Debug print
                     return file # Return the full path
                 else
                     # Hash collision, prepare to check next file in the next iteration
-                    println("Hash collision detected for: ", file) # Debug print
+                    @warn "Hash collision detected for: ", file # Debug print
                     counter += 1
                     # Continue to the next iteration of the while loop
                 end
@@ -185,7 +186,7 @@ function getFileName(params::ParamDictType)
             # If we checked the base file (counter=0) and it wasn't there, OR
             # if we checked a collision file (_N) and it wasn't there,
             # then no matching file exists with this base hash.
-            println("File not found: ", file, ". Stopping search for this hash.") # Debug print
+            @info "File not found: ", file, ". Stopping search for this hash." # Debug print
             throw(SimFileNotFoundError("Requested File does not exist! (Checked up to collision $counter)"))
             # The loop terminates here by throwing the error
         end
@@ -279,7 +280,7 @@ function changeparams(ks::Vector{String}, oldVals::Vector, newVals::Vector)
                 if sim_data.params[key] == oldVals[i]
                     sim_data.params[key] = newVals[i]
                     saveSimData(sim_data; overwrite = true)
-                    println("Changed simulation mesh is saved!")
+                    @info "Changed simulation mesh is saved!"
                 end
             end
         end
@@ -539,77 +540,78 @@ Returns a dictionary of results.
 """
 function calculateConvergenceData(
     sim_config::SimulationConfig,
-    key_varied::String, # The parameter key being varied (e.g., "N", "CFL")
+    key_varied::String,
     param_values_for_key::Union{AbstractVector, AbstractRange};
     force_int_param::Bool = false,
+    calculate_all::Bool = false,
     force_overwrite::Bool = false
 )
+    # --- Task Preparation (as before) ---
+    all_method_labels = calculate_all ? collect(keys(sim_config.methods_dict)) : sim_config.default_methods
+    num_tasks = length(all_method_labels) * length(param_values_for_key)
+    if num_tasks == 0; @info "No simulations to run."; return; end
 
-    all_method_labels = collect(keys(sim_config.methods_dict)) # These are the UI labels
-    num_methods = length(all_method_labels)
-    num_p_values = length(param_values_for_key)
-
-    # --- Prepare a list of all individual simulation tasks (parameter dictionaries) ---
-    # Each task is a fully specified ParamDictType ready for the sim_function
-    num_tasks = num_methods * num_p_values
     tasks_params_list = Vector{ParamDictType}(undef, num_tasks)
-    # Store identifiers to map results back correctly
-    task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks) # (method_label, param_value_index)
-
+    task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks)
+    
     task_idx = 0
     for method_label in all_method_labels
-        # Get base parameters for this method label: shared + method_specific_overrides
-        # This replicates the logic from your IPlotPDESols.assemble_params_for_run
-        # but uses direct values instead of observables.
-        current_method_base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict,method_label)
-
+        current_method_base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method_label)
         for (j, p_val) in enumerate(param_values_for_key)
             task_idx += 1
-            # Create a specific param dict for this run
             params_for_this_run = copy(current_method_base_params)
-            # Set the varied parameter
             params_for_this_run[key_varied] = force_int_param ? trunc(Int64, p_val) : p_val
-
-            # The sim_function (e.g., runBurgersSimulation_for_IPlotPDESols)
-            # will use component keys like "timestepper", "main_gradient" etc.
-            # already present in params_for_this_run from the merge above.
-
             tasks_params_list[task_idx] = params_for_this_run
             task_identifiers[task_idx] = (method_label, j)
         end
     end
-    # ------------------------------------------------------------------------
 
-    println("Starting parallel calculation of $(num_tasks) convergence simulations...")
+    @info "Starting parallel calculation of $(num_tasks) convergence simulations..."
+
+    # --- NEW: Progress Bar Setup ---
+    # 1. Create a Progress meter object.
+    p = Progress(num_tasks, "Calculating..."; 
+        barglyphs=BarGlyphs('|','█', ['▁' ,'▂' ,'▃' ,'▄' ,'▅' ,'▆', '▇'],' ','|',),
+        showspeed=true)
+    # 2. Create a thread-safe counter.
+    counter = Threads.Atomic{Int}(0)
+    # -----------------------------
+
     # --- Parallel Execution ---
-    # WARNING: The effectiveness and correctness of RNG handling inside
-    # runSimulation_for_IPlotPDESols when called in parallel like this needs
-    # careful consideration. If it modifies a shared global RNG, there could be issues.
     Threads.@threads for i in 1:num_tasks
-        params_for_this_run = tasks_params_list[i]
-        method_label_this_run, p_val_idx = task_identifiers[i]
-        p_val_actual = param_values_for_key[p_val_idx]
+        try
+            params_for_this_run = tasks_params_list[i]
+            method_label_this_run, p_val_idx = task_identifiers[i]
+            p_val_actual = param_values_for_key[p_val_idx]
 
-        println("Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
+            # Optional: You may want to remove or comment out the println statements
+            # below, as they can interfere with the visual appearance of the progress bar.
+            # @info "Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
 
-        # Call the sim_function (e.g., runBurgersSimulation_for_IPlotPDESols)
-        # It should return only the SimData object or nothing
-        if !doesSimDataExist(params_for_this_run) || force_overwrite
-            sim_data = sim_config.sim_function(params_for_this_run)
-        else
-            sim_data = "skipped"
-            @info "Skipped calculation because existing simulation data was found. If recalculation is wanted, enable force_overwrite!"
+            if !doesSimDataExist(params_for_this_run) || force_overwrite
+                sim_data = sim_config.sim_function(params_for_this_run)
+                if !isnothing(sim_data)
+                    saveSimData(sim_data; overwrite = force_overwrite)
+                else
+                    @warn "Simulation returned `nothing` for $method_label_this_run, $key_varied = $p_val_actual"
+                end
+            else
+                # @info "Skipped calculation because existing data was found."
+            end
+        catch e
+            @error "Error in thread $(Threads.threadid())" exception=(e, catch_backtrace())
         end
-        if isnothing(sim_data)
-            @warn "Simulation could not run correctly for the method $method_label_this_run and $key_varied = $p_val_actual"
-        elseif !(sim_data == "skipped")
-            saveSimData(sim_data; overwrite = force_overwrite)
-        end
-        println("Thread $(Threads.threadid()): Finished Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
+
+        # --- NEW: Update Progress ---
+        # 3. Atomically increment the counter and update the progress bar.
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
+        # ----------------------------
     end
 
-    println("Convergence data calculation complete.")
+    @info "\nConvergence data calculation complete."
 end
+
 
 function allMethodNames(config::SimulationConfig)
     return collect(keys(config.methods_dict))
