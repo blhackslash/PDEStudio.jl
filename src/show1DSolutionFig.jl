@@ -27,7 +27,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
+    control_fig, update_notifier, ui_update, components, comp_sel = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -51,7 +51,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         end 
     end
     Label(control_fig[end-1,:], tLabel_text)
-    axis_label = lift(selector) do sel; "Solution Value ($sel)" end
+    axis_label = lift(comp_sel) do sel; components[][sel] end
     axis_title = @lift("t = " * string(round($(tSlider.value),digits = 3)))
     
     default_labels = Dict("xlabel" => "Position (x)",
@@ -102,6 +102,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         xData_tmp = Vector{Tuple{datatype, Vector{Float64}}}(undef, active_num)
         uData_tmp = Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, active_num)
         active_methods_now = methods_obs[]
+        first_run = true
 
         for i = 1:active_num
             method = active_methods_now[i]
@@ -134,15 +135,22 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
 
             xData_tmp[i] = (sim_data.x, sim_data.t)
-            
-            if isa(sim_data.u[1], AbstractVector)
-                key = "u"
-                y_options[] = [key]
-                uData_tmp[i] = (Dict(key => sim_data.u), sim_data.t)
-            elseif isa(sim_data.u[1], AbstractMatrix)
-                y_options[] = ["u_$j" for j = 1:length(sim_data.u[1][1,:])]
-                uData_tmp[i] = (Dict("u_$j" => [sim_data.u[k][:,j] for k = eachindex(sim_data.u)] for j = 1:length(sim_data.u[1][1,:])), sim_data.t)
+            uData_tmp[i] = (Dict("u" => sim_data.u), sim_data.t)
+            current_comps = length(sim_data.u[1][1,:])
+            if first_run
+                components[] = Tuple(["Component $k" for k = 1:current_comps])
+                first_run = false
+            elseif current_comps != length(components[])
+                @warn "Inconsistent components amount detected!"
             end
+            # if isa(sim_data.u[1], AbstractVector)
+            #     key = "u"
+            #     y_options[] = [key]
+            #     uData_tmp[i] = (Dict(key => sim_data.u), sim_data.t)
+            # elseif isa(sim_data.u[1], AbstractMatrix)
+            #     y_options[] = ["u_$j" for j = 1:length(sim_data.u[1][1,:])]
+            #     uData_tmp[i] = (Dict("u_$j" => [sim_data.u[k][:,j] for k = eachindex(sim_data.u)] for j = 1:length(sim_data.u[1][1,:])), sim_data.t)
+            # end
 
             
             # -----------------------------
@@ -154,12 +162,25 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     println("Lift 1: Update complete.")
 
     end # --- End Lift Block 1 ---
-    lift(selector, uData) do sel, u
+    lift(comp_sel, uData) do sel, u
         if isempty(u); return; end
-        uData_extr[] = extractStats(u, sel);
+        uData_extr[] = extractData(u, "u", sel);
         set_axis_limits!(ax, xData[], uData_extr[], ui_options_obs)
         return nothing
 
+    end
+    lift(ui_update) do _
+        if ui_options_obs["comp_names"][] != ("default",) 
+            if length(ui_options_obs["comp_names"][]) == length(components[])
+                components[] = ui_options_obs["comp_names"][]
+            else
+                println(ui_options_obs["comp_names"][], components[])
+                @warn "Could not match components to the given names because of length mismatch!"
+            end
+        else
+            components[] = Tuple(["Component $k" for k = eachindex(components[])])
+        end
+        return nothing
     end
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
     lift(uData_extr, tSlider.value, ui_update) do u_data, t, _

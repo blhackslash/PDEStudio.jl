@@ -401,12 +401,13 @@ function createBaseControlsFigure(
         end
     end
    # --- GENERIC SELECTION MENU SETUP ---
-   Label(fig_layout[current_row, 1], "Select Plotted Data", fontsize=16, halign=:left)
+   Label(fig_layout[current_row, 1], "Select Component", fontsize=16, halign=:left)
    current_row += 1
    
    # These are the key observables that form the "interface"
-   y_options = Observable{AbstractArray}(["1",1]) # Holds the list of strings for the menu
-   selector = Observable{Any}(" ") # Holds the final selected value
+   components = Observable{Tuple}(("Component 1",))
+   comp_options = lift(components) do comps; ([(name,ind) for (ind,name) = enumerate(comps)]) end # Holds the list of strings for the menu
+   sel_comp = Observable{Int}(1) # Holds the final selected value
    
    # This container will hold the menu widget, which will be deleted and recreated
    menu_container = fig_layout[current_row, 1] = GridLayout()
@@ -416,16 +417,16 @@ function createBaseControlsFigure(
    # --- REACTIVE LINK: Rebuild the menu whenever the options list changes ---
    # This `on` block is the core of the generalization. It lives here and handles all
    # the UI logic for updating the menu.
-   on(y_options) do available_options
+   on(comp_options) do _
        println("Updating selection menu with new options...")
        create_or_update_selection_menu!(
            menu_container,
            current_menu_handle,
-           y_options[],
-           selector
+           comp_options[],
+           sel_comp
        )
    end
-    return base_controls_fig, update_notifier, ui_update, y_options, selector
+    return base_controls_fig, update_notifier, ui_update, components, sel_comp
 end
 
 """
@@ -775,103 +776,6 @@ function createParameterToggles(to_layout, keys::Vector{String}, params_obs::Dic
         end
     end
 end
-
-
-# """
-#     createControls_Separated(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names)
-
-# Creates a Makie control figure using the user's helper functions, separating shared
-# and method-specific parameters into sections. Assumes helper functions add their
-# own rows to the passed figure using `fig[end+1, ...]`.
-# """
-# function createControls(
-#     plot_fig::Makie.Figure,                             # Figure for save box action reference
-#     shared_params_obs::Dict{String, Observable},
-#     method_params_collection_obs::Dict{String, Dict{String, Observable}},
-#     methods_obs::Observable{Vector{String}},          # Observable list of ACTIVE methods
-#     all_method_names::Vector{String}   # FULL list of possible methods                
-#     )
-#     update_notifier = Observable(0)
-#     column_number = length(all_method_names)+1
-#     #row_number = max(length(shared_params_obs), maximum(map(dict -> length(dict), values(method_params_collection_obs)))) + 1
-#     control_fig = Figure(size=(800, 1000)) # Adjust size as needed, likely taller
-#     Label(control_fig[1, 1:column_number], "Control Panel", fontsize = 24, font=:bold, tellwidth=false, halign = :center) # Main title
-#     update_button = Button(control_fig[1,end], label = "Update", halign = :left)
-
-#     on(update_button.clicks) do _
-#         update_notifier[] += 1
-#     end
-#     tb_layout = control_fig[2, 1:column_number] = GridLayout()
-#     # --- Shared Parameters Section ---
-#     if !isempty(shared_params_obs)
-#         # The content goes into the layout of the GroupBox   
-#         #Label(tb_layout, "Shared Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-#         # Separate keys
-#         # --- Filter out keys marked as :const ---
-#         # -------------------------------------
-#         shared_keys = sort(collect(keys(shared_params_obs)))
-#         shared_bool_keys = filter(k -> shared_params_obs[k][] isa Bool, shared_keys)
-#         shared_other_keys = filter(k -> !(shared_params_obs[k][] isa Bool), shared_keys)
-#         # Call user's helpers (they will add rows using end+1)
-#         if !isempty(shared_other_keys)
-#             rows = length(shared_other_keys)+1
-#             createTextBoxes(tb_layout[1:rows,1], shared_other_keys, shared_params_obs, "Shared Parameters")
-#         end
-#         if !isempty(shared_bool_keys)
-#             row_end = rows + length(shared_bool_keys) + 1
-#             createParameterToggles(tb_layout[rows+1:row_end,1], shared_bool_keys, shared_params_obs)
-#         end
-#     end
-
-#     # --- Method-Specific Parameters Section ---
-#     #Label(control_fig[end+1, :], "Method-Specific Parameters", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-#     any_method_specific_params = false
-#     # Iterate through ALL possible methods to create sections consistently
-#     for (i,method_name) in enumerate(sort(all_method_names))
-#         # Check if this method has specific parameter observables defined
-#         if haskey(method_params_collection_obs, method_name)
-#             method_params_obs = method_params_collection_obs[method_name]
-#             if !isempty(method_params_obs)
-#                 any_method_specific_params = true
-#                 #tb_layout = control_fig[end, end+1]
-#                 # Add a sub-header for the method
-#                 #Label(control_fig[end+1, :], method_name, font=:bold, halign=:center, tellwidth=false).padding = (0,0,5,15) # Indent slightly
-
-#                 # Separate keys for this method
-#                 method_keys = sort(collect(keys(method_params_obs)))
-#                 method_bool_keys = filter(k -> method_params_obs[k][] isa Bool, method_keys)
-#                 method_other_keys = filter(k -> !(method_params_obs[k][] isa Bool), method_keys)
-
-#                 # Call user's helpers for this method's params
-#                 if !isempty(method_other_keys)
-#                     rows = length(method_other_keys)+1
-#                     createTextBoxes(tb_layout[1:rows,i+1], method_other_keys, method_params_obs, method_name)
-#                 end
-#                 if !isempty(method_bool_keys)
-#                     #row_end = rows + length(method_bool_keys)
-#                     createParameterToggles(tb_layout[rows + 1 : end,i+1], method_bool_keys, method_params_obs)
-#                 end
-#             end # end if !isempty(method_params_obs)
-#         end # end if haskey
-#     end # end for method_name
-#     if !any_method_specific_params
-#          Label(control_fig[end+1, :], "(None)", halign=:center, tellwidth=false).padding = (0,0,5,15)
-#     end
-#     # --- Method Selection Section ---
-#     Label(control_fig[end+1, :], "Active Methods", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-
-#     # Call user's Checkbox helper function
-#     cb_layout = control_fig[end+1, :] = GridLayout()
-#     createMethodCheckboxes(cb_layout, methods_obs, all_method_names)
-
-#     # --- Save Box Section ---
-#     # Note: This currently only passes shared_params_obs to be saved in the CSV.
-#     # Modifying createSaveFigBox would be needed to save method-specific params too.
-#     #Label(control_fig[end+1, :], "Save Current View", fontsize=18, font=:bold, halign=:center, tellwidth=false).padding = (0,0,10,5)
-#     createSaveFigBox(control_fig[end+1,:], plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
-
-#     return control_fig, update_notifier
-# end
 
 # This function goes into your plotting_helpers.jl file
 """
@@ -1926,6 +1830,99 @@ function extractStats(
 end
 
 
+#======================================================================#
+#              GENERALIZED `extractData` FUNCTION SUITE
+#======================================================================#
+
+# --- RECURSIVE `_extract_component` HELPERS ---
+
+# Base Case 1: The data is a Matrix. This is the "workhorse".
+# It extracts the specified column (for time-dependent) or value (for time-independent).
+function _extract_component(stat_val::AbstractMatrix, selected_comp::Int)
+    return 1 <= selected_comp <= size(stat_val, 2) ? stat_val[:, selected_comp] : missing
+end
+
+# Base Case 2: The data is a single Number (scalar).
+function _extract_component(stat_val::Number, selected_comp::Int)
+    return selected_comp == 1 ? stat_val : missing
+end
+
+# Recursive Case: The data is a Vector.
+# This function calls `_extract_component` on each element of the vector.
+function _extract_component(stat_val::AbstractVector, selected_comp::Int)
+    # This handles any level of nesting, e.g., Vector{Matrix}, Vector{Vector{Matrix}}, etc.
+    return [_extract_component(item, selected_comp) for item in stat_val]
+end
+
+# Fallback for any other unsupported type.
+function _extract_component(stat_val, selected_comp::Int)
+    @warn "Unsupported statistic type `$(typeof(stat_val))` for component extraction. Returning missing."
+    return missing
+end
+
+
+# --- Main `extractData` functions ---
+
+# Base Case 1: Operates on the (Dict, time_vector) tuple for time-dependent data.
+function extractData(
+    run_data::Tuple{<:Dict, <:AbstractVector},
+    selected_key::String,
+    selected_comp::Int
+)
+    stats_dict, times = run_data
+    stat_val = get(stats_dict, selected_key, missing)
+    
+    if ismissing(stat_val)
+        return (missing, times)
+    end
+    
+    # Call the recursive helper to get the single component data
+    component_data = _extract_component(stat_val, selected_comp)
+    
+    # Return the new tuple with the extracted component data and its original time vector.
+    return (component_data, times)
+end
+
+# Base Case 2: Operates on a raw Dict for time-independent data.
+function extractData(
+    run_data::Dict,
+    selected_key::String,
+    selected_comp::Int
+)
+    stat_val = get(run_data, selected_key, missing)
+    
+    if ismissing(stat_val)
+        return (missing, Float64[]) 
+    end
+    
+    component_data = _extract_component(stat_val, selected_comp)
+    
+    # Return a tuple with an empty time vector for type consistency.
+    return (component_data, Float64[])
+end
+
+
+# Recursive Case: This handles any level of nesting (e.g., Vector{Vector{...}})
+function extractData(
+    all_series_data::Vector,
+    selected_key::String,
+    selected_comp::Int
+)
+    num_series = length(all_series_data)
+    extracted = Vector{Any}(undef, num_series)
+
+    for i in 1:num_series
+        if isassigned(all_series_data, i)
+            # RECURSIVE CALL: Julia's multiple dispatch will call this same function
+            # if the element is another Vector, or one of the base cases if it's a Tuple or Dict.
+            extracted[i] = extractData(all_series_data[i], selected_key, selected_comp)
+        else
+            extracted[i] = missing
+        end
+    end
+
+    return filter(!ismissing, extracted)
+end
 
 # --- Base Case: We've drilled down to the Tuple containing the data and the time vector. ---
 """

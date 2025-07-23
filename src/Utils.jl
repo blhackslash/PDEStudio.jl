@@ -463,7 +463,8 @@ function StringToTuple(s::String)::Union{Tuple, Nothing}
             push!(elements, parsed_value)
         else
             # Element could not be parsed as Bool, Int, or Float64
-            return nothing 
+            #return nothing
+            push!(elements, stripped_elem_str) 
         end
     end
 

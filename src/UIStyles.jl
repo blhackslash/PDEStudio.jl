@@ -67,9 +67,10 @@ function GetUIStyle(style::Symbol)
         "reference" => (1.,),
         "update_limits" => false,
         "save_formats" => ["png"], # Default to saving only PNG
-        "create_savefolder" => true,
+        "create_savefolder" => false,
         "mark_outliers" => false,
         "remove_outliers" => false,
+        "comp_names" => ("default",),
         "outlier_threshold" => 1.5,
         "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
         "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
@@ -92,6 +93,7 @@ function GetUIStyle(style::Symbol)
             "legend" => "",
             "font_size" => 14,
             "figsize" => (700, 550),
+            "update_limits" => true,
             "save_formats" => ["png", "pdf", "svg"] # For publication, save all formats
             # You could also add other font settings here
         ))
