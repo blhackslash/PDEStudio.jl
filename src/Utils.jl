@@ -8,6 +8,7 @@ using JLD2, FileIO
 using Base.Threads
 using GLMakie
 using ProgressMeter 
+using Random
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, calculateConvergenceData,
@@ -578,8 +579,9 @@ function calculateConvergenceData(
     counter = Threads.Atomic{Int}(0)
     # -----------------------------
 
+    loop_indices = randperm(num_tasks)
     # --- Parallel Execution ---
-    Threads.@threads for i in 1:num_tasks
+    Threads.@threads for i in loop_indices
         try
             params_for_this_run = tasks_params_list[i]
             method_label_this_run, p_val_idx = task_identifiers[i]

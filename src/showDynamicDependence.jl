@@ -32,7 +32,7 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
 
     # --- Call the NEW createControls function ---
-    control_fig, update_notifier, ui_update, y_options, selector = createBaseControlsFigure(
+    control_fig, update_notifier, ui_update, components, comp_sel = createBaseControlsFigure(
         plot_fig,
         shared_params_obs,
         method_params_collection_obs,
@@ -42,12 +42,16 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
     )
     # -----------------------------------------
     
+    Label(control_fig[end+1, :], "Choose Statistic:")
+    menu_container = control_fig[end+1,:] = GridLayout()
+    menu_handle = Observable{Union{Nothing, Menu}}(nothing)
+    selected_key_obs = Observable("Calculating...")
 
-    ylabel = lift(selector) do sel
-        string(sel)
+    ylabel = lift(selected_key_obs, comp_sel) do sel, c_sel
+        sel * " (" * components[][c_sel] * ")"
     end
-    title = lift(selector) do sel
-        "Time dependance of $sel"
+    title = lift(ylabel) do label
+        "Time dependance of $label"
     end
     # -----------------------------------------
     default_labels = Dict("xlabel" => "Time (t)",
@@ -66,13 +70,13 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
     lift(update_notifier; ignore_equal_values = true) do _
         println("Updating data based on methods/parameters...")
         active_methods_now = methods_obs[]
-        active_num = length(active_methods_now)
+        active_num = length(methods_obs[])
         statsData[] = Vector{Observable{Dict{String, Any}}}(undef, active_num)
-        tData[] = Vector{Observable{Vector{Float64}}}(undef, active_num)
+        tData[] = Vector{Vector{Float64}}(undef, active_num)
 
         # Store potential keys temporarily before checking type and intersection
         potential_keys_per_method = Vector{Set{String}}(undef, active_num) 
-        
+        first_run = true
 
         for i = 1:active_num
             method = active_methods_now[i]
@@ -119,7 +123,7 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
             if !isempty(sim_data.stats) && isa(sim_data.stats, Dict)
                 for (key, value) in sim_data.stats
                     # *** Check if the value is a Vector of Real numbers ***
-                    if isa(value, AbstractVector) && length(value) == length(sim_data.t)
+                    if isa(value, AbstractVector) && length(value) == length(sim_data.t) || isa(value, AbstractMatrix) && size(value, 1) == length(sim_data.t)
                         push!(plottable_keys_this_method, key)
                     else
                          # Optionally warn if a key exists but is not plottable
@@ -130,7 +134,15 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
             else
                  @warn "Method '$method' produced empty or invalid stats. Skipping stats processing."
             end
-            #println("hello", plottable_keys_this_method)
+
+            current_comps = length(sim_data.u[1][1,:])
+            if first_run
+                components[] = Tuple(["u_$k" for k = 1:current_comps])
+                first_run = false
+            elseif current_comps != length(components[])
+                @warn "Inconsistent components amount detected!"
+            end
+
             potential_keys_per_method[i] = plottable_keys_this_method
         end # End loop over methods
 
@@ -145,13 +157,13 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
         # --- Update Stat Selection UI ---
         sorted_keys = sort(collect(common_plottable_keys))
 
-        y_options[] = sorted_keys # Update the observable list of keys
+        create_or_update_selection_menu!(menu_container, menu_handle, sorted_keys, selected_key_obs)
 
         println("Data update complete.")
     end # End of lift block 1
 
-    lift(selector, update_notifier) do sel, _ 
-        yData[] = extractStats(statsData[], sel)
+    lift(selected_key_obs, comp_sel, statsData) do sel, c_sel, data
+        yData[] = extractData(data, sel, c_sel)
         return nothing
     end
 

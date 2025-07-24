@@ -405,7 +405,7 @@ function createBaseControlsFigure(
    current_row += 1
    
    # These are the key observables that form the "interface"
-   components = Observable{Tuple}(("Component 1",))
+   components = Observable{Tuple}(("u_1",))
    comp_options = lift(components) do comps; ([(name,ind) for (ind,name) = enumerate(comps)]) end # Holds the list of strings for the menu
    sel_comp = Observable{Int}(1) # Holds the final selected value
    
@@ -417,6 +417,18 @@ function createBaseControlsFigure(
    # --- REACTIVE LINK: Rebuild the menu whenever the options list changes ---
    # This `on` block is the core of the generalization. It lives here and handles all
    # the UI logic for updating the menu.
+   on(ui_update) do _
+        if ui_options_obs["comp_names"][] != ("default",) 
+            if length(ui_options_obs["comp_names"][]) == length(components[])
+                components[] = ui_options_obs["comp_names"][]
+            else
+                println(ui_options_obs["comp_names"][], components[])
+                @warn "Could not match components to the given names because of length mismatch!"
+            end
+        else
+            components[] = Tuple(["u_$k" for k = eachindex(components[])])
+        end
+    end
    on(comp_options) do _
        println("Updating selection menu with new options...")
        create_or_update_selection_menu!(
@@ -1883,7 +1895,7 @@ function extractData(
     return (component_data, times)
 end
 
-# Base Case 2: Operates on a raw Dict for time-independent data.
+# Base Case 2: Operates on a raw Dict for functions that do not need the Tuple
 function extractData(
     run_data::Dict,
     selected_key::String,
@@ -1892,13 +1904,14 @@ function extractData(
     stat_val = get(run_data, selected_key, missing)
     
     if ismissing(stat_val)
-        return (missing, Float64[]) 
+        println(selected_key)
+        return missing 
     end
     
     component_data = _extract_component(stat_val, selected_comp)
     
     # Return a tuple with an empty time vector for type consistency.
-    return (component_data, Float64[])
+    return component_data#(component_data, Float64[])
 end
 
 

@@ -169,19 +169,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         return nothing
 
     end
-    lift(ui_update) do _
-        if ui_options_obs["comp_names"][] != ("default",) 
-            if length(ui_options_obs["comp_names"][]) == length(components[])
-                components[] = ui_options_obs["comp_names"][]
-            else
-                println(ui_options_obs["comp_names"][], components[])
-                @warn "Could not match components to the given names because of length mismatch!"
-            end
-        else
-            components[] = Tuple(["Component $k" for k = eachindex(components[])])
-        end
-        return nothing
-    end
+
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
     lift(uData_extr, tSlider.value, ui_update) do u_data, t, _
 
