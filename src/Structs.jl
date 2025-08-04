@@ -21,13 +21,22 @@ struct SimulationConfig
     #ui_options::ParamDictType
 
     function SimulationConfig(sim_function::Function, shared_params::ParamDictType, methods_dict::MethodDictType, default_methods::Union{Vector{String}, String})
-        methods = isa(default_methods, String) ? (default_methods == "all" ? collect(keys(methods_dict)) : [default_methods]) : copy(default_methods)
+        all_methods = collect(keys(methods_dict))
+        methods = isa(default_methods, String) ? (default_methods == "all" ? all_methods : [default_methods]) : copy(default_methods)
         for key = methods
             if !haskey(methods_dict, key)
                 @warn "Default method $key is not contained in the given dictionary! Initializing empty!"
                 deleteat!(methods, findall(i -> i == key, methods))
             end
         end
+        # ind_ref = findfirst(s -> contains(lowercase(s), "reference"), all_methods)
+        # if !isnothing(ind_ref)
+        #     ref_string = all_methods[ind_ref]
+        #     if ref_string in default_methods
+        #         deleteat!(default_methods, findfirst(s -> s == ref_string))
+        #     end
+        #     pushfirst!(ref_string, default_methods)
+        # end
         new(sim_function, methods_dict, methods, shared_params::ParamDictType)
     end
 end
