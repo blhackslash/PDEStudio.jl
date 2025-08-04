@@ -4,13 +4,17 @@ export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConverge
        calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,
-       AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames
+       AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames,
+       calculateAllStats!
 
 include("Structs.jl")
 using .Structs
 
 include("Utils.jl")
 using .Utils
+
+include("StatCalculation.jl")
+using .StatCalculation
 
 include("MakiePlotting.jl")
 using .MakiePlotting

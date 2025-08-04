@@ -7,7 +7,7 @@ and an option to save the animation as a GIF (which may close the window).
 Saves corresponding parameters to a CSV file.
 Uses closest data point logic for animation frames.
 """
-function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :default)
+function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, reference_function::Union{Function,Nothing} = nothing, ui_options::UIType = :default)
 
     # --- Basic Setup & UI ---
     base_ui_dict = createUIDict(ui_options)
@@ -22,9 +22,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
 
     # Method selection observable (no change)
     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
-    #methods_obs = Observable(isempty(all_method_names) ? String[] : [default_method])
-    method_number = lift(length, methods_obs)
-
 
     # --- Call the NEW createControls function ---
     control_fig, update_notifier, ui_update, components, comp_sel = createBaseControlsFigure(
@@ -102,37 +99,25 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
         xData_tmp = Vector{Tuple{datatype, Vector{Float64}}}(undef, active_num)
         uData_tmp = Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, active_num)
         active_methods_now = methods_obs[]
+
+        # --- STEP 1: Assemble the list of simulation tasks ---
+        tasks = assemble_simulation_tasks(
+            shared_params_obs, method_params_collection_obs, active_methods_now
+        )
+
+        # --- STEP 2: Ensure SimData exists for all tasks ---
+        ensure_sim_data_exists!(tasks, sim_config)
+
+        # --- STEP 3 (Optional): Calculate all statistics ---
+        if calc_stats
+            calculateAllStats!(sim_config; ref_func_cont = reference_function)
+        end
+
         first_run = true
 
-        for i = 1:active_num
-            method = active_methods_now[i]
-            # Assemble params for this method run
-            # --- Assemble Parameters using Helper ---
-            params = assembleParams(
-                shared_params_obs,          # Pass the observable dict
-                method_params_collection_obs, # Pass the nested observable dict
-                method
-            )
-            # ------------------------------------
-
-            # --- Load or Compute Data ---
-            local sim_data::Union{AbstractSimData, Nothing} = nothing
-            try
-                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
-                if !Utils.doesSimDataExist(params)
-                     println(" Running simulation for method: $method")
-                     sim_data = sim_config.sim_function(params)
-                     Utils.saveSimData(sim_data;overwrite = true) # Assumes saveSimData exists
-                else
-                     println(" Loading data for method: $method")
-                     sim_data = Utils.loadSimData(params)
-                end
-            catch e
-                 @warn "Simulation/Load failed for method '$method'" exception=(e, catch_backtrace())
-                 sim_data = nothing
-            end
-            # --------------------------
-
+        for (i, method) in enumerate(active_methods_now)
+            params = tasks[i] # Get the correct parameter dict
+            sim_data = Utils.loadSimData(params)
 
             xData_tmp[i] = (sim_data.x, sim_data.t)
             uData_tmp[i] = (Dict("u" => sim_data.u), sim_data.t)
@@ -143,16 +128,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
             elseif current_comps != length(components[])
                 @warn "Inconsistent components amount detected!"
             end
-            # if isa(sim_data.u[1], AbstractVector)
-            #     key = "u"
-            #     y_options[] = [key]
-            #     uData_tmp[i] = (Dict(key => sim_data.u), sim_data.t)
-            # elseif isa(sim_data.u[1], AbstractMatrix)
-            #     y_options[] = ["u_$j" for j = 1:length(sim_data.u[1][1,:])]
-            #     uData_tmp[i] = (Dict("u_$j" => [sim_data.u[k][:,j] for k = eachindex(sim_data.u)] for j = 1:length(sim_data.u[1][1,:])), sim_data.t)
-            # end
-
-            
             # -----------------------------
         end # End loop over methods
         
@@ -292,6 +267,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; ui_options::UIType = :d
     # --- Display Figures ---
     try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
     try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
-
-    return control_fig, plot_fig
+    return nothing
+    # return control_fig, plot_fig
 end

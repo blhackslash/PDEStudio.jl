@@ -1841,6 +1841,122 @@ function extractStats(
     return filter(!ismissing, extracted)
 end
 
+# --- Method 1: For single-run plots (like showDynamicDependence) ---
+"""
+    assemble_simulation_tasks(...) -> Tuple{Vector{ParamDictType}, Vector{String}}
+
+Assembles a flat list of parameter dictionaries for a single run of each active method.
+Returns the list of tasks and a corresponding list of method names.
+"""
+function assemble_simulation_tasks(
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    active_methods::Vector{String}
+)
+    tasks = ParamDictType[]
+    for method_name in active_methods
+        push!(tasks, assembleParams(shared_params_obs, method_params_collection_obs, method_name))
+    end
+    return tasks
+end
+
+# --- Method 2: For convergence plots (iterating over a parameter) ---
+"""
+    assemble_simulation_tasks(...) -> Matrix{ParamDictType}
+
+Assembles a matrix of parameter dictionaries for convergence studies.
+The rows of the matrix correspond to the `active_methods`, and the columns
+correspond to the `param_values`. This structure allows for clean, nested
+iteration in subsequent processing steps.
+"""
+function assemble_simulation_tasks(
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    active_methods::Vector{String},
+    key_varied::String,
+    param_values::AbstractVector;
+    force_int_param::Bool = false
+)
+    num_methods = length(active_methods)
+    num_p_values = length(param_values)
+
+    # Pre-allocate a Matrix to hold the parameter dictionaries.
+    tasks = Matrix{ParamDictType}(undef, num_methods, num_p_values)
+
+    # Iterate through methods (rows)
+    for (i, method_name) in enumerate(active_methods)
+        base_params = assembleParams(shared_params_obs, method_params_collection_obs, method_name)
+        
+        # Iterate through parameter values (columns)
+        for (j, p_val) in enumerate(param_values)
+            params_for_this_run = copy(base_params)
+            params_for_this_run[key_varied] = force_int_param ? trunc(Int64, p_val) : p_val
+            
+            # Assign the parameter dictionary to its correct (method, param) position in the matrix.
+            tasks[i, j] = params_for_this_run
+        end
+    end
+    
+    return tasks
+end
+
+
+#======================================================================#
+#              2. ENSURE SIMULATION DATA EXISTS
+#======================================================================#
+
+"""
+    ensure_sim_data_exists!(tasks::Vector{ParamDictType}, sim_config; force_overwrite=false)
+
+Iterates through a list of simulation tasks. For each task, it checks if the
+corresponding data file exists. If not (or if `force_overwrite` is true), it
+runs the simulation in parallel.
+"""
+function ensure_sim_data_exists!(
+    tasks::Vector{ParamDictType},
+    sim_config::SimulationConfig;
+    force_overwrite::Bool = false
+)
+    num_tasks = length(tasks)
+    if num_tasks == 0; return; end
+    
+    @debug "Checking for existing data for $num_tasks simulations..."
+    p = Progress(num_tasks, "Running simulations...")
+    counter = Threads.Atomic{Int}(0)
+
+    Threads.@threads for params_for_this_run in tasks
+        try
+            if !doesSimDataExist(params_for_this_run) || force_overwrite
+                sim_data = sim_config.sim_function(params_for_this_run)
+                if !isnothing(sim_data)
+                    saveSimData(sim_data; overwrite = force_overwrite)
+                end
+            end
+        catch e
+            @error "A simulation failed to run or save." exception=(e, catch_backtrace())
+        end
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
+    end
+    @debug "\nSimulation check complete."
+end
+
+
+#======================================================================#
+#              3. CALCULATE ALL STATS (GENERALIZED)
+#======================================================================#
+
+"""Finds the first parameter dictionary corresponding to a 'reference' method."""
+function find_reference_params(tasks::Vector{ParamDictType}, task_method_names::Vector{String})
+    ref_idx = findfirst(name -> contains(lowercase(name), "reference"), task_method_names)
+    if isnothing(ref_idx)
+        @warn "No method with 'reference' in its name found. Using the first task as reference for stats calculation."
+        return isempty(tasks) ? nothing : tasks[1]
+    end
+    return tasks[ref_idx]
+end
+
+
 
 #======================================================================#
 #              GENERALIZED `extractData` FUNCTION SUITE

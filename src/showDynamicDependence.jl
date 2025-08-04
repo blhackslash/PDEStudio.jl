@@ -15,7 +15,7 @@ statistics across methods.
   `AbstractSimData` object with non-empty `t::Vector{Float64}` and 
   `stats::Dict{String, Any}` fields.
 """
-function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType = :default)
+function showDynamicDependence(sim_config::SimulationConfig; reference_function::Union{Function,Nothing} = nothing, calc_stats = true, ui_options::UIType = :default)
     # --- Standard Setup ---
     base_ui_dict = createUIDict(ui_options)
     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
@@ -74,38 +74,26 @@ function showDynamicDependence(sim_config::SimulationConfig; ui_options::UIType 
         statsData[] = Vector{Observable{Dict{String, Any}}}(undef, active_num)
         tData[] = Vector{Vector{Float64}}(undef, active_num)
 
+        # --- STEP 1: Assemble the list of simulation tasks ---
+        tasks = assemble_simulation_tasks(
+            shared_params_obs, method_params_collection_obs, active_methods_now
+        )
+
+        # --- STEP 2: Ensure SimData exists for all tasks ---
+        ensure_sim_data_exists!(tasks, sim_config)
+
+        # --- STEP 3 (Optional): Calculate all statistics ---
+        if calc_stats
+            calculateAllStats!(sim_config; ref_func_cont = reference_function)
+        end
+
         # Store potential keys temporarily before checking type and intersection
         potential_keys_per_method = Vector{Set{String}}(undef, active_num) 
-        first_run = true
+        first_run = true    
 
-        for i = 1:active_num
-            method = active_methods_now[i]
-            # Assemble params for this method run
-            # --- Assemble Parameters using Helper ---
-            params = assembleParams(
-                shared_params_obs,          # Pass the observable dict
-                method_params_collection_obs, # Pass the nested observable dict
-                method
-            )
-            # ------------------------------------
-
-            # --- Load or Compute Data ---
-            local sim_data::Union{AbstractSimData, Nothing} = nothing
-            try
-                # Assumes existence of Utils.doesSimDataExist and Utils.loadSimData
-                if !Utils.doesSimDataExist(params)
-                     println(" Running simulation for method: $method")
-                     sim_data = sim_config.sim_function(params)
-                     Utils.saveSimData(sim_data) # Assumes saveSimData exists
-                else
-                     println(" Loading data for method: $method")
-                     sim_data = Utils.loadSimData(params)
-                end
-            catch e
-                 @warn "Simulation/Load failed for method '$method'" exception=(e, catch_backtrace())
-                 sim_data = nothing
-            end
-            # --------------------------
+        for (i, method) in enumerate(active_methods_now)
+            params = tasks[i] # Get the correct parameter dict
+            sim_data = Utils.loadSimData(params)
 
             # --- Store Data & Update Limits ---
             if isnothing(sim_data) || !isa(sim_data, SimData1D)

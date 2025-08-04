@@ -16,6 +16,8 @@ function showConvergencePlot(
     param_values::Union{AbstractVector, AbstractRange};
     x_stat_key::Union{String, Nothing} = nothing,
     y_stat_key::Union{String, Nothing} = nothing,
+    calc_stats = true,
+    reference_function::Union{Function,Nothing} = nothing,
     force_int_param::Bool = false,
     initial_calc::Bool = true,
     ui_options::UIType = :default
@@ -66,7 +68,6 @@ function showConvergencePlot(
         end 
     end
     Label(control_fig[end-1,:], tLabel_text)
-    # ... (Your log toggle setup) ...
 
     # --- DATA STORAGE (using the tuple structure) ---
     raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}())
@@ -80,51 +81,55 @@ function showConvergencePlot(
         num_params = length(x_vals)
         sets_of_plottable_keys = [Set{String}() for _ in 1:active_num]
         temp_raw_data = [Vector{Tuple{Dict{String, Any}, Vector{<:Real}}}(undef, num_params) for _ in 1:active_num]
+        
+        # 1. Assemble tasks. This now returns a Matrix.
+        tasks_matrix = assemble_simulation_tasks(
+            shared_params_obs,
+            method_params_collection_obs,
+            methods_obs[],
+            key,
+            param_values;
+            force_int_param = force_int_param
+        )
+
+        # --- STEP 2: Ensure SimData exists for all tasks ---
+        for i = eachindex(tasks_matrix[:,1]); ensure_sim_data_exists!(tasks_matrix[i,:], sim_config) end
+
+        # --- STEP 3 (Optional): Calculate all statistics ---
+        if calc_stats
+            calculateAllStats!(sim_config, key, param_values; force_int_param = force_int_param, ref_func_cont = reference_function)
+        end
+
+        num_methods, num_params = size(tasks_matrix)
         first_run = true
-        for i in 1:active_num
-            method = methods_obs[][i]
-            base_params = assembleParams(shared_params_obs, method_params_collection_obs, method)
+
+        for i in 1:num_methods    
             is_first_run_for_method = true
             for j in 1:num_params
-                current_params = copy(base_params)
-                current_params[key] = x_vals[j]
-                
-                stats_dict_for_run = Dict{String,Any}()
-                try
-                    if !doesSimDataExist(current_params)
-                        sim_data = sim_config.sim_function(current_params)
-                        saveSimData(sim_data)
-                    else
-                        sim_data = Utils.loadSimData(current_params)
-                    end
-                    if !isnothing(sim_data) && hasproperty(sim_data, :stats)
-                        stats_dict_for_run = sim_data.stats
-                    end
-                    time_vec_for_run = sim_data.t
-                    stats_dict_for_run[key] = x_vals[j]
-                    temp_raw_data[i][j] = (stats_dict_for_run, time_vec_for_run)
+                sim_data = loadSimData(tasks_matrix[i,j])
 
-                    
-                    # Update components
-                    current_comps = length(sim_data.u[1][1,:])
-                    if first_run
-                        components[] = Tuple(["u_$k" for k = 1:current_comps])
-                        first_run = false
-                    elseif current_comps != length(components[])
-                        @warn "Inconsistent components amount detected!"
-                    end
-                catch e
-                    @warn "Could not load data for method '$method' with '$key'=$(current_params[key])"
+                # save results
+                time_vec_for_run = sim_data.t
+                sim_data.stats[key] = x_vals[j]
+                temp_raw_data[i][j] = (sim_data.stats, time_vec_for_run)
+
+                
+                # Update components
+                current_comps = length(sim_data.u[1][1,:])
+                if first_run
+                    components[] = Tuple(["u_$k" for k = 1:current_comps])
+                    first_run = false
+                elseif current_comps != length(components[])
+                    @warn "Inconsistent components amount detected!"
                 end
-                current_run_plottable_keys = Set(keys(filter(p -> isa(p.second, Union{Number, AbstractVector, AbstractMatrix}), stats_dict_for_run)))
+
+                current_run_plottable_keys = Set(keys(filter(p -> isa(p.second, Union{Number, AbstractVector, AbstractMatrix}), sim_data.stats)))
                 if is_first_run_for_method
                     sets_of_plottable_keys[i] = current_run_plottable_keys
                     is_first_run_for_method = false
                 else
                     intersect!(sets_of_plottable_keys[i], current_run_plottable_keys)
                 end
-                if current_run_plottable_keys == Set(["N"]); println(method,i) end
-                
             end
         end
         raw_data_store[] = temp_raw_data
