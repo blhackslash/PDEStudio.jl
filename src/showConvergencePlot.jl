@@ -16,7 +16,7 @@ function showConvergencePlot(
     param_values::Union{AbstractVector, AbstractRange};
     x_stat_key::Union{String, Nothing} = nothing,
     y_stat_key::Union{String, Nothing} = nothing,
-    calc_stats = true,
+    calc_stats = false,
     reference_function::Union{Function,Nothing} = nothing,
     force_int_param::Bool = false,
     initial_calc::Bool = true,

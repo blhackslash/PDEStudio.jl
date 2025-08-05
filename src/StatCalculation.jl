@@ -5,6 +5,7 @@ using ..Utils
 
 using Dierckx
 using QuadGK
+using ProgressMeter
 
 
 export calculateAllStats!
@@ -231,8 +232,9 @@ function calculateAllStats!(
 
     domain_params = (xmin=sim_data.params["xmin"], xmax=sim_data.params["xmax"])
     @debug "Calculating statistics for $(sim_data.params)..."
-
-    for m in 1:num_timesteps
+    p = Progress(num_timesteps, "Calculating Stats...")
+    counter = Threads.Atomic{Int}(0)
+    Threads.@threads for m in 1:num_timesteps
         t = sim_data.t[m]
         x_coords = sim_data.x[m]
         discontinuity_points = discontinuity_points_func(t)
@@ -241,16 +243,17 @@ function calculateAllStats!(
             for i_comp in 1:num_components
                 analytical_func_component = x -> ref_func(x, t)[i_comp]
                 u_numerical_component = @view sim_data.u[m][:, i_comp]
-                _calculate_stats_at_timestep(u_numerical_component, analytical_func_component, x_coords, domain_params, discontinuity_points; dierckx_k=dierckx_k, quad_tol=quad_tol)
-                for key in stats_list; sim_datstats_tmp = _calculate_stats_at_timestepa.stats[key][m, i_comp] = get(stats_tmp, key, NaN); end
+                stats_tmp = _calculate_stats_at_timestep(u_numerical_component, analytical_func_component, x_coords, domain_params, discontinuity_points; dierckx_k=dierckx_k, quad_tol=quad_tol)
+                for key in stats_list; sim_data.stats[key][m,i_comp] = get(stats_tmp, key, NaN); end
             end
         else # Scalar case
             analytical_func_scalar = x -> ref_func(x, t)
             stats_tmp = _calculate_stats_at_timestep(sim_data.u[m], analytical_func_scalar, x_coords, domain_params, discontinuity_points; dierckx_k=dierckx_k, quad_tol=quad_tol)
             for key in stats_list; sim_data.stats[key][m] = get(stats_tmp, key, NaN); end
         end
-    end
-    
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
+    end  
     # Placeholder for derived stats, which would only apply to systems
     if is_system
         @debug "No mixed stats implemented yet!"
@@ -263,6 +266,7 @@ function calculateAllStats!(
             @warn "Error while running the custom stats-Function! Check the input structure." exception=(e, catch_backtrace())
         end
     end
+    saveSimData(sim_data; overwrite = true)
 end
 
 """
@@ -290,7 +294,7 @@ function calculateAllStats!(
     domain_params = (xmin=xmin, xmax=xmax)
 
     @debug "Calculating statistics (no reference) for $(sim_data.params)"
-    for (m, t) in enumerate(sim_data.t)
+    for m in 1:length(sim_data.t)
         stats_tmp = _calculate_stats_at_timestep_no_ref(sim_data.u[m], sim_data.x[m], domain_params, discontinuity_points; dierckx_k=dierckx_k)
         for key in stats_list; push!(sim_data.stats[key], get(stats_tmp, key, NaN)); end
     end
@@ -301,38 +305,32 @@ function calculateAllStats!(
             @warn "Error while running the custom stats-Function! Check the input structure." exception=(e, catch_backtrace())
         end
     end
+    saveSimData(sim_data; overwrite = true)
 end
 
-"""
-    calculateAllStats!(sim_data, ref_sim_data::AbstractSimData; ...)
-
-Convenience function that takes a loaded reference SimData object and creates a continuous reference function.
-"""
-function calculateAllStats!(sim_data::AbstractSimData, ref_sim_data::AbstractSimData; discontinuity_points = Float64[], kwargs...)
+function createReferenceFunction(ref_sim_data::AbstractSimData; discontinuity_points_func::Function = t -> Float64[])
     is_ref_system = ref_sim_data.u[1] isa AbstractMatrix
     num_ref_components = is_ref_system ? size(ref_sim_data.u[1], 2) : 1
-
     ref_func_splines = []
-    for m in 1:length(ref_sim_data.t)
-        breakpoints = [ref_sim_data.x[m][1]; discontinuity_points; ref_sim_data.x[m][end]]
+    for (m,t) in enumerate(ref_sim_data.t)
+        breakpoints = [ref_sim_data.x[m][1]; discontinuity_points_func(t); ref_sim_data.x[m][end]]
         if is_ref_system
-            comp_splines = [_create_piecewise_spline_function(@view(ref_sim_data.x[m]), @view(ref_sim_data.u[m][:, i]), breakpoints, 1) for i in 1:num_ref_components]
+            comp_splines = [_create_piecewise_spline_function(ref_sim_data.x[m], ref_sim_data.u[m][:, i], breakpoints, 1) for i in 1:num_ref_components]
             push!(ref_func_splines, comp_splines)
         else
             push!(ref_func_splines, _create_piecewise_spline_function(ref_sim_data.x[m], ref_sim_data.u[m], breakpoints, 1))
         end
     end
 
-    function ref_func(x, t, comp=nothing)
+    function ref_func(x, t)
         _, t_idx = findmin(abs.(ref_sim_data.t .- t))
         if is_ref_system
-            return ref_func_splines[t_idx][comp](x)
+            return Tuple([ref_func_splines[t_idx][comp](x) for comp = 1:length(ref_func_splines[t_idx])])
         else
             return ref_func_splines[t_idx](x)
         end
     end
-
-    calculateAllStats!(sim_data, ref_func; discontinuity_points_func=discontinuity_points_func, kwargs...)
+    return ref_func
 end
 
 """
@@ -355,7 +353,7 @@ end
 
 High-level convenience function that takes a SimulationConfig and orchestrates stats calculation.
 """
-function calculateAllStats!(sim_config::SimulationConfig; ref_func_cont::Union{Function, Nothing}=nothing, kwargs...)
+function calculateAllStats!(sim_config::SimulationConfig; ref_func_cont::Union{Function, Nothing}=nothing, discontinuity_points_func::Union{Function, Nothing} = t -> Float64[], kwargs...)
     all_methods = collect(keys(sim_config.methods_dict))
     ref_method_idx = findfirst(s -> contains(lowercase(s), "reference"), all_methods)
     
@@ -367,7 +365,7 @@ function calculateAllStats!(sim_config::SimulationConfig; ref_func_cont::Union{F
         ref_method_name = all_methods[ref_method_idx]
         @info "Using numerical reference solution '$ref_method_name'."
         ref_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, ref_method_name)
-        reference = loadSimData(ref_params)
+        reference = createReferenceFunction(loadSimData(ref_params); discontinuity_points_func = discontinuity_points_func)
     else
         reference = nothing
         @warn "Neither an analytic solution nor a numerical reference method found in SimulationConfig. Skipping calculation!"

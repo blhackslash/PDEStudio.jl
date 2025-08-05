@@ -15,7 +15,7 @@ statistics across methods.
   `AbstractSimData` object with non-empty `t::Vector{Float64}` and 
   `stats::Dict{String, Any}` fields.
 """
-function showDynamicDependence(sim_config::SimulationConfig; reference_function::Union{Function,Nothing} = nothing, calc_stats = true, ui_options::UIType = :default)
+function showDynamicDependence(sim_config::SimulationConfig; reference_function::Union{Function,Nothing} = nothing, calc_stats = false, ui_options::UIType = :default)
     # --- Standard Setup ---
     base_ui_dict = createUIDict(ui_options)
     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
@@ -80,7 +80,7 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
         )
 
         # --- STEP 2: Ensure SimData exists for all tasks ---
-        ensure_sim_data_exists!(tasks, sim_config)
+        ensure_sim_data_exists!(tasks, sim_config; force_overwrite = true)
 
         # --- STEP 3 (Optional): Calculate all statistics ---
         if calc_stats
