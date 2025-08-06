@@ -8,11 +8,12 @@ using JLD2, FileIO
 using Base.Threads
 using GLMakie
 using ProgressMeter 
-using Random
+using LibGit2
+using Pkg
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
-       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, calculateConvergenceData,
-       assembleParams, allMethodNames
+       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, 
+       assembleParams, allMethodNames, create_sim_config_from_csv
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -116,6 +117,7 @@ Saves the given simulation mesh in the folder given by save_data with the hash a
 CAUTION: Enabling overwrite will overwrite an existing file with the given simulation mesh!
 """
 function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
+
     hash = calculateHash(sim_data.params)
     save_data = get_save_path() * "/data/"
     file_name = save_data * hash *".jld2"
@@ -150,6 +152,7 @@ Returns the filename of the simulation data corresponding to the given params di
 Throws SimFileNotFoundError if no matching file is found.
 """
 function getFileName(params::ParamDictType)
+    
     local file_name # Ensure file_name is scoped correctly
     hash_val = calculateHash(params) # Renamed from 'hash' to avoid conflict
     save_data = get_save_path() * "/data/"
@@ -169,6 +172,8 @@ function getFileName(params::ParamDictType)
         if isfile(file)
             try # Add inner try-catch for loading/comparison errors
                 sim_data_saved = load(file)["sim_data"]
+                println(params)
+                println("2",sim_data_saved.params)
                 if (params == sim_data_saved.params)
                     @info "Found matching file: ", file # Debug print
                     return file # Return the full path
@@ -530,93 +535,296 @@ function assembleParams(
 
     return current_params
 end
-"""
-    calculateConvergenceData(sim_config::SimulationConfig,
-                             key_varied::String,
-                             param_values_for_key::Union{AbstractVector, AbstractRange};
-                             force_int_param::Bool = false)
-
-Runs simulations for each method in `sim_config` across each value in
-`param_values_for_key` (for the `key_varied`) IN PARALLEL.
-Returns a dictionary of results.
-"""
-function calculateConvergenceData(
-    sim_config::SimulationConfig,
-    key_varied::String,
-    param_values_for_key::Union{AbstractVector, AbstractRange};
-    force_int_param::Bool = false,
-    calculate_all::Bool = false,
-    force_overwrite::Bool = false
-)
-    # --- Task Preparation (as before) ---
-    all_method_labels = calculate_all ? collect(keys(sim_config.methods_dict)) : sim_config.default_methods
-    num_tasks = length(all_method_labels) * length(param_values_for_key)
-    if num_tasks == 0; @info "No simulations to run."; return; end
-
-    tasks_params_list = Vector{ParamDictType}(undef, num_tasks)
-    task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks)
-    
-    task_idx = 0
-    for method_label in all_method_labels
-        current_method_base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method_label)
-        for (j, p_val) in enumerate(param_values_for_key)
-            task_idx += 1
-            params_for_this_run = copy(current_method_base_params)
-            params_for_this_run[key_varied] = force_int_param ? trunc(Int64, p_val) : p_val
-            tasks_params_list[task_idx] = params_for_this_run
-            task_identifiers[task_idx] = (method_label, j)
-        end
-    end
-
-    @info "Starting parallel calculation of $(num_tasks) convergence simulations..."
-
-    # --- NEW: Progress Bar Setup ---
-    # 1. Create a Progress meter object.
-    p = Progress(num_tasks, "Calculating..."; 
-        barglyphs=BarGlyphs('|','█', ['▁' ,'▂' ,'▃' ,'▄' ,'▅' ,'▆', '▇'],' ','|',),
-        showspeed=true)
-    # 2. Create a thread-safe counter.
-    counter = Threads.Atomic{Int}(0)
-    # -----------------------------
-
-    loop_indices = randperm(num_tasks)
-    # --- Parallel Execution ---
-    Threads.@threads for i in loop_indices
-        try
-            params_for_this_run = tasks_params_list[i]
-            method_label_this_run, p_val_idx = task_identifiers[i]
-            p_val_actual = param_values_for_key[p_val_idx]
-
-            # Optional: You may want to remove or comment out the println statements
-            # below, as they can interfere with the visual appearance of the progress bar.
-            # @info "Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
-
-            if !doesSimDataExist(params_for_this_run) || force_overwrite
-                sim_data = sim_config.sim_function(params_for_this_run)
-                if !isnothing(sim_data)
-                    saveSimData(sim_data; overwrite = force_overwrite)
-                else
-                    @warn "Simulation returned `nothing` for $method_label_this_run, $key_varied = $p_val_actual"
-                end
-            else
-                # @info "Skipped calculation because existing data was found."
-            end
-        catch e
-            @error "Error in thread $(Threads.threadid())" exception=(e, catch_backtrace())
-        end
-
-        # --- NEW: Update Progress ---
-        # 3. Atomically increment the counter and update the progress bar.
-        Threads.atomic_add!(counter, 1)
-        ProgressMeter.update!(p, counter[])
-        # ----------------------------
-    end
-
-    @info "\nConvergence data calculation complete."
-end
 
 
 function allMethodNames(config::SimulationConfig)
     return collect(keys(config.methods_dict))
 end
+
+"""
+    create_sim_config_from_csv(csv_filepath::String, sim_function::Function) -> SimulationConfig
+
+Reads a "tidy" format CSV file and reconstructs a `SimulationConfig` object from it.
+
+# Arguments
+- `csv_filepath::String`: The path to the saved parameters CSV file.
+- `sim_function::Function`: The handle to the simulation function to be used. This
+  cannot be stored in the CSV and must be provided manually.
+
+# Returns
+- A `SimulationConfig` object populated with the data from the CSV.
+"""
+function create_sim_config_from_csv(
+    csv_filepath::String,
+    sim_function::Function
+)
+    # --- 1. Read and Parse the CSV ---
+    if !isfile(csv_filepath)
+        error("CSV file not found at: $csv_filepath")
+    end
+    
+    df = CSV.read(csv_filepath, DataFrame)
+    
+    # Create a new column with correctly typed values
+    df.ParsedValue = [parseValue(string(v)) for v in df.Value]
+
+    # --- 2. Reconstruct Shared Parameters ---
+    shared_params_df = filter(row -> row.Section == "Shared", df)
+    shared_params = Dict{String, Any}(
+        row.Parameter => row.ParsedValue for row in eachrow(shared_params_df)
+    )
+
+    # --- 3. Reconstruct Method-Specific Parameters ---
+    methods_df = filter(row -> row.Section == "Method", df)
+    methods_dict = Dict{String, Dict{String, Any}}()
+    
+    # Group the DataFrame by the "MethodName" column
+    grouped_by_method = groupby(methods_df, :MethodName)
+    
+    for method_group in grouped_by_method
+        method_name = method_group.MethodName[1]
+        method_params = Dict{String, Any}(
+            row.Parameter => row.ParsedValue for row in eachrow(method_group)
+        )
+        methods_dict[method_name] = method_params
+    end
+
+    # --- 4. Determine Default Methods ---
+    # For reproducibility, we assume all methods found in the file were the "active" ones.
+    default_methods = collect(keys(methods_dict))
+
+    # --- 5. Construct and Return the SimulationConfig ---
+    println("Successfully created SimulationConfig from $csv_filepath")
+    return SimulationConfig(
+        shared_params,
+        methods_dict,
+        default_methods,
+        sim_function
+    )
+end
+function load_project_from_git(
+    repo_path::String,
+    commit_hash::String,
+    main_module_path::String,
+    function_to_get_sym::Symbol
+)
+    original_pwd = pwd()
+    tmp_dir = mktempdir()
+    println("Created temporary directory for historical project: $tmp_dir")
+
+    absolute_repo_path = abspath(repo_path)
+    original_repo_parent_dir = dirname(absolute_repo_path)
+    dependency_name = "IPlotPDESols"
+    original_dependency_path = joinpath(dirname(original_repo_parent_dir), dependency_name)
+    
+    tmp_parent_dir = dirname(tmp_dir)
+    temporary_dependency_path = joinpath(tmp_parent_dir, dependency_name)
+
+    try
+        println("Copying local dependency from $original_dependency_path to $temporary_dependency_path")
+        cp(original_dependency_path, temporary_dependency_path, force=true)
+
+        # # --- NEW: Manually add Logging to the IPlotPDESols Project.toml ---
+        # toml_path = joinpath(temporary_dependency_path, "Project.toml")
+        
+        # # Load the Project.toml file
+        # project_dict = Pkg.TOML.parsefile(toml_path)
+        
+        # # Add the Logging dependency with its UUID
+        # if !haskey(project_dict, "deps")
+        #     project_dict["deps"] = Dict{String, Any}()
+        # end
+        # project_dict["deps"]["Logging"] = "56ddb016-857b-54e1-b83d-db4d58db5568"
+        
+        # # Save the modified Project.toml file
+        # open(toml_path, "w") do io
+        #     Pkg.TOML.print(io, project_dict)
+        # end
+        # println("Added 'Logging' to IPlotPDESols's Project.toml.")
+
+        println("Cloning project to temporary directory...")
+        run(`git clone $absolute_repo_path $tmp_dir`)
+        
+        cd(tmp_dir)
+        run(`git checkout $commit_hash`)
+        
+        # Now Pkg can see the updated IPlotPDESols dependency
+        println("Activating historical project and installing dependencies...")
+        Pkg.activate(".")
+        Pkg.resolve()
+        Pkg.instantiate()
+        
+        absolute_main_module_path = joinpath(tmp_dir, main_module_path)
+        
+        println("Loading historical main module from: $absolute_main_module_path")
+        include(absolute_main_module_path)
+        
+        main_module_name = Symbol(splitext(basename(main_module_path))[1])
+        
+        if isdefined(Main, main_module_name)
+            main_module = getfield(Main, main_module_name)
+            if isdefined(main_module, function_to_get_sym)
+                println("Successfully loaded and sandboxed project from commit $(first(commit_hash, 7))")
+                return getfield(main_module, function_to_get_sym)
+            else
+                @error "Function '$function_to_get_sym' not found in historical project's main module."
+                return nothing
+            end
+        else
+            @error "Main module '$main_module_name' not found after including the project file."
+            return nothing
+        end
+        
+    catch e
+        @error "Failed to load project from Git history." exception=(e, catch_backtrace())
+        return nothing
+    finally
+        cd(original_pwd)
+        Pkg.activate(".")
+        rm(tmp_dir, recursive=true, force=true)
+        rm(temporary_dependency_path, recursive=true, force=true)
+        println("Cleaned up temporary directory.")
+    end
+end
+
+
+"""
+    _load_function_from_string(content::String, function_name_sym::Symbol) -> Function
+
+Safely loads Julia code from a string into an isolated, anonymous module
+and returns a handle to the specified function.
+"""
+function _load_function_from_string(content::String, function_name_sym::Symbol)
+    # Create a sandboxed module to load the code into, preventing conflicts.
+    sandbox_module = Module()
+    # Evaluate the file's content within the new module's scope.
+    Base.include_string(sandbox_module, content)
+    
+    if isdefined(sandbox_module, function_name_sym)
+        return getfield(sandbox_module, function_name_sym)
+    else
+        @error "Function '$function_name_sym' was not found in the provided code."
+        return nothing
+    end
+end
+
+"""
+    load_function_from_git(repo_path, commit_hash, function_name_sym) -> Function
+
+Retrieves a specific simulation function from Git history. This version uses the
+robust `Commit -> Tree -> Blob` lookup pattern.
+"""
+function load_function_from_git(
+    repo_path::String,
+    commit_hash::String,
+    function_name_sym::Symbol
+)
+    file_in_repo = "SimulationFunctions/$(function_name_sym).jl"
+    try
+        repo = LibGit2.GitRepo(repo_path)
+        commit = LibGit2.GitCommit(repo, commit_hash)
+        
+        # --- THIS IS THE FIX ---
+        # 1. Get the tree object (the root directory) from the commit.
+        tree = LibGit2.peel(LibGit2.GitTree, commit)
+        
+        # 2. Look up the file path within the tree to get the blob (the file content).
+        #    The tree can be indexed like a dictionary.
+        blob = tree[file_in_repo]
+        
+        if isnothing(blob)
+            @error "File '$file_in_repo' not found in commit '$commit_hash'."
+            return nothing
+        end
+        # --- END OF FIX ---
+        
+        file_content = String(LibGit2.content(blob))
+        
+        func = _load_function_from_string(file_content, function_name_sym)
+        if !isnothing(func)
+            println("Successfully loaded function '$function_name_sym' from commit $(first(commit_hash, 7))")
+        end
+        return func
+    catch e
+        @error "Failed to load '$file_in_repo' from Git commit '$commit_hash'." exception=(e, catch_backtrace())
+        return nothing
+    end
+end
+
+
+#======================================================================#
+#              2. MAIN `create_sim_config_from_csv`
+#======================================================================#
+
+"""
+    create_sim_config_from_csv(csv_filepath, time_warp; repo_path) -> SimulationConfig
+
+Reads a "tidy" format CSV and reconstructs a `SimulationConfig` object with
+varying levels of historical accuracy, controlled by the `time_warp` flag.
+"""
+function create_sim_config_from_csv(
+    csv_filepath::String,
+    time_warp::String;
+    repo_path::String = "." # Assumes the script is run from the repo root
+)
+    # --- 1. Read and Parse the CSV ---
+    df = CSV.read(csv_filepath, DataFrame)
+    df.ParsedValue = [parseValue(string(v)) for v in df.Value]
+    context_df = filter(row -> row.Section == "Context", df)
+    shared_params_df = filter(row -> row.Section == "Shared", df)
+    shared_params = Dict{String, Any}(row.Parameter => row.ParsedValue for row in eachrow(shared_params_df))
+    context = Dict(row.Parameter => row.ParsedValue for row in eachrow(context_df))
+
+    # --- 2. Determine and Load the Simulation Function ---
+    sim_func_name_str = get(shared_params, "sim_function", nothing)
+    if isnothing(sim_func_name_str)
+        error("CSV is missing required context key: 'sim_function'.")
+    end
+    sim_func_sym = Symbol(sim_func_name_str)
+    
+    local sim_function::Function
+
+    if time_warp == "none"
+        println("Time Warp: 'none'. Using the currently saved version of the simulation function.")
+        sim_function = load_function_from_disk(repo_path, sim_func_sym)
+
+    elseif time_warp == "partial"
+        println("Time Warp: 'partial'. Loading historical function into current environment...")
+        commit_hash = string(get(context, "git_commit_hash", nothing))
+        if isnothing(commit_hash); error("CSV is missing 'git_commit_hash' for partial time warp."); end
+        sim_function = load_function_from_git(repo_path, commit_hash, sim_func_sym)
+    elseif time_warp == "project" # <-- NEW OPTION
+        println("Time Warp: 'project'. Loading historical project source code...")
+        commit_hash = string(get(context, "git_commit_hash", nothing))
+        # We need to know the path to your main module file to start the process
+        main_module_file = "src/Meshfree4ScalarEq.jl" # You might make this an argument
+        sim_function = load_project_from_git(repo_path, commit_hash, main_module_file, sim_func_sym)
+    elseif time_warp == "full"
+        # ... (Instructions for the user as before) ...
+        error("Full time warp is a manual process. Follow the instructions above.")
+    else
+        error("Invalid `time_warp` option.")
+    end
+
+    if isnothing(sim_function); error("Could not load the simulation function. Cannot proceed."); end
+
+    # --- 3. Reconstruct All Parameter Dictionaries ---
+    methods_df = filter(row -> row.Section == "Method", df)
+    methods_dict = Dict{String, Dict{String, Any}}()
+    if !isempty(methods_df)
+        grouped_by_method = groupby(methods_df, :MethodName)
+        for method_group in grouped_by_method
+            method_name = method_group.MethodName[1]
+            methods_dict[method_name] = Dict{String, Any}(row.Parameter => row.ParsedValue for row in eachrow(method_group))
+        end
+    end
+
+    default_methods = collect(keys(methods_dict))
+
+    # --- 4. Construct and Return the SimulationConfig ---
+    println("Successfully created fully reproducible SimulationConfig from $csv_filepath")
+    return SimulationConfig(sim_function, shared_params, methods_dict, default_methods)
+end
+
+
 end

@@ -80,7 +80,7 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
         )
 
         # --- STEP 2: Ensure SimData exists for all tasks ---
-        ensure_sim_data_exists!(tasks, sim_config; force_overwrite = true)
+        ensure_sim_data_exists!(tasks, sim_config; force_overwrite = false)
 
         # --- STEP 3 (Optional): Calculate all statistics ---
         if calc_stats

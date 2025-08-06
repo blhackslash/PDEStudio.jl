@@ -1,6 +1,7 @@
 using CairoMakie
 using Printf
 using Statistics
+using LibGit2
 
 function updateUI(ui_dict::Dict, ui_input::Dict)
     @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
@@ -16,103 +17,93 @@ end
 # Functions for Makie Controls
 
 
-# Assuming ParamDictType is defined elsewhere, e.g.:
-# const ParamDictType = Dict{String, Any}
-
-function isAtomic(val)
-    return isa(val, Real) || isa(val, String) || isa(val, Bool) || isa(val,Symbol)
-end
+#======================================================================#
+#              2. WIDGET CREATION LOGIC
+#======================================================================#
 
 """
-Determines if a value should be treated as a "simple interactive type" 
-for creating a Makie widget.
-This includes:
-- Real, String, Bool
-- 1D Tuples where ALL elements are Real, String, or Bool.
-Excludes:
-- Vectors, Dicts, other container types.
-- Tuples containing other Tuples, Vectors, Dicts, etc.
-- Custom structs (unless they are Real, String, or Bool themselves).
+    shouldCreateWidget(val)
+
+Determines if a value is of a type that should have an interactive
+widget created for it (i.e., it's an Atomic or an AtomicTuple).
 """
 function shouldCreateWidget(val)
-    if isAtomic(val)
-        return true  # It's a Real, String, or Bool
+    if isa(val, AtomicType)
+        return true
     elseif isa(val, Tuple)
-        if isempty(val)
-            # Decide how to treat empty tuple. For UI, usually non-interactive or special placeholder.
-            # Let's consider it non-interactive for simplicity, as there's no value to edit.
-            return false 
-        end
-        # Check if all elements of the tuple are simple atomic types
-        for element in val
-            if !isAtomic(element)
-                # Found an element that is not Real, String, or Bool (e.g., another Tuple, a Vector)
-                return false 
-            end
-        end
-        return true # All elements are simple atomic types; it's a 1D tuple of simple types
+        # Check if all elements of the tuple are of Atomic type.
+        return all(x -> isa(x, AtomicType), val)
     else
-        # It's an AbstractVector, AbstractDict, custom struct, etc.
-        return false 
+        return false
     end
 end
 
-# --- Helper 1: For Shared Params (each param is its own nested 2-col grid) ---
-function add_param_as_nested_grid!(parent_cell_for_item, key_name::String, param_obs::Observable, 
-                                    is_toggle::Bool, is_fixed_const::Bool, label_fontsize::Int, p_internal_item_colgap::Int)
-    
-    item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false) 
-    colgap!(item_layout, p_internal_item_colgap) 
+
+"""
+    add_param_as_nested_grid!(...)
+
+Creates a UI element (Label, Toggle, or Textbox) for a given parameter
+observable. This version uses the robust `parseValue` function for Textbox validation
+and updates.
+"""
+function add_param_as_nested_grid!(
+    parent_cell_for_item,
+    key_name::String,
+    param_obs::Observable,
+    is_toggle::Bool,
+    is_fixed_const::Bool,
+    label_fontsize::Int,
+    p_internal_item_colgap::Int
+)
+    item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false)
+    colgap!(item_layout, p_internal_item_colgap)
 
     val = param_obs[]
-    is_regular_tuple = isa(val, Tuple)
     
     Label(item_layout[1,1], 
-            (is_fixed_const ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
-            halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
+          (is_fixed_const ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
+          halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
 
     if is_fixed_const
         Label(item_layout[1,2], string(val), halign=:left, fontsize=label_fontsize)
     elseif is_toggle
-        current_bool_val = isa(val, Bool) ? val : false
-        tgl = Toggle(item_layout[1,2], active = current_bool_val)
+        tgl = Toggle(item_layout[1,2], active = isa(val, Bool) ? val : false)
         on(tgl.active) do active_val
             if param_obs[] != active_val; param_obs[] = active_val; end
         end
-    elseif is_regular_tuple
-        validator_type = Tuple #typeof(val)  # More restrictive alternative
-        validator = s -> isa(StringToTuple(s),validator_type)
-        tb = Textbox(item_layout[1,2], placeholder = string(val), 
-                    validator = validator, width = Auto(), reset_on_defocus=true)
-        on(tb.stored_string) do s
-            param_obs[] = StringToTuple(s)
+    else # It's a Textbox for an Atomic or AtomicTuple
+        val_str = string(val)
+        # 1. If the string representation is empty, use a safe, non-empty placeholder.
+        placeholder_str = isempty(strip(val_str)) ? "<empty>" : val_str
+
+        # 2. The validator must understand that "<empty>" should be treated as "".
+        validator = s -> begin
+            input_to_parse = s == "<empty>" ? "" : s
+            parsed = parseValue(input_to_parse)
+            isa(parsed, typeof(val)) || isa(val, String)
         end
-    else # Textbox
-        validator_type = if isa(val, AbstractFloat) Float64
-                            elseif isa(val, Integer) Int
-                            elseif isa(val, String) s -> true # Function for String
-                            else (s -> true) # Fallback
-                            end
-        placeholder_string = isempty(strip(string(val))) ? "empty" : string(val)
-        tb = Textbox(item_layout[1,2], placeholder = placeholder_string, 
-                        validator = validator_type, width = Auto(), reset_on_defocus=true)
+
+        # 3. Create the Textbox with the SAFE placeholder.
+        tb = Textbox(item_layout[1,2],
+                     placeholder = placeholder_str,
+                     validator = validator,
+                     width = Auto(),
+                     reset_on_defocus=true)
+        
+        # 4. The update logic must also handle the special placeholder.
         on(tb.stored_string) do s
-            target_type = typeof(val)
-            try
-                parsed_val = if target_type == String; s
-                                elseif validator_type == Float64 || validator_type == Int; parse(target_type,s)
-                                elseif target_type == Symbol; Symbol(s)
-                                else s end # If generic validator, treat as string or handle based on target_type
-                if !is_fixed_const && param_obs[] != parsed_val; param_obs[] = parsed_val; end
-            catch e
-                current_display_val = is_fixed_const ? param_obs[][2] : param_obs[]
-                tb.stored_string = string(current_display_val) 
+            input_to_parse = (s == "<empty>") ? "" : s
+            parsed_val = parseValue(input_to_parse)
+            println(parsed_val)
+            if param_obs[] != parsed_val
+                param_obs[] = parsed_val
             end
         end
     end
-    colsize!(item_layout, 1, Auto()) 
-    colsize!(item_layout, 2, Auto()) 
+    colsize!(item_layout, 1, Auto())
+    colsize!(item_layout, 2, Auto())
 end
+
 
 # Add this to MakiePlotting.txt
 
@@ -269,7 +260,7 @@ function create_or_update_selection_menu!(
     new_default = if persistent_selection_obs[] in available_options
         persistent_selection_obs[]
     else
-        if isAtomic(available_options[1])
+        if available_options[1] isa AtomicType
             available_options[1]
         else
             available_options[1][2]
@@ -543,13 +534,29 @@ function createTextBoxes(
 
 end # End function createTextBoxes
 
+"""
+    _value_to_string_for_csv(v)
+
+A robust helper to convert a Julia object to a string for CSV saving,
+paying special attention to `Symbol`s to ensure they can be parsed back correctly.
+"""
+function _value_to_string_for_csv(v)
+    # If the value is a Symbol, prepend a colon to its string representation.
+    # This saves `:periodic` as the string `":periodic"`.
+    if isa(v, Symbol)
+        return ":" * string(v)
+    end
+    # For all other types (Tuples, Vectors, Numbers, Strings), the default
+    # `string` representation is usually a valid Julia expression that
+    # `parseValue` can handle.
+    return string(v)
+end
 
 """
-    saveParametersToCSV(base_filename, save_dir, shared_params_obs, method_params_collection_obs, methods_obs, optional_info::Dict)
+    saveParametersToCSV(...)
 
-Gathers current parameter values (shared and active method-specific) and saves
-them to a CSV file named based on `base_filename` inside `save_dir`.
-Includes optional context information. Returns true on success, false on failure.
+Saves all relevant context, simulation parameters, and UI styling options to a
+CSV file using a "tidy" format and robust type serialization.
 """
 function saveParametersToCSV(
     base_filename::String,
@@ -558,96 +565,125 @@ function saveParametersToCSV(
     method_params_collection_obs::Dict{String, Dict{String, Observable}},
     methods_obs::Observable{Vector{String}},
     ui_options_obs::Dict{String, Observable},
-    optional_info::Dict = Dict{String, Any}() # For context like time, animation settings etc.
-    )::Bool # Indicate success/failure
+    optional_info::Dict = Dict{String, Any}()
+)::Bool
+    if isempty(base_filename); @warn "CSV save skipped: filename is empty."; return false; end
 
-    if isempty(base_filename)
-        @warn "CSV save skipped: Base filename is empty."
-        return false
-    end
-
-    # Construct filename, using a suffix for clarity
     csv_filename = joinpath(save_dir, base_filename * "_params.csv")
-    println("Saving parameters to $csv_filename...")
+    println("Saving parameters and UI options to $csv_filename...")
 
     try
-        params_to_save = Pair{String, String}[] # Use String pairs for DataFrame
+        # --- Initialize vectors for each column of the DataFrame ---
+        sections = String[]
+        method_names = Union{String, Missing}[]
+        parameters = String[]
+        values = String[]
 
-        # --- Add Optional Context Info First ---
-        if !isempty(optional_info)
-            push!(params_to_save, "# Context Info" => "====================")
-            # Sort optional keys for consistent output
-            for key in sort(collect(keys(optional_info)))
-                 push!(params_to_save, string(key) => string(optional_info[key]))
-             end
+        # --- Helper function to push a row ---
+        function add_row(section, method, param, value)
+            push!(sections, section)
+            push!(method_names, method)
+            push!(parameters, string(param))
+            # Use the new robust string converter here
+            push!(values, _value_to_string_for_csv(value))
         end
 
-        # --- Add Shared Parameters ---
-        push!(params_to_save, "# Shared Parameters" => "====================")
-        shared_keys = sort(collect(keys(shared_params_obs)))
-        if isempty(shared_keys)
-             push!(params_to_save, "(None)" => "")
-        else
-             for p_key in shared_keys
-                if haskey(shared_params_obs, p_key) # Safety check
-                    p_obs = shared_params_obs[p_key]
-                    push!(params_to_save, string(p_key) => string(p_obs[])) # Store value as string
+        # --- Add Data (Context, Shared, Methods, UI) ---
+        for key in sort(collect(keys(optional_info))); add_row("Context", missing, key, optional_info[key]); end
+        for p_key in sort(collect(keys(shared_params_obs))); add_row("Shared", missing, p_key, shared_params_obs[p_key][]); end
+        for ui_key in sort(collect(keys(ui_options_obs))); add_row("UI", missing, ui_key, ui_options_obs[ui_key][]); end
+        
+        for method_name in sort(methods_obs[])
+            if haskey(method_params_collection_obs, method_name)
+                for p_key in sort(collect(keys(method_params_collection_obs[method_name])))
+                    add_row("Method", method_name, p_key, method_params_collection_obs[method_name][p_key][])
                 end
             end
         end
 
-        # --- Add Active Method-Specific Parameters ---
-        push!(params_to_save, "# Method-Specific Parameters" => "==========================")
-        active_methods = sort(methods_obs[]) # Get current active methods
-        if isempty(active_methods)
-             push!(params_to_save, "(No methods active)" => "")
-        else
-            for method_name in active_methods
-                push!(params_to_save, "# Method: $method_name" => "--------------------") # Sub-header
-                if haskey(method_params_collection_obs, method_name)
-                    method_params_obs = method_params_collection_obs[method_name]
-                    if !isempty(method_params_obs)
-                        method_keys = sort(collect(keys(method_params_obs)))
-                        for p_key in method_keys
-                             if haskey(method_params_obs, p_key) # Safety check
-                                p_obs = method_params_obs[p_key]
-                                push!(params_to_save, string(p_key) => string(p_obs[])) # Store value as string
-                            end
-                        end
-                    else
-                         push!(params_to_save, "(No specific parameters defined)" => "")
-                    end
-                else
-                     push!(params_to_save, "(Parameter definition collection not found)" => "")
-                end
-            end # End loop through active methods
-        end
-        # --------------------------------------
-        # --- NEW: Add UI Options ---
-        push!(params_to_save, "# UI Options" => "====================")
-        ui_keys = sort(collect(keys(ui_options_obs)))
-        if isempty(ui_keys)
-            push!(params_to_save, "(None)" => "")
-        else
-            for ui_key in ui_keys
-                if haskey(ui_options_obs, ui_key)
-                    # Get the value from the observable and convert to string
-                    push!(params_to_save, string(ui_key) => string(ui_options_obs[ui_key][]))
-                end
-            end
-        end
-        # ---------------------------
-        # Convert to DataFrame and write CSV
-        df_to_save = DataFrame(Parameter = first.(params_to_save), Value = last.(params_to_save))
+        # --- Convert to DataFrame and write CSV ---
+        df_to_save = DataFrame(
+            Section = sections,
+            MethodName = method_names,
+            Parameter = parameters,
+            Value = values
+        )
         CSV.write(csv_filename, df_to_save)
-        println("Parameters successfully saved.")
-        return true # Indicate success
+        
+        println("Parameters and UI options successfully saved.")
+        return true
 
     catch e
         @error "Failed to save parameters to CSV ($csv_filename)!" exception=(e, catch_backtrace())
-        return false # Indicate failure
+        return false
     end
 end
+
+# This function can be added to your plotting_helpers.jl or a similar utility file.
+
+
+"""
+    get_git_info(start_path=".") -> Union{Dict{String, Any}, Nothing}
+
+Inspects the Git repository containing the given path and returns key information
+about the current state (HEAD commit). It robustly finds the repository root by
+searching upwards from the `start_path`.
+"""
+function get_git_info(start_path::String = ".")
+    try
+        # --- Robust Repo Discovery Logic ---
+        current_path = abspath(start_path)
+        repo_root_path = nothing
+
+        while true
+            if isdir(joinpath(current_path, ".git"))
+                repo_root_path = current_path
+                break
+            end
+            parent_path = dirname(current_path)
+            if parent_path == current_path; break; end
+            current_path = parent_path
+        end
+
+        if isnothing(repo_root_path)
+            @warn "Could not find a .git repository in or above the path: $(abspath(start_path))"
+            return nothing
+        end
+        
+        repo = LibGit2.GitRepo(repo_root_path)
+        
+        # --- Extract Information ---
+        head_ref = LibGit2.head(repo)
+        commit = LibGit2.peel(LibGit2.GitCommit, head_ref)
+        
+        # --- THIS IS THE FINAL FIX ---
+        # The most robust, idiomatic way to get the hash is to construct a
+        # `GitHash` object from the commit, then convert it to a string.
+        commit_hash = string(LibGit2.GitHash(commit))
+        # --- END OF FIX ---
+
+        commit_summary = LibGit2.summary(commit)
+        
+        commit_count = try
+            parse(Int, readchomp(`git -C $repo_root_path rev-list --count HEAD`))
+        catch
+            -1 # Indicate count could not be determined
+        end
+
+        return Dict{String, Any}(
+            "git_commit_hash" => commit_hash,
+            "git_commit_count" => commit_count,
+            "git_commit_summary" => commit_summary,
+            "julia_version" => string(VERSION)
+        )
+        
+    catch e
+        @warn "Could not retrieve Git information." exception=(e, catch_backtrace())
+        return nothing
+    end
+end
+
+
 
 """
     createSaveFigBox(target_layout, plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
@@ -731,12 +767,18 @@ function createSaveFigBox(
             end
         end # End loop over formats
          # --- Call reusable function to save Parameters ---
-         optional_info = Dict(
+         context_info = Dict{String, Any}(
              "Save Type" => "Static Frame",
              "Timestamp" => string(Dates.now()) # Use Dates.now()
              # Add tSlider value if tSlider variable is accessible here?
              # "Trigger Time (t)" => string(round(tSlider.value[], digits=4))
          )
+             path = Utils.get_save_path()
+
+             git_info = get_git_info(path) # Assumes your script runs from the repo root
+        if !isnothing(git_info)
+            merge!(context_info, git_info)
+        end
          saveParametersToCSV( # Call the new function
              base_name,
              save_figures_path,
@@ -744,7 +786,7 @@ function createSaveFigBox(
              method_params_collection_obs, # Pass it along
              methods_obs,                  # Pass it along
              ui_options_obs,
-             optional_info
+             context_info
          )
          # --------------------------------------------------
         #ui_options_obs["update_limits"][] = original_update_state

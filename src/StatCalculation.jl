@@ -6,9 +6,10 @@ using ..Utils
 using Dierckx
 using QuadGK
 using ProgressMeter
+using Random
 
 
-export calculateAllStats!
+export calculateAllStats!, calculateConvergenceData
 
 """
     _create_piecewise_spline_function(x_coords, y_values, domain_params, discontinuity_points, k)
@@ -401,6 +402,96 @@ function calculateAllStats!(sim_config::SimulationConfig, key_varied::String, pa
         
         calculateAllStats!(temp_config; kwargs...)
     end
+end
+
+"""
+    calculateConvergenceData(sim_config::SimulationConfig,
+                             key_varied::String,
+                             param_values_for_key::Union{AbstractVector, AbstractRange};
+                             force_int_param::Bool = false)
+
+Runs simulations for each method in `sim_config` across each value in
+`param_values_for_key` (for the `key_varied`) IN PARALLEL.
+Returns a dictionary of results.
+"""
+function calculateConvergenceData(
+    sim_config::SimulationConfig,
+    key_varied::String,
+    param_values_for_key::Union{AbstractVector, AbstractRange};
+    force_int_param::Bool = false,
+    calculate_all::Bool = false,
+    force_overwrite::Bool = false,
+    calc_stats = true
+)
+    # --- Task Preparation (as before) ---
+    all_method_labels = calculate_all ? collect(keys(sim_config.methods_dict)) : sim_config.default_methods
+    num_tasks = length(all_method_labels) * length(param_values_for_key)
+    if num_tasks == 0; @info "No simulations to run."; return; end
+
+    tasks_params_list = Vector{ParamDictType}(undef, num_tasks)
+    task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks)
+    
+    task_idx = 0
+    for method_label in all_method_labels
+        current_method_base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method_label)
+        for (j, p_val) in enumerate(param_values_for_key)
+            task_idx += 1
+            params_for_this_run = copy(current_method_base_params)
+            params_for_this_run[key_varied] = force_int_param ? trunc(Int64, p_val) : p_val
+            tasks_params_list[task_idx] = params_for_this_run
+            task_identifiers[task_idx] = (method_label, j)
+        end
+    end
+
+    @info "Starting parallel calculation of $(num_tasks) convergence simulations..."
+
+    # --- NEW: Progress Bar Setup ---
+    # 1. Create a Progress meter object.
+    p = Progress(num_tasks, "Calculating..."; 
+        barglyphs=BarGlyphs('|','█', ['▁' ,'▂' ,'▃' ,'▄' ,'▅' ,'▆', '▇'],' ','|',),
+        showspeed=true)
+    # 2. Create a thread-safe counter.
+    counter = Threads.Atomic{Int}(0)
+    # -----------------------------
+
+    loop_indices = randperm(num_tasks)
+    # --- Parallel Execution ---
+    Threads.@threads for i in loop_indices
+        try
+            params_for_this_run = tasks_params_list[i]
+            method_label_this_run, p_val_idx = task_identifiers[i]
+            p_val_actual = param_values_for_key[p_val_idx]
+
+            # Optional: You may want to remove or comment out the println statements
+            # below, as they can interfere with the visual appearance of the progress bar.
+            # @info "Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
+
+            if !doesSimDataExist(params_for_this_run) || force_overwrite
+                sim_data = sim_config.sim_function(params_for_this_run)
+                if !isnothing(sim_data)
+                    saveSimData(sim_data; overwrite = force_overwrite)
+                else
+                    @warn "Simulation returned `nothing` for $method_label_this_run, $key_varied = $p_val_actual"
+                end
+            else
+                # @info "Skipped calculation because existing data was found."
+            end
+        catch e
+            @error "Error in thread $(Threads.threadid())" exception=(e, catch_backtrace())
+        end
+
+        # --- NEW: Update Progress ---
+        # 3. Atomically increment the counter and update the progress bar.
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
+        # ----------------------------
+    end
+    @info "\nConvergence data calculation complete."
+    @info "\nStat calculation started."
+    if calc_stats
+        calculateAllStats!(sim_config,key_varied, param_values_for_key, force_int_param = force_int_param)
+    end
+    @info "\nStat calculation complete."
 end
 
 end
