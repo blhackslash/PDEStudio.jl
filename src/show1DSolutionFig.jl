@@ -48,7 +48,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
         end 
     end
     Label(control_fig[end-1,:], tLabel_text)
-    axis_label = lift(comp_sel) do sel; components[][sel] end
+    axis_label = lift(comp_sel) do sel; sel == 1 ? "Solution (u)" : components[][sel] end
     axis_title = @lift("t = " * string(round($(tSlider.value),digits = 3)))
     
     default_labels = Dict("xlabel" => "Position (x)",
@@ -117,7 +117,14 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
 
         for (i, method) in enumerate(active_methods_now)
             params = tasks[i] # Get the correct parameter dict
-            sim_data = Utils.loadSimData(params)
+            local sim_data
+            try
+                sim_data = Utils.loadSimData(params)
+            catch e
+                @warn "simData for method $method could not be loaded. Skipping!"
+                sim_data = nothing
+                continue
+            end
 
             xData_tmp[i] = (sim_data.x, sim_data.t)
             uData_tmp[i] = (Dict("u" => sim_data.u), sim_data.t)

@@ -9,7 +9,6 @@ using Base.Threads
 using GLMakie
 using ProgressMeter 
 using LibGit2
-using Pkg
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, 
@@ -172,8 +171,6 @@ function getFileName(params::ParamDictType)
         if isfile(file)
             try # Add inner try-catch for loading/comparison errors
                 sim_data_saved = load(file)["sim_data"]
-                println(params)
-                println("2",sim_data_saved.params)
                 if (params == sim_data_saved.params)
                     @info "Found matching file: ", file # Debug print
                     return file # Return the full path
@@ -602,90 +599,90 @@ function create_sim_config_from_csv(
         sim_function
     )
 end
-function load_project_from_git(
-    repo_path::String,
-    commit_hash::String,
-    main_module_path::String,
-    function_to_get_sym::Symbol
-)
-    original_pwd = pwd()
-    tmp_dir = mktempdir()
-    println("Created temporary directory for historical project: $tmp_dir")
+# function load_project_from_git(
+#     repo_path::String,
+#     commit_hash::String,
+#     main_module_path::String,
+#     function_to_get_sym::Symbol
+# )
+#     original_pwd = pwd()
+#     tmp_dir = mktempdir()
+#     println("Created temporary directory for historical project: $tmp_dir")
 
-    absolute_repo_path = abspath(repo_path)
-    original_repo_parent_dir = dirname(absolute_repo_path)
-    dependency_name = "IPlotPDESols"
-    original_dependency_path = joinpath(dirname(original_repo_parent_dir), dependency_name)
+#     absolute_repo_path = abspath(repo_path)
+#     original_repo_parent_dir = dirname(absolute_repo_path)
+#     dependency_name = "IPlotPDESols"
+#     original_dependency_path = joinpath(dirname(original_repo_parent_dir), dependency_name)
     
-    tmp_parent_dir = dirname(tmp_dir)
-    temporary_dependency_path = joinpath(tmp_parent_dir, dependency_name)
+#     tmp_parent_dir = dirname(tmp_dir)
+#     temporary_dependency_path = joinpath(tmp_parent_dir, dependency_name)
 
-    try
-        println("Copying local dependency from $original_dependency_path to $temporary_dependency_path")
-        cp(original_dependency_path, temporary_dependency_path, force=true)
+#     try
+#         println("Copying local dependency from $original_dependency_path to $temporary_dependency_path")
+#         cp(original_dependency_path, temporary_dependency_path, force=true)
 
-        # # --- NEW: Manually add Logging to the IPlotPDESols Project.toml ---
-        # toml_path = joinpath(temporary_dependency_path, "Project.toml")
+#         # # --- NEW: Manually add Logging to the IPlotPDESols Project.toml ---
+#         # toml_path = joinpath(temporary_dependency_path, "Project.toml")
         
-        # # Load the Project.toml file
-        # project_dict = Pkg.TOML.parsefile(toml_path)
+#         # # Load the Project.toml file
+#         # project_dict = Pkg.TOML.parsefile(toml_path)
         
-        # # Add the Logging dependency with its UUID
-        # if !haskey(project_dict, "deps")
-        #     project_dict["deps"] = Dict{String, Any}()
-        # end
-        # project_dict["deps"]["Logging"] = "56ddb016-857b-54e1-b83d-db4d58db5568"
+#         # # Add the Logging dependency with its UUID
+#         # if !haskey(project_dict, "deps")
+#         #     project_dict["deps"] = Dict{String, Any}()
+#         # end
+#         # project_dict["deps"]["Logging"] = "56ddb016-857b-54e1-b83d-db4d58db5568"
         
-        # # Save the modified Project.toml file
-        # open(toml_path, "w") do io
-        #     Pkg.TOML.print(io, project_dict)
-        # end
-        # println("Added 'Logging' to IPlotPDESols's Project.toml.")
+#         # # Save the modified Project.toml file
+#         # open(toml_path, "w") do io
+#         #     Pkg.TOML.print(io, project_dict)
+#         # end
+#         # println("Added 'Logging' to IPlotPDESols's Project.toml.")
 
-        println("Cloning project to temporary directory...")
-        run(`git clone $absolute_repo_path $tmp_dir`)
+#         println("Cloning project to temporary directory...")
+#         run(`git clone $absolute_repo_path $tmp_dir`)
         
-        cd(tmp_dir)
-        run(`git checkout $commit_hash`)
+#         cd(tmp_dir)
+#         run(`git checkout $commit_hash`)
         
-        # Now Pkg can see the updated IPlotPDESols dependency
-        println("Activating historical project and installing dependencies...")
-        Pkg.activate(".")
-        Pkg.resolve()
-        Pkg.instantiate()
+#         # Now Pkg can see the updated IPlotPDESols dependency
+#         println("Activating historical project and installing dependencies...")
+#         Pkg.activate(".")
+#         Pkg.resolve()
+#         Pkg.instantiate()
         
-        absolute_main_module_path = joinpath(tmp_dir, main_module_path)
+#         absolute_main_module_path = joinpath(tmp_dir, main_module_path)
         
-        println("Loading historical main module from: $absolute_main_module_path")
-        include(absolute_main_module_path)
+#         println("Loading historical main module from: $absolute_main_module_path")
+#         include(absolute_main_module_path)
         
-        main_module_name = Symbol(splitext(basename(main_module_path))[1])
+#         main_module_name = Symbol(splitext(basename(main_module_path))[1])
         
-        if isdefined(Main, main_module_name)
-            main_module = getfield(Main, main_module_name)
-            if isdefined(main_module, function_to_get_sym)
-                println("Successfully loaded and sandboxed project from commit $(first(commit_hash, 7))")
-                return getfield(main_module, function_to_get_sym)
-            else
-                @error "Function '$function_to_get_sym' not found in historical project's main module."
-                return nothing
-            end
-        else
-            @error "Main module '$main_module_name' not found after including the project file."
-            return nothing
-        end
+#         if isdefined(Main, main_module_name)
+#             main_module = getfield(Main, main_module_name)
+#             if isdefined(main_module, function_to_get_sym)
+#                 println("Successfully loaded and sandboxed project from commit $(first(commit_hash, 7))")
+#                 return getfield(main_module, function_to_get_sym)
+#             else
+#                 @error "Function '$function_to_get_sym' not found in historical project's main module."
+#                 return nothing
+#             end
+#         else
+#             @error "Main module '$main_module_name' not found after including the project file."
+#             return nothing
+#         end
         
-    catch e
-        @error "Failed to load project from Git history." exception=(e, catch_backtrace())
-        return nothing
-    finally
-        cd(original_pwd)
-        Pkg.activate(".")
-        rm(tmp_dir, recursive=true, force=true)
-        rm(temporary_dependency_path, recursive=true, force=true)
-        println("Cleaned up temporary directory.")
-    end
-end
+#     catch e
+#         @error "Failed to load project from Git history." exception=(e, catch_backtrace())
+#         return nothing
+#     finally
+#         cd(original_pwd)
+#         Pkg.activate(".")
+#         rm(tmp_dir, recursive=true, force=true)
+#         rm(temporary_dependency_path, recursive=true, force=true)
+#         println("Cleaned up temporary directory.")
+#     end
+# end
 
 
 """
@@ -793,12 +790,12 @@ function create_sim_config_from_csv(
         commit_hash = string(get(context, "git_commit_hash", nothing))
         if isnothing(commit_hash); error("CSV is missing 'git_commit_hash' for partial time warp."); end
         sim_function = load_function_from_git(repo_path, commit_hash, sim_func_sym)
-    elseif time_warp == "project" # <-- NEW OPTION
-        println("Time Warp: 'project'. Loading historical project source code...")
-        commit_hash = string(get(context, "git_commit_hash", nothing))
-        # We need to know the path to your main module file to start the process
-        main_module_file = "src/Meshfree4ScalarEq.jl" # You might make this an argument
-        sim_function = load_project_from_git(repo_path, commit_hash, main_module_file, sim_func_sym)
+    # elseif time_warp == "project" # <-- NEW OPTION
+    #     println("Time Warp: 'project'. Loading historical project source code...")
+    #     commit_hash = string(get(context, "git_commit_hash", nothing))
+    #     # We need to know the path to your main module file to start the process
+    #     main_module_file = "src/Meshfree4ScalarEq.jl" # You might make this an argument
+    #     sim_function = load_project_from_git(repo_path, commit_hash, main_module_file, sim_func_sym)
     elseif time_warp == "full"
         # ... (Instructions for the user as before) ...
         error("Full time warp is a manual process. Follow the instructions above.")

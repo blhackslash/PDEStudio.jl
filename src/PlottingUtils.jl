@@ -94,7 +94,6 @@ function add_param_as_nested_grid!(
         on(tb.stored_string) do s
             input_to_parse = (s == "<empty>") ? "" : s
             parsed_val = parseValue(input_to_parse)
-            println(parsed_val)
             if param_obs[] != parsed_val
                 param_obs[] = parsed_val
             end
@@ -2062,7 +2061,6 @@ function extractData(
     stat_val = get(run_data, selected_key, missing)
     
     if ismissing(stat_val)
-        println(selected_key)
         return missing 
     end
     

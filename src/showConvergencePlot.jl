@@ -23,7 +23,7 @@ function showConvergencePlot(
     ui_options::UIType = :default
 )
     # --- Initial Setup ---
-    if initial_calc; calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, force_overwrite = false); end
+    if initial_calc; calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, calc_stats = calc_stats, force_overwrite = false); end
     GLMakie.activate!()
     base_ui_dict = createUIDict(ui_options)
     ui_options_obs = create_ui_observables(base_ui_dict)
