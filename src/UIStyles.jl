@@ -87,6 +87,7 @@ function GetUIStyle(style::Symbol)
             "markersize" => 10,
             "title_size" => 14,
             "legend_pos" => "righttop",
+            "show_scatter" => true,
             "label_size" => 14,
             "ticklabel_size" => 12,
             "title" => "",

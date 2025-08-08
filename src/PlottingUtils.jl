@@ -918,6 +918,8 @@ function create_or_update_legend!(
             # For a detached legend, create it in column 2 of the figure's layout.
             Legend(fig[1, 2], plotted_objects, labels, final_title; # <-- Use final_title
                 tellheight=false,
+                merge = true,
+                unique = true,
                 titlesize=ui_options_obs["font_size"][], # Use [] to get value
                 labelsize=ui_options_obs["font_size"][]
             )
@@ -932,6 +934,8 @@ function create_or_update_legend!(
                 tellwidth=false,
                 halign = halign,
                 valign = valign,
+                merge = true,
+                unique = true,
                 titlesize=ui_options_obs["font_size"][],
                 labelsize=ui_options_obs["font_size"][],
                 margin=(10, 10, 10, 10)
@@ -1558,27 +1562,33 @@ function create_base_plot_1D!(
         end
 
         # Plot main data
-        obj_for_legend = nothing
+        line_for_legend = nothing
         if ui_options_obs["show_lines"][]
             l = lines!(ax, x_data, u_data; 
                 color=color, linewidth=ui_options_obs["linewidth"], 
                 label=plotLabel, linestyle=linestyle)
-            obj_for_legend = l
+            line_for_legend = l
         end
+        scatter_for_legend = nothing
         if ui_options_obs["show_scatter"][]
             s = scatter!(ax, x_data, u_data; 
                 color=color, markersize=ui_options_obs["markersize"], 
                 marker=marker, label=plotLabel)
-            if isnothing(obj_for_legend); obj_for_legend = s; end
+            scatter_for_legend = s
         end
         
         # Call extrema tracking with the correct data and styling index
         plot_extrema_lines!(ax, x_data, u_data, ui_options_obs, plot_idx)
         
-        if !isnothing(obj_for_legend)
-            push!(plotted_objects, obj_for_legend)
+        if !isnothing(line_for_legend)
+            vec_for_legend = Any[line_for_legend]
+            push!(plotted_objects, vec_for_legend)
+            if !isnothing(scatter_for_legend)
+                push!(vec_for_legend, scatter_for_legend)
+            end
             push!(labels_for_legend, plotLabel)
         end
+
     end
 
     if is_static || ui_options_obs["update_limits"][]; set_axis_limits!(ax, xs, us, ui_options_obs) end
