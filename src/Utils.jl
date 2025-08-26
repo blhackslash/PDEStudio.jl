@@ -12,7 +12,7 @@ using LibGit2
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, 
-       assembleParams, allMethodNames, create_sim_config_from_csv
+       assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -538,67 +538,7 @@ function allMethodNames(config::SimulationConfig)
     return collect(keys(config.methods_dict))
 end
 
-"""
-    create_sim_config_from_csv(csv_filepath::String, sim_function::Function) -> SimulationConfig
 
-Reads a "tidy" format CSV file and reconstructs a `SimulationConfig` object from it.
-
-# Arguments
-- `csv_filepath::String`: The path to the saved parameters CSV file.
-- `sim_function::Function`: The handle to the simulation function to be used. This
-  cannot be stored in the CSV and must be provided manually.
-
-# Returns
-- A `SimulationConfig` object populated with the data from the CSV.
-"""
-function create_sim_config_from_csv(
-    csv_filepath::String,
-    sim_function::Function
-)
-    # --- 1. Read and Parse the CSV ---
-    if !isfile(csv_filepath)
-        error("CSV file not found at: $csv_filepath")
-    end
-    
-    df = CSV.read(csv_filepath, DataFrame)
-    
-    # Create a new column with correctly typed values
-    df.ParsedValue = [parseValue(string(v)) for v in df.Value]
-
-    # --- 2. Reconstruct Shared Parameters ---
-    shared_params_df = filter(row -> row.Section == "Shared", df)
-    shared_params = Dict{String, Any}(
-        row.Parameter => row.ParsedValue for row in eachrow(shared_params_df)
-    )
-
-    # --- 3. Reconstruct Method-Specific Parameters ---
-    methods_df = filter(row -> row.Section == "Method", df)
-    methods_dict = Dict{String, Dict{String, Any}}()
-    
-    # Group the DataFrame by the "MethodName" column
-    grouped_by_method = groupby(methods_df, :MethodName)
-    
-    for method_group in grouped_by_method
-        method_name = method_group.MethodName[1]
-        method_params = Dict{String, Any}(
-            row.Parameter => row.ParsedValue for row in eachrow(method_group)
-        )
-        methods_dict[method_name] = method_params
-    end
-
-    # --- 4. Determine Default Methods ---
-    # For reproducibility, we assume all methods found in the file were the "active" ones.
-    default_methods = collect(keys(methods_dict))
-
-    # --- 5. Construct and Return the SimulationConfig ---
-    println("Successfully created SimulationConfig from $csv_filepath")
-    return SimulationConfig(
-        shared_params,
-        methods_dict,
-        default_methods,
-        sim_function
-    )
-end
 # function load_project_from_git(
 #     repo_path::String,
 #     commit_hash::String,
@@ -748,7 +688,67 @@ function load_function_from_git(
     end
 end
 
+"""
+    create_sim_config_from_csv(csv_filepath::String, sim_function::Function) -> SimulationConfig
 
+Reads a "tidy" format CSV file and reconstructs a `SimulationConfig` object from it.
+
+# Arguments
+- `csv_filepath::String`: The path to the saved parameters CSV file.
+- `sim_function::Function`: The handle to the simulation function to be used. This
+  cannot be stored in the CSV and must be provided manually.
+
+# Returns
+- A `SimulationConfig` object populated with the data from the CSV.
+"""
+function create_sim_config_from_csv(
+    csv_filepath::String,
+    sim_function::Function
+)
+    # --- 1. Read and Parse the CSV ---
+    if !isfile(csv_filepath)
+        error("CSV file not found at: $csv_filepath")
+    end
+    
+    df = CSV.read(csv_filepath, DataFrame)
+    
+    # Create a new column with correctly typed values
+    df.ParsedValue = [parseValue(string(v)) for v in df.Value]
+
+    # --- 2. Reconstruct Shared Parameters ---
+    shared_params_df = filter(row -> row.Section == "Shared", df)
+    shared_params = Dict{String, Any}(
+        row.Parameter => row.ParsedValue for row in eachrow(shared_params_df)
+    )
+
+    # --- 3. Reconstruct Method-Specific Parameters ---
+    methods_df = filter(row -> row.Section == "Method", df)
+    methods_dict = Dict{String, Dict{String, Any}}()
+    
+    # Group the DataFrame by the "MethodName" column
+    grouped_by_method = groupby(methods_df, :MethodName)
+    
+    for method_group in grouped_by_method
+        method_name = method_group.MethodName[1]
+        method_params = Dict{String, Any}(
+            row.Parameter => row.ParsedValue for row in eachrow(method_group)
+        )
+        methods_dict[method_name] = method_params
+    end
+
+    # --- 4. Determine Default Methods ---
+    # For reproducibility, we assume all methods found in the file were the "active" ones.
+    default_methods = collect(keys(methods_dict))
+
+    # --- 5. Construct and Return the SimulationConfig ---
+    println("Successfully created SimulationConfig from $csv_filepath")
+    return SimulationConfig(
+        shared_params,
+        methods_dict,
+        default_methods,
+        sim_function
+    )
+end
 #======================================================================#
 #              2. MAIN `create_sim_config_from_csv`
 #======================================================================#
@@ -760,8 +760,8 @@ Reads a "tidy" format CSV and reconstructs a `SimulationConfig` object with
 varying levels of historical accuracy, controlled by the `time_warp` flag.
 """
 function create_sim_config_from_csv(
-    csv_filepath::String,
-    time_warp::String;
+    csv_filepath::String;
+    time_warp::String = "none",
     repo_path::String = "." # Assumes the script is run from the repo root
 )
     # --- 1. Read and Parse the CSV ---
@@ -819,9 +819,28 @@ function create_sim_config_from_csv(
     default_methods = collect(keys(methods_dict))
 
     # --- 4. Construct and Return the SimulationConfig ---
-    println("Successfully created fully reproducible SimulationConfig from $csv_filepath")
+    @info "Successfully created fully reproducible SimulationConfig from $csv_filepath"
     return SimulationConfig(sim_function, shared_params, methods_dict, default_methods)
 end
 
+function load_additional_options_from_csv(
+    csv_filepath::String,
+    section_name::String
+)
+    if !isfile(csv_filepath); error("CSV file not found at: $csv_filepath"); end
+    
+    df = CSV.read(csv_filepath, DataFrame)
+    df.ParsedValue = [parseValue(string(v)) for v in df.Value]
+
+# --- Iterate through the requested sections and extract each one ---
+    section_df = filter(row -> row.Section == section_name, df)
+    
+    section_dict = Dict{String, Any}(
+        row.Parameter => row.ParsedValue for row in eachrow(section_df)
+    )
+
+    @info "Successfully loaded options for section: $section_name"
+    return section_dict
+end
 
 end

@@ -7,14 +7,14 @@ and an option to save the animation as a GIF (which may close the window).
 Saves corresponding parameters to a CSV file.
 Uses closest data point logic for animation frames.
 """
-function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, reference_function::Union{Function,Nothing} = nothing, ui_options::UIType = :default)
+function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, reference_function::Union{Function,Nothing} = nothing, scene_options::Dict = Dict{String,Any}(), ui_options::UIType = :default)
 
     # --- Basic Setup & UI ---
     base_ui_dict = createUIDict(ui_options)
     ui_options_obs = create_ui_observables(base_ui_dict)
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
-
+    scene_info = Dict{String,Any}()
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
     shared_params_obs, method_params_collection_obs = create_parameter_observables(sim_config)
@@ -30,10 +30,12 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
         method_params_collection_obs,
         methods_obs,
         all_method_names,
-        ui_options_obs
+        ui_options_obs,
+        scene_info
     )
     # -----------------------------------------
 
+    
     # --- Time Slider & Label ---
     tLabel_text = Observable("t = 0.0")
     # Add a new row for the time label
@@ -47,6 +49,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
             "t = $(round(val; digits = 3))"
         end 
     end
+    
+
     Label(control_fig[end-1,:], tLabel_text)
     axis_label = lift(comp_sel) do sel; sel == 1 ? "Solution (u)" : components[][sel] end
     axis_title = @lift("t = " * string(round($(tSlider.value),digits = 3)))
@@ -81,7 +85,11 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     # Adjust column sizes in the controls row for better spacing
     colsize!(anim_save_controls_row, 1, Auto()); colsize!(anim_save_controls_row, 3, Auto()); colsize!(anim_save_controls_row, 4, Auto())
 
-
+    scene_obs = Dict{String,Observable}(
+        "component" => comp_sel,
+        "t" => tSlider.value 
+    )
+    set_scene_options!(scene_obs, scene_options)
 
     # --- Data Structures ---
     datatype = Vector{Vector{Float64}}
@@ -155,6 +163,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
     lift(uData_extr, tSlider.value, ui_update) do u_data, t, _
 
+        save_scene_info!(scene_obs, scene_info)
         x_snapshot, y_snapshot = calculate_snapshot(xData[], u_data, t)
         create_base_plot_1D!(plot_fig, ax, 
                              methods_obs[],
@@ -234,7 +243,9 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
                             shared_params_obs,
                             method_params_collection_obs,
                             methods_obs,
-                            anim_info
+                            ui_options_obs,
+                            anim_info,
+                            scene_info
                     )
         if !save_success; @warn "Parameter CSV saving failed for $base_filename. Continuing with GIF..."; end
         # =================================================
@@ -276,4 +287,11 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
     return nothing
     # return control_fig, plot_fig
+end
+
+function show1DSolutionFig(csv_filepath::String; kwargs...)
+    ui_options = load_additional_options_from_csv(csv_filepath, "UI")
+    scene_options = load_additional_options_from_csv(csv_filepath, "Scene")
+    sim_config = create_sim_config_from_csv(csv_filepath)
+    show1DSolutionFig(sim_config; scene_options = scene_options, ui_options = ui_options, kwargs...)
 end

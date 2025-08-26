@@ -15,7 +15,7 @@ statistics across methods.
   `AbstractSimData` object with non-empty `t::Vector{Float64}` and 
   `stats::Dict{String, Any}` fields.
 """
-function showDynamicDependence(sim_config::SimulationConfig; reference_function::Union{Function,Nothing} = nothing, calc_stats = false, ui_options::UIType = :default)
+function showDynamicDependence(sim_config::SimulationConfig; reference_function::Union{Function,Nothing} = nothing, calc_stats = false, scene_options= Dict{String,Any}(), ui_options::UIType = :default)
     # --- Standard Setup ---
     base_ui_dict = createUIDict(ui_options)
     deleteUIOptions!(base_ui_dict, ["system_dimension", "animation_duration_s", "animation_duration_s"])
@@ -31,6 +31,8 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
     # Method selection observable (no change)
     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
 
+    scene_info = Dict{String,Any}()
+
     # --- Call the NEW createControls function ---
     control_fig, update_notifier, ui_update, components, comp_sel = createBaseControlsFigure(
         plot_fig,
@@ -38,7 +40,8 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
         method_params_collection_obs,
         methods_obs,
         all_method_names,
-        ui_options_obs
+        ui_options_obs,
+        scene_info
     )
     # -----------------------------------------
     
@@ -60,6 +63,11 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
     label_obs = create_axis_label_observables(ui_options_obs, default_labels)
     ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"]) 
 
+    scene_obs = Dict{String, Observable}(
+        "component" => comp_sel,
+        "y_key" => selected_key_obs
+    )
+    set_scene_options!(scene_obs, scene_options)
 
     # --- Data Structures for Statistics (using Dict{String, Any}) ---
     statsData = Observable(Vector{Dict{String, Any}}(undef, 0)) # Stores the full stats dict
@@ -157,6 +165,7 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
 
     # --- Lift Block 2: Update Plot ---
     lift(ui_update, yData) do _...
+        save_scene_info!(scene_obs, scene_info)
         create_base_plot_1D!(plot_fig, ax, 
                         methods_obs[],
                         tData[],

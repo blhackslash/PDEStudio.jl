@@ -127,12 +127,11 @@ function parseValue(s::String)
     try
         # Meta.parse turns a string into a Julia expression.
         # `eval` executes that expression.
-        val = eval(Meta.parse(s))
-        return isnothing(val) ? "" : val
+        return eval(Meta.parse(s))
     catch e
         # If parsing fails, it's probably just a plain string.
         # We also strip quotes that CSV readers sometimes add.
-        return strip(s, '\"')
+        return s == "<empty>" ? "" : string(strip(s, '\"'))
     end
 end
 

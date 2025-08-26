@@ -5,7 +5,7 @@ export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConverge
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,
        AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames,
-       calculateAllStats!, AtomicType, AtomicTuple, create_sim_config_from_csv
+       calculateAllStats!, AtomicType, AtomicTuple, create_sim_config_from_csv, plotFromCSV, interactiveCSVLauncher
 
 include("Structs.jl")
 using .Structs

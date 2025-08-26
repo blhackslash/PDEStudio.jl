@@ -14,13 +14,12 @@ function showConvergencePlot(
     sim_config::SimulationConfig,
     key::String,
     param_values::Union{AbstractVector, AbstractRange};
-    x_stat_key::Union{String, Nothing} = nothing,
-    y_stat_key::Union{String, Nothing} = nothing,
     calc_stats = false,
     reference_function::Union{Function,Nothing} = nothing,
     force_int_param::Bool = false,
     initial_calc::Bool = true,
-    ui_options::UIType = :default
+    ui_options::UIType = :default,
+    scene_options::Dict = Dict{String,Any}()
 )
     # --- Initial Setup ---
     if initial_calc; calculateConvergenceData(sim_config, key, param_values; force_int_param = force_int_param, calc_stats = calc_stats, force_overwrite = false); end
@@ -36,20 +35,22 @@ function showConvergencePlot(
     all_method_names = collect(keys(sim_config.methods_dict))
     methods_obs = Observable(filter(m -> m in all_method_names, sim_config.default_methods))
     
+    scene_info = Dict{String,Any}("varied_key" => key, "variation_range" => x_vals)
     # --- Control Figure Setup ---
     control_fig, update_notifier, ui_update, components, comp_sel = 
-        createBaseControlsFigure(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names,ui_options_obs)
+        createBaseControlsFigure(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names, ui_options_obs, scene_info)
 
     Label(control_fig[end+1, :], "X-Axis Statistic:")
     x_menu_container = control_fig[end+1,:] = GridLayout()
     x_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
-    selected_x_key_obs = Observable(isnothing(x_stat_key) ? key : x_stat_key)
+    #selected_x_key_obs = Observable(isnothing(x_stat_key) ? key : x_stat_key)
+    selected_x_key_obs = Observable(key)
 
     Label(control_fig[end+1, :], "Y-Axis Statistic:")
     y_menu_container = control_fig[end+1,:] = GridLayout()
     y_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
-    selected_y_key_obs = Observable(isnothing(y_stat_key) ? key : y_stat_key)
-    
+    #selected_y_key_obs = Observable(isnothing(y_stat_key) ? key : y_stat_key)
+    selected_y_key_obs = Observable(key)
 
     # --- Reactive Axis Labels ---
     reactive_title = lift((x,y) -> "Convergence: $y vs $x", selected_x_key_obs, selected_y_key_obs)
@@ -68,6 +69,15 @@ function showConvergencePlot(
         end 
     end
     Label(control_fig[end-1,:], tLabel_text)
+
+    scene_obs = Dict{String, Observable}(
+        "t" => tSlider.value,
+        "component" => comp_sel,
+        "x_key" => selected_x_key_obs,
+        "y_key" => selected_y_key_obs
+    )
+
+    set_scene_options!(scene_obs, scene_options)
 
     # --- DATA STORAGE (using the tuple structure) ---
     raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}())
@@ -160,6 +170,8 @@ function showConvergencePlot(
 
     # --- FINAL PLOTTING LIFT ---
     lift(tSlider.value, extracted_x_data, extracted_y_data, ui_update) do t, x_data, y_data, _
+
+        save_scene_info!(scene_obs, scene_info)
         if isempty(x_data) || isempty(y_data); return; end
            
         x_snapshot, y_snapshot = calculate_snapshot(x_data, y_data, t)

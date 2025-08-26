@@ -208,7 +208,7 @@ function populate_parameter_figure!(
     
     rowsize!(main_layout, 2, Auto()) 
     Makie.trim!(main_layout) 
-    GLMakie.display(target_fig.scene)
+    GLMakie.display(target_fig)
 end
 
 
@@ -296,7 +296,8 @@ function createBaseControlsFigure(
     method_params_collection_obs::Dict{String, Dict{String, Observable}}, # For save box data
     methods_obs::Observable{Vector{String}},
     all_method_names::Vector{String},
-    ui_options_obs::Dict{String, Observable}
+    ui_options_obs::Dict{String, Observable},
+    scene_info::Dict{String,Any}
 )
     GLMakie.activate!()
     base_controls_fig = Figure(size=(500, 600)) # Initial size, will grow as more controls are added
@@ -344,7 +345,7 @@ function createBaseControlsFigure(
     current_row += 1
     save_box_layout = fig_layout[current_row, 1] = GridLayout()
     # Adapt createSaveFigBox to populate this layout
-    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs) # (source: 37-45, 62)
+    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs, scene_info) # (source: 37-45, 62)
     current_row += 1
 
     # Ensure the fig_layout rows can auto-size based on content added so far
@@ -412,7 +413,6 @@ function createBaseControlsFigure(
             if length(ui_options_obs["comp_names"][]) == length(components[])
                 components[] = ui_options_obs["comp_names"][]
             else
-                println(ui_options_obs["comp_names"][], components[])
                 @warn "Could not match components to the given names because of length mismatch!"
             end
         else
@@ -545,6 +545,10 @@ function _value_to_string_for_csv(v)
     if isa(v, Symbol)
         return ":" * string(v)
     end
+
+    if v == ""
+        return "<empty>"
+    end
     # For all other types (Tuples, Vectors, Numbers, Strings), the default
     # `string` representation is usually a valid Julia expression that
     # `parseValue` can handle.
@@ -564,7 +568,8 @@ function saveParametersToCSV(
     method_params_collection_obs::Dict{String, Dict{String, Observable}},
     methods_obs::Observable{Vector{String}},
     ui_options_obs::Dict{String, Observable},
-    optional_info::Dict = Dict{String, Any}()
+    optional_info::Dict,
+    scene_info::Dict,
 )::Bool
     if isempty(base_filename); @warn "CSV save skipped: filename is empty."; return false; end
 
@@ -589,6 +594,7 @@ function saveParametersToCSV(
 
         # --- Add Data (Context, Shared, Methods, UI) ---
         for key in sort(collect(keys(optional_info))); add_row("Context", missing, key, optional_info[key]); end
+        for s_key in sort(collect(keys(scene_info))); add_row("Scene", missing, s_key, scene_info[s_key]); end
         for p_key in sort(collect(keys(shared_params_obs))); add_row("Shared", missing, p_key, shared_params_obs[p_key][]); end
         for ui_key in sort(collect(keys(ui_options_obs))); add_row("UI", missing, ui_key, ui_options_obs[ui_key][]); end
         
@@ -696,7 +702,9 @@ function createSaveFigBox(
     shared_params_obs::Dict{String, Observable},
     method_params_collection_obs::Dict{String, Dict{String, Observable}}, # <<< Pass through
     methods_obs::Observable{Vector{String}}, # <<< Pass through
-    ui_options_obs::Dict
+    ui_options_obs::Dict,
+    scene_info::Dict = Dict{String, Any}();
+    context_info = Dict{String, Any}()
     )
 
     gb = target_layout[1, 1:2] = GridLayout() # Example layout
@@ -766,15 +774,11 @@ function createSaveFigBox(
             end
         end # End loop over formats
          # --- Call reusable function to save Parameters ---
-         context_info = Dict{String, Any}(
-             "Save Type" => "Static Frame",
-             "Timestamp" => string(Dates.now()) # Use Dates.now()
-             # Add tSlider value if tSlider variable is accessible here?
-             # "Trigger Time (t)" => string(round(tSlider.value[], digits=4))
-         )
-             path = Utils.get_save_path()
+        context_info["Save Type"] = "Static Frame"
+        context_info["Timestamp"] = string(Dates.now()) # Use Dates.now()
+        path = Utils.get_save_path()
 
-             git_info = get_git_info(path) # Assumes your script runs from the repo root
+        git_info = get_git_info(path) # Assumes your script runs from the repo root
         if !isnothing(git_info)
             merge!(context_info, git_info)
         end
@@ -785,7 +789,8 @@ function createSaveFigBox(
              method_params_collection_obs, # Pass it along
              methods_obs,                  # Pass it along
              ui_options_obs,
-             context_info
+             context_info,
+             scene_info,
          )
          # --------------------------------------------------
         #ui_options_obs["update_limits"][] = original_update_state
@@ -1069,6 +1074,19 @@ function set_axis_styles!(
         @warn "An error occurred while setting 3D axis styles. A required key might be missing." exception=(e, catch_backtrace())
     end
 end
+
+function set_scene_options!(scene_obs::Dict{String,Observable}, scene_options::Dict{String,Any})
+    for (key, val) = scene_obs
+        if haskey(scene_options, key); val[] = scene_options[key] end
+    end
+end
+
+function save_scene_info!(scene_obs::Dict{String,Observable}, scene_info::Dict{String,Any})
+    for (key,val) = scene_obs
+        scene_info[key] = to_value(val)
+    end
+end
+
 """
     create_axis_label_observables(ui_options_obs, default_values) -> Dict
 
