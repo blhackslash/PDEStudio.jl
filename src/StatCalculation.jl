@@ -467,7 +467,7 @@ function calculateConvergenceData(
             # @info "Thread $(Threads.threadid()): Starting Sim - Label: '$method_label_this_run', $key_varied = $p_val_actual")
 
             if !doesSimDataExist(params_for_this_run) || force_overwrite
-                sim_data = sim_config.sim_function(params_for_this_run)
+                sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
                 if !isnothing(sim_data)
                     saveSimData(sim_data; overwrite = force_overwrite)
                 else

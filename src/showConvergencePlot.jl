@@ -17,7 +17,7 @@ function showConvergencePlot(
     calc_stats = false,
     reference_function::Union{Function,Nothing} = nothing,
     force_int_param::Bool = false,
-    initial_calc::Bool = true,
+    initial_calc::Bool = false,
     ui_options::UIType = :default,
     scene_options::Dict = Dict{String,Any}()
 )
@@ -103,7 +103,7 @@ function showConvergencePlot(
         )
 
         # --- STEP 2: Ensure SimData exists for all tasks ---
-        for i = eachindex(tasks_matrix[:,1]); ensure_sim_data_exists!(tasks_matrix[i,:], sim_config) end
+        ensure_sim_data_exists!(tasks_matrix, sim_config)
 
         # --- STEP 3 (Optional): Calculate all statistics ---
         if calc_stats

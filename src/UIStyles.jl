@@ -64,7 +64,7 @@ function GetUIStyle(style::Symbol)
         "ylabel" => "default",
         "xlogscale" => false,
         "ylogscale" => false,
-        "reference" => (1.,),
+        "reference" => (0.,),
         "update_limits" => false,
         "save_formats" => ["png"], # Default to saving only PNG
         "create_savefolder" => false,

@@ -42,7 +42,8 @@ Launches a small, simple Makie window that serves as a drag-and-drop target.
 Dropping a valid CSV file onto this window will call `plotFromCSV` to spawn a
 separate, new window containing the plot.
 """
-function interactiveCSVLauncher()
+function interactiveCSVLauncher(;kwargs...)
+    println("--- Launcher starting on Julia process with ", Threads.nthreads(), " threads. ---")
     # --- 1. Setup the simple UI Figure for Drag-and-Drop ---
     launcher_fig = Figure(size = (600, 200))
     
@@ -70,7 +71,7 @@ function interactiveCSVLauncher()
             # if the plotting function fails.
             try
                 # Call the dispatcher. This will create and display a NEW window.
-                plotFromCSV(first_file)
+                plotFromCSV(first_file; kwargs...)
                 ax_drop.title = "Success! Drop another file."
             catch e
                 error_message = "Error plotting file: $e"
@@ -81,12 +82,13 @@ function interactiveCSVLauncher()
             ax_drop.title = "Error: Dropped file is not a .csv file. Try again."
             println("Warning: Ignored non-CSV file drop: $first_file")
         end
-        display(GLMakie.Screen(), launcher_fig)
+        display(launcher_fig)
     end
 
     # --- 3. Display the Launcher Figure ---
     println("CSV Plot Launcher is active.")
-    display(launcher_fig)
+    GLMakie.activate!()
+    display(GLMakie.Screen(),launcher_fig)
     return launcher_fig
 end
 

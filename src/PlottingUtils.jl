@@ -80,7 +80,7 @@ function add_param_as_nested_grid!(
         validator = s -> begin
             input_to_parse = s == "<empty>" ? "" : s
             parsed = parseValue(input_to_parse)
-            isa(parsed, typeof(val)) || isa(val, String)
+            isa(parsed, typeof(val)) || isa(val, String) || isa(val, Tuple)
         end
 
         # 3. Create the Textbox with the SAFE placeholder.
@@ -208,7 +208,7 @@ function populate_parameter_figure!(
     
     rowsize!(main_layout, 2, Auto()) 
     Makie.trim!(main_layout) 
-    GLMakie.display(target_fig)
+    display(GLMakie.Screen(),target_fig)
 end
 
 
@@ -326,9 +326,9 @@ function createBaseControlsFigure(
     
     menu_options = ["UI Options"; "Shared Parameters"; all_method_sorted] # Menu items
     # Ensure a default selection if possible, or handle no selection
-    default_selection = isempty(menu_options) ? nothing : menu_options[2]
+    #default_selection = isempty(menu_options) ? nothing : menu_options[2]
 
-    param_view_menu = Menu(fig_layout[current_row, 1], options = menu_options, default = default_selection)
+    param_view_menu = Menu(fig_layout[current_row, 1], options = menu_options)
     selected_param_key_obs = param_view_menu.selection # This is the Observable for the selected menu item
     current_row += 1
 
@@ -1597,13 +1597,15 @@ function create_base_plot_1D!(
         
         # Call extrema tracking with the correct data and styling index
         plot_extrema_lines!(ax, x_data, u_data, ui_options_obs, plot_idx)
-        
-        if !isnothing(line_for_legend)
-            vec_for_legend = Any[line_for_legend]
-            push!(plotted_objects, vec_for_legend)
-            if !isnothing(scatter_for_legend)
-                push!(vec_for_legend, scatter_for_legend)
-            end
+        vec_for_legend = Any[]
+        push!(plotted_objects, vec_for_legend)
+        if !isnothing(line_for_legend) 
+            push!(vec_for_legend, line_for_legend)
+        end
+        if !isnothing(scatter_for_legend)
+            push!(vec_for_legend, scatter_for_legend)
+        end
+        if !isempty(vec_for_legend)
             push!(labels_for_legend, plotLabel)
         end
 
@@ -1982,11 +1984,12 @@ corresponding data file exists. If not (or if `force_overwrite` is true), it
 runs the simulation in parallel.
 """
 function ensure_sim_data_exists!(
-    tasks::Vector{ParamDictType},
+    tasks::Union{Vector{ParamDictType},Matrix{ParamDictType}},
     sim_config::SimulationConfig;
     force_overwrite::Bool = false
 )
-    num_tasks = length(tasks)
+    task_size = size(tasks)
+    num_tasks = task_size isa Tuple{Int64} ? task_size[1] : task_size[1] * task_size[2]
     if num_tasks == 0; return; end
     
     @debug "Checking for existing data for $num_tasks simulations..."
@@ -1996,7 +1999,12 @@ function ensure_sim_data_exists!(
     Threads.@threads for params_for_this_run in tasks
         try
             if !doesSimDataExist(params_for_this_run) || force_overwrite
-                sim_data = sim_config.sim_function(params_for_this_run)
+                # --- THIS IS THE FIX ---
+                # We wrap the function call in `Base.invokelatest`.
+                # This tells Julia to look up the newest definition of the function
+                # right before calling it, which solves the world age issue.
+                sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
+                # --- END OF FIX ---
                 if !isnothing(sim_data)
                     saveSimData(sim_data; overwrite = force_overwrite)
                 end
