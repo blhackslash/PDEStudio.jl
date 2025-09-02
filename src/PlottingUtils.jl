@@ -2374,6 +2374,142 @@ function create_ui_observables(ui_options)
     end
     return ui_options_obs
 end
+
+
+"""
+    createAnimationControls!(...)
+
+Creates and populates a layout with animation and GIF saving controls.
+This function is designed to be called from a main plotting function to
+modularize the UI creation.
+"""
+function createAnimationControls!(
+    controls_layout::GridLayout,
+    plot_fig::Figure,
+    tSlider::Slider,
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    methods_obs::Observable{Vector{String}},
+    ui_options_obs::Dict{String, Observable},
+    scene_info::Dict{String, Any}
+)
+    # --- 1. Setup Layout and State Variables ---
+    is_animating = Observable(false)
+    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
+
+    # --- 2. Create UI Widgets ---
+    play_button = Button(controls_layout[1, 1], label=@lift($is_animating ? "Stop Anim" : "Play Anim"))
+    gif_save_textbox = Textbox(controls_layout[1, 2], placeholder="GIF Name (no ext)", width=150)
+    gif_save_textbox.stored_string = "untitled_anim" # Default filename
+    gif_save_button = Button(controls_layout[1, 3], label="Save GIF")
+    Label(controls_layout[1, 4], text="(can be slow!)", fontsize=10, color=:darkgray, halign=:left)
+
+    colgap!(controls_layout, 10)
+    colsize!(controls_layout, 1, Auto()); colsize!(controls_layout, 3, Auto()); colsize!(controls_layout, 4, Auto())
+
+    # --- 3. Animation Button Logic ---
+    on(play_button.clicks) do _
+        new_state = !is_animating[]
+        if new_state # Start Animation
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
+            
+            t_min, t_max = tSlider.range[][1], tSlider.range[][end]
+            if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
+            is_animating[] = true
+
+            anim_duration_s = ui_options_obs["animation_duration_s"][]
+            anim_fps = ui_options_obs["animation_fps"][]
+            timer_interval = 1.0 / max(1, anim_fps)
+            start_real_time = time()
+
+            function update_frame(timer_handle)
+                if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
+                
+                elapsed_real_time = time() - start_real_time
+                cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
+                time_fraction = cycled_elapsed_time / anim_duration_s
+                current_sim_time = t_min + time_fraction * (t_max - t_min)
+                
+                set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max))
+            end
+            
+            println("Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)...")
+            animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
+        else # Stop Animation
+            println("Stopping animation...")
+            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
+            animation_timer[] = nothing
+            is_animating[] = false
+        end
+    end
+
+    # --- 4. GIF Saving Button Logic ---
+    on(gif_save_button.clicks) do _
+        base_filename = string(strip(gif_save_textbox.stored_string[]))
+        if isempty(base_filename); @warn "Enter GIF filename."; return; end
+
+        # --- Path Setup ---
+        # Both GIF and parameters will be saved here.
+        save_dir = joinpath(Utils.get_save_path(), "animations")
+        try mkpath(save_dir) catch e; @warn "Could not create animations dir: $e"; end
+        
+        gif_filepath = joinpath(save_dir, base_filename * ".gif")
+        println("Preparing to save GIF and parameters to: $save_dir")
+
+        # --- Save Parameters ---
+        anim_info = Dict(
+            "Save Type" => "Animation GIF",
+            "Timestamp" => string(Dates.now()),
+            "Animation Time Range" => string((tSlider.range[][1], tSlider.range[][end])),
+            "Animation Duration (s)" => ui_options_obs["animation_duration_s"][],
+            "Animation FPS" => ui_options_obs["animation_fps"][],
+        )
+        saveParametersToCSV(
+            base_filename, save_dir, shared_params_obs, method_params_collection_obs,
+            methods_obs, ui_options_obs, anim_info, scene_info
+        )
+
+        # --- Record Animation ---
+        was_animating = is_animating[]
+        if was_animating; play_button.clicks[] = 1; sleep(0.1); end # Trigger stop
+
+        t_min, t_max = tSlider.range[][1], tSlider.range[][end]
+        duration_s = ui_options_obs["animation_duration_s"][]
+        fps = ui_options_obs["animation_fps"][]
+        n_frames = round(Int, duration_s * fps)
+        times_for_gif = range(t_min, t_max, length=n_frames)
+        @async begin
+        try
+            println("Recording $n_frames frames at $fps FPS...")
+            
+            # Record the animation without modifying axis limits
+            record(plot_fig, gif_filepath, times_for_gif; framerate=fps) do t_now
+                set_close_to!(tSlider, t_now)
+                yield()
+            end
+            println("Animation saved successfully to $gif_filepath")
+        catch e
+            @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
+        finally
+            display(GLMakie.Screen(), plot_fig)
+        end
+        end
+    end
+
+    # --- 5. Timer Cleanup on Figure Close ---
+    on(plot_fig.scene.events.window_open) do is_open
+        if !is_open && !isnothing(animation_timer[])
+            try close(animation_timer[]) catch; end
+            animation_timer[] = nothing
+            is_animating[] = false
+        end
+    end
+
+    return # The function modifies the layout in place
+end
+
+
+
 # """
 #     is_time_dependent(extracted_data) -> Bool
 

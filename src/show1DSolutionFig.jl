@@ -62,29 +62,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
 
     ax = Axis(plot_fig[1,1], xlabel = label_obs["xlabel"], ylabel = label_obs["ylabel"], title = label_obs["title"])
 
-    # --- Animation and GIF Saving Controls ---
-    # Add a new row, using a grid layout within it for alignment
-    anim_save_controls_row = control_fig[end+1, :] = GridLayout() # Span controls area
-
-    # Animation State/Controls
-    is_animating = Observable(false)
-    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
-    time_range_data = Ref((0.0, 1.0)) # Stores (t_min, t_max) from actual data
-    play_button = Button(anim_save_controls_row[1, 1], label = @lift($is_animating ? "Stop Anim" : "Play Anim")) # Col 1
-
-    # GIF Saving Textbox (Col 2) - with default value
-    gif_save_textbox = Textbox(anim_save_controls_row[1, 2], placeholder = "GIF Name (no ext)", width=150)
-    gif_save_textbox.stored_string = "untitled_anim" # Set default filename
-
-    # GIF Saving Button (Col 3)
-    gif_save_button = Button(anim_save_controls_row[1, 3], label = "Save GIF")
-
-    # Warning Label (Col 4)
-    Label(anim_save_controls_row[1, 4], text="(Window may close!)", fontsize=10, color=:darkgray, halign=:left).padding = (10,0,0,0)
-
-    # Adjust column sizes in the controls row for better spacing
-    colsize!(anim_save_controls_row, 1, Auto()); colsize!(anim_save_controls_row, 3, Auto()); colsize!(anim_save_controls_row, 4, Auto())
-
+    ani_layout = control_fig[end+1,:] = GridLayout()
+    createAnimationControls!(ani_layout, plot_fig, tSlider,shared_params_obs,method_params_collection_obs,methods_obs, ui_options_obs,scene_info)
     scene_obs = Dict{String,Observable}(
         "component" => comp_sel,
         "t" => tSlider.value 
@@ -173,114 +152,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
                              plot_observable = false)        
      
     end # --- End Lift Block 3 ---
-
-
-    # --- Animation Button Logic (Using real-time mapping) ---
-    on(play_button.clicks) do _
-        new_state = !is_animating[]
-        if new_state # --- Request Start Animation ---
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-            t_min, t_max = (tSlider.range[][1], tSlider.range[][end]); 
-            if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
-            is_animating[] = true
-
-            anim_duration_s = ui_options_obs["animation_duration_s"][] # Use value from dict
-            anim_fps = ui_options_obs["animation_fps"][]
-            timer_interval = 1.0 / max(1, anim_fps)
-            start_real_time = time()
-            #anim_time_ref = Ref(t_min) # Start animation from the beginning
-
-            function update_frame(timer_handle)
-                # Check if stopped externally
-                if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
-                # Calculate simulation time based on real time elapsed
-                elapsed_real_time = time() - start_real_time
-                cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
-                time_fraction = cycled_elapsed_time / anim_duration_s
-                current_sim_time = t_min + time_fraction * (t_max - t_min)
-                # Update slider value (triggers Lift 2)
-                set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max))
-            end
-
-            println("Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)...")
-            # Start timer immediately, repeat at interval
-            animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
-
-        else # --- Request Stop Animation ---
-            println("Stopping animation...")
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end
-            is_animating[] = false
-            # Nudge Lift 2 to ensure final state matches slider using non-animating logic
-            set_close_to!(tSlider, tSlider.value[])
-        end
-    end
-    # --- End Animation Button Logic ---
-
-    # --- GIF Saving Button Logic (using saveParametersToCSV) ---
-    on(gif_save_button.clicks) do _
-        base_filename = string(strip(gif_save_textbox.stored_string[]))
-        if isempty(base_filename); @warn "Enter GIF filename."; return; end
-
-        save_dir = joinpath(Utils.get_save_path(), "figures")
-        try mkpath(save_dir) catch e; @warn "Could not create dir: $e"; end
-        gif_filename = joinpath(save_dir, base_filename * ".gif")
-
-        println("Preparing GIF: $gif_filename and Parameters...")
-
-        # === Call reusable function to save Parameters ===
-        anim_info = Dict(
-            "Save Type" => "Animation GIF",
-            "Timestamp" => string(Dates.now()),
-            "Animation Time Range" => string(time_range_data[]),
-            "Animation Duration (s)" => string(ui_options_obs["animation_duration_s"]),
-            "Animation FPS" => string(ui_options_obs["animation_fps"][]),
-            "Save Trigger Time (t)" => string(round(tSlider.value[], digits=4))
-            # Add other relevant info?
-        )
-        save_success = saveParametersToCSV( # Call the new function
-                            base_filename,
-                            save_dir,
-                            shared_params_obs,
-                            method_params_collection_obs,
-                            methods_obs,
-                            ui_options_obs,
-                            anim_info,
-                            scene_info
-                    )
-        if !save_success; @warn "Parameter CSV saving failed for $base_filename. Continuing with GIF..."; end
-        # =================================================
-
-        # Stop interactive animation if running
-        was_animating = is_animating[]
-        if was_animating; if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; end; is_animating[] = false; sleep(0.1); end
-
-        # Get parameters for saving GIF
-        t_min, t_max = time_range_data[]; if !(t_max > t_min); println("Cannot save GIF: Invalid time range."); if was_animating; is_animating[]=true; end; return; end
-        duration_s = ui_options_obs["animation_duration_s"][]; fps = ui_options_obs["animation_fps"]; n_frames = round(Int, duration_s * fps); if n_frames <= 0; n_frames = 100; end
-        times_for_gif = range(t_min, t_max, length=n_frames)
-
-        # --- Record the animation ---
-        try
-            println("Recording $n_frames frames at $fps FPS... (Window may close)")
-            xlims!(ax, global_xlims[]); ylims!(ax, global_ylims[]) # Use fixed limits
-
-            record(plot_fig, gif_filename, times_for_gif; framerate = fps) do t_now
-                set_close_to!(tSlider, t_now) # Update plot state via Lift 2
-                yield() # Allow Makie to process events and redraw
-            end
-            println("Animation saved successfully to $gif_filename")
-        catch e; @error "Failed to save GIF animation!" exception=(e, catch_backtrace());
-        finally; println("GIF saving process finished."); end
-        # --------------------------
-    end
-    # --- End GIF Saving Logic ---
-
-
-    # --- Timer Cleanup on Figure Close ---
-    on(plot_fig.scene.events.window_open) do is_open
-        # Stop timer if figure closes
-        if !is_open && !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; animation_timer[] = nothing; is_animating[] = false; end
-    end
 
     # --- Display Figures ---
     try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
