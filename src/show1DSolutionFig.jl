@@ -14,7 +14,9 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     ui_options_obs = create_ui_observables(base_ui_dict)
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
-    scene_info = Dict{String,Any}()
+    scene_default = Dict{String,Any}("t"=> 0., "component" => 1)
+    scene_dict = merge(scene_options, scene_default)
+    scene_obs = createObsDict(scene_dict)
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
     shared_params_obs, method_params_collection_obs = create_parameter_observables(sim_config)
@@ -31,7 +33,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
         methods_obs,
         all_method_names,
         ui_options_obs,
-        scene_info
+        scene_obs
     )
     # -----------------------------------------
 
@@ -39,8 +41,10 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     # --- Time Slider & Label ---
     tLabel_text = Observable("t = 0.0")
     # Add a new row for the time label
-    # --- Time Slider, Log Toggles, etc. ---
-    tSlider = Slider(control_fig[end+2,:], range = 0:0)
+    tSlider = GLMakie.Slider(control_fig[end+2, 1:end], range=0:0.01:1, startvalue=scene_dict["t"])
+    comp_sel[] = scene_dict["component"]
+    # --- 3. Scene-Specific Observables for 2D Plot ---
+    connectObsDict!(scene_obs, ["t","component"],[tSlider.value,comp_sel])
 
     tLabel_text = lift(tSlider.value, tSlider.range) do val, range; 
         if range == [0]
@@ -63,12 +67,11 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     ax = Axis(plot_fig[1,1], xlabel = label_obs["xlabel"], ylabel = label_obs["ylabel"], title = label_obs["title"])
 
     ani_layout = control_fig[end+1,:] = GridLayout()
-    createAnimationControls!(ani_layout, plot_fig, tSlider,shared_params_obs,method_params_collection_obs,methods_obs, ui_options_obs,scene_info)
+    createAnimationControls!(ani_layout, plot_fig, tSlider,shared_params_obs,method_params_collection_obs,methods_obs, ui_options_obs,scene_obs)
     scene_obs = Dict{String,Observable}(
         "component" => comp_sel,
         "t" => tSlider.value 
     )
-    set_scene_options!(scene_obs, scene_options)
 
     # --- Data Structures ---
     datatype = Vector{Vector{Float64}}
@@ -142,7 +145,6 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     #lift(method_number, tSlider.value, xs, us, track_max_obs, x_at_max_obs, u_at_max_obs; ignore_equal_values=true) do active_num, _, current_xs_obsvec, current_us_obsvec, track_max_enabled, current_x_max_obsvec, current_u_max_obsvec
     lift(uData_extr, tSlider.value, ui_update) do u_data, t, _
 
-        save_scene_info!(scene_obs, scene_info)
         x_snapshot, y_snapshot = calculate_snapshot(xData[], u_data, t)
         create_base_plot_1D!(plot_fig, ax, 
                              methods_obs[],

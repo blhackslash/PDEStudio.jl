@@ -12,7 +12,7 @@ using LibGit2
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, 
-       assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv
+       assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv, createObsDict, connectObsDict!
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
@@ -843,4 +843,17 @@ function load_additional_options_from_csv(
     return section_dict
 end
 
+function createObsDict(dict::Dict{String,Any})
+    dict_obs = Dict{String,Observable}()
+    for (key,val) = dict
+        dict_obs[key] = Observable(val)
+    end
+    return dict_obs
+end
+
+function connectObsDict!(dict::Dict{String,Observable}, ks::Vector{String}, vals::Vector{Observable})
+    for (i,key) = enumerate(ks)
+        connect!(dict[key],vals[i])
+    end
+end
 end

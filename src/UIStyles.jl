@@ -1,7 +1,5 @@
 const UIType = Union{Symbol,Dict}
 
-# In src/ui_styles.jl
-
 """
     createUIDict(options::Union{Symbol, Dict})
 
@@ -95,8 +93,7 @@ function GetUIStyle(style::Symbol)
             "font_size" => 14,
             "figsize" => (700, 550),
             "update_limits" => true,
-            "save_formats" => ["png", "pdf", "svg"] # For publication, save all formats
-            # You could also add other font settings here
+            "save_formats" => ["png", "pdf", "svg"]
         ))
         return publication_style
     elseif style == :simple
@@ -107,7 +104,6 @@ function GetUIStyle(style::Symbol)
             "ticklabel_size" => 16,
         ))
         return simple_style
-    # Add other styles as needed
     else
         @warn "UI style ':$style' not recognized. Returning default style."
         return default_style
@@ -119,64 +115,47 @@ end
 #======================================================================#
 
 """
-    get_ui_style_2D(style::Symbol) -> Dict
+    getUIStyle2D(style::Symbol) -> Dict
 
 Returns a dictionary of UI options for pre-defined 2D plotting styles.
-Available styles include: `:default`, `:publication`.
+It builds upon the 1D styles from `GetUIStyle` and adds/overrides
+2D-specific keys.
 """
 function getUIStyle2D(style::Symbol)
-    # --- Base Default Style for 2D Plots ---
-    default_style_2D = Dict{String, Any}(
-        "system_dimension" => 1,
-        "figsize" => (1280, 800),
+    # --- 1. Start with the corresponding 1D style as a base ---
+    base_style = GetUIStyle(style)
+
+    # --- 2. Define 2D-specific additions and overrides ---
+    default_2D_additions = Dict{String, Any}(
         "markersize_2d" => 15,
         "markersize_3d" => Vec3f(0.2, 0.2, 0.2),
-        "label_size" => 24,
-        "ticklabel_size" => 22,
-        "font_size" => 24,
-        "legend" => "Legend",
-        "xpadding" => 0,
-        "ypadding" => 0.1,
-        "animation_fps" => 30,
-        "animation_duration_s" => 10.0,
-        "legend_pos" => "detached",
-        "xgridvisible" => true,
-        "ygridvisible" => true,
-        "xticklabelsvisible" => true,
-        "yticklabelsvisible" => true,
-        "title" => "default",
-        "xlabel" => "default",
-        "ylabel" => "default",
-        "zlabel" => "default",
-        "colorbar_label" => "default",
-        "xlogscale" => false,
-        "ylogscale" => false,
-        "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
-        "markers" => [:circle, :rect, :utriangle, :dtriangle, :cross, :xcross],
         "plot_as_surface" => false,
         "colormap" => :viridis,
         "colormaps" => [:viridis, :plasma, :inferno, :magma, :thermal, :coolwarm, :balance, :grays],
-        "axis_limit_padding" => 0.1
+        "axis_limit_padding" => 0.1,
+        # Override labels for 2D context
+        "zlabel" => "default",
+        "colorbar_label" => "default"
     )
 
-    if style == :default
-        return default_style_2D
-    elseif style == :publication
-        publication_style_2D = deepcopy(default_style_2D)
-        merge!(publication_style_2D, Dict{String, Any}(
-            "figsize" => (700, 550), # A more paper-friendly size
-            "label_size" => 16,
-            "ticklabel_size" => 14,
-            "font_size" => 16,
+    # Merge the 2D additions into the base style
+    final_style = merge(base_style, default_2D_additions)
+
+    # --- 3. Apply any 2D-specific modifications for non-default styles ---
+    if style == :publication
+        merge!(final_style, Dict{String, Any}(
             "markersize_2d" => 10,
-            "markersize_3d" => Vec3f(0.1, 0.1, 0.1),
+            "markersize_3d" => Vec3f(0.1, 0.1, 0.1)
         ))
-        return publication_style_2D
-    # You can add other 2D-specific styles here, e.g., :heatmap_default
-    else
-        @warn "2D UI style ':$style' not recognized. Returning default 2D style."
-        return default_style_2D
     end
+    
+    # --- 4. Remove 1D-only keys that are not applicable to 2D plots ---
+    irrelevant_keys = ["show_lines", "dashed_lines", "track_max", "track_min", "linewidth", "markersize", "lineStyles", "reference"]
+    for key in irrelevant_keys
+        delete!(final_style, key)
+    end
+
+    return final_style
 end
 
 """
@@ -193,48 +172,3 @@ function createUIDict2D(options::UIType)
     end
     return Dict{String, Any}() # Fallback
 end
-
-ui_dict = Dict(
-    "system_dimension" => 1,
-    "dashed_lines" => false,
-    "show_scatter" => false,
-    "show_lines" => true,
-    "hPos" => :right,
-    "vPos" => :top,
-    "figsize" => (1280,800),
-    "linewidth" => 6,
-    "markersize" => 20,
-    "label_size" => 24,
-    "ticklabel_size" => 22,
-    "font_size" => 24,
-    "legend" => "Legend",
-    "xpadding" => 0,
-    "ypadding" => 0.1,
-    "animation_fps" => 30,
-    "animation_duration_s" => 10.,
-    "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
-    "markers" => [:rect, :circle, :utriangle, :dtriangle, :cross, :xcross],
-    "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)]
-)
-
-# --- ui_dict definition ---
-# Add the new option for 2D plotting type
-ui_dict2D = Dict(
-    # ... (previous keys) ...
-    "hPos" => :right,
-    "vPos" => :top,
-    "figsize" => (1280, 800),
-    "markersize_2d" => 15,    # Marker size for 2D scatter plot
-    "markersize_3d" => Vec3f(0.2, 0.2, 0.2), # Marker size for 3D meshscatter (can be Vec3f or Float)
-    "label_size" => 24,
-    "ticklabel_size" => 22,
-    "font_size" => 24,
-    "legend" => "Legend",
-    "colors" => [:red, :blue, :green, :orange, :purple, :brown, :cyan, :yellow, :gray, :magenta, :navy],
-    "markers" => [:circle, :rect, :utriangle, :dtriangle, :cross, :xcross], # Markers for legend mostly
-    "lineStyles" => [:solid, (:dash, :dense), (:dash, :normal), (:dashdot, :dense), (:dashdot, :normal), (:dot, :dense), (:dot, :normal)], # Less relevant
-    "plot_as_surface" => false, # << NEW: false for scatter/heatmap, true for surface
-    "colormap" => :viridis,     # Default colormap
-    "colormaps" => [:viridis, :plasma, :inferno, :magma, :thermal, :coolwarm, :balance, :grays], # Available colormaps
-    "axis_limit_padding" => 0.1
-)

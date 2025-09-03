@@ -297,7 +297,7 @@ function createBaseControlsFigure(
     methods_obs::Observable{Vector{String}},
     all_method_names::Vector{String},
     ui_options_obs::Dict{String, Observable},
-    scene_info::Dict{String,Any}
+    scene_obs::Dict{String,Observable}
 )
     GLMakie.activate!()
     base_controls_fig = Figure(size=(500, 600)) # Initial size, will grow as more controls are added
@@ -345,7 +345,7 @@ function createBaseControlsFigure(
     current_row += 1
     save_box_layout = fig_layout[current_row, 1] = GridLayout()
     # Adapt createSaveFigBox to populate this layout
-    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs, scene_info) # (source: 37-45, 62)
+    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs, scene_obs) # (source: 37-45, 62)
     current_row += 1
 
     # Ensure the fig_layout rows can auto-size based on content added so far
@@ -569,7 +569,7 @@ function saveParametersToCSV(
     methods_obs::Observable{Vector{String}},
     ui_options_obs::Dict{String, Observable},
     optional_info::Dict,
-    scene_info::Dict,
+    scene_obs::Dict,
 )::Bool
     if isempty(base_filename); @warn "CSV save skipped: filename is empty."; return false; end
 
@@ -594,7 +594,7 @@ function saveParametersToCSV(
 
         # --- Add Data (Context, Shared, Methods, UI) ---
         for key in sort(collect(keys(optional_info))); add_row("Context", missing, key, optional_info[key]); end
-        for s_key in sort(collect(keys(scene_info))); add_row("Scene", missing, s_key, scene_info[s_key]); end
+        for s_key in sort(collect(keys(scene_obs))); add_row("Scene", missing, s_key, scene_obs[s_key][]); end
         for p_key in sort(collect(keys(shared_params_obs))); add_row("Shared", missing, p_key, shared_params_obs[p_key][]); end
         for ui_key in sort(collect(keys(ui_options_obs))); add_row("UI", missing, ui_key, ui_options_obs[ui_key][]); end
         
@@ -703,7 +703,7 @@ function createSaveFigBox(
     method_params_collection_obs::Dict{String, Dict{String, Observable}}, # <<< Pass through
     methods_obs::Observable{Vector{String}}, # <<< Pass through
     ui_options_obs::Dict,
-    scene_info::Dict = Dict{String, Any}();
+    scene_obs::Dict = Dict{String, Observable}();
     context_info = Dict{String, Any}()
     )
 
@@ -790,7 +790,7 @@ function createSaveFigBox(
              methods_obs,                  # Pass it along
              ui_options_obs,
              context_info,
-             scene_info,
+             scene_obs,
          )
          # --------------------------------------------------
         #ui_options_obs["update_limits"][] = original_update_state
@@ -884,7 +884,6 @@ The position can be:
 """
 function create_or_update_legend!(
     fig::Figure, 
-    ax::Axis, 
     plotted_objects::Vector, 
     labels::Vector, 
     ui_options_obs::Dict
@@ -921,7 +920,8 @@ function create_or_update_legend!(
 
         if position == "detached"
             # For a detached legend, create it in column 2 of the figure's layout.
-            Legend(fig[1, 2], plotted_objects, labels, final_title; # <-- Use final_title
+            trim!(fig.layout)
+            Legend(fig[1, end+1], plotted_objects, labels, final_title; # <-- Use final_title
                 tellheight=false,
                 merge = true,
                 unique = true,
@@ -1618,12 +1618,203 @@ function create_base_plot_1D!(
     # sorted order, so no extra sorting is needed here.
     create_or_update_legend!(
         plot_fig,
-        ax,
         plotted_objects,
         labels_for_legend,
         ui_options_obs
     )
     
+    return nothing
+end
+
+"""
+    _find_outlier_indices(matrix::AbstractMatrix, threshold::Real) -> Vector{CartesianIndex}
+
+Identifies the indices of extreme outliers in a matrix using a tunable IQR method.
+It works by flattening the matrix and applying the 1D outlier logic.
+"""
+function _find_outlier_indices(
+    matrix::AbstractMatrix,
+    threshold::Real
+)::Vector{CartesianIndex}
+    # Flatten the matrix to a vector to reuse the existing IQR logic
+    flat_vector = vec(matrix)
+    
+    # Get the linear indices of outliers in the flattened vector
+    linear_outlier_indices = _find_outlier_indices(flat_vector, threshold)
+    
+    # Convert the linear indices back to Cartesian indices for the original matrix
+    return CartesianIndices(matrix)[linear_outlier_indices]
+end
+
+
+"""
+    create_or_update_colorbar!(fig::Figure, plot_object, ui_options_obs::Dict)
+
+Creates or updates a Colorbar for a given plot object (like a heatmap or surface).
+It is placed to the right of the plot. Any existing Colorbar is removed first.
+"""
+function create_or_update_colorbar!(
+    fig::Figure,
+    plot_object, # The heatmap, surface, etc.
+    ui_options_obs::Dict{String, Observable}
+)
+    # --- 1. Find and Delete any existing Colorbar in the Figure ---
+    for elem in copy(contents(fig.layout))
+        if elem isa Colorbar
+            delete!(elem)
+        end
+    end
+
+    if isnothing(plot_object)
+        return
+    end
+
+    # --- 2. Create and Place the New Colorbar ---
+    try
+        # Place the colorbar in column 2 of the figure's layout.
+        cb = Colorbar(fig[1, 2], plot_object, label = ui_options_obs["colorbar_label"][],
+            labelsize = ui_options_obs["label_size"][]
+        )
+        cb.ticklabelsize = ui_options_obs["ticklabel_size"][]
+        
+        # Ensure the new column's width is determined by the colorbar's content
+        colsize!(fig.layout, 2, Auto())
+    catch e
+        @error "Failed to create or update colorbar." exception=(e, catch_backtrace())
+    end
+end
+
+
+"""
+    set_axis_styles!(ax::Axis3, ui_options_obs)
+
+Applies styles to a 3D `Axis3` object. It dynamically switches between a 3D
+surface view and a 2D top-down view based on the `plot_as_surface` UI option.
+"""
+function set_axis_styles!(
+    ax::Axis3,
+    ui_options_obs::Dict{String, Observable}
+)
+    try
+        # Check the UI option to decide which mode to use
+        is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+
+        # Set common properties first
+        ax.titlesize = get(ui_options_obs, "title_size", Observable(26))[]
+        ax.xlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+        ax.ylabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+        ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+        ax.yticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+
+        if is_surface_view
+            # --- Configure for 3D Surface View ---
+            ax.zlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+            ax.zticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+            ax.aspect = (1, 1, 0.5)
+            ax.perspectiveness = 0.5
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
+            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
+        else
+            # --- Configure for 2D Top-Down View ---
+            ax.zlabel = "" # Hide Z label
+            ax.zticklabelsvisible = false # Hide Z tick labels
+            ax.aspect = :data
+            ax.perspectiveness = 0.0
+            ax.elevation = pi/2 # Set the view to be directly from above
+            ax.azimuth = 0
+            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # Hide Z grid
+        end
+    catch e
+        @warn "An error occurred while setting 3D axis styles." exception=(e, catch_backtrace())
+    end
+end
+
+
+"""
+    create_base_plot_2D!(...)
+
+Handles the core plotting for 2D data (surfaces or heatmaps). It calculates a global
+color range to ensure a consistent color scale across all visible plots.
+"""
+function create_base_plot_2D!(
+    plot_fig::Figure,
+    ax::Axis3,
+    active_methods::Vector{String},
+    x_snapshot::AbstractVector, # Vector of Vector{NTuple{2,Float64}}
+    u_snapshot::AbstractVector, # Vector of Vector{Float64}
+    ui_options_obs::Dict{String, Observable},
+    global_color_range::Observable{Tuple{Float64, Float64}}
+)
+    # --- Setup and Styling ---
+    width, height = ui_options_obs["figsize"][]
+    resize!(plot_fig, width, height)
+    empty!(ax)
+    
+    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs); return nothing; end
+
+    # --- Plotting Loop ---
+    plotted_objects = []
+    labels_for_legend = String[]
+    plot_object_for_colorbar = nothing
+
+    is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+    color_range = global_color_range[]
+
+    for (i, method_label) in enumerate(active_methods)
+        if i > length(x_snapshot) || i > length(u_snapshot); continue; end
+
+        x_data = x_snapshot[i] # This is a Vector{NTuple{2, Float64}}
+        u_data = u_snapshot[i] # This is a Vector{Float64}
+        
+        if isempty(x_data) || isempty(u_data); continue; end
+
+        # Handle outlier removal if requested
+        u_data_for_plotting = copy(u_data)
+        if ui_options_obs["remove_outliers"][]
+             # For 2D, u_data is just a vector at this point, so we use the 1D version
+            outlier_indices = _find_outlier_indices(u_data, ui_options_obs["outlier_threshold"][])
+            if !isempty(outlier_indices)
+                u_data_for_plotting[outlier_indices] .= NaN
+            end
+        end
+
+        local current_plot_object
+        if is_surface_view
+            points_xyz = [Point3f(p[1], p[2], val) for (p, val) in zip(x_data, u_data_for_plotting)]
+            current_plot_object = meshscatter!(ax, points_xyz; 
+                markersize=ui_options_obs["markersize_3d"][], 
+                color=u_data_for_plotting, 
+                colormap=ui_options_obs["colormap"][], 
+                colorrange=color_range, 
+                label=method_label
+            )
+        else
+            points_xy = [Point2f(p[1], p[2]) for p in x_data]
+            current_plot_object = scatter!(ax, points_xy; 
+                markersize=ui_options_obs["markersize_2d"][], 
+                color=u_data_for_plotting, 
+                colormap=ui_options_obs["colormap"][], 
+                colorrange=color_range, 
+                label=method_label
+            )
+        end
+        
+        push!(plotted_objects, current_plot_object)
+        push!(labels_for_legend, method_label)
+        plot_object_for_colorbar = current_plot_object
+    end
+
+    # --- Final Touches ---
+    create_or_update_colorbar!(plot_fig, plot_object_for_colorbar, ui_options_obs)
+    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, ui_options_obs)
+    set_axis_styles!(ax, ui_options_obs)
+    
+    # Auto-limit XY axes for the current view, but fix the Z-axis to the global range
+    autolimits!(ax)
+    if is_surface_view
+        zlims!(ax, color_range...)
+    end
+
     return nothing
 end
 
@@ -2225,7 +2416,7 @@ end
 # This is the "workhorse". It takes a single tuple of (value_vector, time_vector)
 # and finds the value at the closest time `t`.
 function calculate_snapshot(
-    run_data::Tuple{<:AbstractVector{<:Real}, <:AbstractVector},
+    run_data::Tuple{<:AbstractVector{<:Union{Real,Tuple}}, <:AbstractVector},
     t_snapshot::Real
 )
     series_data, series_times = run_data
@@ -2256,7 +2447,7 @@ end
 
 # --- Base Case 2: For a single time-independent (scalar) run ---
 # If the data is just a number, it doesn't change with time, so we just return it.
-function calculate_snapshot(run_data::Tuple{<:Real, <:AbstractVector}, t_snapshot::Real)
+function calculate_snapshot(run_data::Tuple{<:Union{Real,Tuple}, <:AbstractVector}, t_snapshot::Real)
     scalar_data, _ = run_data # We ignore the time vector for scalar stats
     return scalar_data
 end
@@ -2391,7 +2582,7 @@ function createAnimationControls!(
     method_params_collection_obs::Dict{String, Dict{String, Observable}},
     methods_obs::Observable{Vector{String}},
     ui_options_obs::Dict{String, Observable},
-    scene_info::Dict{String, Any}
+    scene_obs::Dict{String, Observable}
 )
     # --- 1. Setup Layout and State Variables ---
     is_animating = Observable(false)
@@ -2466,7 +2657,7 @@ function createAnimationControls!(
         )
         saveParametersToCSV(
             base_filename, save_dir, shared_params_obs, method_params_collection_obs,
-            methods_obs, ui_options_obs, anim_info, scene_info
+            methods_obs, ui_options_obs, anim_info, scene_obs
         )
 
         # --- Record Animation ---
