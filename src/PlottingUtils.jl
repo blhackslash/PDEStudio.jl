@@ -1685,49 +1685,49 @@ function create_or_update_colorbar!(
 end
 
 
-"""
-    set_axis_styles!(ax::Axis3, ui_options_obs)
+# """
+#     set_axis_styles!(ax::Axis3, ui_options_obs)
 
-Applies styles to a 3D `Axis3` object. It dynamically switches between a 3D
-surface view and a 2D top-down view based on the `plot_as_surface` UI option.
-"""
-function set_axis_styles!(
-    ax::Axis3,
-    ui_options_obs::Dict{String, Observable}
-)
-    try
-        # Check the UI option to decide which mode to use
-        is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+# Applies styles to a 3D `Axis3` object. It dynamically switches between a 3D
+# surface view and a 2D top-down view based on the `plot_as_surface` UI option.
+# """
+# function set_axis_styles!(
+#     ax::Axis3,
+#     ui_options_obs::Dict{String, Observable}
+# )
+#     try
+#         # Check the UI option to decide which mode to use
+#         is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
 
-        # Set common properties first
-        ax.titlesize = get(ui_options_obs, "title_size", Observable(26))[]
-        ax.xlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
-        ax.ylabelsize = get(ui_options_obs, "label_size", Observable(24))[]
-        ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
-        ax.yticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+#         # Set common properties first
+#         ax.titlesize = get(ui_options_obs, "title_size", Observable(26))[]
+#         ax.xlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+#         ax.ylabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+#         ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+#         ax.yticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
 
-        if is_surface_view
-            # --- Configure for 3D Surface View ---
-            ax.zlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
-            ax.zticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
-            ax.aspect = (1, 1, 0.5)
-            ax.perspectiveness = 0.5
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
-            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
-        else
-            # --- Configure for 2D Top-Down View ---
-            ax.zlabel = "" # Hide Z label
-            ax.zticklabelsvisible = false # Hide Z tick labels
-            ax.aspect = :data
-            ax.perspectiveness = 0.0
-            ax.elevation = pi/2 # Set the view to be directly from above
-            ax.azimuth = 0
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # Hide Z grid
-        end
-    catch e
-        @warn "An error occurred while setting 3D axis styles." exception=(e, catch_backtrace())
-    end
-end
+#         if is_surface_view
+#             # --- Configure for 3D Surface View ---
+#             ax.zlabelsize = get(ui_options_obs, "label_size", Observable(24))[]
+#             ax.zticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(22))[]
+#             ax.aspect = (1, 1, 0.5)
+#             ax.perspectiveness = 0.5
+#             ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
+#             ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
+#         else
+#             # --- Configure for 2D Top-Down View ---
+#             ax.zlabel = "" # Hide Z label
+#             ax.zticklabelsvisible = false # Hide Z tick labels
+#             ax.aspect = :data
+#             ax.perspectiveness = 0.0
+#             ax.elevation = pi/2 # Set the view to be directly from above
+#             ax.azimuth = 0
+#             ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # Hide Z grid
+#         end
+#     catch e
+#         @warn "An error occurred while setting 3D axis styles." exception=(e, catch_backtrace())
+#     end
+# end
 
 
 """
@@ -2699,7 +2699,79 @@ function createAnimationControls!(
     return # The function modifies the layout in place
 end
 
+# This function should be updated in PlottingUtils.jl
 
+"""
+    extract_line_cut_data(x_points, u_values, line_point, line_vector, tolerance_dist)
+
+Extracts a 1D slice of data from a 2D snapshot, preserving all solution components.
+
+It finds all points within a specified orthogonal distance (`tolerance_dist`) of a line
+and projects them to get a 1D coordinate. It returns these coordinates along with their
+corresponding `u` values, which can be a vector (single component) or a matrix
+(multiple components). The new 1D coordinate system is centered at `line_point`.
+
+# Arguments
+- `x_points::Vector{NTuple{2, Float64}}`: The (x,y) coordinates of the 2D data.
+- `u_values::VecOrMat{<:Real}`: The solution values (Vector or Matrix) at each point.
+- `line_point::NTuple{2, <:Real}`: The point `p` that the cut line passes through.
+- `line_vector::NTuple{2, <:Real}`: The direction vector `v` of the cut line.
+- `tolerance_dist::Real`: The maximum orthogonal distance for a point to be included.
+
+# Returns
+- A tuple `(cut_x_coords, cut_u_values::VecOrMat)` containing the sorted 1D data.
+"""
+function extract_line_cut_data(
+    x_points::Vector{NTuple{2, Float64}},
+    u_values::VecOrMat{<:Real},
+    line_point::NTuple{2, <:Real},
+    line_vector::NTuple{2, <:Real},
+    tolerance_dist::Real
+)
+    if isempty(x_points) || isempty(u_values); return (Float64[], eltype(u_values)[]); end
+
+    v_norm = sqrt(line_vector[1]^2 + line_vector[2]^2)
+    if v_norm < 1e-9; return (Float64[], eltype(u_values)[]); end
+    v_unit = (line_vector[1] / v_norm, line_vector[2] / v_norm)
+
+    p = line_point
+    cut_x = Float64[]
+    
+    # Store indices of points that are part of the cut
+    valid_indices = Int[]
+
+    for i in eachindex(x_points)
+        q = x_points[i]
+        w = (q[1] - p[1], q[2] - p[2])
+        
+        projected_coord = w[1] * v_unit[1] + w[2] * v_unit[2]
+        dist_sq = (w[1]^2 + w[2]^2) - projected_coord^2
+        orthogonal_dist = dist_sq > 0 ? sqrt(dist_sq) : 0.0
+        
+        if orthogonal_dist <= tolerance_dist
+            push!(cut_x, projected_coord)
+            push!(valid_indices, i)
+        end
+    end
+
+    if !isempty(valid_indices)
+        # Sort the results by the new 1D coordinate
+        p = sortperm(cut_x)
+        
+        # Select and sort the u_values based on the valid indices and permutation
+        if u_values isa AbstractMatrix
+            cut_u = u_values[valid_indices, :]
+            return (cut_x[p], cut_u[p, :])
+        else # It's a Vector
+            cut_u = u_values[valid_indices]
+            return (cut_x[p], cut_u[p])
+        end
+    else
+        # Return empty arrays with the correct type
+        empty_u = u_values isa AbstractMatrix ? Matrix{eltype(u_values)}(undef, 0, size(u_values, 2)) : Vector{eltype(u_values)}()
+        return (Float64[], empty_u)
+    end
+end
 
 # """
 #     is_time_dependent(extracted_data) -> Bool

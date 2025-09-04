@@ -9,7 +9,7 @@ using Dates # For timestamp in optional info
 using ProgressMeter
 
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, GetUIStyle, plotFromCSV, interactiveCSVLauncher
+export show1DSolutionFig, show2DCutFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, GetUIStyle, plotFromCSV, interactiveCSVLauncher
 
 include("UIStyles.jl")
 include("PlottingUtils.jl")
@@ -17,6 +17,7 @@ include("show1DSolutionFig.jl")
 include("show2DSolutionFig.jl")
 include("showDynamicDependence.jl")
 include("showConvergencePlot.jl")
+include("show2DCutFig.jl")
 
 function plotFromCSV(csv_filepath::String; kwargs...)
     ui_options = load_additional_options_from_csv(csv_filepath, "UI")
@@ -26,6 +27,10 @@ function plotFromCSV(csv_filepath::String; kwargs...)
         return showConvergencePlot(sim_config, scene_options["varied_key"], 
                                    scene_options["variation_range"]; ui_options = ui_options,
                                    scene_options = scene_options, kwargs...)
+    elseif haskey(ui_options, "plot_as_surface")
+        return show2DSolutionFig(sim_config; scene_options = scene_options, ui_options = ui_options, kwargs...)
+    elseif haskey(scene_options, "line_point") && haskey(scene_options,"line_vector")
+        return show2DCutFig(sim_config; scene_options = scene_options, ui_options = ui_options, kwargs...)
     elseif haskey(scene_options, "y_key") && !haskey(scene_options, "t")
         return showDynamicDependence(sim_config; scene_options = scene_options, ui_options = ui_options, kwargs...)
     elseif !haskey(scene_options, "y_key") && !haskey(scene_options, "x_key")
