@@ -89,6 +89,7 @@ function show2DCutFig(sim_config::SimulationConfig; calc_stats = false, referenc
         xData_tmp = Vector{Tuple{Vector{Vector{Float64}}, Vector{Float64}}}(undef, length(tasks))
         uData_tmp = Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, length(tasks))
         
+        first_run = true
         for (i, params) in enumerate(tasks)
             sim_data = Utils.loadSimData(params)
             if isnothing(sim_data) || !isa(sim_data, SimData2D); continue; end
@@ -113,6 +114,13 @@ function show2DCutFig(sim_config::SimulationConfig; calc_stats = false, referenc
             
             xData_tmp[i] = (cut_x_all_t, sim_data.t)
             uData_tmp[i] = (Dict("u" => cut_u_all_t), sim_data.t)
+            current_comps = length(sim_data.u[1][1,:])
+            if first_run
+                components[] = Tuple(["Component $k" for k = 1:current_comps])
+                first_run = false
+            elseif current_comps != length(components[])
+                @warn "Inconsistent components amount detected!"
+            end
         end
 
         xData[] = xData_tmp

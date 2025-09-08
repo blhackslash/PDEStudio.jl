@@ -1246,10 +1246,130 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
-#======================================================================#
-#           RECURSIVE MIN/MAX CALCULATION
-#======================================================================#
+# #======================================================================#
+# #           RECURSIVE MIN/MAX CALCULATION
+# #======================================================================#
+# # --- Base Case: Single Number ---
+# _get_val(x::Real) = isfinite(x) ? x : nothing
 
+# #======================================================================#
+# #           RECURSIVE MIN/MAX CALCULATION (COMPONENT-AWARE)
+# #======================================================================#
+
+# # --- MINIMUM VALUE CALCULATION ---
+
+# """
+#     get_min_val(data; component=nothing) -> Union{Real, Nothing}
+
+# Recursively finds the minimum finite value in a potentially nested collection.
+
+# # Arguments
+# - `data`: The potentially nested data structure.
+# - `component::Union{Int, Nothing}`: If specified (e.g., `component=1`), the function
+#   will extract the first element from base tuples (`Tuple{VarArg{<:Real}}`) and calculate
+#   the minimum based on these extracted values. Scalars not part of tuples will be ignored.
+#   If `nothing`, it calculates the minimum from base scalar values and ignores tuples.
+# """
+# function get_min_val(data; kwargs...)
+#     _get_min_val(data; kwargs...)
+# end
+
+# """Base case for scalar values. Ignored if component extraction mode is active."""
+# function _get_min_val(data::Real; kwargs...)
+#     return _get_val(data)
+# end
+
+# """Base case for vectors of scalar values. Ignored if component extraction mode is active."""
+# function _get_min_val(data::AbstractVector{<:Real}; kwargs...)
+#     filtered_data = _get_val(data)
+#     return isnothing(filtered_data) ? Inf : minimum(filtered_data; init=Inf)
+# end
+
+# """New base case for tuples. Extracts a component if specified."""
+# function _get_min_val(data::Tuple; kwargs...)
+#     component_idx = get(kwargs, :component, nothing)
+#     if isnothing(component_idx)
+#         return nothing # In default mode, ignore tuples
+#     end
+    
+#     # Extract component value if valid
+#     if 1 <= component_idx <= length(data) && isa(data[component_idx], Real)
+#         return _get_val(data[component_idx])
+#     else
+#         return nothing # Index out of bounds or component not a Real number
+#     end
+# end
+
+# """Recursive step for nested vectors. Propagates kwargs."""
+# function _get_min_val(data::AbstractVector; kwargs...)
+#     # Use a generator to recursively call get_min_val on each element,
+#     # filtering out `nothing` results before finding the minimum.
+#     min_val = minimum(
+#         (v for v in (get_min_val(d; kwargs...) for d in data) if !isnothing(v)); 
+#         init=Inf
+#     )
+#     return min_val == Inf ? nothing : min_val
+# end
+
+
+# # --- MAXIMUM VALUE CALCULATION ---
+
+# """
+#     get_max_val(data; component=nothing) -> Union{Real, Nothing}
+
+# Recursively finds the maximum finite value in a potentially nested collection.
+
+# # Arguments
+# - `data`: The potentially nested data structure.
+# - `component::Union{Int, Nothing}`: If specified (e.g., `component=1`), the function
+#   will extract the first element from base tuples (`Tuple{VarArg{<:Real}}`) and calculate
+#   the maximum based on these extracted values. Scalars not part of tuples will be ignored.
+#   If `nothing`, it calculates the maximum from base scalar values and ignores tuples.
+# """
+# function get_max_val(data; kwargs...)
+#     _get_max_val(data; kwargs...)
+# end
+
+# """Base case for scalar values. Ignored if component extraction mode is active."""
+# function _get_max_val(data::Real; kwargs...)
+#     if haskey(kwargs, :component)
+#         return nothing
+#     else
+#         return _get_val(data)
+#     end
+# end
+
+# """Base case for vectors of scalar values. Ignored if component extraction mode is active."""
+# function _get_max_val(data::AbstractVector{<:Real}; kwargs...)
+#     if haskey(kwargs, :component)
+#         return nothing
+#     end
+#     filtered_data = _get_val(data)
+#     return isnothing(filtered_data) ? -Inf : maximum(filtered_data; init=-Inf)
+# end
+
+# """New base case for tuples. Extracts a component if specified."""
+# function _get_max_val(data::Tuple; kwargs...)
+#     component_idx = get(kwargs, :component, nothing)
+#     if isnothing(component_idx)
+#         return nothing
+#     end
+    
+#     if 1 <= component_idx <= length(data) && isa(data[component_idx], Real)
+#         return _get_val(data[component_idx])
+#     else
+#         return nothing
+#     end
+# end
+
+# """Recursive step for nested vectors. Propagates kwargs."""
+# function _get_max_val(data::AbstractVector; kwargs...)
+#     max_val = maximum(
+#         (v for v in (get_max_val(d; kwargs...) for d in data) if !isnothing(v)); 
+#         init=-Inf
+#     )
+#     return max_val == -Inf ? nothing : max_val
+# end
 # --- Base Cases ---
 # For a single number
 _get_val(x::Real) = isfinite(x) ? x : nothing
@@ -1263,17 +1383,18 @@ _get_val(v::AbstractVector{<:Real}) = isempty(v) ? nothing : filter(isfinite, v)
 Recursively finds the minimum finite value in a potentially nested collection
 of vectors and numbers. Returns `nothing` if no finite values are found.
 """
-function get_min_val(data)
+function get_min_val(data;kwargs...)
     # Use multiple dispatch to handle the base cases (a single number or a vector of numbers)
     # and the recursive case (a vector of other things).
-    _get_min_val(data)
+    _get_min_val(data;kwargs...)
 end
 
-_get_min_val(data::Real) = _get_val(data)
-_get_min_val(data::AbstractVector{<:Real}) = minimum(_get_val(data); init=Inf)
-_get_min_val(data::Tuple{<:Any,<:Vector}) = _get_min_val(data[1])
+_get_min_val(data::Real;kwargs...) = _get_val(data)
+_get_min_val(data::Tuple{Vararg{Real}}; kwargs...) = (c_ind = get(kwargs, :component, 1); _get_val(data[c_ind]))
+_get_min_val(data::AbstractVector{<:Real};kwargs...) = minimum(_get_val(data); init=Inf)
+_get_min_val(data::Tuple{<:Any,<:Vector};kwargs...) = _get_min_val(data[1], kwargs...)
 
-function _get_min_val(data::AbstractVector) # Recursive case for nested vectors
+function _get_min_val(data::AbstractVector;kwargs...) # Recursive case for nested vectors
     # Use a generator to recursively call get_min_val on each element,
     # filtering out `nothing` results before finding the minimum.
     return minimum((v for v in (get_min_val(d) for d in data) if !isnothing(v)); init=Inf)
@@ -1284,15 +1405,16 @@ end
 
 Recursively finds the maximum finite value in a potentially nested collection.
 """
-function get_max_val(data)
-    _get_max_val(data)
+function get_max_val(data;kwargs...)
+    _get_max_val(data; kwargs...)
 end
 
-_get_max_val(data::Real) = _get_val(data)
-_get_max_val(data::AbstractVector{<:Real}) = maximum(_get_val(data); init=-Inf)
-_get_max_val(data::Tuple{<:Any,<:Vector}) = _get_max_val(data[1])
+_get_max_val(data::Real;kwargs...) = _get_val(data)
+_get_max_val(data::Tuple{Vararg{Real}}; kwargs...) = (c_ind = get(kwargs, :component, 1); _get_val(data[c_ind]))
+_get_max_val(data::AbstractVector{<:Real};kwargs...) = maximum(_get_val(data); init=-Inf)
+_get_max_val(data::Tuple{<:Any,<:Vector};kwargs...) = _get_max_val(data[1]; kwargs...)
 
-function _get_max_val(data::AbstractVector) # Recursive case
+function _get_max_val(data::AbstractVector;kwargs...) # Recursive case
     return maximum((v for v in (get_max_val(d) for d in data) if !isnothing(v)); init=-Inf)
 end
 
@@ -1306,9 +1428,9 @@ end
 
 Uses the recursive helpers to find the raw (min, max) tuple for a given dataset.
 """
-function get_raw_global_range(data)
-    min_val = get_min_val(data)
-    max_val = get_max_val(data)
+function get_raw_global_range(data; kwargs...)
+    min_val = get_min_val(data; kwargs...)
+    max_val = get_max_val(data; kwargs...)
     return (min_val, max_val)
 end
 
@@ -1656,7 +1778,8 @@ It is placed to the right of the plot. Any existing Colorbar is removed first.
 function create_or_update_colorbar!(
     fig::Figure,
     plot_object, # The heatmap, surface, etc.
-    ui_options_obs::Dict{String, Observable}
+    ui_options_obs::Dict{String, Observable},
+    label::String,
 )
     # --- 1. Find and Delete any existing Colorbar in the Figure ---
     for elem in copy(contents(fig.layout))
@@ -1668,11 +1791,10 @@ function create_or_update_colorbar!(
     if isnothing(plot_object)
         return
     end
-
     # --- 2. Create and Place the New Colorbar ---
     try
         # Place the colorbar in column 2 of the figure's layout.
-        cb = Colorbar(fig[1, 2], plot_object, label = ui_options_obs["colorbar_label"][],
+        cb = Colorbar(fig[1, 2], plot_object, label = label,
             labelsize = ui_options_obs["label_size"][]
         )
         cb.ticklabelsize = ui_options_obs["ticklabel_size"][]
@@ -1729,6 +1851,62 @@ end
 #     end
 # end
 
+"""
+    set_axis_limits!(ax::Axis3, x_data_tuples, z_data, ui_options_obs)
+
+Calculates and applies final padded limits for x, y, and z axes for a 3D plot.
+It decomposes the `x_data_tuples` into separate x and y components and reuses
+the 1D limit calculation logic for each axis.
+"""
+function set_axis_limits!(
+    ax::Axis3,
+    x_data, # Nested collection of NTuples, e.g., (x,y) points
+    z_data,        # Nested collection of Reals, e.g., u(x,y) values
+    ui_options_obs::Dict{String, Observable},
+    color_range::Observable
+)
+    try
+        # --- 1. Get UI Options ---
+        x_padding = ui_options_obs["xpadding"][]
+        y_padding = ui_options_obs["ypadding"][]
+        # Use `get` to safely access a "zpadding" key, falling back to ypadding if it doesn't exist
+        z_padding = get(ui_options_obs, "zpadding", Observable(ui_options_obs["ypadding"][]))[]
+
+        # x_is_log_requested = ui_options_obs["xlogscale"][]
+        # y_is_log_requested = ui_options_obs["ylogscale"][]
+        # # Axis3 does not support a log z-scale, but we can use the flag for padding calculation
+        # z_is_log_requested = get(ui_options_obs, "zlogscale", Observable(false))[]
+
+        # --- 3. Calculate Raw and Padded Limits for Each Axis ---
+        raw_xlims = get_raw_global_range(x_data; component = 1)
+        raw_ylims = get_raw_global_range(x_data; component = 2)
+        raw_zlims = get_raw_global_range(z_data)
+
+        final_xlims = calculate_padded_axis_range(raw_xlims, x_padding, false)
+        final_ylims = calculate_padded_axis_range(raw_ylims, y_padding, false)
+        final_zlims = calculate_padded_axis_range(raw_zlims, z_padding, false)
+
+        println(raw_xlims, raw_ylims, raw_zlims)
+        # --- 4. Apply Limits and Scales ---
+        # Makie's limits! for Axis3 takes (xmin, xmax, ymin, ymax, zmin, zmax)
+        try
+            color_range[] = final_zlims
+            real_zlims = ui_options_obs["plot_as_surface"][] ? final_zlims : (-0.1,.1)
+            limits!(ax, final_xlims..., final_ylims..., real_zlims...)
+            
+        catch e
+            @warn "Failed to set 3D axis limits." exception=(e, catch_backtrace())
+        end
+
+        # # Set scales for X and Y axes (Axis3 does not support `zscale`)
+        # ax.xscale[] = final_xlims[1] > 0 && x_is_log_requested ? log10 : identity
+        # ax.yscale[] = final_ylims[1] > 0 && y_is_log_requested ? log10 : identity
+
+    catch e
+        @error "Failed to set dynamic 3D axis limits. A required UI option key might be missing." exception=(e, catch_backtrace())
+    end
+    return nothing
+end
 
 """
     create_base_plot_2D!(...)
@@ -1743,14 +1921,15 @@ function create_base_plot_2D!(
     x_snapshot::AbstractVector, # Vector of Vector{NTuple{2,Float64}}
     u_snapshot::AbstractVector, # Vector of Vector{Float64}
     ui_options_obs::Dict{String, Observable},
-    global_color_range::Observable{Tuple{Float64, Float64}}
+    color_range::Observable{Tuple{Float64, Float64}},
+    label_obs
 )
     # --- Setup and Styling ---
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
     empty!(ax)
     
-    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs); return nothing; end
+    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs, label_obs[colorbar_label][]); return nothing; end
 
     # --- Plotting Loop ---
     plotted_objects = []
@@ -1758,7 +1937,6 @@ function create_base_plot_2D!(
     plot_object_for_colorbar = nothing
 
     is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
-    color_range = global_color_range[]
 
     for (i, method_label) in enumerate(active_methods)
         if i > length(x_snapshot) || i > length(u_snapshot); continue; end
@@ -1805,15 +1983,16 @@ function create_base_plot_2D!(
     end
 
     # --- Final Touches ---
-    create_or_update_colorbar!(plot_fig, plot_object_for_colorbar, ui_options_obs)
+    if ui_options_obs["update_limits"][]; set_axis_limits!(ax, x_snapshot, u_snapshot, ui_options_obs, color_range) end
+    create_or_update_colorbar!(plot_fig, plot_object_for_colorbar, ui_options_obs, label_obs["colorbar_label"][])
     create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, ui_options_obs)
     set_axis_styles!(ax, ui_options_obs)
     
-    # Auto-limit XY axes for the current view, but fix the Z-axis to the global range
-    autolimits!(ax)
-    if is_surface_view
-        zlims!(ax, color_range...)
-    end
+    # # Auto-limit XY axes for the current view, but fix the Z-axis to the global range
+    # autolimits!(ax)
+    # if is_surface_view
+    #     zlims!(ax, color_range...)
+    # end
 
     return nothing
 end

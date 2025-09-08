@@ -666,7 +666,7 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     xData = Observable(Vector{Tuple{Vector{Vector{NTuple{2,Float64}}}, Vector{Float64}}}(undef, 0))
     uData = Observable(Vector{Tuple{Dict{String, Any}, Vector{Float64}}}(undef, 0))
     uData_extr = Observable(Vector{Tuple{Vector{VecOrMat}, Vector{Float64}}}(undef, 0))
-    global_zlims = Observable((0.0, 1.0)) # Global range for color and Z-axis
+    color_range = Observable((0.0, 1.0)) # Global range for color and Z-axis
 
     # --- LIFT BLOCK 1: Data Loading / Simulation ---
     lift(update_notifier; ignore_equal_values=true) do _
@@ -705,11 +705,11 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
         uData[] = uData_tmp
         update_time_slider!(tSlider, xData[])
         
-        # Finalize and store global Z limits / color range
-        pad_range = g_umax - g_umin
-        pad = ui_options_obs["axis_limit_padding"][] * (isinf(pad_range) || isnan(pad_range) ? 0.0 : pad_range) / 2.0
-        pad = (pad <= 1e-6 && pad_range <= 1e-6) ? 0.1 : pad
-        global_zlims[] = (g_umin - pad, g_umax + pad)
+        # # Finalize and store global Z limits / color range
+        # pad_range = g_umax - g_umin
+        # pad = ui_options_obs["axis_limit_padding"][] * (isinf(pad_range) || isnan(pad_range) ? 0.0 : pad_range) / 2.0
+        # pad = (pad <= 1e-6 && pad_range <= 1e-6) ? 0.1 : pad
+        # global_zlims[] = (g_umin - pad, g_umax + pad)
 
         println("Lift 1 (2D): Update complete.")
     end
@@ -718,6 +718,8 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     lift(comp_sel, uData) do sel, u
         if isempty(u); return; end
         uData_extr[] = extractData(u, "u", sel)
+        set_axis_limits!(ax, xData[], uData_extr[], ui_options_obs, color_range)
+        return 
     end
 
     # --- LIFT BLOCK 3: Plotting ---
@@ -729,7 +731,8 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
             plot_fig, ax, methods_obs[],
             x_snapshot, u_snapshot,
             ui_options_obs,
-            global_zlims
+            color_range,
+            label_obs
         )
     end
 

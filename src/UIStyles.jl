@@ -132,7 +132,9 @@ function getUIStyle2D(style::Symbol)
         "plot_as_surface" => false,
         "colormap" => :viridis,
         "colormaps" => [:viridis, :plasma, :inferno, :magma, :thermal, :coolwarm, :balance, :grays],
-        "axis_limit_padding" => 0.1,
+        "xpadding" => 0.2,
+        "ypadding" => 0.2,
+        "zpadding" => 0.4,
         # Override labels for 2D context
         "zlabel" => "default",
         "colorbar_label" => "default"
@@ -150,7 +152,7 @@ function getUIStyle2D(style::Symbol)
     end
     
     # --- 4. Remove 1D-only keys that are not applicable to 2D plots ---
-    irrelevant_keys = ["show_lines", "dashed_lines", "track_max", "track_min", "linewidth", "markersize", "lineStyles", "reference"]
+    irrelevant_keys = ["show_lines", "dashed_lines", "track_max", "track_min", "linewidth", "markersize", "lineStyles", "reference","xlogscale","ylogscale"]
     for key in irrelevant_keys
         delete!(final_style, key)
     end
