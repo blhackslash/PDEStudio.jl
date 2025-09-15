@@ -105,8 +105,7 @@ Calculates the hash of a given params dictionary
 """
 function calculateHash(params::ParamDictType)
     sorted_keys = sort(collect(keys(params)))
-    sorted_vals = [params[key] for key = sorted_keys]
-    stringToHash = join(map(d -> "$d", sorted_vals))
+    stringToHash = join(map(key -> "$key => $(params[key])", sorted_keys))
     return bytes2hex(sha256(stringToHash))
 end
 
@@ -175,6 +174,8 @@ function getFileName(params::ParamDictType)
                     @info "Found matching file: ", file # Debug print
                     return file # Return the full path
                 else
+                    println("Input",params)
+                    println("Saved",sim_data_saved.params)
                     # Hash collision, prepare to check next file in the next iteration
                     @warn "Hash collision detected for: ", file # Debug print
                     counter += 1
