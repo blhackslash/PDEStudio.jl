@@ -15,7 +15,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     plot_fig = Figure(size = ui_options_obs["figsize"])
 
     scene_default = Dict{String,Any}("t"=> 0., "component" => 1)
-    scene_dict = merge(scene_options, scene_default)
+    scene_dict = merge(scene_default, scene_options)
     scene_obs = createObsDict(scene_dict)
     # --- Parameter & Method Observables/Controls (REVISED INITIALIZATION) ---
     # Observable dictionary for SHARED parameters
@@ -41,7 +41,7 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     # --- Time Slider & Label ---
     tLabel_text = Observable("t = 0.0")
     # Add a new row for the time label
-    tSlider = GLMakie.Slider(control_fig[end+2, 1:end], range=0:0.01:1, startvalue=scene_dict["t"])
+    tSlider = GLMakie.Slider(control_fig[end+2, 1:end], range=0:ceil(scene_dict["t"][]), startvalue=scene_dict["t"][])
     comp_sel[] = scene_dict["component"]
     # --- 3. Scene-Specific Observables for 2D Plot ---
     connectObsDict!(scene_obs, ["t","component"],[tSlider.value,comp_sel])

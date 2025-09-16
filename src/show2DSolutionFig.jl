@@ -606,7 +606,7 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     plot_fig = Figure(size = ui_options_obs["figsize"][])
 
     scene_default = Dict{String,Any}("t"=> 0., "component" => 1)
-    scene_dict = merge(scene_options, scene_default)
+    scene_dict = merge(scene_default, scene_options)
     scene_obs = createObsDict(scene_dict)
 
     # --- Parameter & Method Observables ---

@@ -34,24 +34,26 @@ function showConvergencePlot(
     method_params_collection_obs = Dict{String,Dict{String, Observable}}(m => Dict(k=>Observable(v) for (k,v) in p) for (m,p) in sim_config.methods_dict)
     all_method_names = collect(keys(sim_config.methods_dict))
     methods_obs = Observable(filter(m -> m in all_method_names, sim_config.default_methods))
-    
-    scene_info = Dict{String,Any}("varied_key" => key, "variation_range" => x_vals)
+    scene_default = Dict{String,Any}("t"=> 0., "x_key" => key, "y_key" => key, "varied_key" => key, "variation_range" => x_vals, "component" => 1)
+    scene_dict = merge(scene_default, scene_options)
+    scene_obs = createObsDict(scene_dict)
     # --- Control Figure Setup ---
     control_fig, update_notifier, ui_update, components, comp_sel = 
-        createBaseControlsFigure(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names, ui_options_obs, scene_info)
+        createBaseControlsFigure(plot_fig, shared_params_obs, method_params_collection_obs, methods_obs, all_method_names, ui_options_obs, scene_obs)
 
+    comp_sel[] = scene_obs["component"][]
     Label(control_fig[end+1, :], "X-Axis Statistic:")
     x_menu_container = control_fig[end+1,:] = GridLayout()
     x_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
     #selected_x_key_obs = Observable(isnothing(x_stat_key) ? key : x_stat_key)
-    selected_x_key_obs = Observable(key)
+    selected_x_key_obs = Observable(scene_obs["x_key"][])
 
     Label(control_fig[end+1, :], "Y-Axis Statistic:")
     y_menu_container = control_fig[end+1,:] = GridLayout()
     y_menu_handle = Observable{Union{Nothing, Menu}}(nothing)
     #selected_y_key_obs = Observable(isnothing(y_stat_key) ? key : y_stat_key)
-    selected_y_key_obs = Observable(key)
-
+    selected_y_key_obs = Observable(scene_obs["y_key"][])
+    
     # --- Reactive Axis Labels ---
     reactive_title = lift((x,y) -> "Convergence: $y vs $x", selected_x_key_obs, selected_y_key_obs)
     default_labels = Dict{String,Any}("xlabel" => selected_x_key_obs, "ylabel" => selected_y_key_obs, "title" => reactive_title)
@@ -59,7 +61,7 @@ function showConvergencePlot(
     ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"])
 
     # --- Time Slider, Log Toggles, etc. ---
-    tSlider = Slider(control_fig[end+2,:], range = 0:0)
+    tSlider = Slider(control_fig[end+2,:], range = 0:scene_obs["t"][], startvalue = scene_obs["t"][])
 
     tLabel_text = lift(tSlider.value, tSlider.range) do val, range; 
         if range == [0]
@@ -70,14 +72,7 @@ function showConvergencePlot(
     end
     Label(control_fig[end-1,:], tLabel_text)
 
-    scene_obs = Dict{String, Observable}(
-        "t" => tSlider.value,
-        "component" => comp_sel,
-        "x_key" => selected_x_key_obs,
-        "y_key" => selected_y_key_obs
-    )
-
-    set_scene_options!(scene_obs, scene_options)
+    connectObsDict!(scene_obs, ["t","x_key","y_key", "component"],[tSlider.value,selected_x_key_obs,selected_y_key_obs,comp_sel])    
 
     # --- DATA STORAGE (using the tuple structure) ---
     raw_data_store = Observable(Vector{Vector{Tuple{Dict{String,Any}, Vector{Float64}}}}())
@@ -130,7 +125,7 @@ function showConvergencePlot(
                     components[] = Tuple(["u_$k" for k = 1:current_comps])
                     first_run = false
                 elseif current_comps != length(components[])
-                    @warn "Inconsistent components amount detected!"
+                    @warn "Inconsistent components amount detected! Current: $current_comps vs $(length(components[]))"
                 end
 
                 current_run_plottable_keys = Set(keys(filter(p -> isa(p.second, Union{Number, AbstractVector, AbstractMatrix}), sim_data.stats)))
@@ -145,7 +140,6 @@ function showConvergencePlot(
         raw_data_store[] = temp_raw_data
         common_keys = if !isempty(sets_of_plottable_keys); intersect(sets_of_plottable_keys...); else Set{String}(); end
         sorted_keys = sort(collect(common_keys))
-        
         create_or_update_selection_menu!(x_menu_container, x_menu_handle, sorted_keys, selected_x_key_obs)
         create_or_update_selection_menu!(y_menu_container, y_menu_handle, sorted_keys, selected_y_key_obs)
         
@@ -171,7 +165,6 @@ function showConvergencePlot(
     # --- FINAL PLOTTING LIFT ---
     lift(tSlider.value, extracted_x_data, extracted_y_data, ui_update) do t, x_data, y_data, _
 
-        save_scene_info!(scene_obs, scene_info)
         if isempty(x_data) || isempty(y_data); return; end
            
         x_snapshot, y_snapshot = calculate_snapshot(x_data, y_data, t)

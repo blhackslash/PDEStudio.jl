@@ -31,7 +31,9 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
     # Method selection observable (no change)
     methods_obs = Observable(issubset(sim_config.default_methods,all_method_names) ? sim_config.default_methods : all_method_names)
 
-    scene_info = Dict{String,Any}()
+    scene_default = Dict{String,Any}("y_key" => "Temp", "component" => 1)
+    scene_dict = merge(scene_default, scene_options)
+    scene_obs = createObsDict(scene_dict)
 
     # --- Call the NEW createControls function ---
     control_fig, update_notifier, ui_update, components, comp_sel = createBaseControlsFigure(
@@ -41,14 +43,14 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
         methods_obs,
         all_method_names,
         ui_options_obs,
-        scene_info
+        scene_obs
     )
     # -----------------------------------------
-    
+    comp_sel[] = scene_obs["component"][]
     Label(control_fig[end+1, :], "Choose Statistic:")
     menu_container = control_fig[end+1,:] = GridLayout()
     menu_handle = Observable{Union{Nothing, Menu}}(nothing)
-    selected_key_obs = Observable("Calculating...")
+    selected_key_obs = Observable(scene_obs["y_key"][])
 
     ylabel = lift(selected_key_obs, comp_sel) do sel, c_sel
         sel * " (" * components[][c_sel] * ")"
@@ -63,11 +65,7 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
     label_obs = create_axis_label_observables(ui_options_obs, default_labels)
     ax = Axis(plot_fig[1,1], xlabel=label_obs["xlabel"], ylabel=label_obs["ylabel"], title = label_obs["title"]) 
 
-    scene_obs = Dict{String, Observable}(
-        "component" => comp_sel,
-        "y_key" => selected_key_obs
-    )
-    set_scene_options!(scene_obs, scene_options)
+        connectObsDict!(scene_obs, ["y_key", "component"],[selected_key_obs,comp_sel])  
 
     # --- Data Structures for Statistics (using Dict{String, Any}) ---
     statsData = Observable(Vector{Dict{String, Any}}(undef, 0)) # Stores the full stats dict
@@ -118,13 +116,15 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
             plottable_keys_this_method = Set{String}()
             if !isempty(sim_data.stats) && isa(sim_data.stats, Dict)
                 for (key, value) in sim_data.stats
+                    
                     # *** Check if the value is a Vector of Real numbers ***
                     if isa(value, AbstractVector) && length(value) == length(sim_data.t) || isa(value, AbstractMatrix) && size(value, 1) == length(sim_data.t)
                         push!(plottable_keys_this_method, key)
+                        
                     else
                          # Optionally warn if a key exists but is not plottable
-                         try println("Length of t-vector = $(length(sim_data.t)). Length of stat-vector = $(length(value))" ) catch e end
-                         println("Info: Stat '$key' in method '$method' is not a Vector{<:Real} or has mismatched length, skipping.")
+                         try @info "Length of t-vector = $(length(sim_data.t)). Length of stat-vector = $(length(value))"  catch e end
+                         @warn "Info: Stat '$key' in method '$method' is not a Vector{<:Real} or has mismatched length, skipping."
                     end
                 end
             else
@@ -152,7 +152,6 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
         end
         # --- Update Stat Selection UI ---
         sorted_keys = sort(collect(common_plottable_keys))
-
         create_or_update_selection_menu!(menu_container, menu_handle, sorted_keys, selected_key_obs)
 
         println("Data update complete.")
@@ -165,7 +164,6 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
 
     # --- Lift Block 2: Update Plot ---
     lift(ui_update, yData) do _...
-        save_scene_info!(scene_obs, scene_info)
         create_base_plot_1D!(plot_fig, ax, 
                         methods_obs[],
                         tData[],
