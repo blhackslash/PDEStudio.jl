@@ -195,6 +195,126 @@ function _calculate_stats_at_timestep_no_ref(
     return results
 end
 
+"""
+    _calculate_stats_at_timestep(u_numerical, u_analytical_ref, xy_coords, domain_params; ...)
+
+Internal worker function to compute statistics for a single component at a single 2D time step.
+It takes numerical data on scattered points and a callable function for the analytical solution.
+"""
+function _calculate_stats_at_timestep(
+    u_numerical::AbstractVector{<:Real},
+    u_analytical_ref::Function, # Expected to be u_analytical(x, y)
+    xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
+    domain_params::NamedTuple, # Should contain xmin, xmax, ymin, ymax
+    discontinuity_points; # Unused in 2D for now, kept for API consistency
+    dierckx_k::Int = 3,
+    quad_tol = nothing
+)::Dict{String, Float64}
+
+    results = Dict{String, Float64}()
+    N_particles = length(u_numerical)
+    if N_particles == 0; return results; end
+
+    # --- 1. Unpack Coordinates and Calculate Pointwise Values ---
+    x_coords = [p[1] for p in xy_coords]
+    y_coords = [p[2] for p in xy_coords]
+    
+    u_analytical_at_particles = [u_analytical_ref(p) for p in xy_coords]
+    errors_at_particles = u_numerical .- u_analytical_at_particles
+    
+    xmin, xmax = domain_params.xmin, domain_params.xmax
+    ymin, ymax = domain_params.ymin, domain_params.ymax
+
+    # --- 2. Create 2D Splines with Smoothing ---
+    # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
+    s_factor = Float64(N_particles)
+    
+    # --- 2. Create 2D Splines from Scattered Data ---
+    # Dierckx.Spline2D is ideal for scattered data interpolation.
+    spl_u_num = Spline2D(x_coords, y_coords, u_numerical; ky=dierckx_k, kx=dierckx_k, s = s_factor)
+    
+    # To integrate non-positive functions (like error), we create splines of their modified values
+    spl_error_abs = Spline2D(x_coords, y_coords, abs.(errors_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    spl_error_sq = Spline2D(x_coords, y_coords, errors_at_particles.^2; ky=dierckx_k, kx=dierckx_k, s=s_factor)
+
+    # We do the same for the analytical solution to use the same integration method
+    spl_ana_abs = Spline2D(x_coords, y_coords, abs.(u_analytical_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    spl_ana_sq = Spline2D(x_coords, y_coords, u_analytical_at_particles.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    spl_ana_mass = Spline2D(x_coords, y_coords, u_analytical_at_particles; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+
+    # --- 3. Calculate All Requested Statistics via 2D Integration ---
+    ana_l1_norm = Dierckx.integrate(spl_ana_abs, xmin, xmax, ymin, ymax)
+    ana_l2_sq_norm = Dierckx.integrate(spl_ana_sq, xmin, xmax, ymin, ymax)
+    ana_l2_norm = sqrt(ana_l2_sq_norm)
+    mass_ana = Dierckx.integrate(spl_ana_mass, xmin, xmax, ymin, ymax)
+
+    results["l1error"] = Dierckx.integrate(spl_error_abs, xmin, xmax, ymin, ymax)
+    l2_sq_error_val = Dierckx.integrate(spl_error_sq, xmin, xmax, ymin, ymax)
+    results["l2error"] = sqrt(l2_sq_error_val)
+    
+    results["relative_l1error"] = ana_l1_norm > 1e-12 ? results["l1error"] / ana_l1_norm : results["l1error"]
+    results["relative_l2error"] = ana_l2_norm > 1e-12 ? results["l2error"] / ana_l2_norm : results["l2error"]
+
+    mass_num = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
+    results["mass"] = mass_num
+    results["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / mass_ana : NaN
+
+    results["supnorm"] = maximum(abs.(errors_at_particles))
+    sup_norm_ana = maximum(abs.(u_analytical_at_particles))
+    results["relative_supnorm"] = sup_norm_ana > 1e-12 ? results["supnorm"] / sup_norm_ana : results["supnorm"]
+
+    return results
+end
+
+
+"""
+    _calculate_stats_at_timestep_no_ref(u_numerical, xy_coords, domain_params; ...)
+
+Worker for 2D stats that do not require a reference solution.
+"""
+function _calculate_stats_at_timestep_no_ref(
+    u_numerical::AbstractVector{<:Real},
+    xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
+    domain_params::NamedTuple,
+    discontinuity_points; # Unused
+    dierckx_k::Int = 3
+)::Dict{String, Float64}
+    
+    results = Dict{String, Float64}()
+    N_particles = length(u_numerical)
+    if N_particles == 0; return results; end
+
+    # --- 1. Unpack Coordinates and Get Domain ---
+    x_coords = [p[1] for p in xy_coords]
+    y_coords = [p[2] for p in xy_coords]
+    xmin, xmax = domain_params.xmin, domain_params.xmax
+    ymin, ymax = domain_params.ymin, domain_params.ymax
+
+    # --- 2. Create 2D Splines with Smoothing ---
+    # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
+    s_factor = Float64(N_particles)
+
+    # --- 2. Create Splines for Integration ---
+    spl_u_num = Spline2D(x_coords, y_coords, u_numerical; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    spl_u_num_abs = Spline2D(x_coords, y_coords, abs.(u_numerical); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    spl_u_num_sq = Spline2D(x_coords, y_coords, u_numerical.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+
+    # --- 3. Calculate Integrals and Pointwise Stats ---
+    results["mass"] = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
+    results["l1norm"] = Dierckx.integrate(spl_u_num_abs, xmin, xmax, ymin, ymax)
+    l2_sq_norm_val = Dierckx.integrate(spl_u_num_sq, xmin, xmax, ymin, ymax)
+    results["l2norm"] = sqrt(l2_sq_norm_val)
+
+    height_num, index_num = findmax(u_numerical)
+    pos_num = xy_coords[index_num]
+    results["wave_height"] = height_num
+    # For 2D, we can't just return a single position number. We store the x and y coordinates.
+    results["wave_pos_x"] = pos_num[1]
+    results["wave_pos_y"] = pos_num[2]
+
+    return results
+end
+
 # ==============================================================================
 # --- SECTION 2: MAIN USER-FACING FUNCTIONS ---
 # ==============================================================================
@@ -231,7 +351,7 @@ function calculateAllStats!(
         sim_data.stats[key] = is_system ? Matrix{Float64}(undef, num_timesteps, num_components) : Vector{Float64}(undef, num_timesteps)
     end
 
-    domain_params = (xmin=sim_data.params["xmin"], xmax=sim_data.params["xmax"])
+    domain_params = (xmin=sim_data.params["xmin"], xmax=sim_data.params["xmax"], ymin= get(sim_data.params,"ymin",nothing), ymax = get(sim_data.params,"ymax",nothing))
     @debug "Calculating statistics for $(sim_data.params)..."
     p = Progress(num_timesteps, "Calculating Stats...")
     counter = Threads.Atomic{Int}(0)
