@@ -107,7 +107,7 @@ function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
 end
 
 function createSimData(x, u, t, params, stats)
-    println("Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t)))
+    @warn "Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t))
     error("Wrong input types or requested dimension not implemented yet!")
 end
 
@@ -150,7 +150,7 @@ function load_function_from_disk(repo_path::String, function_name_sym::Symbol)
     
     func = _load_function_from_string(file_content, function_name_sym)
     if !isnothing(func)
-        println("Successfully loaded current version of function '$function_name_sym' from disk.")
+        @info "Successfully loaded current version of function '$function_name_sym' from disk."
     end
     return func
 end

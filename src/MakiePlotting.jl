@@ -48,7 +48,6 @@ Dropping a valid CSV file onto this window will call `plotFromCSV` to spawn a
 separate, new window containing the plot.
 """
 function interactiveCSVLauncher(;kwargs...)
-    println("--- Launcher starting on Julia process with ", Threads.nthreads(), " threads. ---")
     # --- 1. Setup the simple UI Figure for Drag-and-Drop ---
     launcher_fig = Figure(size = (600, 200))
     
@@ -69,7 +68,7 @@ function interactiveCSVLauncher(;kwargs...)
         first_file = files[1]
         
         if endswith(lowercase(first_file), ".csv")
-            println("CSV file dropped: $first_file")
+            @info "CSV file dropped: $first_file"
             ax_drop.title = "Processing: $(basename(first_file))"
             
             # Use a `try...catch` block to prevent the launcher from crashing
@@ -85,13 +84,13 @@ function interactiveCSVLauncher(;kwargs...)
             end
         else
             ax_drop.title = "Error: Dropped file is not a .csv file. Try again."
-            println("Warning: Ignored non-CSV file drop: $first_file")
+            @warn "Warning: Ignored non-CSV file drop: $first_file"
         end
         display(launcher_fig)
     end
 
     # --- 3. Display the Launcher Figure ---
-    println("CSV Plot Launcher is active.")
+    @info "CSV Plot Launcher is active."
     GLMakie.activate!()
     display(GLMakie.Screen(),launcher_fig)
     return launcher_fig

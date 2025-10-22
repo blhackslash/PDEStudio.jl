@@ -420,7 +420,7 @@ function createBaseControlsFigure(
         end
     end
    on(comp_options) do _
-       println("Updating selection menu with new options...")
+       @info "Updating selection menu with new options..."
        create_or_update_selection_menu!(
            menu_container,
            current_menu_handle,
@@ -514,7 +514,7 @@ function createTextBoxes(
                 end
             catch e
                 rethrow(e)
-                println("Invalid input '$s' for parameter '$key' (expected type $target_type): $e")
+                @warn "Invalid input '$s' for parameter '$key' (expected type $target_type): $e"
                 # Reset textbox on error
                 tb.stored_string = string(params_obs[key][])
             end
@@ -574,7 +574,7 @@ function saveParametersToCSV(
     if isempty(base_filename); @warn "CSV save skipped: filename is empty."; return false; end
 
     csv_filename = joinpath(save_dir, base_filename * "_params.csv")
-    println("Saving parameters and UI options to $csv_filename...")
+    @info "Saving parameters and UI options to $csv_filename..."
 
     try
         # --- Initialize vectors for each column of the DataFrame ---
@@ -615,7 +615,7 @@ function saveParametersToCSV(
         )
         CSV.write(csv_filename, df_to_save)
         
-        println("Parameters and UI options successfully saved.")
+        @info "Parameters and UI options successfully saved."
         return true
 
     catch e
@@ -723,7 +723,7 @@ function createSaveFigBox(
         base_name = string(strip(s))
         
         if isempty(base_name)
-            println("Save cancelled (empty name).")
+            @warn "Save cancelled (empty name)."
             return
         end
 
@@ -739,7 +739,7 @@ function createSaveFigBox(
         # Default to only ["png"] if the key is not found.
         formats_to_save = ui_options_obs["save_formats"][]
         
-        println("Saving figure in formats: $(join(formats_to_save, ", "))...")
+        @info "Saving figure in formats: $(join(formats_to_save, ", "))..."
 
         # --- Save the figure in each requested format ---
         for format in formats_to_save
@@ -764,7 +764,7 @@ function createSaveFigBox(
 
                 # Save the figure
                 
-                println("Plot saved as $full_filename")
+                @info "Plot saved as $full_filename"
 
             catch e
                 @error "Failed to save figure in format .$fmt!" exception=(e, catch_backtrace())
@@ -1886,7 +1886,6 @@ function set_axis_limits!(
         final_ylims = calculate_padded_axis_range(raw_ylims, y_padding, false)
         final_zlims = calculate_padded_axis_range(raw_zlims, z_padding, false)
 
-        println(raw_xlims, raw_ylims, raw_zlims)
         # --- 4. Apply Limits and Scales ---
         # Makie's limits! for Axis3 takes (xmin, xmax, ymin, ymax, zmin, zmax)
         try
@@ -2784,7 +2783,7 @@ function createAnimationControls!(
             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
             
             t_min, t_max = tSlider.range[][1], tSlider.range[][end]
-            if !(t_max > t_min); println("Cannot animate: Invalid time range."); return; end
+            if !(t_max > t_min); @warn "Cannot animate: Invalid time range."; return; end
             is_animating[] = true
 
             anim_duration_s = ui_options_obs["animation_duration_s"][]
@@ -2803,10 +2802,10 @@ function createAnimationControls!(
                 set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max))
             end
             
-            println("Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)...")
+            @info "Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)..."
             animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
         else # Stop Animation
-            println("Stopping animation...")
+            @info "Stopping animation..."
             if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
             animation_timer[] = nothing
             is_animating[] = false
@@ -2824,7 +2823,7 @@ function createAnimationControls!(
         try mkpath(save_dir) catch e; @warn "Could not create animations dir: $e"; end
         
         gif_filepath = joinpath(save_dir, base_filename * ".gif")
-        println("Preparing to save GIF and parameters to: $save_dir")
+        @info "Preparing to save GIF and parameters to: $save_dir"
 
         # --- Save Parameters ---
         anim_info = Dict(
@@ -2850,14 +2849,14 @@ function createAnimationControls!(
         times_for_gif = range(t_min, t_max, length=n_frames)
         @async begin
         try
-            println("Recording $n_frames frames at $fps FPS...")
+            @info "Recording $n_frames frames at $fps FPS..."
             
             # Record the animation without modifying axis limits
             record(plot_fig, gif_filepath, times_for_gif; framerate=fps) do t_now
                 set_close_to!(tSlider, t_now)
                 yield()
             end
-            println("Animation saved successfully to $gif_filepath")
+            @info "Animation saved successfully to $gif_filepath"
         catch e
             @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
         finally

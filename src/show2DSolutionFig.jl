@@ -670,7 +670,7 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
 
     # --- LIFT BLOCK 1: Data Loading / Simulation ---
     lift(update_notifier; ignore_equal_values=true) do _
-        println("Lift 1 (2D): Running sims / loading data...")
+        @info "Lift 1 (2D): Running sims / loading data..."
         active_methods_now = methods_obs[]
         tasks = assemble_simulation_tasks(shared_params_obs, method_params_collection_obs, active_methods_now)
         ensure_sim_data_exists!(tasks, sim_config)
@@ -711,7 +711,7 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
         # pad = (pad <= 1e-6 && pad_range <= 1e-6) ? 0.1 : pad
         # global_zlims[] = (g_umin - pad, g_umax + pad)
 
-        println("Lift 1 (2D): Update complete.")
+        @info "Lift 1 (2D): Update complete."
     end
 
     # --- LIFT BLOCK 2: Component Extraction ---
