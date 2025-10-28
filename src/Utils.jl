@@ -755,73 +755,80 @@ end
 #======================================================================#
 
 """
-    create_sim_config_from_csv(csv_filepath, time_warp; repo_path) -> SimulationConfig
+    create_sim_config_from_csv(csv_filepath::String) -> SimulationConfig
 
-Reads a "tidy" format CSV and reconstructs a `SimulationConfig` object with
-varying levels of historical accuracy, controlled by the `time_warp` flag.
+Reads a "tidy" format CSV, reconstructs all parameters, and creates a
+`SimulationConfig` object.
+
+It finds the required simulation function name (e.g., "runScalarSimulation")
+in the CSV and looks up the *actual function handle* from the global
+`SIMULATION_FUNCTION_REGISTRY`.
 """
 function create_sim_config_from_csv(
-    csv_filepath::String;
-    time_warp::String = "none",
-    repo_path::String = "." # Assumes the script is run from the repo root
+    csv_filepath::String
 )
     # --- 1. Read and Parse the CSV ---
+    if !isfile(csv_filepath)
+        error("CSV file not found at: $csv_filepath")
+    end
+    
     df = CSV.read(csv_filepath, DataFrame)
+    
+    # Create a new column with correctly typed values
     df.ParsedValue = [parseValue(string(v)) for v in df.Value]
-    context_df = filter(row -> row.Section == "Context", df)
-    shared_params_df = filter(row -> row.Section == "Shared", df)
-    shared_params = Dict{String, Any}(row.Parameter => row.ParsedValue for row in eachrow(shared_params_df))
-    context = Dict(row.Parameter => row.ParsedValue for row in eachrow(context_df))
 
-    # --- 2. Determine and Load the Simulation Function ---
+    # --- 2. Reconstruct Shared Parameters ---
+    shared_params_df = filter(row -> row.Section == "Shared", df)
+    shared_params = Dict{String, Any}(
+        row.Parameter => row.ParsedValue for row in eachrow(shared_params_df)
+    )
+
+    # --- 3. Determine and Load the Simulation Function ---
     sim_func_name_str = get(shared_params, "sim_function", nothing)
     if isnothing(sim_func_name_str)
         error("CSV is missing required context key: 'sim_function'.")
     end
     sim_func_sym = Symbol(sim_func_name_str)
+
+    # --- THIS IS THE FIX (Registry Pattern) ---
+    @info "Looking up function ':$sim_func_sym' in the registry..."
+    local sim_function = getSimFunction(sim_func_sym) # From registry
     
-    local sim_function::Function
-
-    if time_warp == "none"
-        println("Time Warp: 'none'. Using the currently saved version of the simulation function.")
-        sim_function = load_function_from_disk(repo_path, sim_func_sym)
-
-    elseif time_warp == "partial"
-        println("Time Warp: 'partial'. Loading historical function into current environment...")
-        commit_hash = string(get(context, "git_commit_hash", nothing))
-        if isnothing(commit_hash); error("CSV is missing 'git_commit_hash' for partial time warp."); end
-        sim_function = load_function_from_git(repo_path, commit_hash, sim_func_sym)
-    # elseif time_warp == "project" # <-- NEW OPTION
-    #     println("Time Warp: 'project'. Loading historical project source code...")
-    #     commit_hash = string(get(context, "git_commit_hash", nothing))
-    #     # We need to know the path to your main module file to start the process
-    #     main_module_file = "src/Meshfree4ScalarEq.jl" # You might make this an argument
-    #     sim_function = load_project_from_git(repo_path, commit_hash, main_module_file, sim_func_sym)
-    elseif time_warp == "full"
-        # ... (Instructions for the user as before) ...
-        error("Full time warp is a manual process. Follow the instructions above.")
-    else
-        error("Invalid `time_warp` option.")
+    if isnothing(sim_function)
+        error("Function ':$sim_func_sym' not found in the registry. 
+               Make sure it was registered using 'register_simulation_function!' 
+               before calling this plot function.")
     end
+    # --- END OF FIX ---
 
-    if isnothing(sim_function); error("Could not load the simulation function. Cannot proceed."); end
-
-    # --- 3. Reconstruct All Parameter Dictionaries ---
+    # --- 4. Reconstruct Method-Specific Parameters ---
     methods_df = filter(row -> row.Section == "Method", df)
     methods_dict = Dict{String, Dict{String, Any}}()
+    
     if !isempty(methods_df)
         grouped_by_method = groupby(methods_df, :MethodName)
         for method_group in grouped_by_method
             method_name = method_group.MethodName[1]
-            methods_dict[method_name] = Dict{String, Any}(row.Parameter => row.ParsedValue for row in eachrow(method_group))
+            method_params = Dict{String, Any}(
+                row.Parameter => row.ParsedValue for row in eachrow(method_group)
+            )
+            methods_dict[method_name] = method_params
         end
     end
 
+    # --- 5. Determine Default Methods ---
     default_methods = collect(keys(methods_dict))
 
-    # --- 4. Construct and Return the SimulationConfig ---
-    @info "Successfully created fully reproducible SimulationConfig from $csv_filepath"
-    return SimulationConfig(sim_function, shared_params, methods_dict, default_methods)
+    # --- 6. Construct and Return the SimulationConfig ---
+    @info "Successfully created SimulationConfig from $csv_filepath"
+    
+    # This calls the simple, first constructor for SimulationConfig
+    return SimulationConfig(
+        sim_function,
+        shared_params,
+        methods_dict,
+        default_methods
+    )
 end
 
 function load_additional_options_from_csv(
