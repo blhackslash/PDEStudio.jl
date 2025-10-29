@@ -1,6 +1,7 @@
 module Utils
 
 using ..Structs  
+using IPlotPDESols: getSimFunction
 
 using SHA
 using CSV, DataFrames

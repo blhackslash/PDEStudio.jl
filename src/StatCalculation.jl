@@ -353,7 +353,7 @@ function calculateAllStats!(
 
     domain_params = (xmin=sim_data.params["xmin"], xmax=sim_data.params["xmax"], ymin= get(sim_data.params,"ymin",nothing), ymax = get(sim_data.params,"ymax",nothing))
     @debug "Calculating statistics for $(sim_data.params)..."
-    p = Progress(num_timesteps, "Calculating Stats...")
+    p = Progress(num_timesteps; desc = "Calculating Stats...")
     counter = Threads.Atomic{Int}(0)
     Threads.@threads for m in 1:num_timesteps
         t = sim_data.t[m]

@@ -1928,7 +1928,7 @@ function create_base_plot_2D!(
     resize!(plot_fig, width, height)
     empty!(ax)
     
-    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs, label_obs[colorbar_label][]); return nothing; end
+    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs, label_obs["colorbar_label"][]); return nothing; end
 
     # --- Plotting Loop ---
     plotted_objects = []
@@ -2362,7 +2362,7 @@ function ensure_sim_data_exists!(
     if num_tasks == 0; return; end
     
     @debug "Checking for existing data for $num_tasks simulations..."
-    p = Progress(num_tasks, "Running simulations...")
+    p = Progress(num_tasks; desc = "Running simulations...")
     counter = Threads.Atomic{Int}(0)
 
     Threads.@threads for params_for_this_run in tasks

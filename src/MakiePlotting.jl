@@ -3,6 +3,7 @@ module MakiePlotting
 using ..Structs
 using ..Utils
 using ..StatCalculation
+using IPlotPDESols: registerAllFunctions
 using GLMakie
 using CSV, DataFrames
 using Dates # For timestamp in optional info
@@ -48,6 +49,8 @@ Dropping a valid CSV file onto this window will call `plotFromCSV` to spawn a
 separate, new window containing the plot.
 """
 function interactiveCSVLauncher(;kwargs...)
+
+    registerAllFunctions()
     # --- 1. Setup the simple UI Figure for Drag-and-Drop ---
     launcher_fig = Figure(size = (600, 200))
     
