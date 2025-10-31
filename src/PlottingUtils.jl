@@ -2346,16 +2346,20 @@ end
 #======================================================================#
 
 """
-    ensure_sim_data_exists!(tasks::Vector{ParamDictType}, sim_config; force_overwrite=false)
+    ensure_sim_data_exists!(tasks::Vector{ParamDictType}, sim_config; 
+                            force_overwrite=false, parallel=false)
 
 Iterates through a list of simulation tasks. For each task, it checks if the
 corresponding data file exists. If not (or if `force_overwrite` is true), it
-runs the simulation in parallel.
+runs the simulation.
+
+Set `parallel=true` to run simulations in parallel using `Threads.@threads`.
 """
 function ensure_sim_data_exists!(
     tasks::Union{Vector{ParamDictType},Matrix{ParamDictType}},
     sim_config::SimulationConfig;
-    force_overwrite::Bool = false
+    force_overwrite::Bool = false,
+    parallel::Bool = false
 )
     task_size = size(tasks)
     num_tasks = task_size isa Tuple{Int64} ? task_size[1] : task_size[1] * task_size[2]
@@ -2363,29 +2367,53 @@ function ensure_sim_data_exists!(
     
     @debug "Checking for existing data for $num_tasks simulations..."
     p = Progress(num_tasks; desc = "Running simulations...")
-    counter = Threads.Atomic{Int}(0)
 
-    Threads.@threads for params_for_this_run in tasks
-        try
-            if !doesSimDataExist(params_for_this_run) || force_overwrite
-                # --- THIS IS THE FIX ---
-                # We wrap the function call in `Base.invokelatest`.
-                # This tells Julia to look up the newest definition of the function
-                # right before calling it, which solves the world age issue.
-                sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
-                # --- END OF FIX ---
-                if !isnothing(sim_data)
-                    saveSimData(sim_data; overwrite = force_overwrite)
+    if parallel
+        # --- PARALLEL EXECUTION ---
+        # This is the original threaded implementation
+        counter = Threads.Atomic{Int}(0)
+
+        Threads.@threads for params_for_this_run in tasks
+            try
+                if !doesSimDataExist(params_for_this_run) || force_overwrite
+                    # We wrap the function call in `Base.invokelatest`.
+                    # This tells Julia to look up the newest definition of the function
+                    # right before calling it, which solves the world age issue.
+                    sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
+                    
+                    if !isnothing(sim_data)
+                        saveSimData(sim_data; overwrite = force_overwrite)
+                    end
                 end
+            catch e
+                @error "A simulation failed to run or save." exception=(e, catch_backtrace())
             end
-        catch e
-            @error "A simulation failed to run or save." exception=(e, catch_backtrace())
+            Threads.atomic_add!(counter, 1)
+            ProgressMeter.update!(p, counter[])
         end
-        Threads.atomic_add!(counter, 1)
-        ProgressMeter.update!(p, counter[])
+    else
+        # --- SERIAL EXECUTION ---
+        for params_for_this_run in tasks
+            try
+                if !doesSimDataExist(params_for_this_run) || force_overwrite
+                    # `Base.invokelatest` is still useful here, especially
+                    # when working interactively in a REPL.
+                    sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
+                    
+                    if !isnothing(sim_data)
+                        saveSimData(sim_data; overwrite = force_overwrite)
+                    end
+                end
+            catch e
+                @error "A simulation failed to run or save." exception=(e, catch_backtrace())
+            end
+            ProgressMeter.next!(p) # Simpler progress update for serial loops
+        end
     end
+
     @debug "\nSimulation check complete."
 end
+
 
 
 #======================================================================#
