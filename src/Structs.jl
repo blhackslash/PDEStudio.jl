@@ -93,6 +93,10 @@ function createSimData(x::Vector{Vector{Tuple{Float64,Float64}}}, u::Vector{T}, 
     SimData2D(x, u, t, params, stats)
 end
 
+function createSimData(x::Vector{<:AbstractVector{<:AbstractVector{Float64}}}, u::Vector{T}, t::Vector{Float64}, params::ParamDictType, stats::ParamDictType) where T <: Union{Vector{Float64}, Matrix{Float64}}
+    SimData2D([[Tuple(p) for p in xs] for xs in x], u, t, params, stats)
+end
+
 function createSimData(x, u, t::Vector{Float64}, params::ParamDictType)
     createSimData(x, u, t, params, ParamDict())
 end
