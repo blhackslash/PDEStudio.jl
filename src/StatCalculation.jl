@@ -7,7 +7,7 @@ using Dierckx
 using QuadGK
 using ProgressMeter
 using Random
-
+using DelaunayTriangulation
 
 export calculateAllStats!, calculateConvergenceData
 
@@ -198,8 +198,8 @@ end
 """
     _calculate_stats_at_timestep(u_numerical, u_analytical_ref, xy_coords, domain_params; ...)
 
-Internal worker function to compute statistics for a single component at a single 2D time step.
-It takes numerical data on scattered points and a callable function for the analytical solution.
+Internal worker function to compute statistics for a single component at a single 2D time step
+using Delaunay Triangulation for integration.
 """
 function _calculate_stats_at_timestep(
     u_numerical::AbstractVector{<:Real},
@@ -207,113 +207,334 @@ function _calculate_stats_at_timestep(
     xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
     domain_params::NamedTuple, # Should contain xmin, xmax, ymin, ymax
     discontinuity_points; # Unused in 2D for now, kept for API consistency
-    dierckx_k::Int = 3,
-    quad_tol = nothing
+    dierckx_k::Int = 3, # No longer used here, but kept for API consistency
+    quad_tol = nothing # No longer used here, but kept for API consistency
 )::Dict{String, Float64}
 
     results = Dict{String, Float64}()
     N_particles = length(u_numerical)
-    if N_particles == 0; return results; end
+    if N_particles < 3
+        @warn "Skipping 2D integration: N_particles < 3"
+        return results
+    end
 
-    # --- 1. Unpack Coordinates and Calculate Pointwise Values ---
-    x_coords = [p[1] for p in xy_coords]
-    y_coords = [p[2] for p in xy_coords]
-    
+    # --- 1. Calculate Pointwise Values ---
     u_analytical_at_particles = [u_analytical_ref(p) for p in xy_coords]
     errors_at_particles = u_numerical .- u_analytical_at_particles
     
     xmin, xmax = domain_params.xmin, domain_params.xmax
     ymin, ymax = domain_params.ymin, domain_params.ymax
 
-    # --- 2. Create 2D Splines with Smoothing ---
-    # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
-    s_factor = Float64(N_particles)
-    
-    # --- 2. Create 2D Splines from Scattered Data ---
-    # Dierckx.Spline2D is ideal for scattered data interpolation.
-    spl_u_num = Spline2D(x_coords, y_coords, u_numerical; ky=dierckx_k, kx=dierckx_k, s = s_factor)
-    
-    # To integrate non-positive functions (like error), we create splines of their modified values
-    spl_error_abs = Spline2D(x_coords, y_coords, abs.(errors_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
-    spl_error_sq = Spline2D(x_coords, y_coords, errors_at_particles.^2; ky=dierckx_k, kx=dierckx_k, s=s_factor)
+    # --- 2. Build Point List and Value Lists ---
+    # Start with the original particle data
+    points_list = [p for p in xy_coords] # Vector of Tuples
+    vals_u_num   = [v for v in u_numerical]
+    vals_err_abs = [v for v in abs.(errors_at_particles)]
+    vals_err_sq  = [v for v in errors_at_particles.^2]
+    vals_ana_abs = [v for v in abs.(u_analytical_at_particles)]
+    vals_ana_sq  = [v for v in u_analytical_at_particles.^2]
+    vals_ana_mass= [v for v in u_analytical_at_particles]
 
-    # We do the same for the analytical solution to use the same integration method
-    spl_ana_abs = Spline2D(x_coords, y_coords, abs.(u_analytical_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
-    spl_ana_sq = Spline2D(x_coords, y_coords, u_analytical_at_particles.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
-    spl_ana_mass = Spline2D(x_coords, y_coords, u_analytical_at_particles; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    # --- 3. Add Boundary Corners (mirroring logic from ParticleGrids.jl) ---
+    boundary_corners = [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+    boundary_indices = Int[]
+    
+    for corner_point in boundary_corners
+        idx = findfirst(p -> p == corner_point, points_list)
+        if isnothing(idx)
+            # This corner is a new point
+            push!(points_list, corner_point)
+            push!(boundary_indices, length(points_list))
+            
+            # Extrapolate values using Nearest Neighbor
+            # Find the closest *original* particle to this corner
+            _, nearest_particle_idx = findmin(p -> (p[1]-corner_point[1])^2 + (p[2]-corner_point[2])^2, xy_coords)
+            
+            # Assign its values to the new corner point
+            push!(vals_u_num, u_numerical[nearest_particle_idx])
+            push!(vals_err_abs, abs(errors_at_particles[nearest_particle_idx]))
+            push!(vals_err_sq, errors_at_particles[nearest_particle_idx]^2)
+            push!(vals_ana_abs, abs(u_analytical_at_particles[nearest_particle_idx]))
+            push!(vals_ana_sq, u_analytical_at_particles[nearest_particle_idx]^2)
+            push!(vals_ana_mass, u_analytical_at_particles[nearest_particle_idx])
+        else
+            # Point already exists, just use its index
+            push!(boundary_indices, idx)
+        end
+    end
+    push!(boundary_indices, boundary_indices[1]) # Close the loop [cite: 110]
 
-    # --- 3. Calculate All Requested Statistics via 2D Integration ---
-    ana_l1_norm = Dierckx.integrate(spl_ana_abs, xmin, xmax, ymin, ymax)
-    ana_l2_sq_norm = Dierckx.integrate(spl_ana_sq, xmin, xmax, ymin, ymax)
+# --- 4. Triangulate ---
+    tri = triangulate(points_list; boundary_nodes = boundary_indices)
+
+    # --- 5. Integrate by Summing over Triangles ---
+    mass_num = 0.0
+    l1_error_val = 0.0
+    l2_sq_error_val = 0.0
+    ana_l1_norm = 0.0
+    ana_l2_sq_norm = 0.0
+    mass_ana = 0.0
+
+    # --- FIX 1: Iterate over SOLID triangles only ---
+    for T in each_solid_triangle(tri)
+        # --- FIX 2: Unpack the tuple directly ---
+        i, j, k = T 
+        
+# Get the coordinates of the triangle's vertices
+        p_i = DelaunayTriangulation.get_point(tri, i)
+        p_j = DelaunayTriangulation.get_point(tri, j)
+        p_k = DelaunayTriangulation.get_point(tri, k)
+        
+        # --- THIS IS THE FIX ---
+        # Calculate area manually using the shoelace formula (0.5 * |determinant|)
+        A = 0.5 * abs(p_i[1]*(p_j[2] - p_k[2]) + p_j[1]*(p_k[2] - p_i[2]) + p_k[1]*(p_i[2] - p_j[2]))
+        # --- END FIX ---
+        
+        mass_num += A * (vals_u_num[i] + vals_u_num[j] + vals_u_num[k]) / 3.0
+        l1_error_val += A * (vals_err_abs[i] + vals_err_abs[j] + vals_err_abs[k]) / 3.0
+        l2_sq_error_val += A * (vals_err_sq[i] + vals_err_sq[j] + vals_err_sq[k]) / 3.0
+        ana_l1_norm += A * (vals_ana_abs[i] + vals_ana_abs[j] + vals_ana_abs[k]) / 3.0
+        ana_l2_sq_norm += A * (vals_ana_sq[i] + vals_ana_sq[j] + vals_ana_sq[k]) / 3.0
+        mass_ana += A * (vals_ana_mass[i] + vals_ana_mass[j] + vals_ana_mass[k]) / 3.0
+    end
+
+    # --- 6. Finalize Statistics ---
     ana_l2_norm = sqrt(ana_l2_sq_norm)
-    mass_ana = Dierckx.integrate(spl_ana_mass, xmin, xmax, ymin, ymax)
-
-    results["l1error"] = Dierckx.integrate(spl_error_abs, xmin, xmax, ymin, ymax)
-    l2_sq_error_val = Dierckx.integrate(spl_error_sq, xmin, xmax, ymin, ymax)
+    results["l1error"] = l1_error_val
     results["l2error"] = sqrt(l2_sq_error_val)
     
     results["relative_l1error"] = ana_l1_norm > 1e-12 ? results["l1error"] / ana_l1_norm : results["l1error"]
     results["relative_l2error"] = ana_l2_norm > 1e-12 ? results["l2error"] / ana_l2_norm : results["l2error"]
 
-    mass_num = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
     results["mass"] = mass_num
     results["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / mass_ana : NaN
 
+    # Pointwise stats are unchanged
     results["supnorm"] = maximum(abs.(errors_at_particles))
     sup_norm_ana = maximum(abs.(u_analytical_at_particles))
     results["relative_supnorm"] = sup_norm_ana > 1e-12 ? results["supnorm"] / sup_norm_ana : results["supnorm"]
 
     return results
 end
-
-
 """
     _calculate_stats_at_timestep_no_ref(u_numerical, xy_coords, domain_params; ...)
 
 Worker for 2D stats that do not require a reference solution.
+Uses Delaunay Triangulation for integration.
 """
 function _calculate_stats_at_timestep_no_ref(
     u_numerical::AbstractVector{<:Real},
     xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
     domain_params::NamedTuple,
     discontinuity_points; # Unused
-    dierckx_k::Int = 3
+    dierckx_k::Int = 3 # No longer used here, but kept for API consistency
 )::Dict{String, Float64}
     
     results = Dict{String, Float64}()
     N_particles = length(u_numerical)
-    if N_particles == 0; return results; end
+    if N_particles < 3
+    @warn "Skipping 2D integration: N_particles < 3"
+        return results
+    end
 
-    # --- 1. Unpack Coordinates and Get Domain ---
-    x_coords = [p[1] for p in xy_coords]
-    y_coords = [p[2] for p in xy_coords]
+    # --- 1. Get Domain ---
     xmin, xmax = domain_params.xmin, domain_params.xmax
     ymin, ymax = domain_params.ymin, domain_params.ymax
 
-    # --- 2. Create 2D Splines with Smoothing ---
-    # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
-    s_factor = Float64(N_particles)
+    # --- 2. Build Point List and Value Lists ---
+    points_list = [p for p in xy_coords] # Vector of Tuples
+    vals_u_num   = [v for v in u_numerical]
+    vals_u_num_abs = [v for v in abs.(u_numerical)]
+    vals_u_num_sq  = [v for v in u_numerical.^2]
 
-    # --- 2. Create Splines for Integration ---
-    spl_u_num = Spline2D(x_coords, y_coords, u_numerical; kx=dierckx_k, ky=dierckx_k, s=s_factor)
-    spl_u_num_abs = Spline2D(x_coords, y_coords, abs.(u_numerical); kx=dierckx_k, ky=dierckx_k, s=s_factor)
-    spl_u_num_sq = Spline2D(x_coords, y_coords, u_numerical.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+    # --- 3. Add Boundary Corners (mirroring logic from ParticleGrids.jl) ---
+    boundary_corners = [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+    boundary_indices = Int[]
+    
+    for corner_point in boundary_corners
+        idx = findfirst(p -> p == corner_point, points_list)
+        if isnothing(idx)
+            # This corner is a new point
+            push!(points_list, corner_point)
+            push!(boundary_indices, length(points_list))
+            
+            # Extrapolate values using Nearest Neighbor
+            _, nearest_particle_idx = findmin(p -> (p[1]-corner_point[1])^2 + (p[2]-corner_point[2])^2, xy_coords)
+            
+            # Assign its values to the new corner point
+            push!(vals_u_num, u_numerical[nearest_particle_idx])
+            push!(vals_u_num_abs, abs(u_numerical[nearest_particle_idx]))
+            push!(vals_u_num_sq, u_numerical[nearest_particle_idx]^2)
+        else
+            # Point already exists, just use its index
+            push!(boundary_indices, idx)
+        end
+    end
+    push!(boundary_indices, boundary_indices[1]) # Close the loop [cite: 110]
 
-    # --- 3. Calculate Integrals and Pointwise Stats ---
-    results["mass"] = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
-    results["l1norm"] = Dierckx.integrate(spl_u_num_abs, xmin, xmax, ymin, ymax)
-    l2_sq_norm_val = Dierckx.integrate(spl_u_num_sq, xmin, xmax, ymin, ymax)
-    results["l2norm"] = sqrt(l2_sq_norm_val)
+# --- 4. Triangulate ---
+    tri = triangulate(points_list; boundary_nodes = boundary_indices)
 
+    # --- 5. Integrate by Summing over Triangles ---
+    mass_num = 0.0
+    l1_norm_val = 0.0
+    l2_sq_norm_val = 0.0
+
+    # --- FIX 1: Iterate over SOLID triangles only ---
+    for T in each_solid_triangle(tri)
+        # --- FIX 2: Unpack the tuple directly ---
+        i, j, k = T 
+        
+# Get the coordinates of the triangle's vertices
+        p_i = DelaunayTriangulation.get_point(tri, i)
+        p_j = DelaunayTriangulation.get_point(tri, j)
+        p_k = DelaunayTriangulation.get_point(tri, k)
+        
+        # --- THIS IS THE FIX ---
+        # Calculate area manually using the shoelace formula (0.5 * |determinant|)
+        A = 0.5 * abs(p_i[1]*(p_j[2] - p_k[2]) + p_j[1]*(p_k[2] - p_i[2]) + p_k[1]*(p_i[2] - p_j[2]))
+        # --- END FIX ---
+        # --- END FIX ---
+        
+        mass_num += A * (vals_u_num[i] + vals_u_num[j] + vals_u_num[k]) / 3.0
+        l1_norm_val += A * (vals_u_num_abs[i] + vals_u_num_abs[j] + vals_u_num_abs[k]) / 3.0
+        l2_sq_norm_val += A * (vals_u_num_sq[i] + vals_u_num_sq[j] + vals_u_num_sq[k]) / 3.0
+    end
+
+    # --- 6. Finalize Statistics ---
+    results["mass"] = mass_num
+    results["l1norm"] = l1_norm_val
+ results["l2norm"] = sqrt(l2_sq_norm_val)
+
+    # Pointwise stats are unchanged
     height_num, index_num = findmax(u_numerical)
     pos_num = xy_coords[index_num]
     results["wave_height"] = height_num
-    # For 2D, we can't just return a single position number. We store the x and y coordinates.
+
     results["wave_pos_x"] = pos_num[1]
     results["wave_pos_y"] = pos_num[2]
 
     return results
 end
+# """
+#     _calculate_stats_at_timestep(u_numerical, u_analytical_ref, xy_coords, domain_params; ...)
+
+# Internal worker function to compute statistics for a single component at a single 2D time step.
+# It takes numerical data on scattered points and a callable function for the analytical solution.
+# """
+# function _calculate_stats_at_timestep(
+#     u_numerical::AbstractVector{<:Real},
+#     u_analytical_ref::Function, # Expected to be u_analytical(x, y)
+#     xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
+#     domain_params::NamedTuple, # Should contain xmin, xmax, ymin, ymax
+#     discontinuity_points; # Unused in 2D for now, kept for API consistency
+#     dierckx_k::Int = 3,
+#     quad_tol = nothing
+# )::Dict{String, Float64}
+
+#     results = Dict{String, Float64}()
+#     N_particles = length(u_numerical)
+#     if N_particles == 0; return results; end
+
+#     # --- 1. Unpack Coordinates and Calculate Pointwise Values ---
+#     x_coords = [p[1] for p in xy_coords]
+#     y_coords = [p[2] for p in xy_coords]
+    
+#     u_analytical_at_particles = [u_analytical_ref(p) for p in xy_coords]
+#     errors_at_particles = u_numerical .- u_analytical_at_particles
+    
+#     xmin, xmax = domain_params.xmin, domain_params.xmax
+#     ymin, ymax = domain_params.ymin, domain_params.ymax
+
+#     # --- 2. Create 2D Splines with Smoothing ---
+#     # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
+#     s_factor = Float64(N_particles)
+    
+#     # --- 2. Create 2D Splines from Scattered Data ---
+#     # Dierckx.Spline2D is ideal for scattered data interpolation.
+#     spl_u_num = Spline2D(x_coords, y_coords, u_numerical; ky=dierckx_k, kx=dierckx_k, s = s_factor)
+    
+#     # To integrate non-positive functions (like error), we create splines of their modified values
+#     spl_error_abs = Spline2D(x_coords, y_coords, abs.(errors_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+#     spl_error_sq = Spline2D(x_coords, y_coords, errors_at_particles.^2; ky=dierckx_k, kx=dierckx_k, s=s_factor)
+
+#     # We do the same for the analytical solution to use the same integration method
+#     spl_ana_abs = Spline2D(x_coords, y_coords, abs.(u_analytical_at_particles); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+#     spl_ana_sq = Spline2D(x_coords, y_coords, u_analytical_at_particles.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+#     spl_ana_mass = Spline2D(x_coords, y_coords, u_analytical_at_particles; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+
+#     # --- 3. Calculate All Requested Statistics via 2D Integration ---
+#     ana_l1_norm = Dierckx.integrate(spl_ana_abs, xmin, xmax, ymin, ymax)
+#     ana_l2_sq_norm = Dierckx.integrate(spl_ana_sq, xmin, xmax, ymin, ymax)
+#     ana_l2_norm = sqrt(ana_l2_sq_norm)
+#     mass_ana = Dierckx.integrate(spl_ana_mass, xmin, xmax, ymin, ymax)
+
+#     results["l1error"] = Dierckx.integrate(spl_error_abs, xmin, xmax, ymin, ymax)
+#     l2_sq_error_val = Dierckx.integrate(spl_error_sq, xmin, xmax, ymin, ymax)
+#     results["l2error"] = sqrt(l2_sq_error_val)
+    
+#     results["relative_l1error"] = ana_l1_norm > 1e-12 ? results["l1error"] / ana_l1_norm : results["l1error"]
+#     results["relative_l2error"] = ana_l2_norm > 1e-12 ? results["l2error"] / ana_l2_norm : results["l2error"]
+
+#     mass_num = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
+#     results["mass"] = mass_num
+#     results["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / mass_ana : NaN
+
+#     results["supnorm"] = maximum(abs.(errors_at_particles))
+#     sup_norm_ana = maximum(abs.(u_analytical_at_particles))
+#     results["relative_supnorm"] = sup_norm_ana > 1e-12 ? results["supnorm"] / sup_norm_ana : results["supnorm"]
+
+#     return results
+# end
+
+
+# """
+#     _calculate_stats_at_timestep_no_ref(u_numerical, xy_coords, domain_params; ...)
+
+# Worker for 2D stats that do not require a reference solution.
+# """
+# function _calculate_stats_at_timestep_no_ref(
+#     u_numerical::AbstractVector{<:Real},
+#     xy_coords::AbstractVector{<:Tuple{<:Real, <:Real}},
+#     domain_params::NamedTuple,
+#     discontinuity_points; # Unused
+#     dierckx_k::Int = 3
+# )::Dict{String, Float64}
+    
+#     results = Dict{String, Float64}()
+#     N_particles = length(u_numerical)
+#     if N_particles == 0; return results; end
+
+#     # --- 1. Unpack Coordinates and Get Domain ---
+#     x_coords = [p[1] for p in xy_coords]
+#     y_coords = [p[2] for p in xy_coords]
+#     xmin, xmax = domain_params.xmin, domain_params.xmax
+#     ymin, ymax = domain_params.ymin, domain_params.ymax
+
+#     # --- 2. Create 2D Splines with Smoothing ---
+#     # THE FIX: Provide a smoothing factor `s`. A good default is the number of data points.
+#     s_factor = Float64(N_particles)
+
+#     # --- 2. Create Splines for Integration ---
+#     spl_u_num = Spline2D(x_coords, y_coords, u_numerical; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+#     spl_u_num_abs = Spline2D(x_coords, y_coords, abs.(u_numerical); kx=dierckx_k, ky=dierckx_k, s=s_factor)
+#     spl_u_num_sq = Spline2D(x_coords, y_coords, u_numerical.^2; kx=dierckx_k, ky=dierckx_k, s=s_factor)
+
+#     # --- 3. Calculate Integrals and Pointwise Stats ---
+#     results["mass"] = Dierckx.integrate(spl_u_num, xmin, xmax, ymin, ymax)
+#     results["l1norm"] = Dierckx.integrate(spl_u_num_abs, xmin, xmax, ymin, ymax)
+#     l2_sq_norm_val = Dierckx.integrate(spl_u_num_sq, xmin, xmax, ymin, ymax)
+#     results["l2norm"] = sqrt(l2_sq_norm_val)
+
+#     height_num, index_num = findmax(u_numerical)
+#     pos_num = xy_coords[index_num]
+#     results["wave_height"] = height_num
+#     # For 2D, we can't just return a single position number. We store the x and y coordinates.
+#     results["wave_pos_x"] = pos_num[1]
+#     results["wave_pos_y"] = pos_num[2]
+
+#     return results
+# end
 
 # ==============================================================================
 # --- SECTION 2: MAIN USER-FACING FUNCTIONS ---
@@ -415,9 +636,13 @@ function calculateAllStats!(
     domain_params = (xmin=xmin, xmax=xmax)
 
     @debug "Calculating statistics (no reference) for $(sim_data.params)"
-    for m in 1:length(sim_data.t)
+    p = Progress(num_timesteps; desc = "Calculating Stats...")
+    counter = Threads.Atomic{Int}(0)
+    Threads.@threads for m in 1:length(sim_data.t)
         stats_tmp = _calculate_stats_at_timestep_no_ref(sim_data.u[m], sim_data.x[m], domain_params, discontinuity_points; dierckx_k=dierckx_k)
         for key in stats_list; push!(sim_data.stats[key], get(stats_tmp, key, NaN)); end
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
     end
     if !isnothing(custom_function)
         try

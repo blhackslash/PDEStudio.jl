@@ -102,8 +102,8 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
             sim_data = Utils.loadSimData(params)
 
             # --- Store Data & Update Limits ---
-            if isnothing(sim_data) || !isa(sim_data, SimData1D)
-                 @warn "Invalid SimData1D for '$method'. Assigning empty."
+            if isnothing(sim_data)
+                 @warn "Invalid SimData for '$method'. Assigning empty."
                     
                  continue # Skip to next method
             end
@@ -120,7 +120,6 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
                     # *** Check if the value is a Vector of Real numbers ***
                     if isa(value, AbstractVector) && length(value) == length(sim_data.t) || isa(value, AbstractMatrix) && size(value, 1) == length(sim_data.t)
                         push!(plottable_keys_this_method, key)
-                        
                     else
                          # Optionally warn if a key exists but is not plottable
                          try @info "Length of t-vector = $(length(sim_data.t)). Length of stat-vector = $(length(value))"  catch e end
@@ -141,17 +140,12 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
 
             potential_keys_per_method[i] = plottable_keys_this_method
         end # End loop over methods
-
+        println(potential_keys_per_method)
         # --- Determine Common Plottable Keys ---
-        common_plottable_keys = Set{String}()
-        if active_num > 0
-            common_plottable_keys = potential_keys_per_method[1] # Start with the first set
-            for i = 2:active_num
-                intersect!(common_plottable_keys, potential_keys_per_method[i]) # Intersect with subsequent sets
-            end
-        end
+        common_keys = if !isempty(potential_keys_per_method); intersect(potential_keys_per_method...); else Set{String}(); end
         # --- Update Stat Selection UI ---
-        sorted_keys = sort(collect(common_plottable_keys))
+        sorted_keys = sort(collect(common_keys))
+        println(sorted_keys)
         create_or_update_selection_menu!(menu_container, menu_handle, sorted_keys, selected_key_obs)
 
         println("Data update complete.")
