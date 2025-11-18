@@ -113,18 +113,18 @@ Clears and populates a given Figure with a title and parameter controls.
 Parameters are laid out in a specified number of columns.
 """
 function populate_parameter_figure!(
-    #target_fig::Figure,
     title_str::String,
     params_obs_dict::Dict{String, Observable}, # Should be Dict{String, Observable}
-    num_param_columns::Int;
+    num_param_columns::Int,
+    target_fig::Figure;
     param_label_fontsize=14,
     header_fontsize=16,
     gap_size=10,
     internal_item_colgap=4,
-    fig_size = (500,600)
+    fig_size = (500,600),
 )
-    #empty!(target_fig.scene) # Clear all previous content and layouts
-    target_fig = Figure(size = fig_size)
+    empty!(target_fig.scene) # Clear all previous content and layouts
+    #target_fig = Figure(size = fig_size)
     main_layout = target_fig[1,1] = GridLayout(tellheight=false)
     rowgap!(main_layout, gap_size)
 
@@ -208,7 +208,6 @@ function populate_parameter_figure!(
     
     rowsize!(main_layout, 2, Auto()) 
     Makie.trim!(main_layout) 
-    display(GLMakie.Screen(),target_fig)
 end
 
 
@@ -300,7 +299,12 @@ function createBaseControlsFigure(
     scene_obs::Dict{String,Observable}
 )
     GLMakie.activate!()
-    base_controls_fig = Figure(size=(500, 600)) # Initial size, will grow as more controls are added
+
+    plot_screen = GLMakie.Screen(title = "Makie Plot")
+    # --- Create the SINGLE Parameter Display Figure ---
+    params_fig = Figure() # Adjust size as needed
+    params_screen = GLMakie.Screen(title = "Makie Parameters")
+    base_controls_fig = Figure() # Initial size, will grow as more controls are added
     #createParameterFigure(shared_params_obs, method_params_collection_obs, all_method_names)
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
@@ -317,6 +321,10 @@ function createBaseControlsFigure(
     update_notifier = Observable(0)
     on(update_button.clicks) do _
         update_notifier[] += 1
+        if !GLMakie.isopen(plot_screen)
+            plot_screen = GLMakie.Screen(title = "Makie Plot")
+            display(plot_screen,plot_fig_ref)
+        end
     end
     current_row += 1
     all_method_sorted = sort!(all_method_names)
@@ -352,30 +360,33 @@ function createBaseControlsFigure(
     for i in 1:current_row-1 # -1 because current_row is ready for the next item
         try rowsize!(fig_layout, i, Auto()); catch; end
     end
-    # --- Create the SINGLE Parameter Display Figure ---
-    #params_fig = Figure(size=(700, 500)) # Adjust size as needed
-
     # --- Listener for Menu Selection to Repopulate the params_fig ---
     on(selected_param_key_obs) do selected_key
         if selected_key == "Shared Parameters"
             populate_parameter_figure!( # Assuming populate_parameter_figure! is defined
                 "Shared Parameters", 
-                shared_params_obs,
-                2
+                shared_params_obs, 
+                2, params_fig
             )
         elseif selected_key == "UI Options"
-            populate_parameter_figure!("UI Style Options", ui_options_obs, 2)
+            populate_parameter_figure!("UI Style Options", ui_options_obs, 2, params_fig)
         elseif haskey(method_params_collection_obs, selected_key)
             populate_parameter_figure!(
                 "$selected_key Parameters", 
                 method_params_collection_obs[selected_key], 
-                2
+                2, params_fig
             )
         else
             empty!(params_fig) # Clear if selection is invalid
             Label(params_fig[1,1], "Select a parameter set to view.", halign=:center)
         end
+        if !GLMakie.isopen(params_screen)
+            params_screen = GLMakie.Screen(title = "Makie Parameters")
+            display(params_screen,params_fig)
+        end
     end
+    
+    #display(GLMakie.Screen(),params_fig)
 
     # --- Initially populate the params_fig ---
     if param_view_menu.selection[] !== nothing
@@ -428,6 +439,9 @@ function createBaseControlsFigure(
            sel_comp
        )
    end
+   display(params_screen,params_fig)
+   display(plot_screen, plot_fig_ref)
+   display(GLMakie.Screen(title="Makie Controls"), base_controls_fig)
     return base_controls_fig, update_notifier, ui_update, components, sel_comp
 end
 
@@ -798,18 +812,18 @@ function createSaveFigBox(
      end # End on event handler
 end
 
-function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String})
+function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String}; n = 20)
     
-    toLayout = cb_layout[end,1:div(length(methods),5)+1] = GridLayout() # 5 hard coded atm can be added to ui_dict
+    toLayout = cb_layout[end,1:div(length(methods),n)+1] = GridLayout() # n hard coded atm can be added to ui_dict
 
     for (i,method) = enumerate(methods)
-        j = div(i-1,5) + 1
-        Label(toLayout[mod1(i,5),j*2-1], method)
+        j = div(i-1,n) + 1
+        Label(toLayout[mod1(i,n),j*2-1], method)
         init_methods = methods_obs[]
         if method in init_methods
-            tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = true)
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = true)
         else
-            tmp = Checkbox(toLayout[mod1(i,5),j*2], checked = false)
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = false)
         end
         on(tmp.checked) do checked 
             if to_value(checked) & !(methods[i] in methods_obs[])
@@ -1020,58 +1034,72 @@ function set_axis_styles!(
     end
 end
 """
-    set_axis_styles!(ax::Axis3, ui_options_obs, final_label_obs)
+    set_axis_styles!(ax::Axis3, ui_options_obs)
 
-Applies styles to a 3D `Axis3` object. It dynamically switches between a 3D
-surface view and a 2D top-down view based on the `plot_as_surface` UI option.
+Dynamically switches between 3D perspective and 2D top-down views.
+Assumes all required keys exist in `ui_options_obs`.
 """
 function set_axis_styles!(
     ax::Axis3,
     ui_options_obs::Dict{String, Observable}
 )
     try
-        # Check the UI option to decide which mode to use
-        is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+        plot_type = ui_options_obs["plot_type"][]
+        is_3d_view = plot_type in [:surface, :scatter3d] 
 
-        # Set common properties first
-        # ax.title = get(final_label_obs, "title", Observable("Default Title"))[]
-        # ax.xlabel = get(final_label_obs, "xlabel", Observable("x"))[]
-        # ax.ylabel = get(final_label_obs, "ylabel", Observable("y"))[]
-        
-        ax.titlesize = get(ui_options_obs, "title_size", Observable(16))[]
-        ax.xlabelsize = get(ui_options_obs, "label_size", Observable(16))[]
-        ax.ylabelsize = get(ui_options_obs, "label_size", Observable(16))[]
-        ax.xticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
-        ax.yticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
+        # --- Common Font Sizes ---
+        ax.titlesize = ui_options_obs["title_size"][]
+        ax.xlabelsize = ui_options_obs["label_size"][]
+        ax.ylabelsize = ui_options_obs["label_size"][]
+        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
+        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]
 
-        if is_surface_view
-            # --- Configure for 3D Surface View ---
-            ax.zlabelsize = get(ui_options_obs, "label_size", Observable(16))[]
-            ax.zticklabelsize = get(ui_options_obs, "ticklabel_size", Observable(14))[]
+        if is_3d_view
+            # --- 3D Perspective Configuration ---
+            ax.zlabel = "z"
+            ax.zlabelsize = ui_options_obs["label_size"][]
+            ax.zticklabelsize = ui_options_obs["ticklabel_size"][]
             
-            ax.aspect = (1, 1, 0.5) # Or lift from a UI option: `ui_options_obs["aspect"][]`
-            ax.perspectiveness = 0.5 # Or lift from a UI option
+            ax.aspect = (1, 1, 0.6) 
+            ax.perspectiveness = 0.5
+            #ax.viewmode = :fit
 
             ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
             ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
-        else
-            # --- Configure for 2D Top-Down View ---
-            ax.zlabel = "" # Hide Z label
-            ax.zlabelsize = 0 # Ensure it takes no space
-            ax.zticklabelsvisible = false # Hide Z tick labels
             
-            ax.aspect = :data
-            ax.perspectiveness = 0.0
+            # --- 3D Offsets & Pads ---
+            ax.xlabeloffset = ui_options_obs["xlabel_offset_3d"][]
+            ax.ylabeloffset = ui_options_obs["ylabel_offset_3d"][]
+            ax.zlabeloffset = ui_options_obs["zlabel_offset_3d"][]
             
-            # Set the view to be directly from above
-            ax.elevation = pi/2
-            ax.azimuth = 0
 
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = false # Hide Z grid
+        else
+            # Use Mixed alignmode to force padding at the bottom
+            b_margin = ui_options_obs["bottom_margin_2d"][]
+            
+            # Mixed(bottom = X) reserves X pixels at the bottom, shrinking the axis height
+            ax.alignmode = Mixed(bottom = b_margin, left = 0, right = 0, top = 0)
+            # --- 2D Top-Down Configuration ---
+            ax.zlabel = "" 
+            ax.zlabelsize = 0
+            ax.zticklabelsvisible = false
+            ax.zgridvisible = false
+            
+            ax.perspectiveness = 0.0 
+            ax.elevation = pi/2       
+            ax.azimuth = -pi/2        
+            ax.aspect = :data 
+
+            
+            # Move Labels away from the Ticks
+            ax.xlabeloffset = ui_options_obs["xlabel_offset_2d"][]
+            ax.ylabeloffset = ui_options_obs["ylabel_offset_2d"][]
+            
+            ax.xgridvisible = true; ax.ygridvisible = true
         end
 
     catch e
-        @warn "An error occurred while setting 3D axis styles. A required key might be missing." exception=(e, catch_backtrace())
+        @warn "Error setting axis styles. A required key might be missing in ui_options_obs." exception=(e, catch_backtrace())
     end
 end
 
@@ -1770,37 +1798,46 @@ end
 
 
 """
-    create_or_update_colorbar!(fig::Figure, plot_object, ui_options_obs::Dict)
+    create_or_update_colorbar!(fig::Figure, ui_options_obs, color_range_obs, label)
 
-Creates or updates a Colorbar for a given plot object (like a heatmap or surface).
-It is placed to the right of the plot. Any existing Colorbar is removed first.
+Creates a Colorbar explicitly linked to the global colormap and colorrange observables.
+This avoids errors when plotting objects like Contours which contain Text elements.
 """
 function create_or_update_colorbar!(
     fig::Figure,
-    plot_object, # The heatmap, surface, etc.
+    plot_object, # We keep this argument to check if a plot exists, but we won't extract from it
     ui_options_obs::Dict{String, Observable},
+    color_range_obs::Observable{Tuple{Float64, Float64}}, # Pass the observable directly
     label::String,
 )
-    # --- 1. Find and Delete any existing Colorbar in the Figure ---
+    # --- 1. Find and Delete any existing Colorbar ---
     for elem in copy(contents(fig.layout))
         if elem isa Colorbar
             delete!(elem)
         end
     end
 
+    # If no plot was actually created (e.g. empty data), don't draw a colorbar
     if isnothing(plot_object)
         return
     end
-    # --- 2. Create and Place the New Colorbar ---
+
+    # --- 2. Create the New Colorbar Explicitly ---
     try
-        # Place the colorbar in column 2 of the figure's layout.
-        cb = Colorbar(fig[1, 2], plot_object, label = label,
-            labelsize = ui_options_obs["label_size"][]
+        # Instead of passing `plot_object`, we pass the attributes explicitly.
+        # This bypasses the "Text" error for contours.
+        cb = Colorbar(fig[1, 2];
+            colormap = ui_options_obs["colormap"],
+            colorrange = color_range_obs,
+            label = label,
+            labelsize = ui_options_obs["label_size"][],
+            ticklabelsize = ui_options_obs["ticklabel_size"][],
+            # Optional: Add highclip/lowclip here if you use them in the main plot
         )
-        cb.ticklabelsize = ui_options_obs["ticklabel_size"][]
         
-        # Ensure the new column's width is determined by the colorbar's content
+        # Ensure the colsize adjusts automatically
         colsize!(fig.layout, 2, Auto())
+        
     catch e
         @error "Failed to create or update colorbar." exception=(e, catch_backtrace())
     end
@@ -1890,7 +1927,8 @@ function set_axis_limits!(
         # Makie's limits! for Axis3 takes (xmin, xmax, ymin, ymax, zmin, zmax)
         try
             color_range[] = final_zlims
-            real_zlims = ui_options_obs["plot_as_surface"][] ? final_zlims : (-0.1,.1)
+            is_3d_view = ui_options_obs["plot_type"][] in [:surface, :scatter3d]
+            real_zlims = is_3d_view ? final_zlims : (-0.1,.1)
             limits!(ax, final_xlims..., final_ylims..., real_zlims...)
             
         catch e
@@ -1907,18 +1945,53 @@ function set_axis_limits!(
     return nothing
 end
 
+function irregular_to_grid(x_tuples, u_vals; resolution=100)
+    # Extract x and y
+    xs = [p[1] for p in x_tuples]
+    ys = [p[2] for p in x_tuples]
+    
+    # Create a grid range
+    x_min, x_max = extrema(xs)
+    y_min, y_max = extrema(ys)
+    
+    # Handle case where data is a single point or line to prevent errors
+    if x_min == x_max; x_max += 1.0; end
+    if y_min == y_max; y_max += 1.0; end
+
+    xg = range(x_min, x_max, length=resolution)
+    yg = range(y_min, y_max, length=resolution)
+    
+    # Initialize grid with NaN (transparent)
+    zg = fill(NaN, resolution, resolution)
+    
+    # Simple Binning (assign point to nearest grid cell)
+    # For better results, consider Inverse Distance Weighting or Delaunay via external packages
+    x_step = step(xg)
+    y_step = step(yg)
+    
+    for (x, y, z) in zip(xs, ys, u_vals)
+        # Map x/y to indices
+        i = clamp(round(Int, (x - x_min) / x_step) + 1, 1, resolution)
+        j = clamp(round(Int, (y - y_min) / y_step) + 1, 1, resolution)
+        
+        # Simple overwrite (or use average if multiple fall in same bin)
+        zg[i, j] = z
+    end
+    
+    return xg, yg, zg
+end
+
 """
     create_base_plot_2D!(...)
 
-Handles the core plotting for 2D data (surfaces or heatmaps). It calculates a global
-color range to ensure a consistent color scale across all visible plots.
+Handles plotting for 2D/3D data using various visualizations (:scatter2d, :surface, :contour, etc.).
 """
 function create_base_plot_2D!(
     plot_fig::Figure,
     ax::Axis3,
     active_methods::Vector{String},
-    x_snapshot::AbstractVector, # Vector of Vector{NTuple{2,Float64}}
-    u_snapshot::AbstractVector, # Vector of Vector{Float64}
+    x_snapshot::AbstractVector, 
+    u_snapshot::AbstractVector, 
     ui_options_obs::Dict{String, Observable},
     color_range::Observable{Tuple{Float64, Float64}},
     label_obs
@@ -1926,29 +1999,34 @@ function create_base_plot_2D!(
     # --- Setup and Styling ---
     width, height = ui_options_obs["figsize"][]
     resize!(plot_fig, width, height)
-    empty!(ax)
+    empty!(ax) # Clear previous plots
     
-    if isempty(active_methods); create_or_update_colorbar!(plot_fig, nothing, ui_options_obs, label_obs["colorbar_label"][]); return nothing; end
+    if isempty(active_methods)
+        create_or_update_colorbar!(plot_fig, nothing, ui_options_obs, color_range, label_obs["colorbar_label"][])
+        return nothing
+    end
+    #main_col_idx = ui_options_obs["main_plot_col"][]
+    #colsize!(plot_fig.layout, 1, Auto(1.0))
 
     # --- Plotting Loop ---
     plotted_objects = []
     labels_for_legend = String[]
     plot_object_for_colorbar = nothing
 
-    is_surface_view = get(ui_options_obs, "plot_as_surface", Observable(false))[]
+    # Retrieve the plot type (default to :scatter2d if missing)
+    plot_type = get(ui_options_obs, "plot_type", Observable(:scatter2d))[]
 
     for (i, method_label) in enumerate(active_methods)
         if i > length(x_snapshot) || i > length(u_snapshot); continue; end
 
-        x_data = x_snapshot[i] # This is a Vector{NTuple{2, Float64}}
-        u_data = u_snapshot[i] # This is a Vector{Float64}
+        x_data = x_snapshot[i] # Vector{NTuple{2, Float64}}
+        u_data = u_snapshot[i] # Vector{Float64}
         
         if isempty(x_data) || isempty(u_data); continue; end
 
-        # Handle outlier removal if requested
+        # Handle outlier removal
         u_data_for_plotting = copy(u_data)
         if ui_options_obs["remove_outliers"][]
-             # For 2D, u_data is just a vector at this point, so we use the 1D version
             outlier_indices = _find_outlier_indices(u_data, ui_options_obs["outlier_threshold"][])
             if !isempty(outlier_indices)
                 u_data_for_plotting[outlier_indices] .= NaN
@@ -1956,7 +2034,9 @@ function create_base_plot_2D!(
         end
 
         local current_plot_object
-        if is_surface_view
+
+        if plot_type == :scatter3d
+            # 3D Scatter (MeshScatter)
             points_xyz = [Point3f(p[1], p[2], val) for (p, val) in zip(x_data, u_data_for_plotting)]
             current_plot_object = meshscatter!(ax, points_xyz; 
                 markersize=ui_options_obs["markersize_3d"][], 
@@ -1965,8 +2045,17 @@ function create_base_plot_2D!(
                 colorrange=color_range, 
                 label=method_label
             )
-        else
-            points_xy = [Point2f(p[1], p[2]) for p in x_data]
+
+        elseif plot_type == :scatter2d
+            # 2D Scatter (Flat on Z plane, or projected)
+            # We plot at Z=0 or Z=val depending on preference. 
+            # Standard scatter! in Axis3 requires 3D points usually, or it projects.
+            # Let's map them to the XY plane explicitly if we want a "pure" 2D look in 3D axis
+            points_xy = [Point3f(p[1], p[2], 0.0) for p in x_data] # Plot on floor
+            
+            # OR if you want them floating at their Z-height but looked at from above:
+            # points_xy = [Point3f(p[1], p[2], val) for (p, val) in zip(x_data, u_data_for_plotting)]
+            
             current_plot_object = scatter!(ax, points_xy; 
                 markersize=ui_options_obs["markersize_2d"][], 
                 color=u_data_for_plotting, 
@@ -1974,6 +2063,33 @@ function create_base_plot_2D!(
                 colorrange=color_range, 
                 label=method_label
             )
+
+        elseif plot_type in [:surface, :contour, :contourf]
+            # Grid-based visualizations
+            xg, yg, zg = irregular_to_grid(x_data, u_data_for_plotting; resolution=100)
+
+            if plot_type == :surface
+                current_plot_object = surface!(ax, xg, yg, zg; 
+                    colormap=ui_options_obs["colormap"][], 
+                    colorrange=color_range,
+                    label=method_label
+                )
+            elseif plot_type == :contour
+                current_plot_object = contour!(ax, xg, yg, zg; 
+                    colormap=ui_options_obs["colormap"][], 
+                    colorrange=color_range,
+                    levels=ui_options_obs["contour_levels"][], # Or lift from options
+                    linewidth=ui_options_obs["linewidth"][],
+                    label=method_label
+                )
+            elseif plot_type == :contourf
+                current_plot_object = contourf!(ax, xg, yg, zg; 
+                    colormap=ui_options_obs["colormap"][], 
+                    colorscale=color_range,
+                    levels=ui_options_obs["contour_levels"][],
+                    label=method_label
+                )
+            end
         end
         
         push!(plotted_objects, current_plot_object)
@@ -1983,15 +2099,12 @@ function create_base_plot_2D!(
 
     # --- Final Touches ---
     if ui_options_obs["update_limits"][]; set_axis_limits!(ax, x_snapshot, u_snapshot, ui_options_obs, color_range) end
-    create_or_update_colorbar!(plot_fig, plot_object_for_colorbar, ui_options_obs, label_obs["colorbar_label"][])
-    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, ui_options_obs)
-    set_axis_styles!(ax, ui_options_obs)
     
-    # # Auto-limit XY axes for the current view, but fix the Z-axis to the global range
-    # autolimits!(ax)
-    # if is_surface_view
-    #     zlims!(ax, color_range...)
-    # end
+    create_or_update_colorbar!(plot_fig, plot_object_for_colorbar, ui_options_obs, color_range, label_obs["colorbar_label"][])
+    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, ui_options_obs)
+    
+    # Pass the plot_type to the styling function
+    set_axis_styles!(ax, ui_options_obs)
 
     return nothing
 end

@@ -156,8 +156,8 @@ function show1DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     end # --- End Lift Block 3 ---
 
     # --- Display Figures ---
-    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
-    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
+    #try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
+    #try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
     return nothing
     # return control_fig, plot_fig
 end

@@ -81,7 +81,7 @@ function GetUIStyle(style::Symbol)
         # Start with a copy of the default and modify it
         publication_style = deepcopy(default_style)
         merge!(publication_style, Dict{String, Any}(
-            "linewidth" => 2.5,
+            "linewidth" => 3.,
             "markersize" => 10,
             "title_size" => 14,
             "legend_pos" => "righttop",
@@ -129,15 +129,28 @@ function getUIStyle2D(style::Symbol)
     default_2D_additions = Dict{String, Any}(
         "markersize_2d" => 15,
         "markersize_3d" => Vec3f(0.2, 0.2, 0.2),
-        "plot_as_surface" => false,
+        "plot_type" => :contourf,
+        "plot_options" => [:scatter2d,:scatter3d,:surface,:contour,:contourf],
         "colormap" => :viridis,
         "colormaps" => [:viridis, :plasma, :inferno, :magma, :thermal, :coolwarm, :balance, :grays],
-        "xpadding" => 0.2,
-        "ypadding" => 0.2,
+        "xpadding" => 0.,
+        "ypadding" => 0.,
         "zpadding" => 0.4,
         # Override labels for 2D context
         "zlabel" => "default",
-        "colorbar_label" => "default"
+        "colorbar_label" => "default",
+        "contour_levels" => 10,
+    # --- 2D View Offsets (Top-Down) ---
+        # These need to be higher to prevent overlap with ticks in orthographic projection
+        "xlabel_offset_2d" => 40.0,
+        "ylabel_offset_2d" => 80.0,
+        "bottom_margin_2d"   => 60,
+
+        # --- 3D View Offsets (Perspective) ---
+        # Standard Makie defaults usually work well here
+        "xlabel_offset_3d" => 40.0,
+        "ylabel_offset_3d" => 40.0,
+        "zlabel_offset_3d" => 50.0,
     )
 
     # Merge the 2D additions into the base style
@@ -152,7 +165,7 @@ function getUIStyle2D(style::Symbol)
     end
     
     # --- 4. Remove 1D-only keys that are not applicable to 2D plots ---
-    irrelevant_keys = ["show_lines", "dashed_lines", "track_max", "track_min", "linewidth", "markersize", "lineStyles", "reference","xlogscale","ylogscale"]
+    irrelevant_keys = ["show_lines", "dashed_lines", "track_max", "track_min", "markersize", "lineStyles", "reference","xlogscale","ylogscale"]
     for key in irrelevant_keys
         delete!(final_style, key)
     end

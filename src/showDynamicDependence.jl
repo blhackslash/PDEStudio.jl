@@ -168,9 +168,9 @@ function showDynamicDependence(sim_config::SimulationConfig; reference_function:
     end # End of lift block 2
 
     # --- Display Figures ---
-    GLMakie.activate!()
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
+    #GLMakie.activate!()
+    #display(GLMakie.Screen(), control_fig)
+    #display(GLMakie.Screen(), plot_fig)
     
     # Optionally return figures
     # return control_fig, plot_fig 

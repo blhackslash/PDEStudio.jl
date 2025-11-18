@@ -29,10 +29,12 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
 
     # --- 2D-Specific Controls ---
     Label(control_fig[end+1,:], "Plot Type: (Scatter / Surface)")
-    plot_type_toggle = Toggle(control_fig[end+1,:], active = ui_options_obs["plot_as_surface"][])
-    on(plot_type_toggle.active) do active_state
-        ui_options_obs["plot_as_surface"][] = active_state
+    plot_type_menu = Menu(control_fig[end+1,:], options = ui_options_obs["plot_options"][])
+   
+    on(plot_type_menu.selection) do sel
+        ui_options_obs["plot_type"][] = sel
     end
+    plot_type_menu.selection[] = ui_options_obs["plot_type"][]
     
     Label(control_fig[end+1,:], "Colormap:")
     cmap_menu = Menu(control_fig[end+1,:], options = ui_options_obs["colormaps"][])
@@ -52,8 +54,9 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     createAnimationControls!(ani_layout, plot_fig, tSlider, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs, scene_obs)
 
     # --- Axis and Labels ---
-    dynamic_zlabel = lift(comp_sel, ui_options_obs["plot_as_surface"]) do c, is_surf
-        is_surf && c <= length(components[]) ? "$(components[][c])" : ""
+    dynamic_zlabel = lift(comp_sel, ui_options_obs["plot_type"]) do c, plot_type
+        is_3d_view = plot_type in [:surface, :scatter3d] 
+        is_3d_view && c <= length(components[]) ? "$(components[][c])" : ""
     end
     dynamic_clabel = lift(comp_sel) do c; c <= length(components[]) ? "$(components[][c])" : "" end
     dynamic_title = lift(tSlider.value) do t; "t = $(round(t, digits=3))" end
@@ -144,8 +147,8 @@ function show2DSolutionFig(sim_config::SimulationConfig; calc_stats = false, ref
     end
 
     # --- Display Figures ---
-    try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
-    try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
+    #try; display(GLMakie.Screen(), control_fig); catch e; @error "Failed displaying control_fig" exception=(e, catch_backtrace()); end
+    #try; display(GLMakie.Screen(), plot_fig); catch e; @error "Failed displaying plot_fig" exception=(e, catch_backtrace()); end
 
     return nothing
 end

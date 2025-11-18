@@ -695,44 +695,44 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_params::ParamDictType
     calculateAllStats!(sim_data, ref_sim_data; kwargs...)
 end
 
-"""
-    calculateAllStats!(sim_config::SimulationConfig; ref_func_cont=nothing, kwargs...)
+# """
+#     calculateAllStats!(sim_config::SimulationConfig; ref_func_cont=nothing, kwargs...)
 
-High-level convenience function that takes a SimulationConfig and orchestrates stats calculation.
-"""
-function calculateAllStats!(sim_config::SimulationConfig; ref_func_cont::Union{Function, Nothing}=nothing, discontinuity_points_func::Union{Function, Nothing} = t -> Float64[], kwargs...)
-    all_methods = collect(keys(sim_config.methods_dict))
-    ref_method_idx = findfirst(s -> contains(lowercase(s), "reference"), all_methods)
+# High-level convenience function that takes a SimulationConfig and orchestrates stats calculation.
+# """
+# function calculateAllStats!(sim_config::SimulationConfig; ref_func_cont::Union{Function, Nothing}=nothing, discontinuity_points_func::Union{Function, Nothing} = t -> Float64[], kwargs...)
+#     all_methods = collect(keys(sim_config.methods_dict))
+#     ref_method_idx = findfirst(s -> contains(lowercase(s), "reference"), all_methods)
     
-    local reference
-    if !isnothing(ref_func_cont)
-        @info "continuous Analytic/Reference Solution given"
-        reference = ref_func_cont
-    elseif !isnothing(ref_method_idx)
-        ref_method_name = all_methods[ref_method_idx]
-        @info "Using numerical reference solution '$ref_method_name'."
-        ref_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, ref_method_name)
-        reference = createReferenceFunction(loadSimData(ref_params); discontinuity_points_func = discontinuity_points_func)
-    else
-        reference = nothing
-        @warn "Neither an analytic solution nor a numerical reference method found in SimulationConfig. Skipping calculation!"
-        @info "Turn off stat calculation if you handle the calculation yourself."
-    end
+#     local reference
+#     if !isnothing(ref_func_cont)
+#         @info "continuous Analytic/Reference Solution given"
+#         reference = ref_func_cont
+#     elseif !isnothing(ref_method_idx)
+#         ref_method_name = all_methods[ref_method_idx]
+#         @info "Using numerical reference solution '$ref_method_name'."
+#         ref_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, ref_method_name)
+#         reference = createReferenceFunction(loadSimData(ref_params); discontinuity_points_func = discontinuity_points_func)
+#     else
+#         reference = nothing
+#         @warn "Neither an analytic solution nor a numerical reference method found in SimulationConfig. Skipping calculation!"
+#         @info "Turn off stat calculation if you handle the calculation yourself."
+#     end
 
-    # Loop through all other methods and calculate their stats against the reference
-    for method_label in sim_config.default_methods
-        #if method_label == all_methods[ref_method_idx]; continue; end
+#     # Loop through all other methods and calculate their stats against the reference
+#     for method_label in sim_config.default_methods
+#         #if method_label == all_methods[ref_method_idx]; continue; end
         
-        params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method_label)
-        sim_data = loadSimData(params)
-        if isnothing(sim_data); @warn "Could not load SimData for '$method_label' to calculate stats."; continue; end
+#         params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method_label)
+#         sim_data = loadSimData(params)
+#         if isnothing(sim_data); @warn "Could not load SimData for '$method_label' to calculate stats."; continue; end
         
-        # Call the version that takes the reference parameters
-        if !isnothing(reference)
-            calculateAllStats!(sim_data, reference; kwargs...)
-        end
-    end
-end
+#         # Call the version that takes the reference parameters
+#         if !isnothing(reference)
+#             calculateAllStats!(sim_data, reference; kwargs...)
+#         end
+#     end
+# end
 
 """
     calculateConvergenceStats!(sim_config, key_varied, param_values; kwargs...)
@@ -802,7 +802,7 @@ function calculateConvergenceData(
 
     loop_indices = randperm(num_tasks)
     # --- Parallel Execution ---
-    Threads.@threads for i in loop_indices
+    @inbounds for i in loop_indices
         try
             params_for_this_run = tasks_params_list[i]
             method_label_this_run, p_val_idx = task_identifiers[i]

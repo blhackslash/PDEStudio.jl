@@ -180,7 +180,7 @@ function showConvergencePlot(
     end
     
     # --- Final Steps ---
-    display(GLMakie.Screen(), control_fig)
-    display(GLMakie.Screen(), plot_fig)
+    #display(GLMakie.Screen(), control_fig)
+    #display(GLMakie.Screen(), plot_fig)
     return plot_fig, control_fig
 end
