@@ -10,7 +10,7 @@ using Dates # For timestamp in optional info
 using ProgressMeter
 
 
-export show1DSolutionFig, show2DCutFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, GetUIStyle, plotFromCSV, interactiveCSVLauncher
+export show1DSolutionFig, show2DCutFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, show2DConvergencePlot, GetUIStyle, plotFromCSV, interactiveCSVLauncher
 
 include("UIStyles.jl")
 include("PlottingUtils.jl")
@@ -18,6 +18,7 @@ include("show1DSolutionFig.jl")
 include("show2DSolutionFig.jl")
 include("showDynamicDependence.jl")
 include("showConvergencePlot.jl")
+include("show2DConvergencePlot.jl")
 include("show2DCutFig.jl")
 
 function plotFromCSV(csv_filepath::String; kwargs...)

@@ -1,6 +1,6 @@
 module IPlotPDESols
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, saveSimData,
+export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, saveSimData,show2DConvergencePlot,
        calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,

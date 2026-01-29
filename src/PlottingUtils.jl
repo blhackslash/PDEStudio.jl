@@ -2453,7 +2453,52 @@ function assemble_simulation_tasks(
     return tasks
 end
 
+"""
+    assemble_simulation_tasks(..., key1, val1, key2, val2; ...) -> Matrix{ParamDictType}
 
+Assembles a matrix of parameter dictionaries for 2D convergence studies.
+Dimensions: (Num_Methods x Total_Grid_Points).
+
+The columns represent the flattened grid of `param_values1 x param_values2`.
+"""
+function assemble_simulation_tasks(
+    shared_params_obs::Dict{String, Observable},
+    method_params_collection_obs::Dict{String, Dict{String, Observable}},
+    active_methods::Vector{String},
+    key1::String,
+    param_values1::AbstractVector,
+    key2::String,
+    param_values2::AbstractVector;
+    force_int_param1::Bool = false,
+    force_int_param2::Bool = false
+)
+    num_methods = length(active_methods)
+    # Create the grid logic once to ensure order consistency
+    # We flatten (v1, v2) tuples
+    param_grid = collect(Iterators.product(param_values1, param_values2)) 
+    num_runs = length(param_grid)
+
+    # Pre-allocate Matrix (Methods x Flat_Runs)
+    tasks = Matrix{ParamDictType}(undef, num_methods, num_runs)
+
+    # Iterate through methods (rows)
+    for (i, method_name) in enumerate(active_methods)
+        base_params = assembleParams(shared_params_obs, method_params_collection_obs, method_name)
+        
+        # Iterate through the flattened grid (columns)
+        for (j, (p1_val, p2_val)) in enumerate(param_grid)
+            params_for_this_run = copy(base_params)
+            
+            # Apply values and force int if requested
+            params_for_this_run[key1] = force_int_param1 ? trunc(Int64, p1_val) : p1_val
+            params_for_this_run[key2] = force_int_param2 ? trunc(Int64, p2_val) : p2_val
+            
+            tasks[i, j] = params_for_this_run
+        end
+    end
+    
+    return tasks
+end
 #======================================================================#
 #              2. ENSURE SIMULATION DATA EXISTS
 #======================================================================#
