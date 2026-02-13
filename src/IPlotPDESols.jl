@@ -100,6 +100,9 @@ using .Structs
 include("Utils.jl")
 using .Utils
 
+include("DataProcessing.jl")
+using .DataProcessing
+
 include("StatCalculation.jl")
 using .StatCalculation
 

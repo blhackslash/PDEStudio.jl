@@ -2020,8 +2020,7 @@ function create_base_plot_2D!(
         if i > length(x_snapshot) || i > length(u_snapshot); continue; end
 
         x_data = x_snapshot[i] # Vector{NTuple{2, Float64}}
-        u_data = u_snapshot[i] # Vector{Float64}
-        
+        u_data = u_snapshot[i] # Vector{Float64} 
         if isempty(x_data) || isempty(u_data); continue; end
 
         # Handle outlier removal
@@ -2052,7 +2051,8 @@ function create_base_plot_2D!(
             # Standard scatter! in Axis3 requires 3D points usually, or it projects.
             # Let's map them to the XY plane explicitly if we want a "pure" 2D look in 3D axis
             points_xy = [Point3f(p[1], p[2], 0.0) for p in x_data] # Plot on floor
-            
+            #println(points_xy)
+            #error("TEST")
             # OR if you want them floating at their Z-height but looked at from above:
             # points_xy = [Point3f(p[1], p[2], val) for (p, val) in zip(x_data, u_data_for_plotting)]
             
@@ -2502,78 +2502,507 @@ end
 #======================================================================#
 #              2. ENSURE SIMULATION DATA EXISTS
 #======================================================================#
-
 """
-    ensure_sim_data_exists!(tasks::Vector{ParamDictType}, sim_config; 
-                            force_overwrite=false, parallel=false)
+    ensure_sim_data_exists!(tasks, sim_config; force_overwrite=false, parallel=false)
 
-Iterates through a list of simulation tasks. For each task, it checks if the
-corresponding data file exists. If not (or if `force_overwrite` is true), it
-runs the simulation.
-
-Set `parallel=true` to run simulations in parallel using `Threads.@threads`.
+Streamlined version: Iterates (serially or in parallel) over tasks and ensures data exists.
 """
 function ensure_sim_data_exists!(
-    tasks::Union{Vector{ParamDictType},Matrix{ParamDictType}},
+    tasks::Union{Vector{ParamDictType}, Matrix{ParamDictType}},
     sim_config::SimulationConfig;
     force_overwrite::Bool = false,
     parallel::Bool = false
 )
-    task_size = size(tasks)
-    num_tasks = task_size isa Tuple{Int64} ? task_size[1] : task_size[1] * task_size[2]
+    # 1. Flatten tasks for uniform handling (if it's a matrix)
+    # generic iteration handles both, but length() works better on a flat view or vec
+    all_tasks = vec(tasks)
+    num_tasks = length(all_tasks)
     if num_tasks == 0; return; end
     
-    @debug "Checking for existing data for $num_tasks simulations..."
-    p = Progress(num_tasks; desc = "Running simulations...")
+    @debug "Checking data for $num_tasks simulations..."
+    p = Progress(num_tasks; desc = "Running simulations...", showspeed=true)
+    counter = Threads.Atomic{Int}(0)
 
-    if parallel
-        # --- PARALLEL EXECUTION ---
-        # This is the original threaded implementation
-        counter = Threads.Atomic{Int}(0)
-
-        Threads.@threads for params_for_this_run in tasks
-            try
-                if !doesSimDataExist(params_for_this_run) || force_overwrite
-                    # We wrap the function call in `Base.invokelatest`.
-                    # This tells Julia to look up the newest definition of the function
-                    # right before calling it, which solves the world age issue.
-                    sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
-                    
-                    if !isnothing(sim_data)
-                        saveSimData(sim_data; overwrite = force_overwrite)
-                    end
+    # 2. Define the core worker function (closure captures config/options)
+    function process_task(params)
+        try
+            if force_overwrite || !doesSimDataExist(params)
+                # invokelatest solves world-age issues if new methods were defined recently
+                sim_data = Base.invokelatest(sim_config.sim_function, params)
+                
+                if !isnothing(sim_data)
+                    saveSimData(sim_data; overwrite = force_overwrite)
                 end
-            catch e
-                @error "A simulation failed to run or save." exception=(e, catch_backtrace())
             end
-            Threads.atomic_add!(counter, 1)
-            ProgressMeter.update!(p, counter[])
+        catch e
+            @error "Simulation failed." exception=(e, catch_backtrace())
         end
-    else
-        # --- SERIAL EXECUTION ---
-        for params_for_this_run in tasks
-            try
-                if !doesSimDataExist(params_for_this_run) || force_overwrite
-                    # `Base.invokelatest` is still useful here, especially
-                    # when working interactively in a REPL.
-                    sim_data = Base.invokelatest(sim_config.sim_function, params_for_this_run)
-                    
-                    if !isnothing(sim_data)
-                        saveSimData(sim_data; overwrite = force_overwrite)
-                    end
-                end
-            catch e
-                @error "A simulation failed to run or save." exception=(e, catch_backtrace())
-            end
-            ProgressMeter.next!(p) # Simpler progress update for serial loops
-        end
+        # Update progress safely
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
     end
 
-    @debug "\nSimulation check complete."
+    # 3. Execution Strategy
+    if parallel
+        Threads.@threads for task in all_tasks
+            process_task(task)
+        end
+    else
+        foreach(process_task, all_tasks)
+    end
+    
+    @debug "Simulation check complete."
 end
 
 
+"""
+    create_plot_controls!(fig, plot_data::UnifiedPlotData)
 
+Creates a hierarchical menu system:
+1. X-Axis Selection
+2. Y-Axis Selection (Filtered by intersection with X)
+3. Plot Axis Selection (If X and Y share multiple dimensions)
+4. Dynamic Sliders/Menus (For all remaining non-singleton dimensions)
+
+Returns a Dict of observables corresponding to the current slice indices.
+"""
+function create_plot_controls!(fig::Figure, plot_data::UnifiedPlotData)
+    # --- Layout Setup ---
+    # Top row: Selection Menus. Bottom row: Dynamic Sliders.
+    menu_layout = fig[1, 1] = GridLayout()
+    slider_layout = fig[2, 1] = GridLayout()
+    
+    # --- Helper: Dimension Names ---
+    # Map index 1..N to string names
+    # Structure: [P1, P2..., Space, Time, Component]
+    n_params = length(plot_data.active_param_keys)
+    dim_names = Dict{Int, String}()
+    for (i, key) in enumerate(plot_data.active_param_keys)
+        dim_names[1 + i] = key # Shift by 1
+    end
+    dim_names[n_params + 1] = "Component"    
+    dim_names[n_params + 2] = "Space"
+    dim_names[n_params + 3] = "Time"
+    
+    total_dims = length(dim_names)
+
+    # --- Observables for State ---
+    # The current selection state
+    x_key_obs = Observable{Union{String, Nothing}}(nothing)
+    y_key_obs = Observable{Union{String, Nothing}}(nothing)
+    plot_dim_obs = Observable{Int}(0) # The dimension index we are plotting against (e.g. 4 for Space)
+    
+    # The Output: What index to slice at for each dimension?
+    # 1 = Index 1 (Fixed), : = All (Plotting Axis), >1 = Specific Index (Slider)
+    # We store integers. 0 will denote "Plotting Axis" (Colon).
+    slice_indices = Observable(ones(Int, total_dims)) 
+
+    # --- 1. X-Axis Menu ---
+    # All keys are valid for X
+    all_keys = sort(collect(keys(plot_data.data)))
+    Label(menu_layout[1,1], "X-Axis:")
+    menu_x = Menu(menu_layout[1,2], options = all_keys)
+    
+    # --- 2. Y-Axis Menu (Filtered) ---
+    # Only show keys that share at least one varied dimension with X
+    Label(menu_layout[1,3], "Y-Axis:")
+    menu_y = Menu(menu_layout[1,4], options = String[])
+
+    # --- 3. Plot Axis Menu ---
+    # Which dimension are we plotting? (e.g. Space vs Time)
+    Label(menu_layout[1,5], "Plot Along:")
+    menu_axis = Menu(menu_layout[1,6], options = String[])
+
+    # --- Logic: Update Y Options based on X ---
+    on(menu_x.selection) do x_val
+        if isnothing(x_val); return; end
+        x_tensor = plot_data.data[x_val]
+        
+        # Identify varied dimensions in X (size > 1)
+        x_dims = findall(s -> s > 1, size(x_tensor))
+        
+        # Filter Y candidates
+        valid_y = String[]
+        for k in all_keys
+            y_tensor = plot_data.data[k]
+            y_dims = findall(s -> s > 1, size(y_tensor))
+            
+            # Intersection: Do they share a varied dimension?
+            if !isempty(intersect(x_dims, y_dims))
+                push!(valid_y, k)
+            end
+        end
+        
+        menu_y.options[] = sort(valid_y)
+        x_key_obs[] = x_val
+        
+        # Reset downstream
+        menu_y.selection[] = nothing
+    end
+
+    # --- Logic: Update Plot Axis Options based on X & Y ---
+    on(menu_y.selection) do y_val
+        if isnothing(y_val); return; end
+        
+        x_val = menu_x.selection[]
+        x_tensor = plot_data.data[x_val]
+        y_tensor = plot_data.data[y_val]
+        
+        # Find intersection of dimensions
+        x_dims = findall(s -> s > 1, size(x_tensor))
+        y_dims = findall(s -> s > 1, size(y_tensor))
+        common_dims = intersect(x_dims, y_dims)
+        
+        # Map indices to names for the menu
+        # e.g. 4 -> "Space", 5 -> "Time"
+        options_dict = Dict(d => dim_names[d] for d in common_dims)
+        menu_axis.options[] = zip(values(options_dict), keys(options_dict)) |> collect
+        
+        y_key_obs[] = y_val
+        
+        # Default select the last common dimension (usually Time or Space)
+        if !isempty(common_dims)
+            menu_axis.selection[] = common_dims[end]
+        end
+    end
+
+    # --- Logic: Create Sliders/Menus for Remaining Dimensions ---
+    on(menu_axis.selection) do axis_idx
+        if isnothing(axis_idx); return; end
+        plot_dim_obs[] = axis_idx
+        
+        # Clear old sliders
+        empty!(slider_layout)
+        
+        # Determine which dimensions need controls
+        # A dimension needs a control if:
+        # 1. It is NOT the plot axis.
+        # 2. It has size > 1 in the Y-tensor (or X-tensor, usually Y governs complexity).
+        #    Actually, we should show controls for any dimension that is varied in *either* tensor 
+        #    but not selected as the plot axis, to define the slice fully.
+        
+        x_val = menu_x.selection[]
+        y_val = menu_y.selection[]
+        if isnothing(x_val) || isnothing(y_val); return; end
+        
+        x_tensor = plot_data.data[x_val]
+        y_tensor = plot_data.data[y_val]
+        
+        # Union of varied dimensions
+        varied_dims = union(
+            findall(s -> s > 1, size(x_tensor)),
+            findall(s -> s > 1, size(y_tensor))
+        )
+        
+        # Dimensions to control = Varied Dims - Plot Axis
+        control_dims = setdiff(varied_dims, [axis_idx])
+        sort!(control_dims) # Keep order: Comp -> Params -> Space -> Time
+        
+        # Create Controls
+        new_indices = ones(Int, total_dims)
+        new_indices[axis_idx] = 0 # Marker for "Plot Axis"
+        
+        for (i, dim) in enumerate(control_dims)
+            d_name = dim_names[dim]
+            d_size = size(y_tensor, dim) > 1 ? size(y_tensor, dim) : size(x_tensor, dim)
+            
+            # Label
+            Label(slider_layout[i, 1], "$d_name:", halign=:right)
+            
+            # Control
+            if dim == 1 # Component -> Menu
+                # Assuming simple numeric components 1..N
+                # If you have names, fetch them from metadata
+                opts = ["$c" for c in 1:d_size]
+                c_menu = Menu(slider_layout[i, 2], options = opts, default = "1")
+                
+                # Listener
+                on(c_menu.selection) do val_str
+                    # Update the specific index in the master observable
+                    current_idxs = copy(slice_indices[])
+                    current_idxs[dim] = parse(Int, val_str)
+                    slice_indices[] = current_idxs
+                end
+                
+            else # Params/Space/Time -> Slider
+                # Check specific values from metadata
+                # 1 = Component
+                # 2..N+1 = Params
+                # N+2 = Space
+                # N+3 = Time
+                
+                # Generate range values for label
+                range_vals = 1:d_size # Default index
+                
+                # Try to find real values
+                real_vals = nothing
+                if dim > 1 && dim <= 1 + n_params
+                    real_vals = plot_data.active_param_values[dim - 1]
+                elseif dim == total_dims # Time
+                    real_vals = plot_data.t_vals
+                end
+                
+                sl = Slider(slider_layout[i, 2], range = 1:d_size, startvalue=1)
+                
+                # Value Label
+                val_lab = lift(sl.value) do idx
+                    if !isnothing(real_vals) && idx <= length(real_vals)
+                        v = real_vals[idx]
+                        return v isa AbstractFloat ? string(round(v, digits=3)) : string(v)
+                    else
+                        return "$idx"
+                    end
+                end
+                Label(slider_layout[i, 3], val_lab, width=50)
+                
+                # Listener
+                on(sl.value) do idx
+                    current_idxs = copy(slice_indices[])
+                    current_idxs[dim] = idx
+                    slice_indices[] = current_idxs
+                end
+            end
+        end
+        
+        # Initial trigger to set slice_indices
+        slice_indices[] = new_indices
+    end
+
+    return x_key_obs, y_key_obs, plot_dim_obs, slice_indices
+end
+
+"""
+    create_plot_controls!(fig, plot_data_dict::Dict{String, UnifiedPlotData})
+
+Creates a control panel with:
+1. X/Y/Axis Selection Menus.
+2. Permanent Sliders/Menus for [Component, P1..., Space, Time].
+
+Instead of hiding controls, it "disables" the control for the active plot axis 
+by setting its range to `[0]` (or options to `["-"]`) and updating the label.
+"""
+function create_plot_controls!(fig::Figure, plot_data_dict::Dict{String, UnifiedPlotData})
+    if isempty(plot_data_dict)
+        error("No plot data available to generate controls.")
+    end
+    
+    # --- 1. Metadata Setup ---
+    # Use the first dataset to determine the dimension structure
+    template_data = first(values(plot_data_dict))
+    
+    active_params = template_data.active_param_keys
+    n_params = length(active_params)
+    
+    # Map Index -> Name
+    # 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time
+    dim_names = Dict{Int, String}()
+    dim_names[1] = "Component"
+    for (i, p) in enumerate(active_params); dim_names[1+i] = p; end
+    dim_names[1+n_params+1] = "Space"
+    dim_names[1+n_params+2] = "Time"
+    
+    total_dims = length(dim_names)
+
+    # --- 2. Create Layout & Return Observables ---
+    menu_layout = fig[1, 1] = GridLayout()
+    slider_layout = fig[2, 1] = GridLayout()
+    
+    # The outputs
+    x_key_obs = Observable{Union{String, Nothing}}(nothing)
+    y_key_obs = Observable{Union{String, Nothing}}(nothing)
+    plot_dim_idx_obs = Observable{Int}(0) # 0 means "Not selected yet"
+    
+    # Holds the current selected values (Physical Float for Params/Time, Int for Component)
+    # If a dimension is disabled (plot axis), this might hold a dummy value.
+    selector_values = Vector{Observable}(undef, total_dims)
+    for i in 1:total_dims
+        val_type = i == 1 ? Int : Float64
+        selector_values[i] = Observable{val_type}(val_type(1)) 
+    end
+
+    # --- 3. Build Selection Menus ---
+    all_keys = Set{String}()
+    for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
+    sorted_keys = sort(collect(all_keys))
+
+    Label(menu_layout[1,1], "X-Axis:")
+    menu_x = Menu(menu_layout[1,2], options = sorted_keys)
+    
+    Label(menu_layout[1,3], "Y-Axis:")
+    menu_y = Menu(menu_layout[1,4], options = String[])
+    
+    Label(menu_layout[1,5], "Plot Along:")
+    menu_axis = Menu(menu_layout[1,6], options = String[])
+
+    # --- 4. Build Static Controls (Sliders/Menus) ---
+    # We create them once. We will manipulate their 'range'/'options' observables later.
+    
+    # Store references to update them later
+    control_objects = Vector{Any}(undef, total_dims) 
+
+    for dim_i in 1:total_dims
+        d_name = dim_names[dim_i]
+        
+        Label(slider_layout[dim_i, 1], "$d_name:", halign=:right)
+        
+        if dim_i == 1
+            # --- COMPONENT (Menu) ---
+            # Default options (will be overwritten)
+            c_menu = Menu(slider_layout[dim_i, 2], options = ["1"])
+            control_objects[dim_i] = c_menu
+            
+            # Label for Component (Display selection)
+            Label(slider_layout[dim_i, 3], lift(s -> "C = $s", c_menu.selection))
+            
+            # Connect to Output
+            on(c_menu.selection) do v
+                if v != "-" && !isnothing(v)
+                    selector_values[dim_i][] = parse(Int, v)
+                end
+            end
+            
+        else
+            # --- CONTINUOUS (Slider) ---
+            # Default range (will be overwritten)
+            sl = Slider(slider_layout[dim_i, 2], range = 0:1:10)
+            control_objects[dim_i] = sl
+            
+            # Label with "N/A" Logic
+            # Note: Makie sliders usually have a vector/abstract range as 'range'
+            lab_text = lift(sl.value, sl.range) do val, r
+                if r == [0] # The "Disabled" flag
+                    "Axis"
+                else
+                    string(round(val, digits=3))
+                end
+            end
+            Label(slider_layout[dim_i, 3], lab_text, width=60, halign=:left)
+            
+            # Connect to Output
+            on(sl.value) do v
+                # Only update if valid (not the dummy 0 from disable)
+                # However, usually we just update anyway. 
+                # The plotting lift checks `plot_dim_idx` and ignores this value if it's the axis.
+                selector_values[dim_i][] = v
+            end
+        end
+    end
+
+    # --- 5. Menu Logic (Filters) ---
+    
+    # X -> Y
+    on(menu_x.selection) do x_val
+        if isnothing(x_val); return; end
+        
+        # Identify varied dimensions
+        varied_dims = Set{Int}()
+        for pd in values(plot_data_dict)
+            if haskey(pd.data, x_val)
+                union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val])))
+            end
+        end
+        
+        # Filter Y
+        valid_y = String[]
+        for y_can in sorted_keys
+            y_varied = Set{Int}()
+            for pd in values(plot_data_dict)
+                if haskey(pd.data, y_can)
+                    union!(y_varied, findall(s -> s > 1, size(pd.data[y_can])))
+                end
+            end
+            if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
+        end
+        
+        menu_y.options[] = valid_y
+        x_key_obs[] = x_val
+        menu_y.selection[] = nothing
+    end
+
+    # Y -> Axis
+    on(menu_y.selection) do y_val
+        if isnothing(y_val); return; end
+        x_val = menu_x.selection[]
+        
+        # Intersect varied dims
+        x_varied, y_varied = Set{Int}(), Set{Int}()
+        for pd in values(plot_data_dict)
+            if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
+            if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
+        end
+        
+        common = sort(collect(intersect(x_varied, y_varied)))
+        menu_axis.options[] = [(dim_names[d], d) for d in common]
+        
+        y_key_obs[] = y_val
+        if !isempty(common); menu_axis.selection[] = common[end]; end
+    end
+
+    # Axis -> Disable/Enable Sliders
+    on(menu_axis.selection) do axis_idx
+        if isnothing(axis_idx); return; end
+        plot_dim_idx_obs[] = axis_idx
+        
+        # Loop through all controls and update their state
+        for dim_i in 1:total_dims
+            ctrl = control_objects[dim_i]
+            
+            # Is this the plot axis?
+            is_axis = (dim_i == axis_idx)
+            
+            if dim_i == 1
+                # --- Update Component Menu ---
+                # Find max components
+                max_c = maximum(size(pd.data["u"], 1) for pd in values(plot_data_dict))
+                
+                if is_axis
+                    ctrl.options[] = ["-"] # Disable
+                    ctrl.selection[] = "-"
+                else
+                    ctrl.options[] = string.(1:max_c)
+                    # Try to keep selection or reset to 1
+                    if ctrl.selection[] == "-"; ctrl.selection[] = "1"; end
+                end
+                
+            else
+                # --- Update Continuous Slider ---
+                # 1. Determine Global Range
+                g_min, g_max = Inf, -Inf
+                
+                # Check data
+                for pd in values(plot_data_dict)
+                    vals = nothing
+                    if dim_i <= 1 + n_params 
+                        p_idx = dim_i - 1
+                        vals = pd.active_param_values[p_idx]
+                    elseif dim_i == 1 + n_params + 1 # Space
+                        if haskey(pd.data, "x"); vals = pd.data["x"]; end
+                    elseif dim_i == 1 + n_params + 2 # Time
+                        vals = pd.t_vals
+                    end
+                    
+                    if !isnothing(vals) && !isempty(vals)
+                        l, h = extrema(vals)
+                        if l < g_min; g_min = l; end
+                        if h > g_max; g_max = h; end
+                    end
+                end
+                if isinf(g_min); g_min=0.0; g_max=1.0; end
+                
+                # 2. Update Slider Range
+                if is_axis
+                    ctrl.range[] = [0] # Disable!
+                    # Value automatically jumps to 0
+                else
+                    # Construct range (approx 100 steps for smooth slider)
+                    ctrl.range[] = range(g_min, g_max, length=100)
+                end
+            end
+        end
+    end
+
+    return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values
+end
 #======================================================================#
 #              3. CALCULATE ALL STATS (GENERALIZED)
 #======================================================================#
@@ -3136,314 +3565,3 @@ function extract_line_cut_data(
         return (Float64[], empty_u)
     end
 end
-
-# """
-#     is_time_dependent(extracted_data) -> Bool
-
-# Checks if a collection of extracted statistic data is time-dependent.
-# It iterates through the data and returns `true` if it finds any value that is
-# an AbstractVector, which signifies a time series.
-# """
-# function is_time_dependent(extracted_data::Vector{<:Vector})
-#     # Use indexed loops for safety against #undef entries
-#     for i in eachindex(extracted_data)
-#         if isassigned(extracted_data, i)
-#             for val in extracted_data[i]
-#                 if !ismissing(val) && isa(val, AbstractVector)
-#                     return true # Found a vector, so it's time-dependent
-#                 end
-#             end
-#         end
-#     end
-#     return false # No vectors found, so it's time-independent
-# end
-
-
-
-# """
-#     update_time_slider!(tSlider, tLabel_text, time_range_data, all_time_points)
-
-# Updates the range and value of a time slider based on the union of all
-# available time points from a dataset. Also updates a corresponding label text observable.
-# """
-# function update_time_slider!(
-#     tSlider::Slider,
-#     tLabel_text::Observable{String},
-#     all_time_points::Set{Float64}
-# )
-
-#     if !isempty(all_time_points)
-#         t_min_data, t_max_data = extrema(all_time_points)
-        
-#         # Create a dense range for smooth sliding
-#         t_range_slider = range(t_min_data, stop=t_max_data, length=max(2, 500))
-        
-#         if tSlider.range[] != t_range_slider
-#             tSlider.range[] = t_range_slider
-#         end
-        
-#         current_t_val = clamp(tSlider.value[], t_min_data, t_max_data)
-#         set_close_to!(tSlider, current_t_val)
-#     else
-#         # Default behavior if no time data is found
-#         if tSlider.range[] != [0]
-#             tSlider.range[] = [0]
-#         end
-#         set_close_to!(tSlider, 0)
-#     end
-    
-#     tLabel_text[] = "t = $(round(tSlider.value[], digits=3))"
-#     return nothing
-# end
-
-# #======================================================================#
-# #         2. `update_time_dependence!` FOR TUPLE DATA
-# #======================================================================#
-
-# """
-#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
-
-# Checks for time dependence by inspecting the first element of each data tuple.
-# """
-# function update_time_dependence!(
-#     is_time_dependent_obs::Observable{Bool},
-#     tSlider::Slider,
-#     tLabel::Label,
-#     extracted_data::Vector{<:Vector{<:Tuple}}
-# )
-#     found_vector = false
-#     # Use indexed loops for safety against #undef entries
-#     for i in eachindex(extracted_data)
-#         if isassigned(extracted_data, i)
-#             for j in eachindex(extracted_data[i])
-#                 if isassigned(extracted_data[i], j)
-#                     # Destructure the tuple to get the value
-#                     val, _ = extracted_data[i][j]
-#                     if !ismissing(val) && isa(val, AbstractVector)
-#                         found_vector = true
-#                         break
-#                     end
-#                 end
-#             end
-#         end
-#         if found_vector; break; end
-#     end
-#     is_td = found_vector
-#     is_time_dependent_obs[] = is_td
-
-#     # Update Time Slider UI
-#     if is_td
-#         all_times_union = Set{Float64}()
-#         for method_data in extracted_data, data_point in method_data
-#             # Destructure to get the time vector (second element)
-#             _, times = data_point
-#             if isa(times, AbstractVector) && !isempty(times)
-#                 union!(all_times_union, times)
-#             end
-#         end
-#         # ... (rest of your slider update logic using all_times_union)
-#     else
-#         tLabel.text[] = "t = N/A (Scalar Stat)"
-#         tSlider.range[] = [0]
-#         tSlider.value[] = 0
-#     end
-# end
-
-# """
-#     update_time_dependence!(is_time_dependent_obs, tSlider, tLabel, extracted_data)
-
-# Checks for time dependence by inspecting the first element of each data tuple.
-# """
-# function update_time_dependence!(
-#     is_td::Bool,
-#     tSlider::Slider,
-#     tLabel::Label,
-#     extracted_data::Vector{<:Vector{<:Tuple}}
-# )
-#     # Update Time Slider UI
-#     if is_td
-#         all_times_union = Set{Float64}()
-#         for method_data in extracted_data, data_point in method_data
-#             # Destructure to get the time vector (second element)
-#             _, times = data_point
-#             if isa(times, AbstractVector) && !isempty(times)
-#                 union!(all_times_union, times)
-#             end
-#         end
-#         # ... (rest of your slider update logic using all_times_union)
-#     else
-#         tLabel.text[] = "t = N/A (Scalar Stat)"
-#         tSlider.range[] = [0]
-#         tSlider.value[] = 0
-#     end
-# end
-# """
-#     updateData!(extracted_stat_data, all_raw_data, selected_key)
-
-# Extracts the data for a selected statistic from a raw data store. This version
-# is fully general and handles cases where different methods may have been run
-# with a different number of parameter variations.
-# """
-# function updateData!(
-#     extracted_stat_data::Observable,
-#     all_raw_data::Vector{<:Vector{<:Any}},
-#     selected_key::String
-# )
-#     # --- Guard Clauses ---
-#     if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
-#         extracted_stat_data[] = []
-#         return
-#     end
-
-#     println("Extracting 1D data for statistic: '$selected_key'")
-    
-#     active_num = length(all_raw_data)
-#     # The new data structure will hold vectors of varying lengths.
-#     temp_extracted_data = Vector{Any}(undef, active_num)
-
-#     for i in 1:active_num
-#         method_data = all_raw_data[i]
-#         # Get the number of parameters for THIS SPECIFIC method run.
-#         num_params_for_method = length(method_data)
-        
-#         # Pre-allocate the vector for this specific method's results.
-#         method_results = Vector{Any}(undef, num_params_for_method)
-        
-#         for j in 1:num_params_for_method
-#             raw_data = method_data[j]
-#             # The raw data point is a tuple, e.g., (stats_dict, time_vector)
-#             if isa(raw_data, Tuple)
-#                 stat_val = get(raw_data[1], selected_key, missing)
-#                 method_results[j] = (stat_val,raw_data[2])
-#             else
-#                 stat_val = get(raw_data, selected_key, missing)
-#                 method_results[j] = stat_val
-#             end
-#         end
-#         temp_extracted_data[i] = method_results
-#     end
-    
-#     # Update the observable with the newly extracted data.
-#     extracted_stat_data[] = temp_extracted_data
-#     notify(extracted_stat_data)
-# end
-
-# function updateData!(
-#     extracted_stat_data::Observable,
-#     all_raw_data::Vector{<:Union{Dict, Tuple}},
-#     selected_key::String
-# )
-#     # --- Guard Clauses ---
-#     if isempty(all_raw_data) || selected_key == "calculating..." || selected_key == "No common stats"
-#         extracted_stat_data[] = []
-#         return
-#     end
-
-#     println("Extracting 1D data for statistic: '$selected_key'")
-#     println(typeof(all_raw_data))
-#     active_num = length(all_raw_data)
-#     # The new data structure will hold vectors of varying lengths.
-#     method_results = Vector{Any}(undef, active_num)
-
-#     for i in 1:active_num
-#         raw_data = all_raw_data[i]
-#         # The raw data point is a tuple, e.g., (stats_dict, time_vector)
-#         if isa(raw_data, Tuple)
-#             stat_val = get(raw_data[1], selected_key, missing)
-#             method_results[i] = (stat_val,raw_data[2])
-#         else
-#             stat_val = raw_data[selected_key]
-#             method_results[i] = stat_val
-#         end
-#     end
-    
-#     # Update the observable with the newly extracted data.
-#     extracted_stat_data[] = method_results
-
-# end
-
-# """
-#     is_time_dependent(extracted_data) -> Bool
-
-# Internal helper that checks if an extracted dataset contains any vectors,
-# which signifies time-dependence.
-# """
-# function is_time_dependent(extracted_data::Vector)
-#     for method_data in extracted_data
-#         # This check is crucial to prevent errors on uninitialized data
-#         if isassigned(method_data, 1:length(method_data))
-#             for val in method_data
-#                 if !ismissing(val) && isa(val, AbstractVector)
-#                     return true # Found a vector, so it's time-dependent
-#                 end
-#             end
-#         end
-#     end
-#     return false # No vectors found
-# end
-
-# """
-#     calculate_snapshot(extracted_data, t, is_time_dependent) -> Vector{Vector{Float64}}
-
-# Calculates a "snapshot" of data at a specific time `t`.
-
-# It takes the extracted data for a single statistic, where each data point is a
-# tuple containing the value and its corresponding time vector.
-
-# # Arguments
-# - `extracted_data`: The data for a single statistic, with structure
-#   `Vector{Vector{Tuple{Any, Vector{Float64}}}}`.
-# - `t::Real`: The current time value from the time slider.
-# - `is_time_dependent::Bool`: A flag indicating if the current statistic is a time series.
-
-# # Returns
-# - A `Vector{Vector{Float64}}` containing the calculated snapshot data, ready for plotting.
-# """
-# function calculate_snapshot(
-#     extracted_data::Vector{Vector{Tuple{Any, Vector{Float64}}}},
-#     t::Real,
-#     is_time_dependent::Bool
-# )
-#     if isempty(extracted_data)
-#         return Vector{Vector{Float64}}()
-#     end
-
-#     active_num = length(extracted_data)
-#     snapshot = Vector{Vector{Float64}}(undef, active_num)
-
-#     for i in 1:active_num
-#         method_data = extracted_data[i]
-#         num_params = length(method_data)
-#         y_vals_for_snapshot = Vector{Float64}(undef, num_params)
-
-#         for j in 1:num_params
-#             if !isassigned(method_data, j); continue; end
-
-#             # Destructure the tuple to get both the value and its time vector
-#             stat_val, times = method_data[j]
-#             final_val = NaN # Default to NaN
-
-#             if !ismissing(stat_val)
-#                 if is_time_dependent && isa(stat_val, AbstractVector)
-#                     # For time-dependent data, find the value at the closest time `t`.
-#                     if !isempty(times) && !isempty(stat_val)
-#                         _, time_idx = findmin(val -> abs(val - t), times)
-#                         if time_idx <= length(stat_val)
-#                             final_val = Float64(stat_val[time_idx])
-#                         end
-#                     end
-#                 elseif !is_time_dependent && isa(stat_val, Number)
-#                     final_val = Float64(stat_val)
-#                 elseif is_time_dependent && isa(stat_val, Number)
-#                     # Handle case where a stat is time-dependent overall but this run was scalar
-#                     final_val = Float64(stat_val)
-#                 end
-#             end
-#             y_vals_for_snapshot[j] = final_val
-#         end
-#         snapshot[i] = y_vals_for_snapshot
-#     end
-    
-#     return snapshot
-# end
-

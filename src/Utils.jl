@@ -12,7 +12,7 @@ using ProgressMeter
 using LibGit2
 
 export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
-       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, 
+       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, ensure_sim_data_exists!,
        assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv, createObsDict, connectObsDict!
 
 
@@ -109,110 +109,121 @@ function calculateHash(params::ParamDictType)
     stringToHash = join(map(key -> "$key => $(params[key])", sorted_keys))
     return bytes2hex(sha256(stringToHash))
 end
+using Dates # Ensure this is imported
 
 """
-Saves the given simulation mesh in the folder given by save_data with the hash as the filename.
+Saves the given simulation mesh in the folder given by save_data.
+Generates a filename based on Hash + Timestamp.
 
-CAUTION: Enabling overwrite will overwrite an existing file with the given simulation mesh!
+If a file with the exact same parameters already exists:
+- Overwrites it if `overwrite=true`.
+- Skips saving if `overwrite=false`.
+
+If no matching parameters are found (even if the hash collides), a new file is created.
 """
 function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
-
-    hash = calculateHash(sim_data.params)
-    save_data = get_save_path() * "/data/"
-    file_name = save_data * hash *".jld2"
-    counter = 0
-    while true
-        counter += 1
-        if !isfile(file_name)
-            save(file_name, "sim_data", sim_data)
-            @info "SimData saved to file $file_name"
-            break
+    
+    # 1. Check if this exact simulation already exists
+    try
+        existing_file = getFileName(sim_data.params)
+        
+        # --- CASE: File Exists ---
+        if overwrite
+            save(existing_file, "sim_data", sim_data)
+            @warn "Existing simulation data overwritten at: $existing_file"
         else
-            SimDataSaved = load(file_name)["sim_data"]
-            if !(sim_data.params == SimDataSaved.params)
-                @info "Filename already exists! Changing hash..."
-                file_name = save_data * hash * "_$counter.jld2"
-            else
-                if overwrite
-                    save(file_name, "sim_data", sim_data)
-                    @warn "Simulation mesh has been overwritten!"
-                    @info "SimData saved to file $file_name"
-                else
-                    @info "File already exists!"
-                end
-                break
-            end 
+            @info "Simulation data already exists at: $existing_file. Skipping save."
         end
+        return # Exit, job done
+    catch e
+        if !isa(e, SimFileNotFoundError)
+            rethrow(e)
+        end
+        # If SimFileNotFoundError, we proceed to save a new file
     end
+
+    # --- CASE: New File Needed ---
+    hash_val = calculateHash(sim_data.params)
+    timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss") # Millisecond precision to be safe
+    
+    save_data = get_save_path() * "/data/"
+    if !isdir(save_data); mkpath(save_data); end
+
+    # Pattern: Hash_Timestamp.jld2
+    file_name = joinpath(save_data, "$(hash_val)_$(timestamp).jld2")
+
+    save(file_name, "sim_data", sim_data)
+    @info "SimData saved to new file: $file_name"
 end
 
 """
 Returns the filename of the simulation data corresponding to the given params dictionary.
+Searches all files matching the hash prefix to find the one with matching parameters.
 Throws SimFileNotFoundError if no matching file is found.
 """
 function getFileName(params::ParamDictType)
-    
-    local file_name # Ensure file_name is scoped correctly
-    hash_val = calculateHash(params) # Renamed from 'hash' to avoid conflict
+    hash_val = calculateHash(params)
     save_data = get_save_path() * "/data/"
-    base_file_part = save_data * hash_val
-    file = base_file_part * ".jld2"
-    counter = 0
+    
+    if !isdir(save_data)
+        throw(SimFileNotFoundError("Data directory does not exist."))
+    end
 
-    while true
-        # Construct current filename to check
-        if counter == 0
-            file_name = hash_val # Assign base name
-        else
-            file_name = hash_val * "_$(counter-1)" # Use counter-1 for _0, _1, ...
-            file = save_data * file_name * ".jld2"
-        end
+    # Get all files in directory
+    all_files = readdir(save_data)
 
-        if isfile(file)
-            try # Add inner try-catch for loading/comparison errors
-                sim_data_saved = load(file)["sim_data"]
-                if (params == sim_data_saved.params)
-                    @info "Found matching file: ", file # Debug print
-                    return file # Return the full path
-                else
-                    println("Input",params)
-                    println("Saved",sim_data_saved.params)
-                    # Hash collision, prepare to check next file in the next iteration
-                    @warn "Hash collision detected for: ", file # Debug print
-                    counter += 1
-                    # Continue to the next iteration of the while loop
-                end
-            catch load_err
-                 # Error during loading or comparison, treat as if file doesn't match
-                 @warn "Error processing potential match file '$file'. Skipping." exception=(load_err, catch_backtrace())
-                 counter += 1 # Prepare to check next file
+    # Filter for files that start with the hash
+    # Expecting format: HASH_TIMESTAMP.jld2
+    candidate_files = filter(f -> startswith(f, hash_val) && endswith(f, ".jld2"), all_files)
+
+    # Loop through candidates to check actual parameters
+    for file in candidate_files
+        full_path = joinpath(save_data, file)
+        try
+            # Load only the data needed to check parameters
+            # Note: We load the whole object because JLD2 structure usually requires it 
+            # to check nested params, unless you stored params separately.
+            sim_data_saved = load(full_path, "sim_data")
+            
+            if params == sim_data_saved.params
+                @debug "Found matching file: $full_path"
+                return full_path
             end
-        else
-            # If we checked the base file (counter=0) and it wasn't there, OR
-            # if we checked a collision file (_N) and it wasn't there,
-            # then no matching file exists with this base hash.
-            @info "File not found: ", file, ". Stopping search for this hash." # Debug print
-            throw(SimFileNotFoundError("Requested File does not exist! (Checked up to collision $counter)"))
-            # The loop terminates here by throwing the error
-        end
-
-        # Optional: Add a safety break to prevent infinite loops in unexpected scenarios
-        if counter > 100 # Or some other reasonable limit
-             @warn "Exceeded collision check limit for hash $hash_val. Assuming file not found."
-             throw(SimFileNotFoundError("Exceeded collision check limit for hash $hash_val."))
+        catch e
+            @warn "Failed to load candidate file $file during search." exception=(e, catch_backtrace())
+            # Continue searching other candidates
         end
     end
+
+    # If loop finishes without returning
+    throw(SimFileNotFoundError("Requested file with matching parameters does not exist (searched $(length(candidate_files)) candidates with hash $hash_val)."))
 end
 
 """
 Loads the simulation data corresponding to the given params dictionary as a simulation mesh
 """
 function loadSimData(params::ParamDictType)
+    # getFileName does the heavy lifting of finding the correct timestamped file
     return load(getFileName(params))["sim_data"]
 end
-function loadSimData(hash::String)
+
+# Overload for loading directly by hash is tricky now because multiple files 
+# might share the hash (collisions). This function assumes you want *any* file 
+# with that hash, or strictly expects only one.
+function loadSimData(hash_prefix::String)
     save_data = get_save_path() * "/data/"
-    file_name = save_data * hash *".jld2"
+    all_files = readdir(save_data)
+    candidates = filter(f -> startswith(f, hash_prefix) && endswith(f, ".jld2"), all_files)
+    
+    if isempty(candidates)
+         error("No files found with hash prefix: $hash_prefix")
+    end
+
+    # Sort by time (assuming standard naming) to get the latest? 
+    # Or just pick the first one. Let's pick the latest.
+    sort!(candidates) 
+    file_name = joinpath(save_data, candidates[end])
+    
     return load(file_name)["sim_data"]
 end
 
@@ -226,48 +237,100 @@ end
 
 """
 Checks if simulation data already exists for the given parameter dictionary.
-Returns true if found, false only if specifically not found (SimFileNotFoundError).
-Other errors during check will propagate.
+Returns true if found, false only if specifically not found.
 """
 function doesSimDataExist(params::ParamDictType)
     try
-        getFileName(params) # Call the function that might throw
-        # If getFileName returns successfully, it means a matching file was found
+        getFileName(params)
         return true
     catch e
-        #e = nothing
         if isa(e, SimFileNotFoundError)
-            # This is the specific error indicating the file wasn't found.
-            # This is NOT a bug, it's the expected outcome when data doesn't exist.
-             # println("Debug (doesSimDataExist): Caught expected SimFileNotFoundError: ", e.message) # Optional
-            return false # File not found, return false as intended
+            return false
         else
-            # This is some other, unexpected error (e.g., in calculateHash, get_save_path,
-            # permissions, JLD2 issues, logic errors in getFileName).
-            # We DON'T want to mask this!
             @error "Unexpected error during file existence check!" exception=(e, catch_backtrace())
-            rethrow(e) # Re-throw the unexpected error to halt and allow debugging
+            rethrow(e)
         end
     end
 end
 
 """
-Deletes all saved simulation meshes with the given keys and values in its paramseter dictionary.
+Deletes all saved simulation meshes with the given keys and values in its parameter dictionary.
 """
 function deleteSimData(keys::Vector{String}, vals::Vector)
     save_data = get_save_path() * "/data/"
+    if !isdir(save_data); return; end
+    
     files = readdir(save_data)
-    for file = files
-        sim_data = load(save_data * file)["sim_data"]
-        deletion = true
-        for (i,key) = enumerate(keys)
-            deletion = deletion && (sim_data.params[key] == vals[i]) && (sim_data.params[key] isa typeof(vals[i]))
-        end
-        if deletion
-            @warn "Saved data at $file is being deleted!"
-            rm(save_data * file)
+    for file in files
+        if !endswith(file, ".jld2"); continue; end
+        
+        full_path = joinpath(save_data, file)
+        try
+            sim_data = load(full_path, "sim_data")
+            deletion = true
+            for (i,key) in enumerate(keys)
+                # Check if key exists and matches value/type
+                if !haskey(sim_data.params, key) || !(sim_data.params[key] == vals[i])
+                    deletion = false
+                    break
+                end
+            end
+            
+            if deletion
+                @warn "Deleting file matching criteria: $file"
+                rm(full_path)
+            end
+        catch e
+            @warn "Could not load file $file for deletion check" exception=e
         end
     end
+end
+
+function ensure_sim_data_exists!(
+    tasks::Union{Vector{ParamDictType}, Matrix{ParamDictType}},
+    sim_config::SimulationConfig;
+    force_overwrite::Bool = false,
+    parallel::Bool = false
+)
+    # 1. Flatten tasks for uniform handling (if it's a matrix)
+    # generic iteration handles both, but length() works better on a flat view or vec
+    all_tasks = vec(tasks)
+    num_tasks = length(all_tasks)
+    if num_tasks == 0; return; end
+    
+    @debug "Checking data for $num_tasks simulations..."
+    p = Progress(num_tasks; desc = "Running simulations...", showspeed=true)
+    counter = Threads.Atomic{Int}(0)
+
+    # 2. Define the core worker function (closure captures config/options)
+    function process_task(params)
+        try
+            if force_overwrite || !doesSimDataExist(params)
+                # invokelatest solves world-age issues if new methods were defined recently
+                sim_data = Base.invokelatest(sim_config.sim_function, params)
+                
+                if !isnothing(sim_data)
+                    saveSimData(sim_data; overwrite = force_overwrite)
+                end
+            end
+        catch e
+            @error "Simulation failed." exception=(e, catch_backtrace())
+        end
+        # Update progress safely
+        Threads.atomic_add!(counter, 1)
+        ProgressMeter.update!(p, counter[])
+    end
+
+    # 3. Execution Strategy
+    if parallel
+        Threads.@threads for task in all_tasks
+            process_task(task)
+        end
+    else
+        foreach(process_task, all_tasks)
+    end
+    
+    @debug "Simulation check complete."
 end
 
 """
@@ -293,7 +356,7 @@ function changeparams(ks::Vector{String}, oldVals::Vector, newVals::Vector)
 end
 
 """
-Returns all saved simulation meshes with the given paramseters.
+Returns all saved simulation meshes with the given parameters.
 """
 function getAllSimData(ks::Vector{String}, vals::Vector)
     save_data = get_save_path() * "/data/"
@@ -539,92 +602,6 @@ end
 function allMethodNames(config::SimulationConfig)
     return collect(keys(config.methods_dict))
 end
-
-
-# function load_project_from_git(
-#     repo_path::String,
-#     commit_hash::String,
-#     main_module_path::String,
-#     function_to_get_sym::Symbol
-# )
-#     original_pwd = pwd()
-#     tmp_dir = mktempdir()
-#     println("Created temporary directory for historical project: $tmp_dir")
-
-#     absolute_repo_path = abspath(repo_path)
-#     original_repo_parent_dir = dirname(absolute_repo_path)
-#     dependency_name = "IPlotPDESols"
-#     original_dependency_path = joinpath(dirname(original_repo_parent_dir), dependency_name)
-    
-#     tmp_parent_dir = dirname(tmp_dir)
-#     temporary_dependency_path = joinpath(tmp_parent_dir, dependency_name)
-
-#     try
-#         println("Copying local dependency from $original_dependency_path to $temporary_dependency_path")
-#         cp(original_dependency_path, temporary_dependency_path, force=true)
-
-#         # # --- NEW: Manually add Logging to the IPlotPDESols Project.toml ---
-#         # toml_path = joinpath(temporary_dependency_path, "Project.toml")
-        
-#         # # Load the Project.toml file
-#         # project_dict = Pkg.TOML.parsefile(toml_path)
-        
-#         # # Add the Logging dependency with its UUID
-#         # if !haskey(project_dict, "deps")
-#         #     project_dict["deps"] = Dict{String, Any}()
-#         # end
-#         # project_dict["deps"]["Logging"] = "56ddb016-857b-54e1-b83d-db4d58db5568"
-        
-#         # # Save the modified Project.toml file
-#         # open(toml_path, "w") do io
-#         #     Pkg.TOML.print(io, project_dict)
-#         # end
-#         # println("Added 'Logging' to IPlotPDESols's Project.toml.")
-
-#         println("Cloning project to temporary directory...")
-#         run(`git clone $absolute_repo_path $tmp_dir`)
-        
-#         cd(tmp_dir)
-#         run(`git checkout $commit_hash`)
-        
-#         # Now Pkg can see the updated IPlotPDESols dependency
-#         println("Activating historical project and installing dependencies...")
-#         Pkg.activate(".")
-#         Pkg.resolve()
-#         Pkg.instantiate()
-        
-#         absolute_main_module_path = joinpath(tmp_dir, main_module_path)
-        
-#         println("Loading historical main module from: $absolute_main_module_path")
-#         include(absolute_main_module_path)
-        
-#         main_module_name = Symbol(splitext(basename(main_module_path))[1])
-        
-#         if isdefined(Main, main_module_name)
-#             main_module = getfield(Main, main_module_name)
-#             if isdefined(main_module, function_to_get_sym)
-#                 println("Successfully loaded and sandboxed project from commit $(first(commit_hash, 7))")
-#                 return getfield(main_module, function_to_get_sym)
-#             else
-#                 @error "Function '$function_to_get_sym' not found in historical project's main module."
-#                 return nothing
-#             end
-#         else
-#             @error "Main module '$main_module_name' not found after including the project file."
-#             return nothing
-#         end
-        
-#     catch e
-#         @error "Failed to load project from Git history." exception=(e, catch_backtrace())
-#         return nothing
-#     finally
-#         cd(original_pwd)
-#         Pkg.activate(".")
-#         rm(tmp_dir, recursive=true, force=true)
-#         rm(temporary_dependency_path, recursive=true, force=true)
-#         println("Cleaned up temporary directory.")
-#     end
-# end
 
 
 """
