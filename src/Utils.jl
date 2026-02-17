@@ -11,7 +11,7 @@ using GLMakie
 using ProgressMeter 
 using LibGit2
 
-export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
+export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, get_git_info,
        getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, ensure_sim_data_exists!,
        assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv, createObsDict, connectObsDict!
 
@@ -620,6 +620,89 @@ function _load_function_from_string(content::String, function_name_sym::Symbol)
         return getfield(sandbox_module, function_name_sym)
     else
         @error "Function '$function_name_sym' was not found in the provided code."
+        return nothing
+    end
+end
+
+"""
+    _value_to_string_for_csv(v)
+
+A robust helper to convert a Julia object to a string for CSV saving,
+paying special attention to `Symbol`s to ensure they can be parsed back correctly.
+"""
+function _value_to_string_for_csv(v)
+    # If the value is a Symbol, prepend a colon to its string representation.
+    # This saves `:periodic` as the string `":periodic"`.
+    if isa(v, Symbol)
+        return ":" * string(v)
+    end
+
+    if v == ""
+        return "<empty>"
+    end
+    # For all other types (Tuples, Vectors, Numbers, Strings), the default
+    # `string` representation is usually a valid Julia expression that
+    # `parseValue` can handle.
+    return string(v)
+end
+
+"""
+    get_git_info(start_path=".") -> Union{Dict{String, Any}, Nothing}
+
+Inspects the Git repository containing the given path and returns key information
+about the current state (HEAD commit). It robustly finds the repository root by
+searching upwards from the `start_path`.
+"""
+function get_git_info(start_path::String = ".")
+    try
+        # --- Robust Repo Discovery Logic ---
+        current_path = abspath(start_path)
+        repo_root_path = nothing
+
+        while true
+            if isdir(joinpath(current_path, ".git"))
+                repo_root_path = current_path
+                break
+            end
+            parent_path = dirname(current_path)
+            if parent_path == current_path; break; end
+            current_path = parent_path
+        end
+
+        if isnothing(repo_root_path)
+            @warn "Could not find a .git repository in or above the path: $(abspath(start_path))"
+            return nothing
+        end
+        
+        repo = LibGit2.GitRepo(repo_root_path)
+        
+        # --- Extract Information ---
+        head_ref = LibGit2.head(repo)
+        commit = LibGit2.peel(LibGit2.GitCommit, head_ref)
+        
+        # --- THIS IS THE FINAL FIX ---
+        # The most robust, idiomatic way to get the hash is to construct a
+        # `GitHash` object from the commit, then convert it to a string.
+        commit_hash = string(LibGit2.GitHash(commit))
+        # --- END OF FIX ---
+
+        commit_summary = LibGit2.summary(commit)
+        
+        commit_count = try
+            parse(Int, readchomp(`git -C $repo_root_path rev-list --count HEAD`))
+        catch
+            -1 # Indicate count could not be determined
+        end
+
+        return Dict{String, Any}(
+            "git_commit_hash" => commit_hash,
+            "git_commit_count" => commit_count,
+            "git_commit_summary" => commit_summary,
+            "julia_version" => string(VERSION)
+        )
+        
+    catch e
+        @warn "Could not retrieve Git information." exception=(e, catch_backtrace())
         return nothing
     end
 end

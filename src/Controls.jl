@@ -1,141 +1,171 @@
 module Controls
 
+export PlotManager, create_plot_manager, create_controls
+
+using GLMakie
+using CairoMakie
+using Printf
+using Statistics
+using LibGit2
+using CSV, DataFrames
+using Dates
+using ..Structs
+using ..Utils
+
+# Type Alias for Scope -> Key -> Observable
+const NestedObsDict = Dict{String, Dict{String, Observable}}
+
+mutable struct PlotManager
+    simulation::NestedObsDict
+    ui::NestedObsDict
+    scene::NestedObsDict
+    methods::Observable{Vector{String}}  # NEW: Tracks active checkboxes
+    last_run_params::Dict{String, Any}
+
+    function PlotManager(sim, ui, scene, methods, last_run)
+        new(sim, ui, scene, methods, last_run)
+    end
+end
+
+function create_plot_manager(sim_config::SimulationConfig, ui_raw::Dict, scene_raw::Dict)
+    # --- 1. Simulation Field ---
+    sim_obs = NestedObsDict()
+    # Add Shared
+    sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
+    # Add Methods
+    for (m_name, m_params) in sim_config.methods_dict
+        sim_obs[m_name] = Dict(k => Observable(v) for (k, v) in m_params)
+    end
+
+    # --- 2. UI Field ---
+    ui_obs = NestedObsDict()
+    for (scope, keys_dict) in ui_raw
+        ui_obs[scope] = Dict(k => Observable(v) for (k, v) in keys_dict)
+    end
+
+    # 3. Initialize Active Methods from sim_config defaults
+    methods_obs = Observable(copy(sim_config.default_methods))
+
+    # --- 4. Scene Field ---
+    scene_obs = NestedObsDict()
+    # Scene usually has one scope, e.g., "Current"
+    scene_obs["Current"] = Dict(k => Observable(v) for (k, v) in scene_raw)
+
+    return PlotManager(sim_obs, ui_obs, scene_obs, methods_obs, copy(sim_config.shared_params))
+end
+
 include("ControlUtils.jl")
 
 """
-    createBaseControlsFigure(...)
+    create_controls(plot_fig, manager::PlotManager)
 
-Creates the static control window containing:
-1. Parameter Configuration (Textboxes via a popup).
-2. Method Selection (Checkboxes).
-3. "Refresh Data" Button (Triggers re-simulation).
-4. Save Controls.
-5. A placeholder slot for the dynamic plot controls.
+Creates the unified interactive control window using the PlotManager hierarchy.
+This window manages:
+1. Re-simulation (Refresh Button).
+2. Method comparison (Checkboxes).
+3. Parameter/UI editing (Hierarchical Menus + Smart Textbox).
+4. Save/Export controls.
+5. A slot for dynamic plot-specific controls (Sliders/Axis Menus).
 
 Returns:
-- `base_controls_fig`: The Makie Figure.
-- `update_notifier`: Observable triggered by the "Refresh" button (Signal: Force Reload).
-- `methods_obs`: Observable for active methods (Signal: Add/Remove Method).
-- `plot_controls_slot`: A GridLayout where the dynamic sliders should be attached.
+- `base_controls_fig`: The Makie Figure for the controls.
+- `update_notifier`: Observable triggered by the "Refresh" button.
+- `methods_obs`: Observable tracking which simulation methods are active.
+- `plot_controls_slot`: The GridLayout to be populated by `attach_plot_controls!`.
 """
-function createBaseControlsFigure(
-    plot_fig_ref::Makie.Figure,
-    shared_params_obs::Dict{String, Observable},
-    method_params_collection_obs::Dict{String, Dict{String, Observable}},
-    methods_obs::Observable{Vector{String}},
-    all_method_names::Vector{String},
-    ui_options_obs::Dict{String, Observable},
-    scene_obs::Dict{String, Observable}
-)
+function create_controls(plot_fig::Makie.Figure, manager::PlotManager)
     GLMakie.activate!()
 
     # --- Windows Setup ---
+    # We maintain references to the screens to allow the Refresh button 
+    # to bring the plot window to the foreground.
     plot_screen = GLMakie.Screen(title = "Makie Plot")
-    params_screen = GLMakie.Screen(title = "Makie Parameters")
-    params_fig = Figure() 
     
     # Main Control Figure
-    base_controls_fig = Figure(size = (300, 800)) 
+    base_controls_fig = Figure(size = (350, 850)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
 
     current_row = 1
 
     # ==============================================================================
-    # 1. HEADER & REFRESH (Force Reload)
+    # 1. HEADER & REFRESH (Force Re-simulation)
     # ==============================================================================
     header_layout = fig_layout[current_row, 1] = GridLayout()
     Label(header_layout[1,1], "Simulation Controls", fontsize=20, font=:bold, halign=:center)
     current_row += 1
     
     update_layout = fig_layout[current_row, 1] = GridLayout()
-    update_button = Button(update_layout[1,1], label="Refresh / Run Simulation", halign=:center, width=220, buttoncolor=:lightblue)
+    update_button = Button(update_layout[1,1], label="Refresh / Run Simulation", 
+                           halign=:center, width=250, buttoncolor=:lightblue)
     
-    # The signal for "Case 1": Re-run simulations with current fixed params
+    # Trigger for re-calculating the UnifiedPlotData
     update_notifier = Observable(0)
     on(update_button.clicks) do _
         update_notifier[] += 1
-        # Bring plot window to front if needed
         if !GLMakie.isopen(plot_screen)
-            plot_screen = GLMakie.Screen(title = "Makie Plot")
-            display(plot_screen, plot_fig_ref)
+            display(plot_fig)
         end
     end
     current_row += 1
 
     # ==============================================================================
-    # 2. PARAMETER POPUP (The Textboxes)
+    # 2. METHOD SELECTION (Add/Remove Methods from Comparison)
     # ==============================================================================
-    Label(fig_layout[current_row, 1], "Edit Fixed Parameters:", fontsize=16, halign=:left)
-    current_row += 1
-    
-    all_method_sorted = sort!(all_method_names)
-    menu_options = ["UI Options"; "Shared Parameters"; all_method_sorted]
-
-    param_view_menu = Menu(fig_layout[current_row, 1], options = menu_options)
-    selected_param_key_obs = param_view_menu.selection 
-    current_row += 1
-
-    # Logic to populate the popup window based on menu selection
-    on(selected_param_key_obs) do selected_key
-        if selected_key == "Shared Parameters"
-            populate_parameter_figure!("Shared Parameters", shared_params_obs, 2, params_fig)
-        elseif selected_key == "UI Options"
-            populate_parameter_figure!("UI Style Options", ui_options_obs, 2, params_fig)
-        elseif haskey(method_params_collection_obs, selected_key)
-            populate_parameter_figure!("$selected_key Parameters", method_params_collection_obs[selected_key], 2, params_fig)
-        else
-            empty!(params_fig)
-            Label(params_fig[1,1], "Select a parameter set.", halign=:center)
-        end
-        
-        if !GLMakie.isopen(params_screen)
-            params_screen = GLMakie.Screen(title = "Makie Parameters")
-            display(params_screen, params_fig)
-        end
-    end
-
-    # ==============================================================================
-    # 3. METHOD SELECTION (Case 2: Add/Remove)
-    # ==============================================================================
-    Label(fig_layout[current_row, 1], "Active Methods:", fontsize=16, font=:bold, halign=:center)
+    Label(fig_layout[current_row, 1], "Active Comparison Methods:", fontsize=16, font=:bold, halign=:center)
     current_row += 1
     
     method_checkbox_layout = fig_layout[current_row, 1] = GridLayout()
-    # This function (from your Utils) attaches listeners to methods_obs directly
-    createMethodCheckboxes(method_checkbox_layout, methods_obs, all_method_sorted) 
+    # Initialize with all methods active. This observable controls soft updates.
+    all_methods = filter(k -> k != "shared", collect(keys(manager.simulation)))
+    methods_obs = Observable(all_methods)
+    
+    createMethodCheckboxes!(method_checkbox_layout, methods_obs, manager) 
+    current_row += 1
+
+    # ==============================================================================
+    # 3. HIERARCHICAL PARAMETER NAVIGATOR
+    # ==============================================================================
+    Label(fig_layout[current_row, 1], "Parameter & UI Editor:", fontsize=16, font=:bold, halign=:center, color=:royalblue)
+    current_row += 1
+    
+    param_nav_layout = fig_layout[current_row, 1] = GridLayout()
+    create_hierarchical_param_controls!(param_nav_layout, manager)
     current_row += 1
 
     # ==============================================================================
     # 4. SAVE CONTROLS
     # ==============================================================================
-    Label(fig_layout[current_row, 1], "Export:", fontsize=16, font=:bold, halign=:center)
+    Label(fig_layout[current_row, 1], "Export Options:", fontsize=16, font=:bold, halign=:center)
     current_row += 1
     
     save_box_layout = fig_layout[current_row, 1] = GridLayout()
-    createSaveFigBox(save_box_layout, plot_fig_ref, shared_params_obs, method_params_collection_obs, methods_obs, ui_options_obs, scene_obs)
+    # We pass the flattened versions of the manager data for the old save logic
+    # or adapt createSaveFigBox to accept the PlotManager directly.
+    createSaveFigBox(save_box_layout, plot_fig, manager)
     current_row += 1
 
     # ==============================================================================
     # 5. DYNAMIC PLOT CONTROLS SLOT
     # ==============================================================================
-    # We add a visual separator
-    Label(fig_layout[current_row, 1], "__________________________", color=:gray)
+    # Visual Separator
+    Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
     
-    Label(fig_layout[current_row, 1], "Plot Controls", fontsize=18, font=:bold, halign=:center, color=:royalblue)
+    Label(fig_layout[current_row, 1], "Data Exploration (Axes & Sliders)", 
+          fontsize=16, font=:bold, halign=:center, color=:darkgreen)
     current_row += 1
     
-    # This is the empty slot we return. The main script will fill it.
+    # This slot is returned to the main show function, which will populate it
+    # by calling attach_plot_controls! every time the data structure changes.
     plot_controls_slot = fig_layout[current_row, 1] = GridLayout()
     
-    # Initial Display
-    display(params_screen, params_fig)
-    display(plot_screen, plot_fig_ref)
+    # Display the final control suite
     display(GLMakie.Screen(title="Makie Controls"), base_controls_fig)
 
     return base_controls_fig, update_notifier, methods_obs, plot_controls_slot
 end
+
 
 """
     create_plot_controls!(fig, plot_data_dict::Dict{String, UnifiedPlotData})
@@ -408,5 +438,280 @@ function attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
     # instead of a Figure, or we overload it).
     return create_plot_controls!(menu_area, slider_area, plot_data_dict)
 end
+
+"""
+    create_hierarchical_param_controls!(layout, manager::PlotManager)
+
+Creates a 3-menu + 1-textbox interface to navigate and edit all parameters.
+"""
+function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManager)
+    # 1. Menus
+    # Categories are fixed strings matching the field names (capitalized for UI)
+    cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui, "Scene" => :scene)
+    menu_cat = Menu(layout[1, 1], options = sort(collect(keys(cat_mapping))), prompt = "Category...")
+    
+    menu_scope = Menu(layout[1, 2], options = ["-"], prompt = "Scope...")
+    menu_key = Menu(layout[1, 3], options = ["-"], prompt = "Key...")
+    
+    active_target_obs = Observable{Any}(nothing)
+
+    # 2. Category -> Scope (Accessing fields directly)
+    on(menu_cat.selection) do cat
+        isnothing(cat) && return
+        # Access mgr.simulation, mgr.ui, or mgr.scene
+        field_data = getproperty(mgr, cat_mapping[cat])
+        menu_scope.options[] = sort(collect(keys(field_data)))
+        menu_scope.selection[] = nothing
+    end
+
+    # 3. Scope -> Key
+    on(menu_scope.selection) do scope
+        isnothing(scope) && return
+        cat = menu_cat.selection[]
+        field_data = getproperty(mgr, cat_mapping[cat])
+        
+        menu_key.options[] = sort(collect(keys(field_data[scope])))
+        menu_key.selection[] = nothing
+    end
+
+    # 4. Textbox with Live Placeholder
+    Label(layout[2, 1], "Edit Value:", halign=:right)
+    
+    # Show what is currently loaded in the plot
+    placeholder_text = lift(menu_key.selection) do k
+        isnothing(k) && return "Select key..."
+        val = get(mgr.last_run_params, k, "default")
+        return "Loaded: $val"
+    end
+
+    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true)
+
+# When a key is selected, we update the Textbox
+    on(menu_key.selection) do key
+        isnothing(key) && return
+        cat, scope = menu_cat.selection[], menu_scope.selection[]
+        
+        field_data = getproperty(mgr, cat_mapping[cat])
+        obs = field_data[scope][key]
+        
+        active_target_obs[] = obs
+        # Show the actual value as a string for editing
+        tb.stored_string[] = string(to_value(obs))
+    end
+
+    # Handle Textbox Submission with the NEW Smart Parser
+    on(tb.stored_string) do s
+        obs = active_target_obs[]
+        isnothing(obs) && return
+        
+        # This replaces the old 'parsed = parseValue(s)' logic
+        smart_parse_and_update!(obs, s)
+    end
+end
+
+function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManager)
+    # Get all scopes in simulation except 'shared'
+    all_method_names = filter(k -> k != "shared", collect(keys(mgr.simulation)))
+    sort!(all_method_names)
+    
+    # Call your existing checkbox creation logic
+    # (assuming createMethodCheckboxes is the function from your PlottingUtils.jl)
+    createMethodCheckboxes(layout, methods_obs, all_method_names)
+end
+
+function createSaveFigBox(
+    target_layout,
+    plot_fig::Makie.Figure,
+    manager::PlotManager;
+    context_info = Dict{String, Any}()
+)
+    gb = target_layout[1, 1:2] = GridLayout()
+    Label(gb[1, 1], "Save Image+CSV:", halign=:right).padding=(0,5,0,0)
+    saveBox = Textbox(gb[1, 2], placeholder = "Type name (no ext)", width=200)
+
+    get_save_dir() = joinpath(Utils.get_save_path(), "figures")
+
+    on(saveBox.stored_string) do s
+        base_name = string(strip(s))
+        if isempty(base_name); return; end
+
+        # Access UI options via the nested "Various" scope
+        ui_various = manager.ui["Various"]
+        save_figures_path = get_save_dir()
+        
+        if ui_various["create_savefolder"][]; save_figures_path = joinpath(save_figures_path, base_name) end
+        mkpath(save_figures_path)
+
+        formats = ui_various["save_formats"][]
+        
+        for format in formats
+            fmt = lowercase(strip(format))
+            full_filename = joinpath(save_figures_path, base_name * ".$fmt")
+
+            try
+                if fmt in ["pdf", "svg"]
+                    # Use CairoMakie for vector export
+                    # Note: You must have 'using CairoMakie' in your scope
+                    CairoMakie.activate!()
+                    CairoMakie.save(full_filename, plot_fig)
+                else
+                    GLMakie.save(full_filename, plot_fig)
+                end
+                @info "Saved: $full_filename"
+            catch e
+                @error "Save failed for $fmt" exception=(e, catch_backtrace())
+            finally
+                GLMakie.activate!()
+            end
+        end
+
+        # Metadata gathering
+        context_info["Save Type"] = "Static Frame"
+        context_info["Timestamp"] = string(Dates.now())
+        
+        git_info = Utils.get_git_info(Utils.get_save_path())
+        if !isnothing(git_info); merge!(context_info, git_info) end
+
+        # Call parameter saver
+        saveParametersToCSV(base_name, save_figures_path, manager, context_info)
+    end
+end
+
+function saveParametersToCSV(
+    base_filename::String,
+    save_dir::String,
+    manager::PlotManager,
+    optional_info::Dict
+)::Bool
+    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+    
+    sections = String[]
+    method_names = Union{String, Missing}[]
+    parameters = String[]
+    values = String[]
+
+    function add_row(sec, meth, param, val)
+        push!(sections, sec); push!(method_names, meth)
+        push!(parameters, string(param))
+        # _value_to_string_for_csv should handle conversion of colors/symbols
+        push!(values, Utils._value_to_string_for_csv(to_value(val)))
+    end
+
+    # 1. Context Info
+    for k in sort(collect(keys(optional_info)))
+        add_row("Context", missing, k, optional_info[k])
+    end
+
+    # 2. Simulation - Shared
+    for k in sort(collect(keys(manager.simulation["shared"])))
+        add_row("Shared", missing, k, manager.simulation["shared"][k])
+    end
+
+    # 3. Simulation - Active Methods
+    # We only save the parameters for methods that are currently checked (active)
+    for m_name in sort(manager.methods[])
+        if haskey(manager.simulation, m_name)
+            for k in sort(collect(keys(manager.simulation[m_name])))
+                add_row("Method", m_name, k, manager.simulation[m_name][k])
+            end
+        end
+    end
+
+    # 4. UI Options (Iterate through Scopes: Axis, Appearance, etc.)
+    for (scope, dict) in manager.ui
+        for k in sort(collect(keys(dict)))
+            # We prefix the parameter with the scope for clarity in the CSV
+            add_row("UI", missing, "$scope:$k", dict[k])
+        end
+    end
+
+    # 5. Scene State
+    for k in sort(collect(keys(manager.scene["Current"])))
+        add_row("Scene", missing, k, manager.scene["Current"][k])
+    end
+
+    try
+        df = DataFrame(Section=sections, MethodName=method_names, Parameter=parameters, Value=values)
+        CSV.write(csv_filename, df)
+        @info "Parameters saved to $csv_filename"
+        return true
+    catch e
+        @error "CSV write failed" exception=(e, catch_backtrace())
+        return false
+    end
+end
+
+
+
+function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String}; n = 20)
+    
+    toLayout = cb_layout[end,1:div(length(methods),n)+1] = GridLayout() # n hard coded atm can be added to ui_dict
+
+    for (i,method) = enumerate(methods)
+        j = div(i-1,n) + 1
+        Label(toLayout[mod1(i,n),j*2-1], method)
+        init_methods = methods_obs[]
+        if method in init_methods
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = true)
+        else
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = false)
+        end
+        on(tmp.checked) do checked 
+            if to_value(checked) & !(methods[i] in methods_obs[])
+                push!(methods_obs[], methods[i])
+            elseif !to_value(checked) & (methods[i] in methods_obs[])
+                deleteat!(methods_obs[],findfirst(isequal(methods[i]),to_value(methods_obs)))
+            end
+            notify(methods_obs)
+        end
+    end
+end
+
+
+"""
+    smart_parse_and_update!(obs::Observable, input_str::String)
+
+Attempts to parse `input_str` into the same type as the current value of `obs`.
+If parsing fails or types are incompatible, it prints a warning and leaves the 
+observable unchanged.
+"""
+function smart_parse_and_update!(obs::Observable, input_str::String)
+    # Ignore empty inputs (usually handled by the placeholder logic)
+    (isempty(input_str) || input_str == "default") && return
+    
+    current_val = to_value(obs)
+    T = typeof(current_val)
+
+    try
+        if T == String
+            obs[] = input_str
+        elseif T == Symbol
+            obs[] = Symbol(input_str)
+        elseif T == Bool
+            # Handle true/false, 1/0, yes/no
+            s = lowercase(strip(input_str))
+            obs[] = (s == "true" || s == "1" || s == "yes")
+        elseif T <: Int
+            obs[] = parse(Int, input_str)
+        elseif T <: AbstractFloat
+            obs[] = parse(Float64, input_str)
+        elseif T <: Tuple || T <: Vector
+            # For complex types, we use the general parser but check the result type
+            parsed = parseValue(input_str) 
+            if typeof(parsed) == T
+                obs[] = parsed
+            else
+                @warn "Type mismatch for complex input. Expected $T, but got $(typeof(parsed))."
+            end
+        else
+            # Fallback for any other types
+            obs[] = parse(T, input_str)
+        end
+    catch e
+        @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
+    end
+end
+
+
 
 end

@@ -103,6 +103,9 @@ using .Utils
 include("DataProcessing.jl")
 using .DataProcessing
 
+include("Controls.jl")
+using .Controls
+
 include("StatCalculation.jl")
 using .StatCalculation
 

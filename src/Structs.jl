@@ -2,7 +2,7 @@ module Structs
 
 export ParamDict, MethodDict, SimulationConfig, ESimData1D, VariedDictType, LSimData1D, UnifiedPlotData, SimData2D, createSimData, mergeParams, FixedDictType
 export AbstractSimData, ParamDictType, MethodDictType, parseValue, AtomicType, AtomicTuple, load_function_from_disk, _load_function_from_string
-
+export PlotManager
 abstract type AbstractSimData end
 abstract type SimData1D <: AbstractSimData end
 abstract type SimData2D <: AbstractSimData end
@@ -175,8 +175,6 @@ function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
     end
     return merged
 end
-
-
 
 function parseValue(s::String)
     try
