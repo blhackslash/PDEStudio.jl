@@ -1,6 +1,6 @@
 module Controls
 
-export PlotManager, create_plot_manager, create_controls
+export PlotManager, create_plot_manager, create_controls, attach_plot_controls!
 
 using GLMakie
 using CairoMakie
@@ -196,10 +196,11 @@ function create_plot_controls!(
     # Map Index -> Name
     # 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time
     dim_names = Dict{Int, String}()
-    dim_names[1] = "Component"
-    for (i, p) in enumerate(active_params); dim_names[1+i] = p; end
-    dim_names[1+n_params+1] = "Space"
-    dim_names[1+n_params+2] = "Time"
+    
+    for (i, p) in enumerate(active_params); dim_names[i] = p; end
+    dim_names[n_params+1] = "Component"
+    dim_names[n_params+2] = "Space"
+    dim_names[n_params+3] = "Time"
     
     total_dims = length(dim_names)
     
@@ -224,11 +225,11 @@ function create_plot_controls!(
     Label(menu_layout[1,1], "X-Axis:")
     menu_x = Menu(menu_layout[1,2], options = sorted_keys)
     
-    Label(menu_layout[1,3], "Y-Axis:")
-    menu_y = Menu(menu_layout[1,4], options = String[])
+    Label(menu_layout[2,1], "Y-Axis:")
+    menu_y = Menu(menu_layout[2,2], options = ["-"])
     
-    Label(menu_layout[1,5], "Plot Along:")
-    menu_axis = Menu(menu_layout[1,6], options = String[])
+    Label(menu_layout[3,1], "Plot Along:")
+    menu_axis = Menu(menu_layout[3,2], options = ["-"])
 
     # --- 4. Build Static Controls (Sliders/Menus) ---
     # We create them once. We will manipulate their 'range'/'options' observables later.
@@ -241,7 +242,7 @@ function create_plot_controls!(
         
         Label(slider_layout[dim_i, 1], "$d_name:", halign=:right)
         
-        if dim_i == 1
+        if dim_i == n_params+1
             # --- COMPONENT (Menu) ---
             # Default options (will be overwritten)
             c_menu = Menu(slider_layout[dim_i, 2], options = ["1"])
@@ -346,7 +347,7 @@ function create_plot_controls!(
             # Is this the plot axis?
             is_axis = (dim_i == axis_idx)
             
-            if dim_i == 1
+            if dim_i == n_params+1
                 # --- Update Component Menu ---
                 # Find max components
                 max_c = maximum(size(pd.data["u"], 1) for pd in values(plot_data_dict))
@@ -368,12 +369,12 @@ function create_plot_controls!(
                 # Check data
                 for pd in values(plot_data_dict)
                     vals = nothing
-                    if dim_i <= 1 + n_params 
-                        p_idx = dim_i - 1
+                    if dim_i <= n_params 
+                        p_idx = dim_i
                         vals = pd.active_param_values[p_idx]
-                    elseif dim_i == 1 + n_params + 1 # Space
+                    elseif dim_i == n_params + 2 # Space
                         if haskey(pd.data, "x"); vals = pd.data["x"]; end
-                    elseif dim_i == 1 + n_params + 2 # Time
+                    elseif dim_i == n_params + 3 # Time
                         vals = pd.t_vals
                     end
                     
@@ -414,28 +415,31 @@ end
 """
     attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
 
-Generates the dynamic plotting controls using `create_plot_controls!` and 
-attaches them to the provided `target_layout`.
+Clears the designated slot and populates it with dynamic plot controls.
+Handles the deletion of both UI Blocks and nested GridLayouts.
 """
 function attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
-    # Clear any previous controls in this slot
-    for c in reverse(contents(target_layout))
-        delete!(c)
+    # 1. Clean the slot robustly
+    # contents(target_layout) returns everything in that grid cell
+    for c in contents(target_layout)
+        if c isa Makie.Block
+            # Logic for Labels, Menus, Sliders, etc.
+            delete!(c)
+        elseif c isa GridLayout
+            # Logic for nested layouts
+            #GridLayoutBase.remove_from_gridlayout!(c)
+        end
     end
     
-    # Create a dummy figure just to use the existing function's logic?
-    # No, create_plot_controls! takes a Figure to attach to fig[1,1] and fig[2,1].
-    # We should refactor create_plot_controls! slightly to accept a Layout, 
-    # OR we can just nest the layouts here.
-    
-    # Let's adapt create_plot_controls! slightly (see below) OR use this wrapper:
-    
-    # We create a sub-grid in the target
+    # 2. Reset the row/col sizes of the parent layout 
+    # (otherwise old row definitions persist)
+    trim!(target_layout)
+
+    # 3. Re-populate
     menu_area = target_layout[1, 1] = GridLayout()
     slider_area = target_layout[2, 1] = GridLayout()
     
-    # Call the logic (assuming we updated create_plot_controls! to take these grids 
-    # instead of a Figure, or we overload it).
+    # Return the observables from your existing function
     return create_plot_controls!(menu_area, slider_area, plot_data_dict)
 end
 
@@ -448,10 +452,10 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     # 1. Menus
     # Categories are fixed strings matching the field names (capitalized for UI)
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui, "Scene" => :scene)
-    menu_cat = Menu(layout[1, 1], options = sort(collect(keys(cat_mapping))), prompt = "Category...")
+    menu_cat = Menu(layout[1, 1:2], options = sort(collect(keys(cat_mapping))), prompt = "Category...")
     
-    menu_scope = Menu(layout[1, 2], options = ["-"], prompt = "Scope...")
-    menu_key = Menu(layout[1, 3], options = ["-"], prompt = "Key...")
+    menu_scope = Menu(layout[2, 1:2], options = ["-"], prompt = "Scope...")
+    menu_key = Menu(layout[3, 1:2], options = ["-"], prompt = "Key...")
     
     active_target_obs = Observable{Any}(nothing)
 
@@ -475,7 +479,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     end
 
     # 4. Textbox with Live Placeholder
-    Label(layout[2, 1], "Edit Value:", halign=:right)
+    Label(layout[4, 1], "Edit Value:", halign=:right)
     
     # Show what is currently loaded in the plot
     placeholder_text = lift(menu_key.selection) do k
@@ -484,7 +488,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         return "Loaded: $val"
     end
 
-    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true)
+    tb = Textbox(layout[4, 2], placeholder = placeholder_text, reset_on_defocus = true)
 
 # When a key is selected, we update the Textbox
     on(menu_key.selection) do key

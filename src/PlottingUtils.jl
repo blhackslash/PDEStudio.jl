@@ -3565,3 +3565,193 @@ function extract_line_cut_data(
         return (Float64[], empty_u)
     end
 end
+
+"""
+    set_axis_limits_manager!(ax, xs, us, manager)
+Adapted from your old set_axis_limits! to read from manager.ui["Axis"].
+"""
+function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
+    ui_axis = manager.ui["Axis"]
+    
+    # xs/us are now Vectors of the 1D slices for each method
+    raw_xlims = (minimum(minimum.(xs)), maximum(maximum.(xs)))
+    raw_ylims = (minimum(minimum.(us)), maximum(maximum.(us)))
+
+    final_xlims = calculate_padded_axis_range(raw_xlims, ui_axis["xpadding"][], ui_axis["xlogscale"][])
+    final_ylims = calculate_padded_axis_range(raw_ylims, ui_axis["ypadding"][], ui_axis["ylogscale"][])
+
+    limits!(ax, final_xlims..., final_ylims...)
+    
+    ax.xscale[] = final_xlims[1] > 0 && ui_axis["xlogscale"][] ? log10 : identity
+    ax.yscale[] = final_ylims[1] > 0 && ui_axis["ylogscale"][] ? log10 : identity
+end
+
+"""
+    plot_extrema_lines_manager!(ax, x, u, manager, plot_idx)
+Adapted to read colors/styles from manager.ui["Appearance"].
+"""
+function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
+    ui_app = manager.ui["Appearance"]
+    ui_various = manager.ui["Various"]
+    
+    track_max = ui_various["track_max"][]
+    track_min = ui_various["track_min"][]
+    (!track_max && !track_min) && return
+
+    valid_idx = findall(isfinite, u_data)
+    isempty(valid_idx) && return
+    
+    color = ui_app["colors"][][mod1(plot_idx, end)]
+    lw = ui_app["linewidth"][] / 2
+
+    if track_max
+        val, i = findmax(u_data[valid_idx])
+        pos = x_data[valid_idx[i]]
+        linesegments!(ax, [Point2f(pos, 0), Point2f(pos, val)]; color=(color, 0.7), linestyle=:dash, linewidth=lw)
+    end
+    # ... Similar for track_min ...
+end
+
+function update_base_plot_1D!(
+    plot_fig::Figure,
+    ax::Axis,
+    active_methods::Vector{String}, # Labels
+    xs_slices::Vector{Vector{Float64}}, # Sliced X data per method
+    us_slices::Vector{Vector{Float64}}, # Sliced U data per method
+    manager::PlotManager
+)
+    # --- 1. Style & Figure Prep ---
+    ui_axis = manager.ui["Axis"]
+    ui_app = manager.ui["Appearance"]
+    ui_leg = manager.ui["Legend"]
+    ui_var = manager.ui["Various"]
+
+    resize!(plot_fig, ui_axis["figsize"][][1], ui_axis["figsize"][][2])
+    empty!(ax)
+    isempty(active_methods) && return
+
+    # --- 2. Sorting Logic (Matches your original) ---
+    sort_key(label) = (contains(lowercase(label), "analytic") ? 0 : 1, label)
+    p = ui_leg["sort_legend"][] ? sortperm(active_methods, by=sort_key) : 1:length(active_methods)
+
+    plotted_objects = []
+    labels_for_legend = String[]
+
+    # --- 3. Plotting Loop ---
+    for (plot_idx, data_idx) in enumerate(p)
+        label = active_methods[data_idx]
+        x_data = xs_slices[data_idx]
+        u_data = us_slices[data_idx]
+
+        # Styles
+        color = ui_app["colors"][][mod1(plot_idx, end)]
+        marker = ui_app["markers"][][mod1(plot_idx, end)]
+        linestyle = ui_app["dashed_lines"][] ? ui_app["lineStyles"][][mod1(plot_idx, end)] : :solid
+        lw = ui_app["linewidth"][]
+
+        # Outlier Detection
+        if ui_var["mark_outliers"][] || ui_var["remove_outliers"][]
+            outlier_idx = _find_outlier_indices(u_data, ui_var["outlier_threshold"][])
+            if ui_var["mark_outliers"][]
+                vlines!(ax, x_data[outlier_idx]; color=(color, 0.4), linestyle=:dot, linewidth=lw/1.5)
+            end
+            if ui_var["remove_outliers"][]
+                u_data[outlier_idx] .= NaN
+            end
+        end
+
+        # Lines and Scatter
+        objs = []
+        if ui_app["show_lines"][]
+            l = lines!(ax, x_data, u_data; color=color, linewidth=lw, linestyle=linestyle, label=label)
+            push!(objs, l)
+        end
+        if ui_app["show_scatter"][]
+            s = scatter!(ax, x_data, u_data; color=color, markersize=ui_app["markersize"][], marker=marker, label=label)
+            push!(objs, s)
+        end
+
+        # Max/Min Tracking
+        plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
+
+        if !isempty(objs)
+            push!(plotted_objects, objs)
+            push!(labels_for_legend, label)
+        end
+    end
+
+    # --- 4. Limits, Labels, and Legend ---
+    set_axis_limits_manager!(ax, xs_slices, us_slices, manager)
+    
+    # Title/Label Logic
+    ax.title = ui_axis["title"][] == "default" ? "Simulation Result" : ui_axis["title"][]
+    ax.xlabel = ui_axis["xlabel"][] == "default" ? "x" : ui_axis["xlabel"][]
+    ax.ylabel = ui_axis["ylabel"][] == "default" ? "u" : ui_axis["ylabel"][]
+
+    #create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager.ui["Legend"])
+end
+
+function setup_render_lift!(ax, plot_fig, plot_data_dict, manager, x_key_obs, y_key_obs, plot_dim_obs, selectors)
+
+    lift(x_key_obs, y_key_obs, plot_dim_obs, selectors...) do x_key, y_key, dim_idx, sel_vals...
+        
+        # 1. Validation
+        (isnothing(x_key) || isnothing(y_key) || dim_idx == 0) && return
+        
+        active_methods = manager.methods[]
+        xs_to_plot = Vector{Vector{Float64}}()
+        us_to_plot = Vector{Vector{Float64}}()
+        valid_labels = String[]
+
+        # 2. Extract Data for all active methods
+        for m_name in active_methods
+            !haskey(plot_data_dict, m_name) && continue
+            
+            pd = plot_data_dict[m_name]
+            
+            # Map physical values in selectors to tensor indices
+            # Helper to find the index of the closest value in pd.t_vals or active_param_values
+            indices = map(1:length(sel_vals)) do i
+                if i == dim_idx
+                    return (:) # The axis we are plotting against
+                else
+                    return find_closest_index_for_dim(pd, i, sel_vals[i])
+                end
+            end
+            push!(xs_to_plot, vec(pd.data[x_key][indices...]))
+            push!(us_to_plot, vec(pd.data[y_key][indices...]))
+            push!(valid_labels, m_name)
+        end
+
+        # 3. Call the refactored base plot function
+        update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager)
+    end
+end
+
+"""
+    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+
+Maps a physical value from a slider back to the correct tensor index.
+1 = Component, 2..N+1 = Params, N+2 = Space, N+3 = Time.
+"""
+function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+    n_params = length(pd.active_param_keys)
+    
+
+    if dim_idx <= n_params # Parameter
+        p_vals = pd.active_param_values[dim_idx]
+        return findmin(v -> abs(v - target_val), p_vals)[2]
+    elseif dim_idx == n_params + 1 # Component
+        return Int(target_val)
+    elseif dim_idx == n_params + 2 # Space
+        # Usually Space is the Plot Axis (:), but if fixed, we find nearest
+        # Note: For Eulerian this is easy; for Lagrangian it depends on Time.
+        # Simple fallback for now:
+        return 1 
+    elseif dim_idx == n_params + 3 # Time
+        return findmin(v -> abs(v - target_val), pd.t_vals)[2]
+    end
+    return 1
+end
+
+
