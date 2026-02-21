@@ -2,6 +2,9 @@ using GLMakie, Statistics, Dates, DataFrames, CSV
 
 # --- Define the Simulation Function ---
 function wave_simulation(params::Dict{String, Any})
+    # DEBUG: Prove the simulation is being called by the orchestrator
+    @info "[SIMULATION] Running wave_simulation | Type: $(get(params, "type", "unknown")) | Freq: $(get(params, "frequency", "unknown"))"
+    
     # Extract Params
     A = get(params, "amplitude", 1.0)
     f = get(params, "frequency", 1.0)
@@ -22,7 +25,6 @@ function wave_simulation(params::Dict{String, Any})
         for i in 1:nt, j in 1:nx
             u[1, j, i] = A * sin(f * x_base[j] - 2π * t[i])
         end
-        # createSimData handles Matrix x -> Vector x conversion
         return createSimData(repeat(x_base, 1, nt), u, t, params, stats)
     else
         # Lagrangian: Moving Particles
@@ -38,7 +40,7 @@ path = "../src/"
 include(path*"Structs.jl")
 include(path*"Utils.jl")
 include(path*"Controls.jl")
-include(path*"DataProcessing.jl") # Assuming orchestrator/tensor logic is here
+include(path*"DataProcessing.jl") 
 include(path*"MakiePlotting.jl")
 using .Structs, .Utils, .MakiePlotting, .Controls
 
@@ -58,23 +60,46 @@ function run_final_test()
 
     # 2. Launch Orchestrator
     println("--- Launching Orchestrator ---")
-    # This calls create_controls, sets up the PlotManager, and runs the data/render lifts
     plot_fig, ctrl_fig, manager = show_unified_fig(
         sim_config; 
         ui_options = :default,
         scene_options = Dict("component" => 1)
     )
 
-    # 3. Add a test listener to verify the Type-Safe Parser
+    # 3. --- UI DEBUG INJECTION ---
+    println("--- Attaching UI Debug Listeners ---")
+    # Loop through every widget on the control figure and log its state changes
+    for widget in ctrl_fig.content
+        if widget isa Makie.Slider
+            on(widget.value) do val
+                @info "[UI EVENT] Slider moved to index/value: $val"
+            end
+        elseif widget isa Makie.Menu
+            on(widget.selection) do val
+                @info "[UI EVENT] Menu selection changed to: $val"
+            end
+        elseif widget isa Makie.Button
+            on(widget.clicks) do val
+                @info "[UI EVENT] Button clicked! (Total clicks: $val)"
+            end
+        elseif widget isa Makie.Textbox
+            on(widget.stored_string) do val
+                @info "[UI EVENT] Textbox input registered: $val"
+            end
+        elseif widget isa Makie.Checkbox
+            on(widget.checked) do val
+                @info "[UI EVENT] Checkbox toggled: $val"
+            end
+        end
+    end
+
+    # Test listener for Type-Safe parser
     on(manager.simulation["shared"]["L"]) do val
-        @info "Property 'L' updated in PlotManager to: $val"
+        @info "[MGR EVENT] Property 'L' updated in PlotManager to: $val"
     end
 
     println("\nSUCCESS: Windows should be open.")
-    println("Try the following:")
-    println("1. Move the 'frequency' slider - the plot should update instantly.")
-    println("2. Change 'amplitude' for Euler_Wave in the Hierarchical Menu, then click REFRESH.")
-    println("3. Change 'xlabel' in UI -> Axis - notice the 'Loaded' placeholder vs 'Value' textbox.")
+    println("Try interacting with the UI and watch the REPL for logs!")
     
     return plot_fig, ctrl_fig, manager
 end

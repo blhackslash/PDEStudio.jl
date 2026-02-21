@@ -25,69 +25,173 @@ include("PlottingUtils.jl")
 # include("show2DCutFig.jl")
 
 
+# ==============================================================================
+# In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
+# ==============================================================================
+
 function show_unified_fig(
     sim_config::SimulationConfig;
     ui_options::UIType = :default,
     scene_options::Dict = Dict{String, Any}()
 )
-    # --- 1. Initialization ---
     ui_nested = createUIDict(ui_options)
     scene_default = Dict{String, Any}("t" => 0.0, "component" => 1)
     scene_dict = merge(scene_default, scene_options)
     
-    # Create the single source of truth
     manager = create_plot_manager(sim_config, ui_nested, scene_dict)
-    
-    plot_fig = Figure(size = manager.ui["Axis"]["figsize"][])
+    plot_fig = Figure(size = (400,400))
     ax = Axis(plot_fig[1, 1])
-    
-    # Storage for the current batch of 5D tensors
-    plot_data_dict = Dict{String, UnifiedPlotData}()
+    Axis
+    # 1. Store plot data in a reactive Observable dict
+    plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
-    # --- 2. Create UI Controls ---
-    # fig_ctrl is the sidebar, plot_slot is where sliders will go
-    fig_ctrl, update_notifier, methods_obs, plot_slot = create_controls(plot_fig, manager)
+    # Determine fixed grid dimensions (P1, P2...) early to build static UI
+    active_params = sort(collect(keys(sim_config.varied_params)))
 
-    # --- 3. The "Data Loader" Lift (Case 1 & 2) ---
-    # Triggered by the "Refresh" button or method toggles
-    # We combine them so any change in method selection or a forced refresh reloads tensors
+    # 2. Create Static Controls Once
+    fig_ctrl, update_notifier, ui_update, methods_obs, x_obs, y_obs, dim_obs, selectors = 
+        Controls.create_controls(plot_fig, manager, plot_data_obs, active_params)
+
+    # 3. Data Loader Lift
     lift(update_notifier, methods_obs) do _, active_methods
-        
-        # Determine fixed params for the "Refresh" (Case 1)
-        # We extract values from manager.simulation["shared"] and method defaults
         fixed_params = Dict{String, Any}()
         for (k, obs) in manager.simulation["shared"]
             fixed_params[k] = obs[]
         end
 
-        # Run orchestrator to ensure data exists and load into tensors
-        # Note: We pass force_reload=true if triggered by update_notifier
+        # Work on a copy to batch changes, then push to the observable once
+        new_plot_data = copy(plot_data_obs[])
+        
         update_plot_data_collection!(
-            plot_data_dict, 
+            new_plot_data, 
             sim_config, 
             active_methods, 
-            fixed_params; 
+            fixed_params;
             force_reload = (update_notifier[] > 0)
         )
-
-        # --- 4. Rebuild Plot Controls ---
-        # Every time the data batch changes, we must rebuild the sliders
-        # because the parameter ranges or time steps might have changed.
         
-        # Clear the old slot and inject new menus/sliders
-        x_obs, y_obs, dim_obs, selectors = Controls.attach_plot_controls!(plot_slot, plot_data_dict)
-
-        # --- 5. Start/Restart the Rendering Lift ---
-        # This connects the newly created sliders to the Axis
-        setup_render_lift!(ax, plot_fig, plot_data_dict, manager, x_obs, y_obs, dim_obs, selectors)
+        # This push triggers build_static_plot_controls! to update all slider ranges natively
+        plot_data_obs[] = new_plot_data
     end
 
-    # Initial trigger to start the first load
+    # 4. Start Rendering Lift
+    setup_render_lift!(ax, plot_fig, plot_data_obs, manager, x_obs, y_obs, dim_obs, ui_update, selectors)
+
     update_notifier[] = 0 
-    
     return plot_fig, fig_ctrl, manager
 end
 
+
+# ==============================================================================
+# In MakiePlotting.jl - Replace setup_render_lift! and find_closest_index_for_dim
+# ==============================================================================
+
+# ==============================================================================
+# In MakiePlotting.jl - Replace setup_render_lift!
+# ==============================================================================
+
+function setup_render_lift!(ax, plot_fig, plot_data_obs, manager, x_key_obs, y_key_obs, plot_dim_obs, ui_update, selectors)
+
+    lift(plot_data_obs, ui_update, x_key_obs, y_key_obs, plot_dim_obs, selectors...) do plot_data_dict, _, x_key, y_key, dim_idx, sel_vals...
+        
+        # 1. Basic Validation
+        (isnothing(x_key) || isnothing(y_key) || x_key == "-" || y_key == "-" || dim_idx == 0) && return
+        isempty(plot_data_dict) && return
+        
+        # 2. Derive Dimension Names (Map indices to descriptive strings)
+        # Based on Controls.jl: 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time 
+        pd_sample = first(values(plot_data_dict))
+        active_params = pd_sample.active_param_keys
+        n_p = length(active_params)
+        
+        dim_names = Dict{Int, String}()
+        for (i, p) in enumerate(active_params); dim_names[i] = p; end
+        dim_names[n_p + 1] = "Component"
+        dim_names[n_p + 2] = "Space"
+        dim_names[n_p + 3] = "Time"
+
+        # 3. Construct the Dynamic Title
+        title_parts = String[]
+        for i in eachindex(sel_vals)
+            name = get(dim_names, i, "Dim$i")
+            if i == dim_idx
+                push!(title_parts, "[Along $name]") # Marker for Plotting Axis
+            else
+                val = sel_vals[i]
+                # Round floats for cleanliness in the title
+                val_str = val isa AbstractFloat ? string(round(val, digits=3)) : string(val)
+                push!(title_parts, "$name: $val_str")
+            end
+        end
+        # Format: "y_key vs x_key | [Along Time], Component: 1, Space: 2.5"
+        generated_title = "$y_key vs $x_key | " * join(title_parts, ", ")
+
+        # 4. Extract Data Slices
+        active_methods = manager.methods[]
+        xs_to_plot = Vector{Vector{Float64}}()
+        us_to_plot = Vector{Vector{Float64}}()
+        valid_labels = String[]
+
+        for m_name in active_methods
+            !haskey(plot_data_dict, m_name) && continue
+            pd = plot_data_dict[m_name]
+            
+            indices = map(1:length(sel_vals)) do i
+                i == dim_idx ? (:) : find_closest_index_for_dim(pd, i, sel_vals[i])
+            end
+            
+            try
+                push!(xs_to_plot, vec(pd.data[x_key][indices...]))
+                push!(us_to_plot, vec(pd.data[y_key][indices...]))
+                push!(valid_labels, m_name)
+            catch; end
+        end
+
+        # 5. Call Plotter with dynamic labels and title
+        update_base_plot_1D!(
+            plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager;
+            xlabel = x_key, 
+            ylabel = y_key, 
+            title_str = generated_title
+        )
+    end
+end
+
+
+"""
+    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+
+Maps a physical value from a slider back to the correct tensor index.
+1 = Component, 2..N+1 = Params, N+2 = Space, N+3 = Time.
+"""
+function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+    n_params = length(pd.active_param_keys)
+    
+    if dim_idx <= n_params # Parameter
+        p_vals = pd.active_param_values[dim_idx]
+        return findmin(v -> abs(v - target_val), p_vals)[2]
+        
+    elseif dim_idx == n_params + 1 # Component
+        return Int(target_val)
+        
+    elseif dim_idx == n_params + 2 # Space
+        # 3. FIX: If the user slides the Space slider to grab a specific X coordinate, 
+        # find the index of the closest spatial point dynamically.
+        if haskey(pd.data, "x")
+            x_tensor = pd.data["x"]
+            # Grab a 1D spatial vector by targeting index 1 for all non-spatial dimensions
+            inds = ntuple(i -> i == dim_idx ? (:) : 1, ndims(x_tensor))
+            x_vec = vec(x_tensor[inds...])
+            return findmin(v -> abs(v - target_val), x_vec)[2]
+        end
+        return 1 
+        
+    elseif dim_idx == n_params + 3 # Time
+        return findmin(v -> abs(v - target_val), pd.t_vals)[2]
+    end
+    
+    return 1
+end
 
 function plotFromCSV(csv_filepath::String; kwargs...)
     ui_options = load_additional_options_from_csv(csv_filepath, "UI")

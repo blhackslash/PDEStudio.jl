@@ -885,42 +885,39 @@ function _parse_legend_position(s_in::String)
     return (halign, valign)
 end
 """
-    create_or_update_legend!(fig::Figure, ax::Axis, plotted_objects::Vector, 
-                             labels::Vector, ui_options::Dict)
+    create_or_update_legend!(fig::Figure, plotted_objects::Vector, 
+                             labels::Vector, manager::PlotManager)
 
 Clears any existing Legend from the figure and creates a new one based on the
-position specified in `ui_options["legend_pos"]`.
-
-The position can be:
-- `:detached`: Places the legend in a new column to the right of the axis.
-- A Symbol like `:rt`, `:ct`, `:rb`, etc., or a Tuple like `(:right, :top)`:
-  Places the legend inside the axis at the specified position.
+position specified in the manager's UI "Legend" scope[cite: 1601, 1607].
 """
 function create_or_update_legend!(
     fig::Figure, 
     plotted_objects::Vector, 
     labels::Vector, 
-    ui_options_obs::Dict
+    manager::PlotManager
 )
    # --- 1. Find and Delete any existing Legend in the Figure ---
-    # We search the main layout for a legend in a separate column (e.g., fig[1,2])
-    # and we also search inside the main axis for an attached legend.
-    # It's crucial to delete from a copy of the contents list as we are modifying it.
+    # We search the main layout for any existing Legend block to ensure a clean update[cite: 1149].
     for elem in copy(contents(fig.layout))
         if elem isa Legend
             delete!(elem)
         end
     end
 
-    # --- 2. Get Legend Properties from UI Options ---
-    position = ui_options_obs["legend_pos"][]
-    title = ui_options_obs["legend"][]
+    # --- 2. Get Legend Properties from PlotManager ---
+    # Access the scoped observables directly from the manager.
+    ui_leg = manager.ui["Legend"]
+    ui_axis = manager.ui["Axis"]
+    
+    position = ui_leg["legend_pos"][]
+    title_str = ui_leg["legend"][]
+    font_size = ui_axis["font_size"][]
 
     if isempty(plotted_objects) || isempty(labels)
-        # If no items, ensure the layout is clean (e.g., no empty legend column)
-        # Check if column 2 exists and is empty, then delete it.
+        # If no items are plotted, clean up the layout and return[cite: 1151].
         try
-            trim!(fig.layout) # trim! is often safer and more general
+            trim!(fig.layout) 
         catch e
             # Ignore if layout is already clean
         end
@@ -929,25 +926,27 @@ function create_or_update_legend!(
 
     # --- 3. Create and Place the New Legend ---
     try
-        title_str = ui_options_obs["legend"][]
+        # Convert empty strings to nothing for cleaner Makie titles[cite: 1152].
         final_title = isempty(strip(title_str)) ? nothing : title_str
 
         if position == "detached"
-            # For a detached legend, create it in column 2 of the figure's layout.
+            # Places the legend in a new column to the right of the axis[cite: 1147, 1153].
             trim!(fig.layout)
-            Legend(fig[1, end+1], plotted_objects, labels, final_title; # <-- Use final_title
+            Legend(fig[1, end+1], plotted_objects, labels, final_title;
                 tellheight=false,
                 merge = true,
                 unique = true,
-                titlesize=ui_options_obs["font_size"][], # Use [] to get value
-                labelsize=ui_options_obs["font_size"][]
+                titlesize=font_size,
+                labelsize=font_size
             )
-            # Ensure the new column's width is determined by the legend's content
+            # Ensure the new column's width is determined by the legend content[cite: 1155].
             colsize!(fig.layout, 2, Auto())
         else
-            # For an attached legend, create it directly inside the axis's grid position
+            # Places the legend inside the axis at a specified anchor point[cite: 1148].
+            # This uses your existing _parse_legend_position helper[cite: 1144, 1156].
             halign, valign = _parse_legend_position(position)
-            Legend(fig[1,1], plotted_objects, labels, final_title; # <-- Use final_title
+            
+            Legend(fig[1,1], plotted_objects, labels, final_title;
                 orientation = :vertical,
                 tellheight=false, 
                 tellwidth=false,
@@ -955,11 +954,11 @@ function create_or_update_legend!(
                 valign = valign,
                 merge = true,
                 unique = true,
-                titlesize=ui_options_obs["font_size"][],
-                labelsize=ui_options_obs["font_size"][],
+                titlesize=font_size,
+                labelsize=font_size,
                 margin=(10, 10, 10, 10)
             )
-            # After creating an attached legend, trim the layout to remove empty columns
+            # Trim layout to ensure no empty ghost columns remain[cite: 1158].
             trim!(fig.layout)
         end
     catch e
@@ -2555,454 +2554,454 @@ function ensure_sim_data_exists!(
 end
 
 
-"""
-    create_plot_controls!(fig, plot_data::UnifiedPlotData)
+# """
+#     create_plot_controls!(fig, plot_data::UnifiedPlotData)
 
-Creates a hierarchical menu system:
-1. X-Axis Selection
-2. Y-Axis Selection (Filtered by intersection with X)
-3. Plot Axis Selection (If X and Y share multiple dimensions)
-4. Dynamic Sliders/Menus (For all remaining non-singleton dimensions)
+# Creates a hierarchical menu system:
+# 1. X-Axis Selection
+# 2. Y-Axis Selection (Filtered by intersection with X)
+# 3. Plot Axis Selection (If X and Y share multiple dimensions)
+# 4. Dynamic Sliders/Menus (For all remaining non-singleton dimensions)
 
-Returns a Dict of observables corresponding to the current slice indices.
-"""
-function create_plot_controls!(fig::Figure, plot_data::UnifiedPlotData)
-    # --- Layout Setup ---
-    # Top row: Selection Menus. Bottom row: Dynamic Sliders.
-    menu_layout = fig[1, 1] = GridLayout()
-    slider_layout = fig[2, 1] = GridLayout()
+# Returns a Dict of observables corresponding to the current slice indices.
+# """
+# function create_plot_controls!(fig::Figure, plot_data::UnifiedPlotData)
+#     # --- Layout Setup ---
+#     # Top row: Selection Menus. Bottom row: Dynamic Sliders.
+#     menu_layout = fig[1, 1] = GridLayout()
+#     slider_layout = fig[2, 1] = GridLayout()
     
-    # --- Helper: Dimension Names ---
-    # Map index 1..N to string names
-    # Structure: [P1, P2..., Space, Time, Component]
-    n_params = length(plot_data.active_param_keys)
-    dim_names = Dict{Int, String}()
-    for (i, key) in enumerate(plot_data.active_param_keys)
-        dim_names[1 + i] = key # Shift by 1
-    end
-    dim_names[n_params + 1] = "Component"    
-    dim_names[n_params + 2] = "Space"
-    dim_names[n_params + 3] = "Time"
+#     # --- Helper: Dimension Names ---
+#     # Map index 1..N to string names
+#     # Structure: [P1, P2..., Space, Time, Component]
+#     n_params = length(plot_data.active_param_keys)
+#     dim_names = Dict{Int, String}()
+#     for (i, key) in enumerate(plot_data.active_param_keys)
+#         dim_names[1 + i] = key # Shift by 1
+#     end
+#     dim_names[n_params + 1] = "Component"    
+#     dim_names[n_params + 2] = "Space"
+#     dim_names[n_params + 3] = "Time"
     
-    total_dims = length(dim_names)
+#     total_dims = length(dim_names)
 
-    # --- Observables for State ---
-    # The current selection state
-    x_key_obs = Observable{Union{String, Nothing}}(nothing)
-    y_key_obs = Observable{Union{String, Nothing}}(nothing)
-    plot_dim_obs = Observable{Int}(0) # The dimension index we are plotting against (e.g. 4 for Space)
+#     # --- Observables for State ---
+#     # The current selection state
+#     x_key_obs = Observable{Union{String, Nothing}}(nothing)
+#     y_key_obs = Observable{Union{String, Nothing}}(nothing)
+#     plot_dim_obs = Observable{Int}(0) # The dimension index we are plotting against (e.g. 4 for Space)
     
-    # The Output: What index to slice at for each dimension?
-    # 1 = Index 1 (Fixed), : = All (Plotting Axis), >1 = Specific Index (Slider)
-    # We store integers. 0 will denote "Plotting Axis" (Colon).
-    slice_indices = Observable(ones(Int, total_dims)) 
+#     # The Output: What index to slice at for each dimension?
+#     # 1 = Index 1 (Fixed), : = All (Plotting Axis), >1 = Specific Index (Slider)
+#     # We store integers. 0 will denote "Plotting Axis" (Colon).
+#     slice_indices = Observable(ones(Int, total_dims)) 
 
-    # --- 1. X-Axis Menu ---
-    # All keys are valid for X
-    all_keys = sort(collect(keys(plot_data.data)))
-    Label(menu_layout[1,1], "X-Axis:")
-    menu_x = Menu(menu_layout[1,2], options = all_keys)
+#     # --- 1. X-Axis Menu ---
+#     # All keys are valid for X
+#     all_keys = sort(collect(keys(plot_data.data)))
+#     Label(menu_layout[1,1], "X-Axis:")
+#     menu_x = Menu(menu_layout[1,2], options = all_keys)
     
-    # --- 2. Y-Axis Menu (Filtered) ---
-    # Only show keys that share at least one varied dimension with X
-    Label(menu_layout[1,3], "Y-Axis:")
-    menu_y = Menu(menu_layout[1,4], options = String[])
+#     # --- 2. Y-Axis Menu (Filtered) ---
+#     # Only show keys that share at least one varied dimension with X
+#     Label(menu_layout[1,3], "Y-Axis:")
+#     menu_y = Menu(menu_layout[1,4], options = String[])
 
-    # --- 3. Plot Axis Menu ---
-    # Which dimension are we plotting? (e.g. Space vs Time)
-    Label(menu_layout[1,5], "Plot Along:")
-    menu_axis = Menu(menu_layout[1,6], options = String[])
+#     # --- 3. Plot Axis Menu ---
+#     # Which dimension are we plotting? (e.g. Space vs Time)
+#     Label(menu_layout[1,5], "Plot Along:")
+#     menu_axis = Menu(menu_layout[1,6], options = String[])
 
-    # --- Logic: Update Y Options based on X ---
-    on(menu_x.selection) do x_val
-        if isnothing(x_val); return; end
-        x_tensor = plot_data.data[x_val]
+#     # --- Logic: Update Y Options based on X ---
+#     on(menu_x.selection) do x_val
+#         if isnothing(x_val); return; end
+#         x_tensor = plot_data.data[x_val]
         
-        # Identify varied dimensions in X (size > 1)
-        x_dims = findall(s -> s > 1, size(x_tensor))
+#         # Identify varied dimensions in X (size > 1)
+#         x_dims = findall(s -> s > 1, size(x_tensor))
         
-        # Filter Y candidates
-        valid_y = String[]
-        for k in all_keys
-            y_tensor = plot_data.data[k]
-            y_dims = findall(s -> s > 1, size(y_tensor))
+#         # Filter Y candidates
+#         valid_y = String[]
+#         for k in all_keys
+#             y_tensor = plot_data.data[k]
+#             y_dims = findall(s -> s > 1, size(y_tensor))
             
-            # Intersection: Do they share a varied dimension?
-            if !isempty(intersect(x_dims, y_dims))
-                push!(valid_y, k)
-            end
-        end
+#             # Intersection: Do they share a varied dimension?
+#             if !isempty(intersect(x_dims, y_dims))
+#                 push!(valid_y, k)
+#             end
+#         end
         
-        menu_y.options[] = sort(valid_y)
-        x_key_obs[] = x_val
+#         menu_y.options[] = sort(valid_y)
+#         x_key_obs[] = x_val
         
-        # Reset downstream
-        menu_y.selection[] = nothing
-    end
+#         # Reset downstream
+#         menu_y.selection[] = nothing
+#     end
 
-    # --- Logic: Update Plot Axis Options based on X & Y ---
-    on(menu_y.selection) do y_val
-        if isnothing(y_val); return; end
+#     # --- Logic: Update Plot Axis Options based on X & Y ---
+#     on(menu_y.selection) do y_val
+#         if isnothing(y_val); return; end
         
-        x_val = menu_x.selection[]
-        x_tensor = plot_data.data[x_val]
-        y_tensor = plot_data.data[y_val]
+#         x_val = menu_x.selection[]
+#         x_tensor = plot_data.data[x_val]
+#         y_tensor = plot_data.data[y_val]
         
-        # Find intersection of dimensions
-        x_dims = findall(s -> s > 1, size(x_tensor))
-        y_dims = findall(s -> s > 1, size(y_tensor))
-        common_dims = intersect(x_dims, y_dims)
+#         # Find intersection of dimensions
+#         x_dims = findall(s -> s > 1, size(x_tensor))
+#         y_dims = findall(s -> s > 1, size(y_tensor))
+#         common_dims = intersect(x_dims, y_dims)
         
-        # Map indices to names for the menu
-        # e.g. 4 -> "Space", 5 -> "Time"
-        options_dict = Dict(d => dim_names[d] for d in common_dims)
-        menu_axis.options[] = zip(values(options_dict), keys(options_dict)) |> collect
+#         # Map indices to names for the menu
+#         # e.g. 4 -> "Space", 5 -> "Time"
+#         options_dict = Dict(d => dim_names[d] for d in common_dims)
+#         menu_axis.options[] = zip(values(options_dict), keys(options_dict)) |> collect
         
-        y_key_obs[] = y_val
+#         y_key_obs[] = y_val
         
-        # Default select the last common dimension (usually Time or Space)
-        if !isempty(common_dims)
-            menu_axis.selection[] = common_dims[end]
-        end
-    end
+#         # Default select the last common dimension (usually Time or Space)
+#         if !isempty(common_dims)
+#             menu_axis.selection[] = common_dims[end]
+#         end
+#     end
 
-    # --- Logic: Create Sliders/Menus for Remaining Dimensions ---
-    on(menu_axis.selection) do axis_idx
-        if isnothing(axis_idx); return; end
-        plot_dim_obs[] = axis_idx
+#     # --- Logic: Create Sliders/Menus for Remaining Dimensions ---
+#     on(menu_axis.selection) do axis_idx
+#         if isnothing(axis_idx); return; end
+#         plot_dim_obs[] = axis_idx
         
-        # Clear old sliders
-        empty!(slider_layout)
+#         # Clear old sliders
+#         empty!(slider_layout)
         
-        # Determine which dimensions need controls
-        # A dimension needs a control if:
-        # 1. It is NOT the plot axis.
-        # 2. It has size > 1 in the Y-tensor (or X-tensor, usually Y governs complexity).
-        #    Actually, we should show controls for any dimension that is varied in *either* tensor 
-        #    but not selected as the plot axis, to define the slice fully.
+#         # Determine which dimensions need controls
+#         # A dimension needs a control if:
+#         # 1. It is NOT the plot axis.
+#         # 2. It has size > 1 in the Y-tensor (or X-tensor, usually Y governs complexity).
+#         #    Actually, we should show controls for any dimension that is varied in *either* tensor 
+#         #    but not selected as the plot axis, to define the slice fully.
         
-        x_val = menu_x.selection[]
-        y_val = menu_y.selection[]
-        if isnothing(x_val) || isnothing(y_val); return; end
+#         x_val = menu_x.selection[]
+#         y_val = menu_y.selection[]
+#         if isnothing(x_val) || isnothing(y_val); return; end
         
-        x_tensor = plot_data.data[x_val]
-        y_tensor = plot_data.data[y_val]
+#         x_tensor = plot_data.data[x_val]
+#         y_tensor = plot_data.data[y_val]
         
-        # Union of varied dimensions
-        varied_dims = union(
-            findall(s -> s > 1, size(x_tensor)),
-            findall(s -> s > 1, size(y_tensor))
-        )
+#         # Union of varied dimensions
+#         varied_dims = union(
+#             findall(s -> s > 1, size(x_tensor)),
+#             findall(s -> s > 1, size(y_tensor))
+#         )
         
-        # Dimensions to control = Varied Dims - Plot Axis
-        control_dims = setdiff(varied_dims, [axis_idx])
-        sort!(control_dims) # Keep order: Comp -> Params -> Space -> Time
+#         # Dimensions to control = Varied Dims - Plot Axis
+#         control_dims = setdiff(varied_dims, [axis_idx])
+#         sort!(control_dims) # Keep order: Comp -> Params -> Space -> Time
         
-        # Create Controls
-        new_indices = ones(Int, total_dims)
-        new_indices[axis_idx] = 0 # Marker for "Plot Axis"
+#         # Create Controls
+#         new_indices = ones(Int, total_dims)
+#         new_indices[axis_idx] = 0 # Marker for "Plot Axis"
         
-        for (i, dim) in enumerate(control_dims)
-            d_name = dim_names[dim]
-            d_size = size(y_tensor, dim) > 1 ? size(y_tensor, dim) : size(x_tensor, dim)
+#         for (i, dim) in enumerate(control_dims)
+#             d_name = dim_names[dim]
+#             d_size = size(y_tensor, dim) > 1 ? size(y_tensor, dim) : size(x_tensor, dim)
             
-            # Label
-            Label(slider_layout[i, 1], "$d_name:", halign=:right)
+#             # Label
+#             Label(slider_layout[i, 1], "$d_name:", halign=:right)
             
-            # Control
-            if dim == 1 # Component -> Menu
-                # Assuming simple numeric components 1..N
-                # If you have names, fetch them from metadata
-                opts = ["$c" for c in 1:d_size]
-                c_menu = Menu(slider_layout[i, 2], options = opts, default = "1")
+#             # Control
+#             if dim == 1 # Component -> Menu
+#                 # Assuming simple numeric components 1..N
+#                 # If you have names, fetch them from metadata
+#                 opts = ["$c" for c in 1:d_size]
+#                 c_menu = Menu(slider_layout[i, 2], options = opts, default = "1")
                 
-                # Listener
-                on(c_menu.selection) do val_str
-                    # Update the specific index in the master observable
-                    current_idxs = copy(slice_indices[])
-                    current_idxs[dim] = parse(Int, val_str)
-                    slice_indices[] = current_idxs
-                end
+#                 # Listener
+#                 on(c_menu.selection) do val_str
+#                     # Update the specific index in the master observable
+#                     current_idxs = copy(slice_indices[])
+#                     current_idxs[dim] = parse(Int, val_str)
+#                     slice_indices[] = current_idxs
+#                 end
                 
-            else # Params/Space/Time -> Slider
-                # Check specific values from metadata
-                # 1 = Component
-                # 2..N+1 = Params
-                # N+2 = Space
-                # N+3 = Time
+#             else # Params/Space/Time -> Slider
+#                 # Check specific values from metadata
+#                 # 1 = Component
+#                 # 2..N+1 = Params
+#                 # N+2 = Space
+#                 # N+3 = Time
                 
-                # Generate range values for label
-                range_vals = 1:d_size # Default index
+#                 # Generate range values for label
+#                 range_vals = 1:d_size # Default index
                 
-                # Try to find real values
-                real_vals = nothing
-                if dim > 1 && dim <= 1 + n_params
-                    real_vals = plot_data.active_param_values[dim - 1]
-                elseif dim == total_dims # Time
-                    real_vals = plot_data.t_vals
-                end
+#                 # Try to find real values
+#                 real_vals = nothing
+#                 if dim > 1 && dim <= 1 + n_params
+#                     real_vals = plot_data.active_param_values[dim - 1]
+#                 elseif dim == total_dims # Time
+#                     real_vals = plot_data.t_vals
+#                 end
                 
-                sl = Slider(slider_layout[i, 2], range = 1:d_size, startvalue=1)
+#                 sl = Slider(slider_layout[i, 2], range = 1:d_size, startvalue=1)
                 
-                # Value Label
-                val_lab = lift(sl.value) do idx
-                    if !isnothing(real_vals) && idx <= length(real_vals)
-                        v = real_vals[idx]
-                        return v isa AbstractFloat ? string(round(v, digits=3)) : string(v)
-                    else
-                        return "$idx"
-                    end
-                end
-                Label(slider_layout[i, 3], val_lab, width=50)
+#                 # Value Label
+#                 val_lab = lift(sl.value) do idx
+#                     if !isnothing(real_vals) && idx <= length(real_vals)
+#                         v = real_vals[idx]
+#                         return v isa AbstractFloat ? string(round(v, digits=3)) : string(v)
+#                     else
+#                         return "$idx"
+#                     end
+#                 end
+#                 Label(slider_layout[i, 3], val_lab, width=50)
                 
-                # Listener
-                on(sl.value) do idx
-                    current_idxs = copy(slice_indices[])
-                    current_idxs[dim] = idx
-                    slice_indices[] = current_idxs
-                end
-            end
-        end
+#                 # Listener
+#                 on(sl.value) do idx
+#                     current_idxs = copy(slice_indices[])
+#                     current_idxs[dim] = idx
+#                     slice_indices[] = current_idxs
+#                 end
+#             end
+#         end
         
-        # Initial trigger to set slice_indices
-        slice_indices[] = new_indices
-    end
+#         # Initial trigger to set slice_indices
+#         slice_indices[] = new_indices
+#     end
 
-    return x_key_obs, y_key_obs, plot_dim_obs, slice_indices
-end
+#     return x_key_obs, y_key_obs, plot_dim_obs, slice_indices
+# end
 
-"""
-    create_plot_controls!(fig, plot_data_dict::Dict{String, UnifiedPlotData})
+# """
+#     create_plot_controls!(fig, plot_data_dict::Dict{String, UnifiedPlotData})
 
-Creates a control panel with:
-1. X/Y/Axis Selection Menus.
-2. Permanent Sliders/Menus for [Component, P1..., Space, Time].
+# Creates a control panel with:
+# 1. X/Y/Axis Selection Menus.
+# 2. Permanent Sliders/Menus for [Component, P1..., Space, Time].
 
-Instead of hiding controls, it "disables" the control for the active plot axis 
-by setting its range to `[0]` (or options to `["-"]`) and updating the label.
-"""
-function create_plot_controls!(fig::Figure, plot_data_dict::Dict{String, UnifiedPlotData})
-    if isempty(plot_data_dict)
-        error("No plot data available to generate controls.")
-    end
+# Instead of hiding controls, it "disables" the control for the active plot axis 
+# by setting its range to `[0]` (or options to `["-"]`) and updating the label.
+# """
+# function create_plot_controls!(fig::Figure, plot_data_dict::Dict{String, UnifiedPlotData})
+#     if isempty(plot_data_dict)
+#         error("No plot data available to generate controls.")
+#     end
     
-    # --- 1. Metadata Setup ---
-    # Use the first dataset to determine the dimension structure
-    template_data = first(values(plot_data_dict))
+#     # --- 1. Metadata Setup ---
+#     # Use the first dataset to determine the dimension structure
+#     template_data = first(values(plot_data_dict))
     
-    active_params = template_data.active_param_keys
-    n_params = length(active_params)
+#     active_params = template_data.active_param_keys
+#     n_params = length(active_params)
     
-    # Map Index -> Name
-    # 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time
-    dim_names = Dict{Int, String}()
-    dim_names[1] = "Component"
-    for (i, p) in enumerate(active_params); dim_names[1+i] = p; end
-    dim_names[1+n_params+1] = "Space"
-    dim_names[1+n_params+2] = "Time"
+#     # Map Index -> Name
+#     # 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time
+#     dim_names = Dict{Int, String}()
+#     dim_names[1] = "Component"
+#     for (i, p) in enumerate(active_params); dim_names[1+i] = p; end
+#     dim_names[1+n_params+1] = "Space"
+#     dim_names[1+n_params+2] = "Time"
     
-    total_dims = length(dim_names)
+#     total_dims = length(dim_names)
 
-    # --- 2. Create Layout & Return Observables ---
-    menu_layout = fig[1, 1] = GridLayout()
-    slider_layout = fig[2, 1] = GridLayout()
+#     # --- 2. Create Layout & Return Observables ---
+#     menu_layout = fig[1, 1] = GridLayout()
+#     slider_layout = fig[2, 1] = GridLayout()
     
-    # The outputs
-    x_key_obs = Observable{Union{String, Nothing}}(nothing)
-    y_key_obs = Observable{Union{String, Nothing}}(nothing)
-    plot_dim_idx_obs = Observable{Int}(0) # 0 means "Not selected yet"
+#     # The outputs
+#     x_key_obs = Observable{Union{String, Nothing}}(nothing)
+#     y_key_obs = Observable{Union{String, Nothing}}(nothing)
+#     plot_dim_idx_obs = Observable{Int}(0) # 0 means "Not selected yet"
     
-    # Holds the current selected values (Physical Float for Params/Time, Int for Component)
-    # If a dimension is disabled (plot axis), this might hold a dummy value.
-    selector_values = Vector{Observable}(undef, total_dims)
-    for i in 1:total_dims
-        val_type = i == 1 ? Int : Float64
-        selector_values[i] = Observable{val_type}(val_type(1)) 
-    end
+#     # Holds the current selected values (Physical Float for Params/Time, Int for Component)
+#     # If a dimension is disabled (plot axis), this might hold a dummy value.
+#     selector_values = Vector{Observable}(undef, total_dims)
+#     for i in 1:total_dims
+#         val_type = i == 1 ? Int : Float64
+#         selector_values[i] = Observable{val_type}(val_type(1)) 
+#     end
 
-    # --- 3. Build Selection Menus ---
-    all_keys = Set{String}()
-    for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
-    sorted_keys = sort(collect(all_keys))
+#     # --- 3. Build Selection Menus ---
+#     all_keys = Set{String}()
+#     for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
+#     sorted_keys = sort(collect(all_keys))
 
-    Label(menu_layout[1,1], "X-Axis:")
-    menu_x = Menu(menu_layout[1,2], options = sorted_keys)
+#     Label(menu_layout[1,1], "X-Axis:")
+#     menu_x = Menu(menu_layout[1,2], options = sorted_keys)
     
-    Label(menu_layout[1,3], "Y-Axis:")
-    menu_y = Menu(menu_layout[1,4], options = String[])
+#     Label(menu_layout[1,3], "Y-Axis:")
+#     menu_y = Menu(menu_layout[1,4], options = String[])
     
-    Label(menu_layout[1,5], "Plot Along:")
-    menu_axis = Menu(menu_layout[1,6], options = String[])
+#     Label(menu_layout[1,5], "Plot Along:")
+#     menu_axis = Menu(menu_layout[1,6], options = String[])
 
-    # --- 4. Build Static Controls (Sliders/Menus) ---
-    # We create them once. We will manipulate their 'range'/'options' observables later.
+#     # --- 4. Build Static Controls (Sliders/Menus) ---
+#     # We create them once. We will manipulate their 'range'/'options' observables later.
     
-    # Store references to update them later
-    control_objects = Vector{Any}(undef, total_dims) 
+#     # Store references to update them later
+#     control_objects = Vector{Any}(undef, total_dims) 
 
-    for dim_i in 1:total_dims
-        d_name = dim_names[dim_i]
+#     for dim_i in 1:total_dims
+#         d_name = dim_names[dim_i]
         
-        Label(slider_layout[dim_i, 1], "$d_name:", halign=:right)
+#         Label(slider_layout[dim_i, 1], "$d_name:", halign=:right)
         
-        if dim_i == 1
-            # --- COMPONENT (Menu) ---
-            # Default options (will be overwritten)
-            c_menu = Menu(slider_layout[dim_i, 2], options = ["1"])
-            control_objects[dim_i] = c_menu
+#         if dim_i == 1
+#             # --- COMPONENT (Menu) ---
+#             # Default options (will be overwritten)
+#             c_menu = Menu(slider_layout[dim_i, 2], options = ["1"])
+#             control_objects[dim_i] = c_menu
             
-            # Label for Component (Display selection)
-            Label(slider_layout[dim_i, 3], lift(s -> "C = $s", c_menu.selection))
+#             # Label for Component (Display selection)
+#             Label(slider_layout[dim_i, 3], lift(s -> "C = $s", c_menu.selection))
             
-            # Connect to Output
-            on(c_menu.selection) do v
-                if v != "-" && !isnothing(v)
-                    selector_values[dim_i][] = parse(Int, v)
-                end
-            end
+#             # Connect to Output
+#             on(c_menu.selection) do v
+#                 if v != "-" && !isnothing(v)
+#                     selector_values[dim_i][] = parse(Int, v)
+#                 end
+#             end
             
-        else
-            # --- CONTINUOUS (Slider) ---
-            # Default range (will be overwritten)
-            sl = Slider(slider_layout[dim_i, 2], range = 0:1:10)
-            control_objects[dim_i] = sl
+#         else
+#             # --- CONTINUOUS (Slider) ---
+#             # Default range (will be overwritten)
+#             sl = Slider(slider_layout[dim_i, 2], range = 0:1:10)
+#             control_objects[dim_i] = sl
             
-            # Label with "N/A" Logic
-            # Note: Makie sliders usually have a vector/abstract range as 'range'
-            lab_text = lift(sl.value, sl.range) do val, r
-                if r == [0] # The "Disabled" flag
-                    "Axis"
-                else
-                    string(round(val, digits=3))
-                end
-            end
-            Label(slider_layout[dim_i, 3], lab_text, width=60, halign=:left)
+#             # Label with "N/A" Logic
+#             # Note: Makie sliders usually have a vector/abstract range as 'range'
+#             lab_text = lift(sl.value, sl.range) do val, r
+#                 if r == [0] # The "Disabled" flag
+#                     "Axis"
+#                 else
+#                     string(round(val, digits=3))
+#                 end
+#             end
+#             Label(slider_layout[dim_i, 3], lab_text, width=60, halign=:left)
             
-            # Connect to Output
-            on(sl.value) do v
-                # Only update if valid (not the dummy 0 from disable)
-                # However, usually we just update anyway. 
-                # The plotting lift checks `plot_dim_idx` and ignores this value if it's the axis.
-                selector_values[dim_i][] = v
-            end
-        end
-    end
+#             # Connect to Output
+#             on(sl.value) do v
+#                 # Only update if valid (not the dummy 0 from disable)
+#                 # However, usually we just update anyway. 
+#                 # The plotting lift checks `plot_dim_idx` and ignores this value if it's the axis.
+#                 selector_values[dim_i][] = v
+#             end
+#         end
+#     end
 
-    # --- 5. Menu Logic (Filters) ---
+#     # --- 5. Menu Logic (Filters) ---
     
-    # X -> Y
-    on(menu_x.selection) do x_val
-        if isnothing(x_val); return; end
+#     # X -> Y
+#     on(menu_x.selection) do x_val
+#         if isnothing(x_val); return; end
         
-        # Identify varied dimensions
-        varied_dims = Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val)
-                union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val])))
-            end
-        end
+#         # Identify varied dimensions
+#         varied_dims = Set{Int}()
+#         for pd in values(plot_data_dict)
+#             if haskey(pd.data, x_val)
+#                 union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val])))
+#             end
+#         end
         
-        # Filter Y
-        valid_y = String[]
-        for y_can in sorted_keys
-            y_varied = Set{Int}()
-            for pd in values(plot_data_dict)
-                if haskey(pd.data, y_can)
-                    union!(y_varied, findall(s -> s > 1, size(pd.data[y_can])))
-                end
-            end
-            if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
-        end
+#         # Filter Y
+#         valid_y = String[]
+#         for y_can in sorted_keys
+#             y_varied = Set{Int}()
+#             for pd in values(plot_data_dict)
+#                 if haskey(pd.data, y_can)
+#                     union!(y_varied, findall(s -> s > 1, size(pd.data[y_can])))
+#                 end
+#             end
+#             if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
+#         end
         
-        menu_y.options[] = valid_y
-        x_key_obs[] = x_val
-        menu_y.selection[] = nothing
-    end
+#         menu_y.options[] = valid_y
+#         x_key_obs[] = x_val
+#         menu_y.selection[] = nothing
+#     end
 
-    # Y -> Axis
-    on(menu_y.selection) do y_val
-        if isnothing(y_val); return; end
-        x_val = menu_x.selection[]
+#     # Y -> Axis
+#     on(menu_y.selection) do y_val
+#         if isnothing(y_val); return; end
+#         x_val = menu_x.selection[]
         
-        # Intersect varied dims
-        x_varied, y_varied = Set{Int}(), Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
-            if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
-        end
+#         # Intersect varied dims
+#         x_varied, y_varied = Set{Int}(), Set{Int}()
+#         for pd in values(plot_data_dict)
+#             if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
+#             if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
+#         end
         
-        common = sort(collect(intersect(x_varied, y_varied)))
-        menu_axis.options[] = [(dim_names[d], d) for d in common]
+#         common = sort(collect(intersect(x_varied, y_varied)))
+#         menu_axis.options[] = [(dim_names[d], d) for d in common]
         
-        y_key_obs[] = y_val
-        if !isempty(common); menu_axis.selection[] = common[end]; end
-    end
+#         y_key_obs[] = y_val
+#         if !isempty(common); menu_axis.selection[] = common[end]; end
+#     end
 
-    # Axis -> Disable/Enable Sliders
-    on(menu_axis.selection) do axis_idx
-        if isnothing(axis_idx); return; end
-        plot_dim_idx_obs[] = axis_idx
+#     # Axis -> Disable/Enable Sliders
+#     on(menu_axis.selection) do axis_idx
+#         if isnothing(axis_idx); return; end
+#         plot_dim_idx_obs[] = axis_idx
         
-        # Loop through all controls and update their state
-        for dim_i in 1:total_dims
-            ctrl = control_objects[dim_i]
+#         # Loop through all controls and update their state
+#         for dim_i in 1:total_dims
+#             ctrl = control_objects[dim_i]
             
-            # Is this the plot axis?
-            is_axis = (dim_i == axis_idx)
+#             # Is this the plot axis?
+#             is_axis = (dim_i == axis_idx)
             
-            if dim_i == 1
-                # --- Update Component Menu ---
-                # Find max components
-                max_c = maximum(size(pd.data["u"], 1) for pd in values(plot_data_dict))
+#             if dim_i == 1
+#                 # --- Update Component Menu ---
+#                 # Find max components
+#                 max_c = maximum(size(pd.data["u"], 1) for pd in values(plot_data_dict))
                 
-                if is_axis
-                    ctrl.options[] = ["-"] # Disable
-                    ctrl.selection[] = "-"
-                else
-                    ctrl.options[] = string.(1:max_c)
-                    # Try to keep selection or reset to 1
-                    if ctrl.selection[] == "-"; ctrl.selection[] = "1"; end
-                end
+#                 if is_axis
+#                     ctrl.options[] = ["-"] # Disable
+#                     ctrl.selection[] = "-"
+#                 else
+#                     ctrl.options[] = string.(1:max_c)
+#                     # Try to keep selection or reset to 1
+#                     if ctrl.selection[] == "-"; ctrl.selection[] = "1"; end
+#                 end
                 
-            else
-                # --- Update Continuous Slider ---
-                # 1. Determine Global Range
-                g_min, g_max = Inf, -Inf
+#             else
+#                 # --- Update Continuous Slider ---
+#                 # 1. Determine Global Range
+#                 g_min, g_max = Inf, -Inf
                 
-                # Check data
-                for pd in values(plot_data_dict)
-                    vals = nothing
-                    if dim_i <= 1 + n_params 
-                        p_idx = dim_i - 1
-                        vals = pd.active_param_values[p_idx]
-                    elseif dim_i == 1 + n_params + 1 # Space
-                        if haskey(pd.data, "x"); vals = pd.data["x"]; end
-                    elseif dim_i == 1 + n_params + 2 # Time
-                        vals = pd.t_vals
-                    end
+#                 # Check data
+#                 for pd in values(plot_data_dict)
+#                     vals = nothing
+#                     if dim_i <= 1 + n_params 
+#                         p_idx = dim_i - 1
+#                         vals = pd.active_param_values[p_idx]
+#                     elseif dim_i == 1 + n_params + 1 # Space
+#                         if haskey(pd.data, "x"); vals = pd.data["x"]; end
+#                     elseif dim_i == 1 + n_params + 2 # Time
+#                         vals = pd.t_vals
+#                     end
                     
-                    if !isnothing(vals) && !isempty(vals)
-                        l, h = extrema(vals)
-                        if l < g_min; g_min = l; end
-                        if h > g_max; g_max = h; end
-                    end
-                end
-                if isinf(g_min); g_min=0.0; g_max=1.0; end
+#                     if !isnothing(vals) && !isempty(vals)
+#                         l, h = extrema(vals)
+#                         if l < g_min; g_min = l; end
+#                         if h > g_max; g_max = h; end
+#                     end
+#                 end
+#                 if isinf(g_min); g_min=0.0; g_max=1.0; end
                 
-                # 2. Update Slider Range
-                if is_axis
-                    ctrl.range[] = [0] # Disable!
-                    # Value automatically jumps to 0
-                else
-                    # Construct range (approx 100 steps for smooth slider)
-                    ctrl.range[] = range(g_min, g_max, length=100)
-                end
-            end
-        end
-    end
+#                 # 2. Update Slider Range
+#                 if is_axis
+#                     ctrl.range[] = [0] # Disable!
+#                     # Value automatically jumps to 0
+#                 else
+#                     # Construct range (approx 100 steps for smooth slider)
+#                     ctrl.range[] = range(g_min, g_max, length=100)
+#                 end
+#             end
+#         end
+#     end
 
-    return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values
-end
+#     return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values
+# end
 #======================================================================#
 #              3. CALCULATE ALL STATS (GENERALIZED)
 #======================================================================#
@@ -3359,139 +3358,6 @@ function create_ui_observables(ui_options)
     return ui_options_obs
 end
 
-
-"""
-    createAnimationControls!(...)
-
-Creates and populates a layout with animation and GIF saving controls.
-This function is designed to be called from a main plotting function to
-modularize the UI creation.
-"""
-function createAnimationControls!(
-    controls_layout::GridLayout,
-    plot_fig::Figure,
-    tSlider::Slider,
-    shared_params_obs::Dict{String, Observable},
-    method_params_collection_obs::Dict{String, Dict{String, Observable}},
-    methods_obs::Observable{Vector{String}},
-    ui_options_obs::Dict{String, Observable},
-    scene_obs::Dict{String, Observable}
-)
-    # --- 1. Setup Layout and State Variables ---
-    is_animating = Observable(false)
-    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
-
-    # --- 2. Create UI Widgets ---
-    play_button = Button(controls_layout[1, 1], label=@lift($is_animating ? "Stop Anim" : "Play Anim"))
-    gif_save_textbox = Textbox(controls_layout[1, 2], placeholder="GIF Name (no ext)", width=150)
-    gif_save_textbox.stored_string = "untitled_anim" # Default filename
-    gif_save_button = Button(controls_layout[1, 3], label="Save GIF")
-    Label(controls_layout[1, 4], text="(can be slow!)", fontsize=10, color=:darkgray, halign=:left)
-
-    colgap!(controls_layout, 10)
-    colsize!(controls_layout, 1, Auto()); colsize!(controls_layout, 3, Auto()); colsize!(controls_layout, 4, Auto())
-
-    # --- 3. Animation Button Logic ---
-    on(play_button.clicks) do _
-        new_state = !is_animating[]
-        if new_state # Start Animation
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
-            
-            t_min, t_max = tSlider.range[][1], tSlider.range[][end]
-            if !(t_max > t_min); @warn "Cannot animate: Invalid time range."; return; end
-            is_animating[] = true
-
-            anim_duration_s = ui_options_obs["animation_duration_s"][]
-            anim_fps = ui_options_obs["animation_fps"][]
-            timer_interval = 1.0 / max(1, anim_fps)
-            start_real_time = time()
-
-            function update_frame(timer_handle)
-                if !is_animating[]; try close(timer_handle) catch; end; animation_timer[] = nothing; return; end
-                
-                elapsed_real_time = time() - start_real_time
-                cycled_elapsed_time = mod(elapsed_real_time, anim_duration_s)
-                time_fraction = cycled_elapsed_time / anim_duration_s
-                current_sim_time = t_min + time_fraction * (t_max - t_min)
-                
-                set_close_to!(tSlider, clamp(current_sim_time, t_min, t_max))
-            end
-            
-            @info "Starting animation (Duration: $(anim_duration_s)s, Target FPS: $anim_fps)..."
-            animation_timer[] = Timer(update_frame, 0.0, interval=max(0.01, timer_interval))
-        else # Stop Animation
-            @info "Stopping animation..."
-            if !isnothing(animation_timer[]); try close(animation_timer[]) catch; end; end
-            animation_timer[] = nothing
-            is_animating[] = false
-        end
-    end
-
-    # --- 4. GIF Saving Button Logic ---
-    on(gif_save_button.clicks) do _
-        base_filename = string(strip(gif_save_textbox.stored_string[]))
-        if isempty(base_filename); @warn "Enter GIF filename."; return; end
-
-        # --- Path Setup ---
-        # Both GIF and parameters will be saved here.
-        save_dir = joinpath(Utils.get_save_path(), "animations")
-        try mkpath(save_dir) catch e; @warn "Could not create animations dir: $e"; end
-        
-        gif_filepath = joinpath(save_dir, base_filename * ".gif")
-        @info "Preparing to save GIF and parameters to: $save_dir"
-
-        # --- Save Parameters ---
-        anim_info = Dict(
-            "Save Type" => "Animation GIF",
-            "Timestamp" => string(Dates.now()),
-            "Animation Time Range" => string((tSlider.range[][1], tSlider.range[][end])),
-            "Animation Duration (s)" => ui_options_obs["animation_duration_s"][],
-            "Animation FPS" => ui_options_obs["animation_fps"][],
-        )
-        saveParametersToCSV(
-            base_filename, save_dir, shared_params_obs, method_params_collection_obs,
-            methods_obs, ui_options_obs, anim_info, scene_obs
-        )
-
-        # --- Record Animation ---
-        was_animating = is_animating[]
-        if was_animating; play_button.clicks[] = 1; sleep(0.1); end # Trigger stop
-
-        t_min, t_max = tSlider.range[][1], tSlider.range[][end]
-        duration_s = ui_options_obs["animation_duration_s"][]
-        fps = ui_options_obs["animation_fps"][]
-        n_frames = round(Int, duration_s * fps)
-        times_for_gif = range(t_min, t_max, length=n_frames)
-        @async begin
-        try
-            @info "Recording $n_frames frames at $fps FPS..."
-            
-            # Record the animation without modifying axis limits
-            record(plot_fig, gif_filepath, times_for_gif; framerate=fps) do t_now
-                set_close_to!(tSlider, t_now)
-                yield()
-            end
-            @info "Animation saved successfully to $gif_filepath"
-        catch e
-            @error "Failed to save GIF animation!" exception=(e, catch_backtrace())
-        finally
-            display(GLMakie.Screen(), plot_fig)
-        end
-        end
-    end
-
-    # --- 5. Timer Cleanup on Figure Close ---
-    on(plot_fig.scene.events.window_open) do is_open
-        if !is_open && !isnothing(animation_timer[])
-            try close(animation_timer[]) catch; end
-            animation_timer[] = nothing
-            is_animating[] = false
-        end
-    end
-
-    return # The function modifies the layout in place
-end
-
 # This function should be updated in PlottingUtils.jl
 
 """
@@ -3618,7 +3484,10 @@ function update_base_plot_1D!(
     active_methods::Vector{String}, # Labels
     xs_slices::Vector{Vector{Float64}}, # Sliced X data per method
     us_slices::Vector{Vector{Float64}}, # Sliced U data per method
-    manager::PlotManager
+    manager::PlotManager;
+    xlabel::Union{String, Nothing} = nothing,    # NEW: Dynamic override
+    ylabel::Union{String, Nothing} = nothing,    # NEW: Dynamic override
+    title_str::Union{String, Nothing} = nothing  # NEW: Dynamic override
 )
     # --- 1. Style & Figure Prep ---
     ui_axis = manager.ui["Axis"]
@@ -3683,75 +3552,51 @@ function update_base_plot_1D!(
     # --- 4. Limits, Labels, and Legend ---
     set_axis_limits_manager!(ax, xs_slices, us_slices, manager)
     
-    # Title/Label Logic
-    ax.title = ui_axis["title"][] == "default" ? "Simulation Result" : ui_axis["title"][]
-    ax.xlabel = ui_axis["xlabel"][] == "default" ? "x" : ui_axis["xlabel"][]
-    ax.ylabel = ui_axis["ylabel"][] == "default" ? "u" : ui_axis["ylabel"][]
+# DYNAMIC LABEL LOGIC:
+    # Use the passed key if provided, otherwise check UI dict for manual overrides [cite: 698, 699, 700]
+    ax.xlabel = ui_axis["xlabel"][] == "default" ? xlabel : ui_axis["xlabel"][]
+    ax.ylabel = ui_axis["ylabel"][] == "default" ? ylabel : ui_axis["ylabel"][]
+    ax.title  = ui_axis["title"][] == "default" ? title_str : ui_axis["title"][]
 
-    #create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager.ui["Legend"])
+    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
 
-function setup_render_lift!(ax, plot_fig, plot_data_dict, manager, x_key_obs, y_key_obs, plot_dim_obs, selectors)
+# function setup_render_lift!(ax, plot_fig, plot_data_dict, manager, x_key_obs, y_key_obs, plot_dim_obs, selectors)
 
-    lift(x_key_obs, y_key_obs, plot_dim_obs, selectors...) do x_key, y_key, dim_idx, sel_vals...
+#     lift(x_key_obs, y_key_obs, plot_dim_obs, selectors...) do x_key, y_key, dim_idx, sel_vals...
         
-        # 1. Validation
-        (isnothing(x_key) || isnothing(y_key) || dim_idx == 0) && return
+#         # 1. Validation
+#         (isnothing(x_key) || isnothing(y_key) || dim_idx == 0) && return
         
-        active_methods = manager.methods[]
-        xs_to_plot = Vector{Vector{Float64}}()
-        us_to_plot = Vector{Vector{Float64}}()
-        valid_labels = String[]
+#         active_methods = manager.methods[]
+#         xs_to_plot = Vector{Vector{Float64}}()
+#         us_to_plot = Vector{Vector{Float64}}()
+#         valid_labels = String[]
 
-        # 2. Extract Data for all active methods
-        for m_name in active_methods
-            !haskey(plot_data_dict, m_name) && continue
+#         # 2. Extract Data for all active methods
+#         for m_name in active_methods
+#             !haskey(plot_data_dict, m_name) && continue
             
-            pd = plot_data_dict[m_name]
+#             pd = plot_data_dict[m_name]
             
-            # Map physical values in selectors to tensor indices
-            # Helper to find the index of the closest value in pd.t_vals or active_param_values
-            indices = map(1:length(sel_vals)) do i
-                if i == dim_idx
-                    return (:) # The axis we are plotting against
-                else
-                    return find_closest_index_for_dim(pd, i, sel_vals[i])
-                end
-            end
-            push!(xs_to_plot, vec(pd.data[x_key][indices...]))
-            push!(us_to_plot, vec(pd.data[y_key][indices...]))
-            push!(valid_labels, m_name)
-        end
+#             # Map physical values in selectors to tensor indices
+#             # Helper to find the index of the closest value in pd.t_vals or active_param_values
+#             indices = map(1:length(sel_vals)) do i
+#                 if i == dim_idx
+#                     return (:) # The axis we are plotting against
+#                 else
+#                     return find_closest_index_for_dim(pd, i, sel_vals[i])
+#                 end
+#             end
+#             push!(xs_to_plot, vec(pd.data[x_key][indices...]))
+#             push!(us_to_plot, vec(pd.data[y_key][indices...]))
+#             push!(valid_labels, m_name)
+#         end
 
-        # 3. Call the refactored base plot function
-        update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager)
-    end
-end
+#         # 3. Call the refactored base plot function
+#         update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager)
+#     end
+# end
 
-"""
-    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
-
-Maps a physical value from a slider back to the correct tensor index.
-1 = Component, 2..N+1 = Params, N+2 = Space, N+3 = Time.
-"""
-function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
-    n_params = length(pd.active_param_keys)
-    
-
-    if dim_idx <= n_params # Parameter
-        p_vals = pd.active_param_values[dim_idx]
-        return findmin(v -> abs(v - target_val), p_vals)[2]
-    elseif dim_idx == n_params + 1 # Component
-        return Int(target_val)
-    elseif dim_idx == n_params + 2 # Space
-        # Usually Space is the Plot Axis (:), but if fixed, we find nearest
-        # Note: For Eulerian this is easy; for Lagrangian it depends on Time.
-        # Simple fallback for now:
-        return 1 
-    elseif dim_idx == n_params + 3 # Time
-        return findmin(v -> abs(v - target_val), pd.t_vals)[2]
-    end
-    return 1
-end
 
 
