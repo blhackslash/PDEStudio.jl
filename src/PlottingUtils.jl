@@ -702,114 +702,112 @@ function get_git_info(start_path::String = ".")
     end
 end
 
+function saveParametersToCSV(
+    base_filename::String,
+    save_dir::String,
+    manager::PlotManager,
+    metadata_general::Dict
+)::Bool
+    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+    
+    try
+        cats, scopes, params, vals = String[], String[], String[], String[]
 
-
-"""
-    createSaveFigBox(target_layout, plot_fig, shared_params_obs, method_params_collection_obs, methods_obs)
-
-Creates UI elements to save the current plot_fig as PNG and calls
-saveParametersToCSV to save parameters.
-"""
-function createSaveFigBox(
-    target_layout,
-    plot_fig::Makie.Figure,
-    shared_params_obs::Dict{String, Observable},
-    method_params_collection_obs::Dict{String, Dict{String, Observable}}, # <<< Pass through
-    methods_obs::Observable{Vector{String}}, # <<< Pass through
-    ui_options_obs::Dict,
-    scene_obs::Dict = Dict{String, Observable}();
-    context_info = Dict{String, Any}()
-    )
-
-    gb = target_layout[1, 1:2] = GridLayout() # Example layout
-    Label(gb[1, 1], "Save Image+CSV:", halign=:right).padding=(0,5,0,0)
-    saveBox = Textbox(gb[1, 2], placeholder = "Type name (no ext)", width=200)
-    try; colsize!(gb, 1, Auto()); colsize!(gb, 2, Auto()); catch; end
-
-    get_save_dir() = joinpath(Utils.get_save_path(), "figures")
-
-    # --- Modified `on` listener ---
-    on(saveBox.stored_string) do s
-
-        #original_update_state = ui_options_obs["update_limits"][]
-        # Turn off auto-limiting. This prevents the plot from resetting.
-        #ui_options_obs["update_limits"][] = false
-        base_name = string(strip(s))
-        
-        if isempty(base_name)
-            @warn "Save cancelled (empty name)."
-            return
+        function add_row(cat, scope, p, v)
+            push!(cats, string(cat)); push!(scopes, string(scope))
+            push!(params, string(p)); push!(vals, Utils._value_to_string_for_csv(to_value(v)))
         end
 
-        save_figures_path = get_save_dir()
-        if ui_options_obs["create_savefolder"][]; save_figures_path *= "/$base_name" end
-        try
-            mkpath(save_figures_path)
-        catch e
-            @warn "Could not create directory $save_figures_path: $e"
-        end
-
-        # Get the list of formats to save from the ui_options dictionary
-        # Default to only ["png"] if the key is not found.
-        formats_to_save = ui_options_obs["save_formats"][]
+        # --- 1. CATEGORY: Metadata ---
+        # Scope: General (Timestamp, Save Type)
+        for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
         
-        @info "Saving figure in formats: $(join(formats_to_save, ", "))..."
-
-        # --- Save the figure in each requested format ---
-        for format in formats_to_save
-            # Sanitize format string
-            fmt = lowercase(strip(format))
-            if !(fmt in ["png", "pdf", "svg"])
-                @warn "Unsupported save format '$fmt' specified. Skipping."
-                continue
-            end
-
-            # Construct the full filename with the correct extension
-            full_filename = joinpath(save_figures_path, base_name * ".$fmt")
-
-            try
-                # Temporarily activate CairoMakie for vector formats for high-quality output
-                if fmt in ["pdf", "svg"]
-                    CairoMakie.activate!()
-                    CairoMakie.save(full_filename, plot_fig, update = false)
-                else
-                    GLMakie.save(full_filename, plot_fig, update = false)
-                end
-
-                # Save the figure
-                
-                @info "Plot saved as $full_filename"
-
-            catch e
-                @error "Failed to save figure in format .$fmt!" exception=(e, catch_backtrace())
-            finally
-                # IMPORTANT: Always reactivate GLMakie to keep the interactive window running
-                GLMakie.activate!()
-            end
-        end # End loop over formats
-         # --- Call reusable function to save Parameters ---
-        context_info["Save Type"] = "Static Frame"
-        context_info["Timestamp"] = string(Dates.now()) # Use Dates.now()
-        path = Utils.get_save_path()
-
-        git_info = get_git_info(path) # Assumes your script runs from the repo root
+        # Scope: Git
+        git_info = Utils.get_git_info(pwd()) # Uses your existing util
         if !isnothing(git_info)
-            merge!(context_info, git_info)
+            for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
         end
-         saveParametersToCSV( # Call the new function
-             base_name,
-             save_figures_path,
-             shared_params_obs,
-             method_params_collection_obs, # Pass it along
-             methods_obs,                  # Pass it along
-             ui_options_obs,
-             context_info,
-             scene_obs,
-         )
-         # --------------------------------------------------
-        #ui_options_obs["update_limits"][] = original_update_state
-         #saveBox.stored_string = "" # Clear textbox
-     end # End on event handler
+
+        # Scope: Julia (Versions)
+        julia_info = get_julia_info()
+        for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
+
+        # Scope: Scene (The specific snapshot settings)
+        # We flatten the scene dicts (usually manager.scene["Current"])
+        for (scope, dict) in manager.scene
+            for (k, v) in dict; add_row("Metadata", "Scene", k, v); end
+        end
+
+        # --- 2. CATEGORY: Simulation ---
+        # Shared params
+        for (k, v) in manager.simulation["shared"]
+            add_row("Simulation", "shared", k, v)
+        end
+        # Active method params
+        for m_name in manager.methods[]
+            if haskey(manager.simulation, m_name)
+                for (k, v) in manager.simulation[m_name]
+                    add_row("Simulation", m_name, k, v)
+                end
+            end
+        end
+
+        # --- 3. CATEGORY: UI ---
+        for (scope, dict) in manager.ui
+            for (k, v) in dict; add_row("UI", scope, k, v); end
+        end
+
+        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        @info "Metadata and Parameters saved to $csv_filename"
+        return true
+    catch e
+        @error "CSV Save Failed" exception=(e, catch_backtrace())
+        return false
+    end
+end
+
+function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
+    gb = target_layout[1, 1] = GridLayout()
+    Label(gb[1, 1], "Save Image+CSV:", halign=:right)
+    saveBox = Textbox(gb[1, 2], placeholder = "Filename", width=200)
+
+    on(saveBox.stored_string) do s
+        base_name = string(strip(s))
+        if isempty(base_name); return; end
+
+        # Setup directory
+        save_dir = joinpath(Utils.get_save_path(), "figures")
+        if manager.ui["Various"]["create_savefolder"][]
+            save_dir = joinpath(save_dir, base_name)
+        end
+        mkpath(save_dir)
+
+        # 1. Save Figures (Handle formats)
+        formats = manager.ui["Various"]["save_formats"][]
+        for fmt in formats
+            ext = lowercase(strip(fmt))
+            full_path = joinpath(save_dir, base_name * ".$ext")
+            
+            if ext in ["pdf", "svg"]
+                CairoMakie.activate!()
+                save(full_path, plot_fig)
+                GLMakie.activate!() # Always switch back for interactivity
+            else
+                save(full_path, plot_fig)
+            end
+        end
+
+        # 2. Gather General Metadata and Save CSV
+        metadata_general = Dict(
+            "Save Type" => "Static Frame",
+            "Timestamp" => string(Dates.now()),
+            "Project Root" => pwd()
+        )
+
+        saveParametersToCSV(base_name, save_dir, manager, metadata_general)
+        
+        saveBox.stored_string = "" # Reset
+    end
 end
 
 function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String}; n = 20)

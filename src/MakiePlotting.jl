@@ -34,51 +34,36 @@ function show_unified_fig(
     ui_options::UIType = :default,
     scene_options::Dict = Dict{String, Any}()
 )
-    ui_nested = createUIDict(ui_options)
-    scene_default = Dict{String, Any}("t" => 0.0, "component" => 1)
-    scene_dict = merge(scene_default, scene_options)
-    
-    manager = create_plot_manager(sim_config, ui_nested, scene_dict)
-    plot_fig = Figure(size = (400,400))
+    # 1. Setup Manager & Figure
+    manager = create_plot_manager(sim_config, createUIDict(ui_options))
+    plot_fig = Figure(size = manager.ui["Axis"]["figsize"][])
     ax = Axis(plot_fig[1, 1])
-    Axis
-    # 1. Store plot data in a reactive Observable dict
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
-    # Determine fixed grid dimensions (P1, P2...) early to build static UI
-    active_params = sort(collect(keys(sim_config.varied_params)))
-
-    # 2. Create Static Controls Once
-    fig_ctrl, update_notifier, ui_update, methods_obs, x_obs, y_obs, dim_obs, selectors = 
-        Controls.create_controls(plot_fig, manager, plot_data_obs, active_params)
-
-    # 3. Data Loader Lift
-    lift(update_notifier, methods_obs) do _, active_methods
-        fixed_params = Dict{String, Any}()
-        for (k, obs) in manager.simulation["shared"]
-            fixed_params[k] = obs[]
-        end
-
-        # Work on a copy to batch changes, then push to the observable once
-        new_plot_data = copy(plot_data_obs[])
+    # 2. Build UI (This populates manager.controls)
+    # We only return the Figure and the specific observables needed for the data-load trigger
+    ctrl_fig = Controls.create_controls(plot_fig, manager, plot_data_obs)
+    
+    # 3. Pull needed observables from the manager for data loading
+    sim_update = manager.controls["Simulation_Update"]
+    methods_obs = manager.methods
+    
+    lift(sim_update, methods_obs) do _, active_methods
+        fixed_params = Dict(k => v[] for (k, v) in manager.simulation["shared"])
         
+        # Reload/Simulate data
         update_plot_data_collection!(
-            new_plot_data, 
-            sim_config, 
-            active_methods, 
-            fixed_params;
-            force_reload = (update_notifier[] > 0)
+            plot_data_obs[], sim_config, active_methods, fixed_params;
+            force_reload = (sim_update[] > 0)
         )
-        
-        # This push triggers build_static_plot_controls! to update all slider ranges natively
-        plot_data_obs[] = new_plot_data
+        notify(plot_data_obs)
     end
 
-    # 4. Start Rendering Lift
-    setup_render_lift!(ax, plot_fig, plot_data_obs, manager, x_obs, y_obs, dim_obs, ui_update, selectors)
+    # 4. Clean Render Setup
+    setup_render_lift!(ax, plot_fig, plot_data_obs, manager)
 
-    update_notifier[] = 0 
-    return plot_fig, fig_ctrl, manager
+    sim_update[] = 0 
+    return plot_fig, ctrl_fig, manager
 end
 
 
@@ -90,54 +75,44 @@ end
 # In MakiePlotting.jl - Replace setup_render_lift!
 # ==============================================================================
 
-function setup_render_lift!(ax, plot_fig, plot_data_obs, manager, x_key_obs, y_key_obs, plot_dim_obs, ui_update, selectors)
+function setup_render_lift!(ax, plot_fig, plot_data_obs, manager)
+    # UNPACK: Grab exactly what we need from the store
+    c = manager.controls
+    
+    # Identify which sliders exist to pass them into the lift
+    # We filter for anything that represents a "Value" or "Selection" 
+    # except the ones we already explicitly named.
+    selector_keys = filter(k -> endswith(k, "_Value") || endswith(k, "_Selection"), collect(keys(c)))
+    # Remove axis selections so we don't double-count them in the lift
+    filter!(k -> !occursin("Axis", k) && !occursin("Plot-Along", k), selector_keys)
+    
+    selectors = [c[k] for k in sort(selector_keys)]
 
-    lift(plot_data_obs, ui_update, x_key_obs, y_key_obs, plot_dim_obs, selectors...) do plot_data_dict, _, x_key, y_key, dim_idx, sel_vals...
+    lift(plot_data_obs, c["X-Axis_Selection"], c["Y-Axis_Selection"], 
+         c["Plot-Along_Selection"], c["UI_Update"], selectors...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
         
-        # 1. Basic Validation
-        (isnothing(x_key) || isnothing(y_key) || x_key == "-" || y_key == "-" || dim_idx == 0) && return
-        isempty(plot_data_dict) && return
+        # 1. Validation
+        (isnothing(x_key) || isnothing(y_key) || x_key == "-" || dim_idx == 0) && return
+        isempty(data) && return
         
-        # 2. Derive Dimension Names (Map indices to descriptive strings)
-        # Based on Controls.jl: 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time 
-        pd_sample = first(values(plot_data_dict))
-        active_params = pd_sample.active_param_keys
-        n_p = length(active_params)
-        
-        dim_names = Dict{Int, String}()
-        for (i, p) in enumerate(active_params); dim_names[i] = p; end
-        dim_names[n_p + 1] = "Component"
-        dim_names[n_p + 2] = "Space"
-        dim_names[n_p + 3] = "Time"
-
-        # 3. Construct the Dynamic Title
-        title_parts = String[]
-        for i in eachindex(sel_vals)
-            name = get(dim_names, i, "Dim$i")
-            if i == dim_idx
-                push!(title_parts, "[Along $name]") # Marker for Plotting Axis
-            else
-                val = sel_vals[i]
-                # Round floats for cleanliness in the title
-                val_str = val isa AbstractFloat ? string(round(val, digits=3)) : string(val)
-                push!(title_parts, "$name: $val_str")
-            end
-        end
-        # Format: "y_key vs x_key | [Along Time], Component: 1, Space: 2.5"
-        generated_title = "$y_key vs $x_key | " * join(title_parts, ", ")
-
-        # 4. Extract Data Slices
+        # 2. Data Slicing
         active_methods = manager.methods[]
-        xs_to_plot = Vector{Vector{Float64}}()
-        us_to_plot = Vector{Vector{Float64}}()
-        valid_labels = String[]
+        xs_to_plot, us_to_plot, valid_labels = [], [], String[]
 
         for m_name in active_methods
-            !haskey(plot_data_dict, m_name) && continue
-            pd = plot_data_dict[m_name]
+            !haskey(data, m_name) && continue
+            pd = data[m_name]
             
-            indices = map(1:length(sel_vals)) do i
-                i == dim_idx ? (:) : find_closest_index_for_dim(pd, i, sel_vals[i])
+            # Map values back to tensor indices
+            # Note: sel_vals is in the same order as selector_keys
+            indices = map(1:ndims(pd.data[x_key])) do i
+                if i == dim_idx
+                    return (:)
+                else
+                    # Find which slider/menu corresponds to this dimension
+                    # (Implementation logic depends on your dim_names mapping)
+                    return find_closest_index_for_dim(pd, i, get_val_for_dim(i, selector_keys, sel_vals))
+                end
             end
             
             try
@@ -147,16 +122,12 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager, x_key_obs, y_k
             catch; end
         end
 
-        # 5. Call Plotter with dynamic labels and title
-        update_base_plot_1D!(
-            plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager;
-            xlabel = x_key, 
-            ylabel = y_key, 
-            title_str = generated_title
-        )
+        # 3. Plotting
+        title_str = generate_dynamic_title(x_key, y_key, dim_idx, manager, selector_keys, sel_vals)
+        update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager;
+                             xlabel=x_key, ylabel=y_key, title_str=title_str)
     end
 end
-
 
 """
     find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)

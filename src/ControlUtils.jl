@@ -1,193 +1,470 @@
+function saveParametersToCSV(
+    base_filename::String,
+    save_dir::String,
+    manager::PlotManager,
+    metadata_general::Dict
+)::Bool
+    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+    
+    try
+        cats, scopes, params, vals = String[], String[], String[], String[]
 
-#======================================================================#
-#              2. WIDGET CREATION LOGIC
-#======================================================================#
+        function add_row(cat, scope, p, v)
+            push!(cats, string(cat)); push!(scopes, string(scope))
+            push!(params, string(p)); push!(vals, Utils._value_to_string_for_csv(to_value(v)))
+        end
 
-"""
-    shouldCreateWidget(val)
+        # --- 1. CATEGORY: Metadata ---
+        # Scope: General (Timestamp, Save Type)
+        for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
+        
+        # Scope: Git
+        git_info = Utils.get_git_info(pwd()) # Uses your existing util
+        if !isnothing(git_info)
+            for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
+        end
 
-Determines if a value is of a type that should have an interactive
-widget created for it (i.e., it's an Atomic or an AtomicTuple).
-"""
-function shouldCreateWidget(val)
-    if isa(val, AtomicType)
+        # Scope: Julia (Versions)
+        julia_info = get_julia_info()
+        for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
+
+        # Scope: Scene (The specific snapshot settings)
+        # We flatten the scene dicts (usually manager.scene["Current"])
+        for (scope, dict) in manager.scene
+            for (k, v) in dict; add_row("Metadata", "Scene", k, v); end
+        end
+
+        # --- 2. CATEGORY: Simulation ---
+        # Shared params
+        for (k, v) in manager.simulation["shared"]
+            add_row("Simulation", "shared", k, v)
+        end
+        # Active method params
+        for m_name in manager.methods[]
+            if haskey(manager.simulation, m_name)
+                for (k, v) in manager.simulation[m_name]
+                    add_row("Simulation", m_name, k, v)
+                end
+            end
+        end
+
+        # --- 3. CATEGORY: UI ---
+        for (scope, dict) in manager.ui
+            for (k, v) in dict; add_row("UI", scope, k, v); end
+        end
+
+        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        @info "Metadata and Parameters saved to $csv_filename"
         return true
-    elseif isa(val, Tuple)
-        # Check if all elements of the tuple are of Atomic type.
-        return all(x -> isa(x, AtomicType), val)
-    else
+    catch e
+        @error "CSV Save Failed" exception=(e, catch_backtrace())
         return false
     end
 end
 
+function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
+    gb = target_layout[1, 1] = GridLayout()
+    Label(gb[1, 1], "Save Image+CSV:", halign=:right)
+    saveBox = Textbox(gb[1, 2], placeholder = "Filename", width=200)
 
-"""
-    add_param_as_nested_grid!(...)
+    on(saveBox.stored_string) do s
+        base_name = string(strip(s))
+        if isempty(base_name); return; end
 
-Creates a UI element (Label, Toggle, or Textbox) for a given parameter
-observable. This version uses the robust `parseValue` function for Textbox validation
-and updates.
-"""
-function add_param_as_nested_grid!(
-    parent_cell_for_item,
-    key_name::String,
-    param_obs::Observable,
-    is_toggle::Bool,
-    is_fixed_const::Bool,
-    label_fontsize::Int,
-    p_internal_item_colgap::Int
-)
-    item_layout = parent_cell_for_item[] = GridLayout(tellwidth=false)
-    colgap!(item_layout, p_internal_item_colgap)
-
-    val = param_obs[]
-    
-    Label(item_layout[1,1], 
-          (is_fixed_const ? "(fixed) " : "") * key_name * (is_toggle ? "" : " ="), 
-          halign=:right, fontsize=label_fontsize, padding=(0, 2, 0, 0))
-
-    if is_fixed_const
-        Label(item_layout[1,2], string(val), halign=:left, fontsize=label_fontsize)
-    elseif is_toggle
-        tgl = Toggle(item_layout[1,2], active = isa(val, Bool) ? val : false)
-        on(tgl.active) do active_val
-            if param_obs[] != active_val; param_obs[] = active_val; end
+        # Setup directory
+        save_dir = joinpath(Utils.get_save_path(), "figures")
+        if manager.ui["Various"]["create_savefolder"][]
+            save_dir = joinpath(save_dir, base_name)
         end
-    else # It's a Textbox for an Atomic or AtomicTuple
-        val_str = string(val)
-        # 1. If the string representation is empty, use a safe, non-empty placeholder.
-        placeholder_str = isempty(strip(val_str)) ? "<empty>" : val_str
+        mkpath(save_dir)
 
-        # 2. The validator must understand that "<empty>" should be treated as "".
-        validator = s -> begin
-            input_to_parse = s == "<empty>" ? "" : s
-            parsed = parseValue(input_to_parse)
-            isa(parsed, typeof(val)) || isa(val, String) || isa(val, Tuple)
-        end
-
-        # 3. Create the Textbox with the SAFE placeholder.
-        tb = Textbox(item_layout[1,2],
-                     placeholder = placeholder_str,
-                     validator = validator,
-                     width = Auto(),
-                     reset_on_defocus=true)
-        
-        # 4. The update logic must also handle the special placeholder.
-        on(tb.stored_string) do s
-            input_to_parse = (s == "<empty>") ? "" : s
-            parsed_val = parseValue(input_to_parse)
-            if param_obs[] != parsed_val
-                param_obs[] = parsed_val
+        # 1. Save Figures (Handle formats)
+        formats = manager.ui["Various"]["save_formats"][]
+        for fmt in formats
+            ext = lowercase(strip(fmt))
+            full_path = joinpath(save_dir, base_name * ".$ext")
+            
+            if ext in ["pdf", "svg"]
+                CairoMakie.activate!()
+                save(full_path, plot_fig)
+                GLMakie.activate!() # Always switch back for interactivity
+            else
+                save(full_path, plot_fig)
             end
         end
+
+        # 2. Gather General Metadata and Save CSV
+        metadata_general = Dict(
+            "Save Type" => "Static Frame",
+            "Timestamp" => string(Dates.now()),
+            "Project Root" => pwd()
+        )
+        capture_scene_metadata!(manager,)
+        saveParametersToCSV(base_name, save_dir, manager, metadata_general)
+        
+        saveBox.stored_string = "" # Reset
     end
-    colsize!(item_layout, 1, Auto())
-    colsize!(item_layout, 2, Auto())
 end
 
 
-# Add this to MakiePlotting.txt
-
-# In MakiePlotting.txt
-
 """
-Clears and populates a given Figure with a title and parameter controls.
-Parameters are laid out in a specified number of columns.
+    createAnimationControls!(...)
+
+Populates a layout with a static target menu. 
+Validation occurs when 'Play' or 'Save' is clicked.
 """
-function populate_parameter_figure!(
-    title_str::String,
-    params_obs_dict::Dict{String, Observable}, # Should be Dict{String, Observable}
-    num_param_columns::Int,
-    target_fig::Figure;
-    param_label_fontsize=14,
-    header_fontsize=16,
-    gap_size=10,
-    internal_item_colgap=4,
-    fig_size = (500,600),
+function createAnimationControls!(
+    layout::GridLayout,
+    plot_fig::Figure,
+    manager::PlotManager,
+    plot_dim_obs::Observable{Int},
+    selector_widgets::Vector{Any},
+    active_params::Vector{String}
 )
-    empty!(target_fig.scene) # Clear all previous content and layouts
-    #target_fig = Figure(size = fig_size)
-    main_layout = target_fig[1,1] = GridLayout(tellheight=false)
-    rowgap!(main_layout, gap_size)
-
-    # Row 1: Title
-    Label(main_layout[1,1], title_str, font=:bold, fontsize=header_fontsize, 
-          tellwidth=false, halign=:center, padding=(0,0,10,0))
-    rowsize!(main_layout, 1, Auto())
-
-    # Row 2: Parameters or "No parameters" message
-    if isempty(params_obs_dict)
-        Label(main_layout[2,1], "(No parameters for this selection)", 
-              fontsize=param_label_fontsize, halign=:center)
-        rowsize!(main_layout, 2, Auto())
-        Makie.trim!(main_layout)
-        return
-    end
-
-    params_content_layout = main_layout[2,1] = GridLayout(tellheight=false)
-    rowgap!(params_content_layout, gap_size)
-    colgap!(params_content_layout, gap_size)
-
-    sorted_keys = sort(collect(keys(params_obs_dict)))
-    widget_keys = []
+    # --- 1. Setup State & Metadata ---
+    is_animating = Observable(false)
+    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
     
-    current_row_in_block, current_col_in_block = 1, 1
-    for key in sorted_keys
-        val_check = params_obs_dict[key][]
-        if !shouldCreateWidget(val_check) continue end
-        is_fixed_const = isa(val_check, Tuple) && length(val_check) == 2 && val_check[1] == :const
-        actual_val = is_fixed_const ? val_check[2] : val_check
-        is_bool_toggle = isa(actual_val, Bool) && !is_fixed_const
+    n_params = length(active_params)
+    dim_names = Dict{Int, String}()
+    for (i, p) in enumerate(active_params); dim_names[i] = p; end
+    dim_names[n_params+1] = "Component"
+    dim_names[n_params+2] = "Space"
+    dim_names[n_params+3] = "Time"
 
-        # Remove constant flag:
-        if is_fixed_const
-            params_obs_dict[key] = Observable(actual_val)
-        end
-        # Assuming add_param_as_nested_grid! is your working helper from before
-        add_param_as_nested_grid!(
-            params_content_layout[current_row_in_block, current_col_in_block], 
-            key, 
-            params_obs_dict[key], 
-            is_bool_toggle, 
-            is_fixed_const,
-            param_label_fontsize, 
-            internal_item_colgap
-        )
-        
-        current_col_in_block += 1
-        if current_col_in_block > num_param_columns
-            current_col_in_block = 1
-            current_row_in_block += 1
-        end
-        push!(widget_keys, key)
-    end
+    # --- 2. Build UI Widgets (Static Options) ---
+    Label(layout[1, 1], "Animate Target:")
+    
+    # We populate the menu ONCE with every possible dimension
+    all_opts = [(dim_names[i], i) for i in 1:length(selector_widgets)]
+    anim_target_menu = Menu(layout[1, 2], options = all_opts, width=120)
+    # Set default to Time (the last index)
+    anim_target_menu.selection[] = length(selector_widgets)
 
-    if !isempty(widget_keys)
-        actual_num_cols_used = min(num_param_columns, length(widget_keys))
-        for c_idx in 1:actual_num_cols_used
-            colsize!(params_content_layout, c_idx, Auto())
-        end
-
-        # Calculate the number of rows that actually received content
-        true_num_rows_used = ceil(Int, length(widget_keys) / num_param_columns)
-        # If length(sorted_keys) is 0, true_num_rows_used will be 0.
-        # If length(sorted_keys) > 0 but less than or equal to num_param_columns, it's 1.
-        # If length(sorted_keys) is (num_param_columns + 1), it's 2.
-        if true_num_rows_used == 0 && !isempty(widget_keys)
-             true_num_rows_used = 1 # Should not happen if sorted_keys is not empty
-        end
-        
-        # Ensure true_num_rows_used is at least 1 if there are any keys, to avoid 1:0 range
-        if !isempty(widget_keys) && true_num_rows_used < 1
-            true_num_rows_used = 1
-        end
-
-        for r_idx in 1:true_num_rows_used
-            # By this point, row r_idx should have been populated if true_num_rows_used is correct
-            rowsize!(params_content_layout, r_idx, Auto())
-        end
+    play_btn = Button(layout[1, 3], label="Play", width=60)
+    on(is_animating) do animating
+        play_btn.label[] = animating ? "Stop" : "Play"
     end
     
-    rowsize!(main_layout, 2, Auto()) 
-    Makie.trim!(main_layout) 
+    gif_name = Textbox(layout[1, 4], placeholder="filename", width=120)
+    gif_name.stored_string = "wave_anim"
+    save_btn = Button(layout[1, 5], label="Save GIF", buttoncolor=:lightgreen)
+
+    # --- 3. Validation Helper ---
+    function check_selection_validity(idx)
+        if idx == 0 || isnothing(idx)
+            @warn "Animation Error: No target selected."
+            return false
+        end
+        
+        if idx == plot_dim_obs[]
+            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is currently the plotting axis."
+            return false
+        end
+        
+        widget = selector_widgets[idx]
+        if !(widget isa Slider)
+            @warn "Animation Error: '$(dim_names[idx])' is a discrete Menu. Only Sliders can be animated."
+            return false
+        end
+        
+        if length(widget.range[]) < 2
+            @warn "Animation Error: Slider for '$(dim_names[idx])' has no range to animate."
+            return false
+        end
+        
+        return true
+    end
+
+    # --- 4. Play/Stop Logic ---
+    on(play_btn.clicks) do _
+        if is_animating[]
+            # Stop existing animation
+            is_animating[] = false
+            !isnothing(animation_timer[]) && close(animation_timer[])
+            animation_timer[] = nothing
+        else
+            # Validate and Start
+            target_idx = anim_target_menu.selection[]
+            !check_selection_validity(target_idx) && return
+            
+            target_widget = selector_widgets[target_idx]
+            is_animating[] = true
+            
+            duration = manager.ui["Various"]["animation_duration_s"][]
+            fps = manager.ui["Various"]["animation_fps"][]
+            rng = target_widget.range[]
+            start_time = time()
+            
+            animation_timer[] = Timer(0.0, interval = 1/fps) do t
+                if !is_animating[]
+                    close(t); return
+                end
+                
+                # Sloop/Cycle logic
+                elapsed = mod(time() - start_time, duration)
+                progress = elapsed / duration
+                val = rng[1] + progress * (rng[end] - rng[1])
+                
+                # Smoothly scrub the target slider
+                set_close_to!(target_widget, val)
+            end
+        end
+    end
+
+    # --- 5. Record Logic ---
+    on(save_btn.clicks) do _
+        target_idx = anim_target_menu.selection[]
+        !check_selection_validity(target_idx) && return
+        
+        target_widget = selector_widgets[target_idx]
+        is_animating[] = false # Stop live playback
+        
+        # Setup Export
+        save_path = joinpath(Utils.get_save_path(), "animations")
+        mkpath(save_path)
+        fname = joinpath(save_path, gif_name.stored_string[] * ".gif")
+        
+        duration = manager.ui["Various"]["animation_duration_s"][]
+        fps = manager.ui["Various"]["animation_fps"][]
+        rng = target_widget.range[]
+        n_frames = Int(duration * fps)
+        
+        @info "Recording '$(dim_names[target_idx])' animation to $fname..."
+        try
+            record(plot_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
+                set_close_to!(target_widget, val)
+                # Yield to ensure the plot lift has time to process the slider move
+                yield() 
+            end
+            @info "GIF Saved Successfully."
+        catch e
+            @error "GIF Recording Failed" exception=(e, catch_backtrace())
+        end
+    end
+end
+
+"""
+    attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
+
+Clears the designated slot and populates it with dynamic plot controls.
+Handles the deletion of both UI Blocks and nested GridLayouts.
+"""
+function attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
+# 1. Clean the slot robustly with a recursive helper
+    function delete_blocks!(layout)
+        # Using copy() is crucial because deleting modifies the underlying collection
+        for c in copy(contents(layout))
+            if c isa Makie.Block
+                delete!(c)
+            elseif c isa GridLayout
+                delete_blocks!(c) # Dive into nested layouts
+            end
+        end
+    end
+    
+    # 2. Reset the row/col sizes of the parent layout 
+    # (otherwise old row definitions persist)
+    trim!(target_layout)
+
+    # 3. Re-populate
+    menu_area = target_layout[1, 1] = GridLayout()
+    slider_area = target_layout[2, 1] = GridLayout()
+    
+    # Return the observables from your existing function
+    return create_plot_controls!(menu_area, slider_area, plot_data_dict)
+end
+
+function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManager)
+    # Get all scopes in simulation except 'shared'
+    all_method_names = filter(k -> k != "shared", collect(keys(mgr.simulation)))
+    sort!(all_method_names)
+    
+    # Call your existing checkbox creation logic
+    # (assuming createMethodCheckboxes is the function from your PlottingUtils.jl)
+    createMethodCheckboxes(layout, methods_obs, all_method_names)
+end
+
+function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String}; n = 20)
+    
+    toLayout = cb_layout[end,1:div(length(methods),n)+1] = GridLayout() # n hard coded atm can be added to ui_dict
+
+    for (i,method) = enumerate(methods)
+        j = div(i-1,n) + 1
+        Label(toLayout[mod1(i,n),j*2-1], method)
+        init_methods = methods_obs[]
+        if method in init_methods
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = true)
+        else
+            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = false)
+        end
+        on(tmp.checked) do checked 
+            if to_value(checked) & !(methods[i] in methods_obs[])
+                push!(methods_obs[], methods[i])
+            elseif !to_value(checked) & (methods[i] in methods_obs[])
+                deleteat!(methods_obs[],findfirst(isequal(methods[i]),to_value(methods_obs)))
+            end
+            notify(methods_obs)
+        end
+    end
+end
+
+
+"""
+    smart_parse_and_update!(obs::Observable, input_str::String)
+
+Attempts to parse `input_str` into the same type as the current value of `obs`.
+If parsing fails or types are incompatible, it prints a warning and leaves the 
+observable unchanged.
+"""
+function smart_parse_and_update!(obs::Observable, input_str::String)
+    # Ignore empty inputs (usually handled by the placeholder logic)
+    (isempty(input_str) || input_str == "default") && return
+    
+    current_val = to_value(obs)
+    T = typeof(current_val)
+
+    try
+        if T == String
+            obs[] = input_str
+        elseif T == Symbol
+            obs[] = Symbol(input_str)
+        elseif T == Bool
+            # Handle true/false, 1/0, yes/no
+            s = lowercase(strip(input_str))
+            obs[] = (s == "true" || s == "1" || s == "yes")
+        elseif T <: Int
+            obs[] = parse(Int, input_str)
+        elseif T <: AbstractFloat
+            obs[] = parse(Float64, input_str)
+        elseif T <: Tuple || T <: Vector
+            # For complex types, we use the general parser but check the result type
+            parsed = parseValue(input_str) 
+            if typeof(parsed) == T
+                obs[] = parsed
+            else
+                @warn "Type mismatch for complex input. Expected $T, but got $(typeof(parsed))."
+            end
+        else
+            # Fallback for any other types
+            obs[] = parse(T, input_str)
+        end
+    catch e
+        @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
+    end
+end
+
+# """
+#     capture_scene_metadata!(manager::PlotManager, x_key, y_key, plot_dim_idx, selector_values, active_params)
+
+# Automatically populates the manager.scene["Current"] dictionary based on the 
+# current state of the axis selection menus and exploration sliders.
+# """
+# function capture_scene_metadata!(
+#     manager::PlotManager,
+#     x_key::String,
+#     y_key::String,
+#     plot_dim_idx::Int,
+#     selector_values::Vector{Observable},
+#     active_params::Vector{String}
+# )
+#     scene_dict = manager.scene["Current"]
+    
+#     # 1. Save Axis Context
+#     scene_dict["x_key"] = Observable(x_key)
+#     scene_dict["y_key"] = Observable(y_key)
+#     scene_dict["plot_along_idx"] = Observable(plot_dim_idx)
+
+#     # 2. Map indices back to names for clarity
+#     n_params = length(active_params)
+#     dim_names = Dict{Int, String}()
+#     for (i, p) in enumerate(active_params); dim_names[i] = p; end
+#     dim_names[n_params+1] = "Component"
+#     dim_names[n_params+2] = "Space"
+#     dim_names[n_params+3] = "Time"
+
+#     # 3. Save Slider/Menu Values
+#     for i in 1:length(selector_values)
+#         name = dim_names[i]
+#         val = to_value(selector_values[i])
+        
+#         # We mark the plotting axis value as :axis for clarity in the CSV
+#         scene_dict[name] = i == plot_dim_idx ? Observable(:axis) : Observable(val)
+#     end
+# end
+
+"""
+    capture_scene_metadata!(manager::PlotManager)
+
+Iterates through all registered UI controls and saves their current values
+into the metadata for the CSV export.
+"""
+function capture_scene_metadata!(manager::PlotManager)
+    # We grab the to_value of every observable in controls
+    return Dict(k => to_value(v) for (k, v) in manager.controls)
+end
+
+# """
+#     apply_scene_state!(manager::PlotManager, widgets::Vector{Any}, menu_x::Menu, menu_y::Menu, menu_axis::Menu)
+
+# Sets the values of UI widgets based on the state stored in manager.scene["Current"].
+# """
+# function apply_scene_state!(
+#     manager::PlotManager, 
+#     widgets::Vector{Any}, # From build_static_plot_controls!
+#     menu_x::Menu, 
+#     menu_y::Menu, 
+#     menu_axis::Menu
+# )
+#     state = manager.scene["Current"]
+#     active_params = sort(collect(keys(manager.simulation["shared"]))) # Approximation
+#     n_params = length(active_params)
+    
+#     # 1. Restore Menus
+#     if haskey(state, "x_key"); menu_x.selection[] = to_value(state["x_key"]); end
+#     yield() # Let reactive filters update menu_y options
+    
+#     if haskey(state, "y_key"); menu_y.selection[] = to_value(state["y_key"]); end
+#     yield()
+    
+#     if haskey(state, "plot_along_idx"); menu_axis.selection[] = to_value(state["plot_along_idx"]); end
+#     yield()
+
+#     # 2. Restore Sliders and Component Menus
+#     dim_names = vcat(active_params, ["Component", "Space", "Time"])
+    
+#     for (i, name) in enumerate(dim_names)
+#         !haskey(state, name) && continue
+#         saved_val = to_value(state[name])
+#         saved_val == :axis && continue # Skip the dimension being used as the X-axis
+        
+#         widget = widgets[i]
+#         if widget isa Slider
+#             set_close_to!(widget, saved_val)
+#         elseif widget isa Menu
+#             widget.selection[] = string(saved_val)
+#         end
+#     end
+# end
+
+"""
+    apply_scene_state!(manager::PlotManager, saved_state::Dict)
+
+Programmatically updates UI widgets to match a saved configuration.
+"""
+function apply_scene_state!(manager::PlotManager, saved_state::Dict)
+    for (key, val) in saved_state
+        if haskey(manager.controls, key)
+            obs = manager.controls[key]
+            
+            # If it's a Slider, use set_close_to! to update the physical handle
+            # We find the slider via the manager's widget references (if stored)
+            # or simply update the observable value directly.
+            if endswith(key, "_Value")
+                obs[] = val
+            elseif endswith(key, "_Selection")
+                obs[] = string(val)
+            end
+        end
+    end
 end

@@ -4,6 +4,7 @@ using ..Structs
 using IPlotPDESols: getSimFunction
 
 using SHA
+using Pkg
 using CSV, DataFrames
 using JLD2, FileIO
 using Base.Threads
@@ -11,8 +12,8 @@ using GLMakie
 using ProgressMeter 
 using LibGit2
 
-export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, get_git_info,
-       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, ensure_sim_data_exists!,
+export saveSimData, calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, get_git_info, get_julia_info,
+       getAllSimData, changeStats, set_save_path!, get_save_path, StringToTuple, ensure_sim_data_exists!, 
        assembleParams, allMethodNames, create_sim_config_from_csv, load_additional_options_from_csv, createObsDict, connectObsDict!
 
 
@@ -644,6 +645,23 @@ function _value_to_string_for_csv(v)
     # `string` representation is usually a valid Julia expression that
     # `parseValue` can handle.
     return string(v)
+end
+
+"""
+    get_julia_info()
+Returns a dictionary containing the Julia version and the versions of 
+loaded/project packages.
+"""
+function get_julia_info()
+    info = Dict{String, Any}("Julia" => string(VERSION))
+    
+    # Get versions of all dependencies in the current project
+    for (uuid, pkg) in Pkg.dependencies()
+        if pkg.is_direct_dep
+            info[pkg.name] = string(pkg.version)
+        end
+    end
+    return info
 end
 
 """
