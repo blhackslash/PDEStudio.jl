@@ -1,4 +1,5 @@
 using IPlotPDESols
+using GLMakie
 
 # --- Define the Simulation Function ---
 function wave_simulation(params::Dict{String, Any})
@@ -25,12 +26,12 @@ function wave_simulation(params::Dict{String, Any})
         for i in 1:nt, j in 1:nx
             u[1, j, i] = A * sin(f * x_base[j] - 2π * t[i])
         end
-        return createSimData(repeat(x_base, 1, nt), u, t, params, stats)
+        return createSimData(repeat(x_base, 1, nt), u, t, params)
     else
         # Lagrangian: Moving Particles
         x_data = [x_base .+ (0.1 * A * sin(2π * ti)) for ti in t]
         u_data = [reshape(A * sin.(f .* x_data[i] .- 2π * t[i]), 1, :) for i in 1:nt]
-        return createSimData(x_data, u_data, t, params, stats)
+        return createSimData(x_data, u_data, t, params)
     end
 end
 
@@ -53,7 +54,6 @@ function run_final_test()
     plot_fig, ctrl_fig, manager = show_unified_fig(
         sim_config; 
         ui_options = :default,
-        scene_options = Dict("component" => 1)
     )
 
     # 3. --- UI DEBUG INJECTION ---

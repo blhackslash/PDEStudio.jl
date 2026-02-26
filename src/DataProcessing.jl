@@ -3,307 +3,290 @@ module DataProcessing
 using ..Structs
 using ..Utils 
 using ProgressMeter
-using LinearAlgebra
 
-export create_unified_plot_data, update_plot_data_collection!, analyze_configuration
-
-
-"""
-    update_plot_data_collection!(...)
-
-Orchestrates the creation and cleanup of plot data tensors for all active methods.
-Passes `var_types` down to handle dimension overwrites/skipping.
-"""
-function update_plot_data_collection!(
-    plot_data_dict::Dict{String, UnifiedPlotData},
-    sim_config::SimulationConfig{D, F},
-    active_methods::Vector{String},
-    fixed_params::FixedDictType,
-    var_types::AbstractVector; # The key input for variable handling
-    force_reload::Bool = false
-) where {D, F}
-    # 1. Clear everything if a full refresh is requested (e.g., clicked REFRESH)
-    if force_reload
-        empty!(plot_data_dict)
-    end
-
-    # 2. Update or Create data for each active method
-    for method_name in active_methods
-        if !haskey(plot_data_dict, method_name)
-            # Assemble the base parameters (Shared + Method-Specific)
-            base_params = Utils.assembleParams(sim_config.shared_params, sim_config.methods_dict, method_name)
-            
-            # Pass everything down to the creation chain
-            # create_method_plot_data now handles the D-dimensional logic
-            new_data = create_method_plot_data(base_params, sim_config, fixed_params, var_types)
-            
-            if !isnothing(new_data)
-                plot_data_dict[method_name] = new_data
-            end
-        end
-    end
-
-    # 3. Cleanup: Remove methods that are no longer selected in the UI
-    for k in keys(plot_data_dict)
-        if !(k in active_methods)
-            delete!(plot_data_dict, k)
-        end
-    end
-    
-    return plot_data_dict
-end
-
-"""
-    create_method_plot_data(...)
-
-Creates the multi-dimensional tensor for a single method.
-Automatically detects spatial dimensionality D from the SimulationConfig.
-"""
-function create_method_plot_data(
-    base_params::ParamDictType,
-    sim_config::SimulationConfig{D, F},
-    fixed_params::FixedDictType,
-    var_types::AbstractVector
-) where {D, F}
-    # 1. Analyze the configuration to find which dimensions are active vs. fixed
-    # Any variable in var_types that is a Number is added to base_fixes here.
-    active_keys, active_values, sim_fixes, base_fixes = analyze_configuration(sim_config, fixed_params, var_types)
-    
-    # 2. Peek at the simulation structure
-    # We generate tasks to find the first valid data point to determine tensor sizes.
-    tasks, _ = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
-    if isempty(tasks); return nothing; end
-    
-    first_data = ensure_sim_data_exists!([tasks[1]], sim_config)[1]
-    
-    # Determine effective sizes for [C, Space..., T]
-    # Fixed/skipped dimensions return size 1.
-    eff_c, eff_space, eff_t = resolve_dimensions(first_data, base_fixes)
-    grid_dims = Tuple(length(v) for v in active_values)
-    
-    # Shape: [ParameterGrid..., Component, Space(D dims)..., Time]
-    tensor_shape = (grid_dims..., eff_c, eff_space..., eff_t)
-    
-    # 3. Allocate Buckets
-    data_store = Dict{String, Array{Float64}}()
-    # Using fill(NaN) makes it easy to spot missing simulation points in the plot
-    data_store["u"] = fill(NaN, tensor_shape...)
-    data_store["x"] = fill(NaN, tensor_shape...)
-
-    # 4. Fill the tensor recursively
-    # This calls the generalized slice_eulerian! or slice_lagrangian!
-    slice_and_fill!(data_store, sim_config.sim_function, sim_config, base_params, 
-                    active_keys, active_values, sim_fixes, base_fixes)
-
-    return UnifiedPlotData{length(tensor_shape)}(
-        data_store,
-        active_keys,
-        active_values,
-        first_data.t,
-        fixed_params
-    )
-end
+export create_method_plot_data, update_plot_data_collection!, generate_method_tasks, analyze_configuration
 
 # ==============================================================================
-# 1. CONFIGURATION ANALYSIS (Handling Overwrites)
+# 1. TASK & CONFIGURATION ANALYSIS
 # ==============================================================================
 
 """
-    analyze_configuration(sim_config, fixed_params, var_types)
+    analyze_configuration(sim_config, fixed_params)
 
-Determines the tensor structure. Dimensions with numeric 'var_types' are 
-pushed to 'base_fixes' to be collapsed during slicing.
+Separates parameters to find the `active_keys` (varied in the grid) and `sim_fixes` 
+(parameters fixed for the simulation). Base variable fixes are now handled separately 
+via the UI's `base_types`.
 """
-function analyze_configuration(
-    sim_config::SimulationConfig{D, F}, 
-    fixed_params::FixedDictType,
-    var_types::AbstractVector
-) where {D, F}
+function analyze_configuration(sim_config::SimulationConfig, fixed_params::FixedDictType)
     all_varied = sim_config.varied_params
     active_keys = String[]
     active_values = Vector{Vector{Any}}()
     
-    sorted_varied_keys = sort(collect(keys(all_varied)))
-    n_varied = length(sorted_varied_keys)
+    # Sort for consistent tensor dimension ordering
+    sorted_keys = sort(collect(keys(all_varied)))
 
     sim_fixes = FixedDictType()
-    base_fixes = Dict{String, Any}() 
 
-    # 1. Process Parameter Overwrites (1..N_varied)
-    for (i, key) in enumerate(sorted_varied_keys)
-        vt = var_types[i]
-        if vt isa Number 
-            sim_fixes[key] = vt
+    # Apply Simulation Parameter Fixes
+    for (k, v) in fixed_params
+        if !(k in Structs.BaseVariables)
+            sim_fixes[k] = v
+        end
+    end
+
+    # Build Active Grid
+    for key in sorted_keys
+        if haskey(sim_fixes, key)
+            continue 
         else
             push!(active_keys, key)
             push!(active_values, all_varied[key])
         end
     end
 
-    # 2. Process Base Variable Overwrites (C, Space..., T)
-    # Component (C) at index N+1
-    vt_c = var_types[n_varied + 1]
-    if vt_c isa Number; base_fixes["c"] = vt_c; end
-
-    # Spatial Dimensions (X, Y, Z) at indices N+2..N+D+1
-    for d in 1:D
-        vt_s = var_types[n_varied + 1 + d]
-        if vt_s isa Number; base_fixes[BaseVariables[1+d]] = vt_s; end
-    end
-
-    # Time (T) at the final index
-    vt_t = var_types[end]
-    if vt_t isa Number; base_fixes["t"] = vt_t; end
-
-    # 3. Merge explicit Fixed Params from Navigator
-    for (k, v) in fixed_params
-        if k in BaseVariables; base_fixes[k] = v; else; sim_fixes[k] = v; end
-    end
-
-    return active_keys, active_values, sim_fixes, base_fixes
+    return active_keys, active_values, sim_fixes
 end
 
-# ==============================================================================
-# 2. DIMENSION RESOLUTION & ALLOCATION
-# ==============================================================================
+function generate_method_tasks(
+    base_params::ParamDictType,
+    active_keys::Vector{String},
+    active_values::Vector{Vector{Any}},
+    sim_fixes::FixedDictType
+)
+    param_grid = collect(Iterators.product(active_values...))
+    tasks = Vector{ParamDictType}()
+    grid_indices = Vector{Tuple}()
 
-"""
-    resolve_dimensions(sim_data, base_fixes)
-
-Calculates the effective tensor sizes. Fixed dimensions return size 1.
-"""
-function resolve_dimensions(sim_data::AbstractSimData{D}, base_fixes::Dict{String, Any}) where D
-    if sim_data isa ESimData{D}
-        raw_c, raw_space, raw_t = size(sim_data.u, 1), size(sim_data.x), length(sim_data.t)
-    else # Lagrangian
-        raw_t, raw_c = length(sim_data.t), size(sim_data.u[1], 1)
-        max_p = maximum(size(step, 2) for step in sim_data.u)
-        raw_space = ntuple(_ -> max_p, D) 
-    end
-
-    eff_c = haskey(base_fixes, "c") ? 1 : raw_c
-    eff_space = Int[]
-    for d in 1:D
-        s_key = BaseVariables[1+d]
-        push!(eff_space, haskey(base_fixes, s_key) ? 1 : raw_space[d])
-    end
-    eff_t = haskey(base_fixes, "t") ? 1 : raw_t
-
-    return eff_c, Tuple(eff_space), eff_t
-end
-
-# ==============================================================================
-# 3. RECURSIVE SLICING ENGINE
-# ==============================================================================
-
-function create_method_plot_data(base_params, sim_config, fixed_params, var_types)
-    # 1. Analyze what needs to be active vs fixed 
-    active_keys, active_values, sim_fixes, base_fixes = analyze_configuration(sim_config, fixed_params, var_types)
-    
-    # 2. Peek at first data to allocate tensors
-    tasks, _ = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
-    first_data = ensure_sim_data_exists!([tasks[1]], sim_config)[1]
-    
-    eff_c, eff_space, eff_t = resolve_dimensions(first_data, base_fixes)
-    grid_dims = Tuple(length(v) for v in active_values)
-    
-    # Shape: [ActiveParams..., C, Space..., T]
-    tensor_shape = (grid_dims..., eff_c, eff_space..., eff_t)
-    
-    data_store = Dict{String, Array{Float64}}()
-    for key in ["u", "x"] # Extend to other buckets as needed
-        data_store[key] = fill(NaN, tensor_shape...)
-    end
-
-    # 3. Recursively fill tensors
-    slice_and_fill!(data_store, sim_config.sim_function, sim_config, base_params, 
-                    active_keys, active_values, sim_fixes, base_fixes)
-
-    return UnifiedPlotData{length(tensor_shape)}(data_store, active_keys, active_values, first_data.t, fixed_params)
-end
-
-function slice_and_fill!(tensor_dict, sim_func, sim_config, current_params, 
-                        rem_keys, rem_vals, sim_fixes, base_fixes)
-    if isempty(rem_keys)
-        # Leaf Node: Merge fixes and run/load simulation 
-        final_params = merge(current_params, sim_fixes)
-        sim_data = ensure_sim_data_exists!([final_params], sim_config)[1]
+    for (linear_idx, p_vals) in enumerate(param_grid)
+        task_params = copy(base_params)
         
-        if sim_data isa ESimData
-            for (key, dest) in tensor_dict
-                slice_eulerian!(dest, sim_data, key, current_params, sim_config, base_fixes)
+        for (k, v) in sim_fixes; task_params[k] = v; end
+        
+        indices = Tuple(CartesianIndices(param_grid)[linear_idx])
+        for (i, val) in enumerate(p_vals)
+            task_params[active_keys[i]] = val
+        end
+        
+        push!(tasks, task_params)
+        push!(grid_indices, indices)
+    end
+
+    return tasks, grid_indices
+end
+
+# ==============================================================================
+# 2. DATA SLICING & DIMENSION HELPERS
+# ==============================================================================
+
+"""
+    resolve_dimensions(sim_data, D, base_types)
+
+Determines the effective sizes after applying `base_types` fixes.
+Reduces the effective dimension to 1 if a number is provided in `base_types`.
+"""
+function resolve_dimensions(sim_data::AbstractSimData{D}, base_types::Vector) where D
+    if sim_data isa ESimData{D}
+        raw_c = size(sim_data.u, 1)
+        raw_space = size(sim_data.u)[2:D+1]
+        raw_t = size(sim_data.u, D+2)
+        max_particles = 0 
+    elseif sim_data isa LSimData{D}
+        raw_t = length(sim_data.t)
+        raw_c = size(sim_data.u[1][1], 1)
+        max_particles = maximum(length(step) for step in sim_data.u)
+        raw_space = (max_particles,) # Lagrangian maps space to a 1D particle index array
+    end
+
+    # Extract effective sizes using base_types: [C, Space(1..D)..., T]
+    eff_c = base_types[1] isa Number ? 1 : raw_c
+    
+    # Lagrangian Space is 1D (Particles), Eulerian is D-dimensional
+    eff_space = if sim_data isa ESimData{D}
+        ntuple(i -> base_types[1+i] isa Number ? 1 : raw_space[i], D)
+    else
+        (base_types[2] isa Number ? 1 : max_particles,)
+    end
+    
+    eff_t = base_types[D+2] isa Number ? 1 : raw_t
+
+    return eff_c, eff_space, eff_t, max_particles, raw_c, raw_space, raw_t
+end
+
+"""
+    get_source_slices(base_types, D, raw_c, raw_space, raw_t, is_lagrangian=false)
+
+Generates the dynamic slicing indices based on `base_types`.
+"""
+function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tuple, raw_t::Int, is_lagrangian::Bool)
+    c_idx = base_types[1] isa Number ? (base_types[1]:base_types[1]) : (1:raw_c)
+    
+    space_idx = if is_lagrangian
+        base_types[2] isa Number ? (base_types[2]:base_types[2]) : (1:raw_space[1])
+    else
+        ntuple(i -> base_types[1+i] isa Number ? (base_types[1+i]:base_types[1+i]) : (1:raw_space[i]), D)
+    end
+    
+    t_idx = base_types[D+2] isa Number ? (base_types[D+2]:base_types[D+2]) : (1:raw_t)
+    
+    return c_idx, space_idx, t_idx
+end
+
+function slice_and_fill_eulerian!(target, source::AbstractArray, dest_prefix, base_types, D, raw_c, raw_space, raw_t)
+    c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, false)
+    
+    # Determine Source Type based on dimensions
+    nd = ndims(source)
+    if nd == 1 # Scalar [C]
+        target[dest_prefix..., :, (1 for _ in 1:D)..., 1] = source[c_src]
+    elseif nd == 2 # TimeSeries [C, T]
+        target[dest_prefix..., :, (1 for _ in 1:D)..., :] = source[c_src, t_src]
+    elseif nd == D + 1 # Profile [C, Space...]
+        target[dest_prefix..., :, (Colon() for _ in 1:D)..., 1] = source[c_src, space_src...]
+    elseif nd == D + 2 # Field [C, Space..., T]
+        target[dest_prefix..., :, (Colon() for _ in 1:D)..., :] = source[c_src, space_src..., t_src]
+    elseif nd == D && source == raw_space # Grid [Space...]
+        target[dest_prefix..., 1, (Colon() for _ in 1:D)..., 1] = source[space_src...]
+    end
+end
+
+function slice_and_fill_lagrangian!(target, x_data, u_data, dest_prefix, base_types, D, raw_c, raw_space, raw_t)
+    c_src, p_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, true)
+    max_p = raw_space[1]
+    
+    for (tgt_t, src_t) in enumerate(t_src)
+        u_step = u_data[src_t] # Vector of Matrices [Particles] -> [C, State]
+        x_step = x_data[src_t] # Vector of SVectors [Particles] -> [SVector{D}]
+        curr_p_len = length(x_step)
+        
+        # Check Particle Index Bounds
+        p_idx = base_types[2] isa Number ? base_types[2] : nothing
+        
+        if !isnothing(p_idx)
+            if p_idx <= curr_p_len
+                # Assuming state matrix is [C, 1] for scalar plots
+                target["u"][dest_prefix..., :, 1, tgt_t] = u_step[p_idx][c_src, 1] 
+                # FIX: Use ':' to assign the D-dimensional SVector along the coordinate axis
+                target["x"][dest_prefix..., :, 1, tgt_t] = x_step[p_idx]
+            else
+                target["u"][dest_prefix..., :, 1, tgt_t] .= NaN
+                target["x"][dest_prefix..., :, 1, tgt_t] .= NaN
             end
         else
-            for (key, dest) in tensor_dict
-                slice_lagrangian!(dest, sim_data, key, current_params, sim_config, base_fixes)
+            # Fill all available particles
+            for p in 1:curr_p_len
+                target["u"][dest_prefix..., :, p, tgt_t] = u_step[p][c_src, 1]
+                # FIX: Use ':' here as well
+                target["x"][dest_prefix..., :, p, tgt_t] = x_step[p]
+            end
+            
+            # Pad dead/unborn particles with NaN
+            if curr_p_len < max_p
+                target["u"][dest_prefix..., :, (curr_p_len+1):end, tgt_t] .= NaN
+                target["x"][dest_prefix..., :, (curr_p_len+1):end, tgt_t] .= NaN
             end
         end
-    else
-        # Navigate Grid
-        key, vals = rem_keys[1], rem_vals[1]
-        for val in vals
-            current_params[key] = val
-            slice_and_fill!(tensor_dict, sim_func, sim_config, current_params, 
-                           rem_keys[2:end], rem_vals[2:end], sim_fixes, base_fixes)
+    end
+end
+
+# ==============================================================================
+# 3. UNIFIED TENSOR CREATION
+# ==============================================================================
+
+function create_method_plot_data(
+    base_params::ParamDictType,
+    sim_config::SimulationConfig{D, F},
+    fixed_params::FixedDictType,
+    base_types::Vector
+) where {D, F}
+    
+    active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
+    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
+    
+    ensure_sim_data_exists!(tasks, sim_config)
+    if isempty(tasks); return nothing; end
+
+    first_data = Utils.loadSimData(tasks[1]) 
+    eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
+    grid_dims = length.(active_values)
+    
+    data_store = Dict{String, Array{Float64}}()
+    
+    function allocate_tensor(category)
+        if category == :field      # [P..., C, Space..., T]
+            return fill(NaN, grid_dims..., eff_c, eff_space..., eff_t)
+        elseif category == :scalar # [P..., C, 1..., 1]
+            return fill(NaN, grid_dims..., eff_c, (1 for _ in 1:length(eff_space))..., 1)
+        elseif category == :series # [P..., C, 1..., T]
+            return fill(NaN, grid_dims..., eff_c, (1 for _ in 1:length(eff_space))..., eff_t)
+        elseif category == :profile# [P..., C, Space..., 1]
+            return fill(NaN, grid_dims..., eff_c, eff_space..., 1)
+        elseif category == :grid   # Eulerian: [P..., 1, Space..., T/1], Lagrangian [P..., D, Space..., T]
+            grid_c = first_data isa LSimData{D} ? D : 1
+            grid_t = (first_data isa ESimData{D} && !(base_types[D+2] isa Number)) ? 1 : eff_t
+            return fill(NaN, grid_dims..., grid_c, eff_space..., grid_t)
         end
     end
-end
 
-# ==============================================================================
-# 4. DATA TYPE SPECIFIC SLICERS (D-DIMENSIONAL)
-# ==============================================================================
+    data_store["u"] = allocate_tensor(:field)
+    data_store["x"] = allocate_tensor(:grid)
 
-function slice_eulerian!(dest, sim_data::ESimData{D}, key, current_params, sim_config, base_fixes) where D
-    raw = key == "u" ? sim_data.u : sim_data.x
-    p_inds = get_param_indices(current_params, sim_config) # Tuple
-    
-    # Map physical values to indices if fixed
-    c_idx = haskey(base_fixes, "c") ? find_closest_idx(1:size(raw, 1), base_fixes["c"]) : (:)
-    s_inds = ntuple(d -> haskey(base_fixes, BaseVariables[1+d]) ? 
-                   find_closest_spatial_idx(sim_data, d, base_fixes[BaseVariables[1+d]]) : (:), D)
-    t_idx = haskey(base_fixes, "t") ? find_closest_idx(sim_data.t, base_fixes["t"]) : (:)
+    for k in keys(first_data.scalars); data_store[k] = allocate_tensor(:scalar); end
+    for k in keys(first_data.series); data_store[k] = allocate_tensor(:series); end
+    for k in keys(first_data.profiles); data_store[k] = allocate_tensor(:profile); end
+    for k in keys(first_data.fields); data_store[k] = allocate_tensor(:field); end
 
-    # Dynamic Slice Assignment
-    dest[p_inds..., (1:length(c_idx))..., (1:length.(s_inds))..., (1:length(t_idx))...] .= raw[c_idx, s_inds..., t_idx]
-end
+    for (k, params) in enumerate(tasks)
+        sim_data = Utils.loadSimData(params)
+        dest_prefix = grid_indices[k]
 
-function slice_lagrangian!(dest, sim_data::LSimData{D}, key, current_params, sim_config, base_fixes) where D
-    raw_steps = key == "u" ? sim_data.u : sim_data.x # Vector of steps
-    p_inds = get_param_indices(current_params, sim_config)
-    
-    t_range = haskey(base_fixes, "t") ? [find_closest_idx(sim_data.t, base_fixes["t"])] : 1:length(sim_data.t)
+        if sim_data isa ESimData{D}
+            slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t)
+            slice_and_fill_eulerian!(data_store["x"], sim_data.x, dest_prefix, base_types, D, 1, raw_space, 1) 
+            
+            for (sk, sv) in sim_data.scalars; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t); end
+            for (sk, sv) in sim_data.series; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t); end
+            for (sk, sv) in sim_data.profiles; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t); end
+            for (sk, sv) in sim_data.fields; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t); end
 
-    for (t_out, t_raw) in enumerate(t_range)
-        step = raw_steps[t_raw]
-        c_idx = haskey(base_fixes, "c") ? [find_closest_idx(1:size(step, 1), base_fixes["c"])] : 1:size(step, 1)
-        # Collapse particles to index 1 if spatial fixed 
-        p_idx = haskey(base_fixes, "x") ? [find_closest_particle(sim_data, t_raw, base_fixes["x"])] : 1:size(step, 2)
-        
-        dest[p_inds..., 1:length(c_idx), 1:length(p_idx), t_out] .= step[c_idx, p_idx]
+        elseif sim_data isa LSimData{D}
+            slice_and_fill_lagrangian!(data_store, sim_data.x, sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t)
+            # Add Lagrangian bucket fillers here similarly using `c_src`, `p_src`, `t_src`
+        end
     end
+
+    return UnifiedPlotData{ndims(data_store["u"])}(
+        data_store, active_keys, active_values, first_data.t, fixed_params
+    )
 end
 
 # ==============================================================================
-# 5. HELPERS
+# 4. ORCHESTRATOR
 # ==============================================================================
 
-function get_param_indices(curr, config)
-    sorted_keys = sort(collect(keys(config.varied_params)))
-    return Tuple(findfirst(==(curr[k]), config.varied_params[k]) for k in sorted_keys if haskey(curr, k))
-end
+function update_plot_data_collection!(
+    plot_data_dict::Dict{String, UnifiedPlotData},
+    sim_config::SimulationConfig,
+    active_methods::Vector{String},
+    fixed_params::FixedDictType,
+    base_types::Vector;
+    force_reload::Bool = false
+)
+    if force_reload; empty!(plot_data_dict); end
 
-find_closest_idx(coll, val) = findmin(x -> abs(x - val), coll)[2]
+    for method_name in active_methods
+        if !haskey(plot_data_dict, method_name)
+            base_params = Utils.assembleParams(sim_config.shared_params, sim_config.methods_dict, method_name)
+            new_data = create_method_plot_data(base_params, sim_config, fixed_params, base_types)
+            if !isnothing(new_data)
+                plot_data_dict[method_name] = new_data
+            end
+        end
+    end
 
-function find_closest_spatial_idx(sim_data::ESimData{D}, dim, val) where D
-    # Extract 1D spatial coord vector along target dimension
-    coords = selectdim(sim_data.x, dim, ntuple(_ -> 1, D-1)...)
-    return find_closest_idx(coords, val)
-end
-
-function find_closest_particle(sim_data::LSimData{D}, t_idx, target_x) where D
-    # Pick particle closest to physical 'target_x' (usually just looking at X1)
-    pos_vectors = sim_data.x[t_idx]
-    return findmin(p -> abs(p[1] - target_x), pos_vectors)[2]
+    for k in keys(plot_data_dict)
+        if !(k in active_methods); delete!(plot_data_dict, k); end
+    end
+    return plot_data_dict
 end
 
 end

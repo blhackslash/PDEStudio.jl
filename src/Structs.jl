@@ -8,7 +8,7 @@ using StaticArrays, LinearAlgebra, GLMakie
 
 export SimulationConfig, ESimData, LSimData, AbstractSimData, AbstractSimulator, UnifiedPlotData
 export createSimData, Simulator, BaseVariables, VariableNames, VariableControls
-export ParamDictType, MethodDictType, VariedDictType, FixedDictType, NestedObsDict
+export ParamDictType, MethodDictType, VariedDictType, FixedDictType, NestedObsDict, ParamDict, MethodDict
 
 const AtomicType = Union{Float64, Int64, Bool, Symbol, String}
 const AtomicTuple = Tuple{Vararg{AtomicType}}
@@ -53,7 +53,6 @@ struct ESimData{D} <: AbstractSimData{D}
     x::Array{Float64, D}          # 1D -> Vector, 2D -> Matrix
     u::Array{Float64}        # [Component, Space..., Time]
     t::Vector{Float64}
-    stats::Dict{String, Any}
 
     scalars::Dict{String, Vector{Float64}} 
     series::Dict{String, Matrix{Float64}} 
@@ -71,7 +70,6 @@ struct LSimData{D} <: AbstractSimData{D}
     x::Vector{Vector{SVector{D, Float64}}} # Time -> Particles -> Position
     u::Vector{Vector{Matrix{Float64}}}     # Time -> Particles -> [Comp, State]
     t::Vector{Float64}
-    stats::Dict{String, Any}
 
     scalars::Dict{String, Vector{Float64}} 
     series::Dict{String, Matrix{Float64}} 
@@ -129,22 +127,125 @@ end
 
 # --- 5. Dispatch for createSimData ---
 
+# function createSimData(x, u, t, params, stats)
+#     @warn "Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t))
+#     error("Wrong input types or requested dimension not implemented yet!")
+# end
+
 # Eulerian 1D
-function createSimData(x::Vector{Float64}, u::Array{Float64, 3}, t::Vector{Float64}, params::Dict, stats::Dict)
-    return ESimData{1}(params, x, u, t, stats, Dict(), Dict(), Dict(), Dict())
+function createSimData(x::Vector{Float64}, u::Array{Float64, 3}, t::Vector{Float64}, params::Dict)
+    return ESimData{1}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
+end
+# Eulerian 1D
+function createSimData(x::Matrix{Float64}, u::Array{Float64, 3}, t::Vector{Float64}, params::Dict)
+    @warn "x-input in matrixform but u given eulerian"
+    return ESimData{1}(params, x[:,1], u, t, Dict(), Dict(), Dict(), Dict())
 end
 
 # Eulerian 2D
-function createSimData(x::Matrix{Float64}, u::Array{Float64, 4}, t::Vector{Float64}, params::Dict, stats::Dict)
-    return ESimData{2}(params, x, u, t, stats, Dict(), Dict(), Dict(), Dict())
+function createSimData(x::Matrix{Float64}, u::Array{Float64, 4}, t::Vector{Float64}, params::Dict)
+    return ESimData{2}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
 
 # Lagrangian D-Dimensional
-function createSimData(x::Vector{Vector{SVector{D, Float64}}}, u, t, params, stats) where D
-    return LSimData{D}(params, x, u, t, stats, Dict(), Dict(), Dict(), Dict())
+function createSimData(x::Vector{Vector{SVector{D, Float64}}}, u, t, params) where D
+    return LSimData{D}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
-# Type Alias for Scope -> Key -> Observable
 
+# --- Structs.jl / DataProcessing.jl additions ---
+
+"""
+    createSimData(x::Matrix{Float64}, u::Matrix{Float64}, t, params, stats)
+
+Specialized 1D Lagrangian constructor. 
+Handles raw Matrices for both position (x) and displacement (u).
+"""
+function createSimData(
+    x::Matrix{Float64}, 
+    u::Matrix{Float64}, 
+    t::AbstractVector{Float64}, 
+    params::Dict{String, Any}, 
+)
+    n_particles, n_time = size(x)
+    
+    # 1. Standardize x: Matrix [P, T] -> Vector{Vector{SVector{1}}}
+    # Inner vector represents all particles at one time step 
+    x_standardized = [ [SVector{1, Float64}(x[p, t_idx]) for p in 1:n_particles] for t_idx in 1:n_time ]
+
+    # 2. Standardize u: Matrix [P, T] -> Vector{Vector{Matrix}}
+    # LSimData expects Vector{Vector{Matrix}} 
+    # We treat the Matrix input as a single component (1, Particles) per time step [cite: 18]
+    u_standardized = [ [reshape(u[:, t_idx], 1, :)] for t_idx in 1:n_time ]
+
+    return LSimData{1}(
+        params, 
+        x_standardized, 
+        u_standardized, 
+        t, 
+        Dict(), Dict(), Dict(), Dict()
+    )
+end
+
+"""
+    createSimData(x::Matrix{SVector{D, Float64}}, u::AbstractArray{T, 3}, ...)
+
+Generalized Multi-D Lagrangian constructor for constant particle counts.
+"""
+function createSimData(
+    x::Matrix{SVector{D, Float64}}, 
+    u::AbstractArray{T, 3}, 
+    t::AbstractVector{Float64}, 
+    params::Dict{String, Any}, 
+) where {D, T}
+    
+    n_particles, n_time = size(x)
+    
+    # Standardize x into Vector of time-step Vectors 
+    x_standardized = [ x[:, i] for i in 1:n_time ]
+
+    # Standardize u: [Comp, Part, Time] -> Vector of [Comp, Part] Matrices [cite: 4, 18]
+    # We wrap each Matrix in a Vector to match the Time -> Particles -> [Comp, State] nesting 
+    u_standardized = [ [u[:, :, i]] for i in 1:n_time ]
+
+    return LSimData{D}(
+        params, 
+        x_standardized, 
+        u_standardized, 
+        t, 
+        Dict(), Dict(), Dict(), Dict()
+    )
+end
+
+"""
+    createSimData(x::Vector{Vector{Float64}}, u::Vector{Matrix{Float64}}, t::Vector{Float64}, params::Dict)
+
+Specialized 1D Lagrangian constructor for Vector of Vectors / Vector of Matrices input.
+Translates flat 1D particle tracks into the generalized Multi-D SVector structure.
+"""
+function createSimData(
+    x::Vector{Vector{Float64}}, 
+    u::Vector{Matrix{Float64}}, 
+    t::Vector{Float64}, 
+    params::Dict{String, Any}
+)
+    # 1. Map positions to 1D SVectors (Time -> Particles -> Position)
+    x_standardized = [ [SVector{1, Float64}(pos) for pos in step_x] for step_x in x ]
+    
+    # 2. Map u states (Time -> Particles -> [Comp, State])
+    # step_u is [n_comp, n_particles]. Target is a Vector of [n_comp, 1] per particle.
+    u_standardized = map(u) do step_u
+        n_comp, n_particles = size(step_u)
+        [reshape(step_u[:, p], n_comp, 1) for p in 1:n_particles]
+    end
+
+    return LSimData{1}(
+        params, 
+        x_standardized, 
+        u_standardized, 
+        t, 
+        Dict(), Dict(), Dict(), Dict()
+    )
+end
 
 # In Controls.jl
 mutable struct PlotManager{D}
@@ -152,14 +253,17 @@ mutable struct PlotManager{D}
     ui::NestedObsDict
     controls::Dict{String, Observable} # NEW: Flat Dict for dynamic widget stat
     methods::Observable{Vector{String}}
-    plot_vars::Vector # Defines all available variables via indices of BaseVariables (only dependent on spatial dimension) # Defines what to create: Menu, Slider or fixed value given
+    plot_vars::Vector{String}
     last_run_params::Dict{String, Any}
 end
 
 function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) where {F,D}
-    
-    vars = [keys(sim_config.varied_params) ; [BaseVariables[1]] ; BaseVariables[2:D+1] ; [BaseVariables[end]]]
-    var_types = Observable(SVector([[:menu]; [:slider for _ in 2:D+1]; [:slider]]))
+    vars = collect(keys(sim_config.varied_params))
+    push!(vars,BaseVariables[1])
+    append!(vars,BaseVariables[2:D+1])
+    push!(vars,BaseVariables[end])
+
+    base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:D+1]; [:slider]])
     sim_obs = NestedObsDict()
     sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
     for (m_name, m_params) in sim_config.methods_dict
@@ -174,7 +278,7 @@ function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) wh
     methods_obs = Observable(copy(sim_config.default_methods))
 
     # Initialize empty; populated by create_plot_controls!
-    controls_obs = Dict{String, Observable}("var_types" => var_types)
+    controls_obs = Dict{String, Observable}("base_types" => base_types)
 
     return PlotManager{D}(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
 end
@@ -204,10 +308,7 @@ end
 
 # --- Constructors / Dispatch ---
 
-function createSimData(x, u, t, params, stats)
-    @warn "Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t))
-    error("Wrong input types or requested dimension not implemented yet!")
-end
+
 
 function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
     merged = copy(shared_params)

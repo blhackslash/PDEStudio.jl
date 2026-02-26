@@ -49,12 +49,11 @@ function show_unified_fig(
     methods_obs = manager.methods
     
     lift(sim_update, methods_obs) do _, active_methods
-        fixed_params = Dict(k => v[] for (k, v) in manager.simulation["shared"])
-        
+        fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
         # Reload/Simulate data
         update_plot_data_collection!(
-            plot_data_obs[], sim_config, active_methods, fixed_params;
-            force_reload = (sim_update[] > 0)
+            plot_data_obs[], sim_config, active_methods, fixed_params, to_value(manager.controls["base_types"]);
+            force_reload = (sim_update[] > 0), 
         )
         notify(plot_data_obs)
     end
@@ -75,67 +74,77 @@ end
 # In MakiePlotting.jl - Replace setup_render_lift!
 # ==============================================================================
 
-function setup_render_lift!(ax, plot_fig, plot_data_obs, manager)
-    # UNPACK: Grab exactly what we need from the store
+function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}) where {D}
     c = manager.controls
+    dim_names = manager.plot_vars # This is natively strictly ordered!
     
-    # Identify which sliders exist to pass them into the lift
-    # We filter for anything that represents a "Value" or "Selection" 
-    # except the ones we already explicitly named.
-    selector_keys = filter(k -> endswith(k, "_Value") || endswith(k, "_Selection"), collect(keys(c)))
-    # Remove axis selections so we don't double-count them in the lift
-    filter!(k -> !occursin("Axis", k) && !occursin("Plot-Along", k), selector_keys)
-    
-    selectors = [c[k] for k in sort(selector_keys)]
+    # 1. Gather the ordered selector observables based on plot_vars
+    selector_obs = Observable[]
+    for name in dim_names
+        # Safely fetch either the Slider Value or the Menu Selection
+        if haskey(c, "$(name)_Value")
+            push!(selector_obs, c["$(name)_Value"])
+        elseif haskey(c, "$(name)_Selection")
+            push!(selector_obs, c["$(name)_Selection"])
+        else
+            @warn "No selector widget found for dimension: $name"
+        end
+    end
 
+    # Pass the ordered selector_obs into the lift
     lift(plot_data_obs, c["X-Axis_Selection"], c["Y-Axis_Selection"], 
-         c["Plot-Along_Selection"], c["UI_Update"], selectors...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
+         c["Plot-Along_Selection"], c["UI_Update"], selector_obs...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
         
         # 1. Validation
+        if isnothing(x_key) || isnothing(y_key) || isnothing(dim_idx)
+            return
+        end
         (isnothing(x_key) || isnothing(y_key) || x_key == "-" || dim_idx == 0) && return
         isempty(data) && return
         
         # 2. Data Slicing
         active_methods = manager.methods[]
-        xs_to_plot, us_to_plot, valid_labels = [], [], String[]
+        xs_to_plot, us_to_plot, valid_labels = Vector{Float64}[], Vector{Float64}[], String[]
 
         for m_name in active_methods
             !haskey(data, m_name) && continue
             pd = data[m_name]
             
             # Map values back to tensor indices
-            # Note: sel_vals is in the same order as selector_keys
+            # sel_vals and indices now map 1:1 perfectly
             indices = map(1:ndims(pd.data[x_key])) do i
                 if i == dim_idx
-                    return (:)
+                    return (:) # Keep the plotted dimension fully sliced
                 else
-                    # Find which slider/menu corresponds to this dimension
-                    # (Implementation logic depends on your dim_names mapping)
-                    return find_closest_index_for_dim(pd, i, get_val_for_dim(i, selector_keys, sel_vals))
+                    val = sel_vals[i]
+                    val = val isa String ? parse(Int,val) : val
+                    return find_closest_index_for_dim(pd, i, val, D)
                 end
             end
-            
             try
                 push!(xs_to_plot, vec(pd.data[x_key][indices...]))
                 push!(us_to_plot, vec(pd.data[y_key][indices...]))
                 push!(valid_labels, m_name)
-            catch; end
+            catch e
+                @warn "Slicing failed for method $m_name" exception=e
+            end
         end
 
         # 3. Plotting
-        title_str = generate_dynamic_title(x_key, y_key, dim_idx, manager, selector_keys, sel_vals)
+        # Make sure your generate_dynamic_title function is also updated to accept the new ordered sel_vals
+        title_str = generate_dynamic_title(dim_idx, dim_names, sel_vals)
         update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager;
                              xlabel=x_key, ylabel=y_key, title_str=title_str)
     end
 end
 
 """
-    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real, D::Int)
 
 Maps a physical value from a slider back to the correct tensor index.
-1 = Component, 2..N+1 = Params, N+2 = Space, N+3 = Time.
+1..N = Params, N+1 = Component, N+2..N+1+D = Space, N+2+D = Time.
 """
-function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real, D::Int)
     n_params = length(pd.active_param_keys)
     
     if dim_idx <= n_params # Parameter
@@ -143,21 +152,27 @@ function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_va
         return findmin(v -> abs(v - target_val), p_vals)[2]
         
     elseif dim_idx == n_params + 1 # Component
-        return Int(target_val)
+        return max(1, Int(target_val))
         
-    elseif dim_idx == n_params + 2 # Space
-        # 3. FIX: If the user slides the Space slider to grab a specific X coordinate, 
-        # find the index of the closest spatial point dynamically.
+    elseif dim_idx > n_params + 1 && dim_idx <= n_params + 1 + D # Space (X, Y, Z...)
         if haskey(pd.data, "x")
             x_tensor = pd.data["x"]
             # Grab a 1D spatial vector by targeting index 1 for all non-spatial dimensions
             inds = ntuple(i -> i == dim_idx ? (:) : 1, ndims(x_tensor))
             x_vec = vec(x_tensor[inds...])
-            return findmin(v -> abs(v - target_val), x_vec)[2]
+            
+            # Filter out NaNs (Lagrangian padding) safely
+            valid_idx = findall(!isnan, x_vec)
+            if isempty(valid_idx)
+                return 1
+            end
+            
+            closest_valid = findmin(v -> abs(v - target_val), x_vec[valid_idx])[2]
+            return valid_idx[closest_valid]
         end
         return 1 
         
-    elseif dim_idx == n_params + 3 # Time
+    elseif dim_idx == n_params + 2 + D # Time
         return findmin(v -> abs(v - target_val), pd.t_vals)[2]
     end
     
