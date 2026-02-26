@@ -1,12 +1,11 @@
 module IPlotPDESols
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, saveSimData,show2DConvergencePlot,
-       calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
+export loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
-       ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,
+       ParamDict, MethodDict, SimulationConfig, SimData, createSimData,
        AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames,
-       calculateAllStats!, AtomicType, AtomicTuple, create_sim_config_from_csv, plotFromCSV, interactiveCSVLauncher,
-       show2DCutFig, registerSimFunction!, getSimFunction, registerAllFunctions
+       calculateAllStats!, create_sim_config_from_csv, plotFromCSV, interactiveCSVLauncher,
+       registerSimFunction!, getSimFunction, registerAllFunctions, show_unified_fig
 
 const SIMULATION_FUNCTION_REGISTRY = Dict{Symbol, Function}()
 

@@ -1,4 +1,4 @@
-using GLMakie, Statistics, Dates, DataFrames, CSV
+using IPlotPDESols
 
 # --- Define the Simulation Function ---
 function wave_simulation(params::Dict{String, Any})
@@ -33,16 +33,6 @@ function wave_simulation(params::Dict{String, Any})
         return createSimData(x_data, u_data, t, params, stats)
     end
 end
-
-path = "../src/"
-# test_full_orchestrator.jl
-
-include(path*"Structs.jl")
-include(path*"Utils.jl")
-include(path*"Controls.jl")
-include(path*"DataProcessing.jl") 
-include(path*"MakiePlotting.jl")
-using .Structs, .Utils, .MakiePlotting, .Controls
 
 function run_final_test()
     println("--- Preparing Test Configuration ---")

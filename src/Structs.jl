@@ -6,14 +6,16 @@ export PlotManager, NestedObsDict, create_plot_manager
 
 using StaticArrays, LinearAlgebra, GLMakie
 
-export SimulationConfig, ESimData, LSimData, AbstractSimData, AbstractSimulator
-export createSimData, Simulator
+export SimulationConfig, ESimData, LSimData, AbstractSimData, AbstractSimulator, UnifiedPlotData
+export createSimData, Simulator, BaseVariables, VariableNames, VariableControls
+export ParamDictType, MethodDictType, VariedDictType, FixedDictType, NestedObsDict
 
 const AtomicType = Union{Float64, Int64, Bool, Symbol, String}
 const AtomicTuple = Tuple{Vararg{AtomicType}}
 
 const BaseVariables = ["c","x","y","z","t"]
 const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
+const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 
 # Types of dictionaries
 const ParamDictType = Dict{String, Any}
@@ -49,14 +51,14 @@ profiles: D-dimensional Matrix/Array per component
 struct ESimData{D} <: AbstractSimData{D}
     params::Dict{String, Any}
     x::Array{Float64, D}          # 1D -> Vector, 2D -> Matrix
-    u::Array{Float64, D+2}        # [Component, Space..., Time]
+    u::Array{Float64}        # [Component, Space..., Time]
     t::Vector{Float64}
     stats::Dict{String, Any}
 
     scalars::Dict{String, Vector{Float64}} 
     series::Dict{String, Matrix{Float64}} 
-    profiles::Dict{String, Array{Float64, D+1}} # [Component, Space...]
-    fields::Dict{String, Array{Float64, D+2}}   # [Component, Space..., Time]
+    profiles::Dict{String, Array{Float64}} # [Component, Space...]
+    fields::Dict{String, Array{Float64}}   # [Component, Space..., Time]
 end
 
 """
@@ -106,7 +108,7 @@ struct SimulationConfig{D, F <: AbstractSimulator{D}}
         shared_params::Dict{String, Any},
         methods_dict::Dict{String, Dict{String, Any}},
         default_methods::Union{Vector{String}, String};
-        varied_params::Dict{String, Vector} = Dict{String, Vector}()
+        varied_params::Dict{String, <:Vector} = Dict{String, Vector{Any}}()
     )
         # Determine D from params or metadata
         # D = min(get(shared_params,"dimension",Inf))
@@ -145,20 +147,19 @@ end
 
 
 # In Controls.jl
-mutable struct PlotManager
+mutable struct PlotManager{D}
     simulation::NestedObsDict
     ui::NestedObsDict
-    controls::Dict{String, Observable} # NEW: Flat Dict for dynamic widget state
+    controls::Dict{String, Observable} # NEW: Flat Dict for dynamic widget stat
     methods::Observable{Vector{String}}
+    plot_vars::Vector # Defines all available variables via indices of BaseVariables (only dependent on spatial dimension) # Defines what to create: Menu, Slider or fixed value given
     last_run_params::Dict{String, Any}
-
-    function PlotManager(sim, ui, ctrl, methods, last_run)
-        new(sim, ui, ctrl, methods, last_run)
-    end
 end
 
 function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) where {F,D}
+    
     vars = [keys(sim_config.varied_params) ; [BaseVariables[1]] ; BaseVariables[2:D+1] ; [BaseVariables[end]]]
+    var_types = Observable(SVector([[:menu]; [:slider for _ in 2:D+1]; [:slider]]))
     sim_obs = NestedObsDict()
     sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
     for (m_name, m_params) in sim_config.methods_dict
@@ -173,9 +174,9 @@ function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) wh
     methods_obs = Observable(copy(sim_config.default_methods))
 
     # Initialize empty; populated by create_plot_controls!
-    controls_obs = Dict{String, Observable}()
+    controls_obs = Dict{String, Observable}("var_types" => var_types)
 
-    return PlotManager(sim_obs, ui_obs, controls_obs, methods_obs, copy(sim_config.shared_params))
+    return PlotManager{D}(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
 end
 
 # --- Plotting Data Structure ---
@@ -207,47 +208,6 @@ function createSimData(x, u, t, params, stats)
     @warn "Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t))
     error("Wrong input types or requested dimension not implemented yet!")
 end
-
-# # 1. Eulerian Dispatch (Dense Array input)
-# function createSimData(x::AbstractMatrix{Float64}, u::AbstractArray{Float64,3}, t::AbstractVector{Float64}, params::ParamDictType, stats::ParamDictType)
-    
-#     # 1. Handle Grid conversion (Matrix [Space, Time] -> Vector [Space])
-#     # Assuming fixed grid for Eulerian, we take the first column.
-#     x_vec = vec(x[:, 1])
-
-#     # 2. Create Empty Buckets (Specific types for Eulerian)
-#     scalars  = Dict{String, Vector{Float64}}()
-#     series   = Dict{String, Matrix{Float64}}()
-#     profiles = Dict{String, Matrix{Float64}}()
-#     fields   = Dict{String, Array{Float64, 3}}()
-
-#     # 3. Construct ESimData1D
-#     # Order: params, x, u, t, buckets...
-#     return ESimData1D(params, x_vec, u, t, scalars, series, profiles, fields)
-# end
-
-# # 2. Lagrangian Dispatch (Vector of Vectors input)
-# function createSimData(x::AbstractVector{<:AbstractVector{Float64}}, u::AbstractVector{<:AbstractVecOrMat}, t::AbstractVector{Float64}, params::ParamDictType, stats::ParamDictType)
-    
-#     # 1. Standardize u to Vector{Matrix}
-#     # This ensures that even if u is a Vector{Vector} (1 component), it becomes Vector{Matrix} [1, Space]
-#     u_standardized = map(u) do step_u
-#         if step_u isa AbstractVector
-#             return reshape(step_u, 1, :) # [1, Space]
-#         else
-#             return step_u # [Component, Space]
-#         end
-#     end
-
-#     # 2. Create Empty Buckets (Specific types for Lagrangian)
-#     scalars  = Dict{String, Vector{Float64}}()
-#     series   = Dict{String, Matrix{Float64}}()
-#     profiles = Dict{String, Vector{Vector{Float64}}}() # Note: Vector{Vector}
-#     fields   = Dict{String, Vector{Matrix{Float64}}}() # Note: Vector{Matrix}
-
-#     # 3. Construct LSimData1D
-#     return LSimData1D(params, x, u_standardized, t, scalars, series, profiles, fields)
-# end
 
 function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
     merged = copy(shared_params)

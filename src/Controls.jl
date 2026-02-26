@@ -22,10 +22,9 @@ on the maximum dimensionality of the simulation.
 """
 function create_controls(
     plot_fig::Makie.Figure, 
-    manager::PlotManager, 
+    manager::PlotManager{D}, 
     plot_data_obs::Observable, 
-    active_params::Vector{String}
-)
+) where {D}
     GLMakie.activate!()
     plot_screen = GLMakie.Screen(title = "Makie Plot")
     # 2. FIX: Attach the Figure to the Screen immediately
@@ -35,6 +34,15 @@ function create_controls(
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
     current_row = 1
+
+    n_params = length(active_params)
+    total_len = n_params + 1 + D + 1
+    
+    if !haskey(manager.controls, "var_types")
+        # Default symbols from VariableControls
+        defaults = vcat(fill(:slider, n_params), :menu, fill(:slider, D), :slider)
+        manager.controls["var_types"] = Observable(defaults)
+    end
 
     # 1. HEADER & REFRESH
     header_layout = fig_layout[current_row, 1] = GridLayout()
@@ -90,13 +98,15 @@ function create_controls(
     slider_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
     
-    # ... after current_row += 1 ...
-    Label(fig_layout[current_row, 1], "Animation Control", fontsize=16, font=:bold)
+    # STATIC PLOT CONTROLS SLOT
+    menu_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
-    anim_layout = fig_layout[current_row, 1] = GridLayout()
+    slider_area = fig_layout[current_row, 1] = GridLayout()
+    current_row += 1
 
-    # Note: build_static_plot_controls! should now return the WIDGETS too
-    x_obs, y_obs, dim_obs, selectors, widgets = build_static_plot_controls!(menu_area, slider_area, plot_data_obs, active_params)
+    x_obs, y_obs, dim_obs, selectors, widgets = build_static_plot_controls!(
+        menu_area, slider_area, plot_data_obs, active_params, manager
+    )
 
    # 4. SAVE CONTROLS
     Label(fig_layout[current_row, 1], "Export Options:", fontsize=16, font=:bold)
@@ -110,164 +120,126 @@ function create_controls(
 
     display(GLMakie.Screen(title="Makie Controls"), base_controls_fig)
 
-    return base_controls_fig, update_notifier, ui_update, methods_obs, x_obs, y_obs, dim_obs, selectors
+    return base_controls_fig
 end
 
-"""
-    build_static_plot_controls!(...)
-
-Builds the Menus and Sliders once. They react internally to `plot_data_obs` to 
-update their ranges and options without destroying the UI.
-"""
 function build_static_plot_controls!(
     menu_layout::GridLayout, 
     slider_layout::GridLayout, 
     plot_data_obs::Observable,
     active_params::Vector{String},
-    manager::PlotManager # Pass manager to register observables
-)
+    manager::PlotManager{D}
+) where {D}
+    # 1. Metadata & Initialization
     n_params = length(active_params)
     
-    # Define Dimension Metadata
-    dim_names = Dict{Int, String}()
-    for (i, p) in enumerate(active_params); dim_names[i] = p; end
-    dim_names[n_params+1] = "Component"
-    dim_names[n_params+2] = "Space"
-    dim_names[n_params+3] = "Time"
+    # Names for labels
+    dim_names = vcat(active_params, Structs.VariableNames[1], Structs.VariableNames[2:1+D], Structs.VariableNames[5])
     total_dims = length(dim_names)
     
     x_key_obs = Observable{String}("-")
     y_key_obs = Observable{String}("-")
     plot_dim_idx_obs = Observable{Int}(0)
     
+    # Store widget objects to update them reactively
+    control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
-    for i in 1:total_dims
-        val_type = i == n_params+1 ? Int : Float64
-        selector_values[i] = Observable{val_type}(val_type(1)) 
-    end
 
-    # --- Build UI Widgets Once ---
-    Label(menu_layout[1,1], "X-Axis:")
-    Label(menu_layout[2,1], "Y-Axis:")
-    Label(menu_layout[3,1], "Plot Along:")
-
-# 1. Register Axis Menus
+    # 2. Setup Axis Menus
     menu_x = Menu(menu_layout[1,2], options = ["-"])
     menu_y = Menu(menu_layout[2,2], options = ["-"])
     menu_axis = Menu(menu_layout[3,2], options = [("-", 1)])
     
+    # Register in manager for Zen-state
     manager.controls["X-Axis_Selection"] = menu_x.selection
-    manager.controls["X-Axis_Options"]   = menu_x.options
     manager.controls["Y-Axis_Selection"] = menu_y.selection
-    manager.controls["Y-Axis_Options"]   = menu_y.options
     manager.controls["Plot-Along_Selection"] = menu_axis.selection
-    manager.controls["Plot-Along_Options"]   = menu_axis.options
 
-    # ... Build UI Widgets Loop ...
-    for dim_i in 1:total_dims
-        name = dim_names[dim_i]
-        if dim_i == n_params + 1 # Component
-            c_menu = Menu(slider_layout[dim_i, 2], options = ["1"])
-            manager.controls["$(name)_Selection"] = c_menu.selection
-            manager.controls["$(name)_Options"]   = c_menu.options
-        else
-            sl = Slider(slider_layout[dim_i, 2], range = 0:1)
-            manager.controls["$(name)_Value"] = sl.value
-            manager.controls["$(name)_Range"] = sl.range
-        end
+    # 3. Create Param Sliders (1..n_params)
+    for i in 1:n_params
+        Label(slider_layout[i, 1], "$(dim_names[i]):", halign=:right)
+        sl = Slider(slider_layout[i, 2], range = 0:0.1:1)
+        control_objects[i] = sl
+        selector_values[i] = sl.value
+        
+        manager.controls["$(dim_names[i])_Value"] = sl.value
+        manager.controls["$(dim_names[i])_Range"] = sl.range
+        
+        Label(slider_layout[i, 3], lift(v -> @sprintf("%.3f", v), sl.value), width=50)
     end
 
-    # --- Reactive Logic (Triggers when data refreshes) ---
-    on(plot_data_obs) do plot_data_dict
-        isempty(plot_data_dict) && return
-        
-        # 1. Update X Options
-        all_keys = Set{String}()
-        for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
-        sorted_keys = sort(collect(all_keys))
-        
-        menu_x.options[] = sorted_keys
-        if menu_x.selection[] == "-" || isnothing(menu_x.selection[])
-            menu_x.selection[] = sorted_keys[1]
+    # 4. Create Base Variable Widgets (Component, Space, Time)
+    # Mapping VariableControls indices to our grid row
+    for b_idx in 1:length(VariableControls)
+        # Skip spatial dimensions not present in the simulation
+        # b_idx: 1=c, 2=x, 3=y, 4=z, 5=t
+        if b_idx > 1 && b_idx < 5 && (b_idx - 1) > D
+            continue
         end
-        notify(menu_x.selection) # Cascade updates
-    end
 
-    on(menu_x.selection) do x_val
-        (isnothing(x_val) || x_val == "-") && return
-        plot_data_dict = plot_data_obs[]
+        # Calculate absolute dimension index in the selector_values vector
+        # Params... -> C -> Space(D) -> Time
+        abs_idx = (b_idx == 5) ? total_dims : (n_params + b_idx)
         
-        # 2. Update Y Options
-        varied_dims = Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val]))); end
-        end
+        Label(slider_layout[abs_idx, 1], "$(dim_names[abs_idx]):", halign=:right)
         
-        valid_y = String[]
-        for y_can in menu_x.options[]
-            y_varied = Set{Int}()
-            for pd in values(plot_data_dict)
-                if haskey(pd.data, y_can); union!(y_varied, findall(s -> s > 1, size(pd.data[y_can]))); end
+        if VariableControls[b_idx] == :menu
+            m = Menu(slider_layout[abs_idx, 2], options = ["1"])
+            control_objects[abs_idx] = m
+            # Handle menu selection strings vs numeric data
+            selector_values[abs_idx] = Observable{Int}(1)
+            on(m.selection) do s
+                if !isnothing(s) && s != "-"; selector_values[abs_idx][] = parse(Int, s); end
             end
-            if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
-        end
-        
-        menu_y.options[] = valid_y
-        x_key_obs[] = x_val
-        if menu_y.selection[] ∉ valid_y
-            menu_y.selection[] = isempty(valid_y) ? "-" : valid_y[1]
-        end
-        notify(menu_y.selection)
-    end
-
-    on(menu_y.selection) do y_val
-        (isnothing(y_val) || y_val == "-") && return
-        x_val = menu_x.selection[]
-        plot_data_dict = plot_data_obs[]
-
-        # 3. Update Axis Options
-        x_varied, y_varied = Set{Int}(), Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
-            if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
-        end
-        
-        common = sort(collect(intersect(x_varied, y_varied)))
-        menu_axis.options[] = isempty(common) ? [("-", 1)] : [(dim_names[d], d) for d in common]
-        y_key_obs[] = y_val
-        
-        if menu_axis.selection[] ∉ common
-            menu_axis.selection[] = isempty(common) ? 1 : common[end]
+            manager.controls["$(dim_names[abs_idx])_Selection"] = m.selection
         else
-            notify(menu_axis.selection)
+            sl = Slider(slider_layout[abs_idx, 2], range = 0:0.1:1)
+            control_objects[abs_idx] = sl
+            selector_values[abs_idx] = sl.value
+            manager.controls["$(dim_names[abs_idx])_Value"] = sl.value
+            manager.controls["$(dim_names[abs_idx])_Range"] = sl.range
+        end
+        
+        Label(slider_layout[abs_idx, 3], lift(v -> string(v), selector_values[abs_idx]), width=50)
+    end
+
+    # 5. Reactive Logic: Handle Overwrites/Skip via var_types
+    # This reacts to manager.controls["var_types"] and disables widgets
+    on(manager.controls["Simulation_Update"]) do vt
+        for i in 1:total_dims
+            ctrl = control_objects[i]
+            val = vt[i]
+            
+            # If a number is provided, we disable the widget visually
+            if val isa Number
+                if ctrl isa Slider
+                    ctrl.range[] = [val] # Fixed range
+                elseif ctrl isa Menu
+                    ctrl.options[] = [string(val)]
+                    ctrl.selection[] = string(val)
+                end
+            end
         end
     end
 
+    # 6. Reactive Logic: Update Ranges from Data
+    # (Same logic as before, but using the generalized control_objects vector)
     on(menu_axis.selection) do axis_idx
         (isnothing(axis_idx) || axis_idx == "-") && return
         plot_dim_idx_obs[] = axis_idx
-        plot_data_dict = plot_data_obs[]
-        
-        # 4. Update Sliders Ranges
-        for dim_i in 1:total_dims
-            ctrl = control_objects[dim_i]
-            is_axis = (dim_i == axis_idx)
+        data = plot_data_obs[]
+        vt = manager.controls["var_types"][]
+
+        for i in 1:total_dims
+            # Skip if this dimension is currently overwritten by a number
+            vt[i] isa Number && continue
             
-            if dim_i == n_params+1 # Component
-                max_c = 1
-                for pd in values(plot_data_dict)
-                    if haskey(pd.data, "u"); max_c = max(max_c, size(pd.data["u"], n_params + 1)); end
-                end
-                
-                if is_axis
-                    ctrl.options[] = ["-"]
-                else
-                    ctrl.options[] = string.(1:max_c)
-                    if ctrl.selection[] == "-" || parse(Int, ctrl.selection[]) > max_c
-                        ctrl.selection[] = "1"
-                    end
-                end
-            else # Continuous Sliders
+            ctrl = control_objects[i]
+            is_axis = (i == axis_idx)
+            
+            if is_axis
+                if ctrl isa Slider; ctrl.range[] = [0]; else; ctrl.options[] = ["-"]; end
+            else
                 g_min, g_max = Inf, -Inf
                 for pd in values(plot_data_dict)
                     vals = nothing
@@ -294,255 +266,6 @@ function build_static_plot_controls!(
     end
 
     return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values, control_objects
-end
-
-"""
-    create_plot_controls!(fig, plot_data_dict::Dict{String, UnifiedPlotData})
-
-Creates a control panel with:
-1. X/Y/Axis Selection Menus.
-2. Permanent Sliders/Menus for [Component, P1..., Space, Time].
-
-Instead of hiding controls, it "disables" the control for the active plot axis 
-by setting its range to `[0]` (or options to `["-"]`) and updating the label.
-"""
-function create_plot_controls!(
-    menu_layout::GridLayout, 
-    slider_layout::GridLayout, 
-    plot_data_dict::Dict{String, UnifiedPlotData}
-)
-    if isempty(plot_data_dict)
-        error("No plot data available to generate controls.")
-    end
-    
-    # --- 1. Metadata Setup ---
-    # Use the first dataset to determine the dimension structure
-    template_data = first(values(plot_data_dict))
-    
-    active_params = template_data.active_param_keys
-    n_params = length(active_params)
-    
-    # Map Index -> Name
-    # 1=Comp, 2..N+1=Params, N+2=Space, N+3=Time
-    dim_names = Dict{Int, String}()
-    
-    for (i, p) in enumerate(active_params); dim_names[i] = p; end
-    dim_names[n_params+1] = "Component"
-    dim_names[n_params+2] = "Space"
-    dim_names[n_params+3] = "Time"
-    
-    total_dims = length(dim_names)
-    
-    # The outputs
-    x_key_obs = Observable{String}("-")
-    y_key_obs = Observable{String}("-")
-    plot_dim_idx_obs = Observable{Int}(0) # 0 means "Not selected yet"
-    
-    # Holds the current selected values (Physical Float for Params/Time, Int for Component)
-    # If a dimension is disabled (plot axis), this might hold a dummy value.
-    selector_values = Vector{Observable}(undef, total_dims)
-    for i in 1:total_dims
-        val_type = i == n_params+1 ? Int : Float64
-        selector_values[i] = Observable{val_type}(val_type(1)) 
-    end
-
-    # --- 3. Build Selection Menus ---
-    all_keys = Set{String}()
-    for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
-    sorted_keys = sort(collect(all_keys))
-
-    Label(menu_layout[1,1], "X-Axis:")
-    menu_x = Menu(menu_layout[1,2], options = sorted_keys, default = sorted_keys[1])
-    
-    Label(menu_layout[2,1], "Y-Axis:")
-    menu_y = Menu(menu_layout[2,2], options = ["-"], default = "-")
-    
-    Label(menu_layout[3,1], "Plot Along:")
-    menu_axis = Menu(menu_layout[3,2], options = [("-",1)], default = 1)
-
-    # --- 4. Build Static Controls (Sliders/Menus) ---
-    # We create them once. We will manipulate their 'range'/'options' observables later.
-    
-    # Store references to update them later
-    control_objects = Vector{Any}(undef, total_dims) 
-
-    for dim_i in 1:total_dims
-        d_name = dim_names[dim_i]
-        
-        Label(slider_layout[dim_i, 1], "$d_name:", halign=:right)
-        
-        if dim_i == n_params+1
-            # --- COMPONENT (Menu) ---
-            # Default options (will be overwritten)
-            c_menu = Menu(slider_layout[dim_i, 2], options = ["1"], default = "1")
-            control_objects[dim_i] = c_menu
-            
-            # Label for Component (Display selection)
-            Label(slider_layout[dim_i, 3], lift(s -> "C = $s", c_menu.selection))
-            
-            # Connect to Output
-            on(c_menu.selection) do v
-                if v != "-" && !isnothing(v)
-                    selector_values[dim_i][] = parse(Int, v)
-                end
-            end
-            notify(c_menu.selection)
-            
-        else
-            # --- CONTINUOUS (Slider) ---
-            # Default range (will be overwritten)
-            sl = Slider(slider_layout[dim_i, 2], range = 0:1:10)
-            control_objects[dim_i] = sl
-            
-            # Label with "N/A" Logic
-            # Note: Makie sliders usually have a vector/abstract range as 'range'
-            lab_text = lift(sl.value, sl.range) do val, r
-                if r == [0] # The "Disabled" flag
-                    "Axis"
-                else
-                    string(round(val, digits=3))
-                end
-            end
-            Label(slider_layout[dim_i, 3], lab_text, width=60, halign=:left)
-            
-            # Connect to Output
-            on(sl.value) do v
-                # Only update if valid (not the dummy 0 from disable)
-                # However, usually we just update anyway. 
-                # The plotting lift checks `plot_dim_idx` and ignores this value if it's the axis.
-                selector_values[dim_i][] = v
-            end
-        end
-    end
-
-    # --- 5. Menu Logic (Filters) ---
-    
-    # X -> Y
-    on(menu_x.selection) do x_val
-        if isnothing(x_val); return; end
-        
-        # Identify varied dimensions
-        varied_dims = Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val)
-                union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val])))
-            end
-        end
-        
-        # Filter Y
-        valid_y = String[]
-        for y_can in sorted_keys
-            y_varied = Set{Int}()
-            for pd in values(plot_data_dict)
-                if haskey(pd.data, y_can)
-                    union!(y_varied, findall(s -> s > 1, size(pd.data[y_can])))
-                end
-            end
-            if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
-        end
-        
-        menu_y.options[] = valid_y
-        x_key_obs[] = x_val
-        menu_y.selection[] = isempty(valid_y) ? "Not Plottable" : valid_y[1]
-    end
-    notify(menu_x.selection)
-
-    # Y -> Axis
-    on(menu_y.selection) do y_val
-        if isnothing(y_val); return; end
-        x_val = menu_x.selection[]
-        
-        # Intersect varied dims
-        x_varied, y_varied = Set{Int}(), Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
-            if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
-        end
-        
-        common = sort(collect(intersect(x_varied, y_varied)))
-        menu_axis.options[] = [(dim_names[d], d) for d in common]
-        
-        y_key_obs[] = y_val
-        if !isempty(common); menu_axis.selection[] = common[end]; end
-    end
-    notify(menu_y.selection)
-
-    # Axis -> Disable/Enable Sliders
-    on(menu_axis.selection) do axis_idx
-        if isnothing(axis_idx); return; end
-        plot_dim_idx_obs[] = axis_idx
-        
-        # Loop through all controls and update their state
-        for dim_i in 1:total_dims
-            ctrl = control_objects[dim_i]
-            
-            # Is this the plot axis?
-            is_axis = (dim_i == axis_idx)
-            
-            if dim_i == n_params+1
-                # --- Update Component Menu ---
-                # Find max components
-                max_c = maximum(size(pd.data["u"], 1) for pd in values(plot_data_dict))
-                
-                if is_axis
-                    ctrl.options[] = ["-"] # Disable
-                    ctrl.selection[] = "-"
-                else
-                    ctrl.options[] = string.(1:max_c)
-                    # Try to keep selection or reset to 1
-                    if ctrl.selection[] == "-"; ctrl.selection[] = "1"; end
-                end
-                
-            else
-                # --- Update Continuous Slider ---
-                # 1. Determine Global Range
-                g_min, g_max = Inf, -Inf
-                
-                # Check data
-                for pd in values(plot_data_dict)
-                    vals = nothing
-                    if dim_i <= n_params 
-                        p_idx = dim_i
-                        vals = pd.active_param_values[p_idx]
-                    elseif dim_i == n_params + 2 # Space
-                        if haskey(pd.data, "x"); vals = pd.data["x"]; end
-                    elseif dim_i == n_params + 3 # Time
-                        vals = pd.t_vals
-                    end
-                    
-                    if !isnothing(vals) && !isempty(vals)
-                        l, h = extrema(vals)
-                        if l < g_min; g_min = l; end
-                        if h > g_max; g_max = h; end
-                    end
-                end
-                if isinf(g_min); g_min=0.0; g_max=1.0; end
-                
-                # 2. Update Slider Range
-                if is_axis
-                    ctrl.range[] = [0] # Disable!
-                    # Value automatically jumps to 0
-                else
-                    # Construct range (approx 100 steps for smooth slider)
-                    ctrl.range[] = range(g_min, g_max, length=100)
-                end
-            end
-        end
-    end
-    notify(menu_axis.selection)
-
-    return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values
-end
-
-# Backward compatibility (if you use it elsewhere)
-function create_plot_controls!(fig::Figure, plot_data_dict)
-    menu_layout = fig[1,1] = GridLayout()
-    slider_layout = fig[2,1] = GridLayout()
-    return create_plot_controls!(
-        menu_layout, 
-        slider_layout, 
-        plot_data_dict
-    )
 end
 
 """
