@@ -102,7 +102,7 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}
         (isnothing(x_key) || isnothing(y_key) || x_key == "-" || dim_idx == 0) && return
         isempty(data) && return
         
-        # 2. Data Slicing
+# 2. Data Slicing
         active_methods = manager.methods[]
         xs_to_plot, us_to_plot, valid_labels = Vector{Float64}[], Vector{Float64}[], String[]
 
@@ -110,20 +110,25 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}
             !haskey(data, m_name) && continue
             pd = data[m_name]
             
-            # Map values back to tensor indices
-            # sel_vals and indices now map 1:1 perfectly
-            indices = map(1:ndims(pd.data[x_key])) do i
-                if i == dim_idx
-                    return (:) # Keep the plotted dimension fully sliced
-                else
-                    val = sel_vals[i]
-                    val = val isa String ? parse(Int,val) : val
-                    return find_closest_index_for_dim(pd, i, val, D)
-                end
+            x_tensor = pd.data[x_key]
+            y_tensor = pd.data[y_key]
+            
+            # Map values back to tensor indices (clamp to actual size to safely ignore size-1 axes!)
+            x_indices = map(1:ndims(x_tensor)) do i
+                if i == dim_idx; return (:); end
+                val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
+                return min(find_closest_index_for_dim(pd, i, val, D), size(x_tensor, i))
             end
+            
+            y_indices = map(1:ndims(y_tensor)) do i
+                if i == dim_idx; return (:); end
+                val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
+                return min(find_closest_index_for_dim(pd, i, val, D), size(y_tensor, i))
+            end
+            
             try
-                push!(xs_to_plot, vec(pd.data[x_key][indices...]))
-                push!(us_to_plot, vec(pd.data[y_key][indices...]))
+                push!(xs_to_plot, vec(x_tensor[x_indices...]))
+                push!(us_to_plot, vec(y_tensor[y_indices...]))
                 push!(valid_labels, m_name)
             catch e
                 @warn "Slicing failed for method $m_name" exception=e

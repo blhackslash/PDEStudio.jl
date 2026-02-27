@@ -74,9 +74,7 @@ function create_controls(
     current_row += 1
     
     method_checkbox_layout = fig_layout[current_row, 1] = GridLayout()
-    all_methods = filter(k -> k != "shared", collect(keys(manager.simulation)))
-    methods_obs = Observable(all_methods)
-    createMethodCheckboxes!(method_checkbox_layout, methods_obs, manager) 
+    createMethodCheckboxes!(method_checkbox_layout, manager.methods, manager) 
     current_row += 1
 
     # 3. HIERARCHICAL PARAMETER NAVIGATOR
@@ -145,6 +143,9 @@ function build_static_plot_controls!(
     selector_values = Vector{Observable}(undef, total_dims)
 
     # 2. Setup Axis Menus
+    Label(menu_layout[1,1],"X-Axis")
+    Label(menu_layout[2,1],"Y-Axis")
+    Label(menu_layout[3,1],"Plot-Along")
     menu_x = Menu(menu_layout[1,2], options = ["-"])
     menu_y = Menu(menu_layout[2,2], options = ["-"])
     menu_axis = Menu(menu_layout[3,2], options = [("-", 1)])
@@ -209,19 +210,25 @@ function build_static_plot_controls!(
         end
     end
 
-    # --- REACTIVE LOGIC: Axis Menus Cascade ---
+# --- REACTIVE LOGIC: Axis Menus Cascade ---
     
     on(plot_data_obs) do plot_data_dict
         isempty(plot_data_dict) && return
+        active_methods = manager.methods[]
         
         # 1. Update X Options
         all_keys = Set{String}()
-        for pd in values(plot_data_dict); union!(all_keys, keys(pd.data)); end
+        for (m, pd) in plot_data_dict
+            if m in active_methods
+                union!(all_keys, keys(pd.data))
+            end
+        end
         sorted_keys = sort(collect(all_keys))
         
         menu_x.options[] = sorted_keys
         if menu_x.selection[] == "-" || isnothing(menu_x.selection[]) || !(menu_x.selection[] in sorted_keys)
             menu_x.selection[] = isempty(sorted_keys) ? "-" : sorted_keys[1]
+            menu_x.i_selected = isempty(sorted_keys) ? 0 : 1
         else
             notify(menu_x.selection) 
         end
@@ -230,20 +237,33 @@ function build_static_plot_controls!(
     on(menu_x.selection) do x_val
         (isnothing(x_val) || x_val == "-") && return
         plot_data_dict = plot_data_obs[]
+        active_methods = manager.methods[]
         
         # 2. Update Y Options
-        varied_dims = Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(varied_dims, findall(s -> s > 1, size(pd.data[x_val]))); end
+        varied_dims = nothing
+        for (m, pd) in plot_data_dict
+            !(m in active_methods) && continue
+            if haskey(pd.data, x_val)
+                v_dims = Set(findall(s -> s > 1, size(pd.data[x_val])))
+                varied_dims = isnothing(varied_dims) ? v_dims : intersect(varied_dims, v_dims)
+            end
         end
+        varied_dims = isnothing(varied_dims) ? Set{Int}() : varied_dims
         
         valid_y = String[]
         for y_can in menu_x.options[]
-            y_varied = Set{Int}()
-            for pd in values(plot_data_dict)
-                if haskey(pd.data, y_can); union!(y_varied, findall(s -> s > 1, size(pd.data[y_can]))); end
+            y_varied = nothing
+            for (m, pd) in plot_data_dict
+                !(m in active_methods) && continue
+                if haskey(pd.data, y_can)
+                    v_dims = Set(findall(s -> s > 1, size(pd.data[y_can])))
+                    y_varied = isnothing(y_varied) ? v_dims : intersect(y_varied, v_dims)
+                end
             end
-            if !isempty(intersect(varied_dims, y_varied)); push!(valid_y, y_can); end
+            y_varied = isnothing(y_varied) ? Set{Int}() : y_varied
+            if !isempty(intersect(varied_dims, y_varied))
+                push!(valid_y, y_can)
+            end
         end
         
         menu_y.options[] = valid_y
@@ -251,6 +271,7 @@ function build_static_plot_controls!(
         
         if menu_y.selection[] ∉ valid_y
             menu_y.selection[] = isempty(valid_y) ? "-" : valid_y[1]
+            menu_y.i_selected = isempty(valid_y) ? 0 : 1
         else
             notify(menu_y.selection)
         end
@@ -260,13 +281,24 @@ function build_static_plot_controls!(
         (isnothing(y_val) || y_val == "-") && return
         x_val = menu_x.selection[]
         plot_data_dict = plot_data_obs[]
+        active_methods = manager.methods[]
         
         # 3. Update Axis Options
-        x_varied, y_varied = Set{Int}(), Set{Int}()
-        for pd in values(plot_data_dict)
-            if haskey(pd.data, x_val); union!(x_varied, findall(s -> s > 1, size(pd.data[x_val]))); end
-            if haskey(pd.data, y_val); union!(y_varied, findall(s -> s > 1, size(pd.data[y_val]))); end
+        x_varied, y_varied = nothing, nothing
+        for (m, pd) in plot_data_dict
+            !(m in active_methods) && continue
+            if haskey(pd.data, x_val)
+                v_dims = Set(findall(s -> s > 1, size(pd.data[x_val])))
+                x_varied = isnothing(x_varied) ? v_dims : intersect(x_varied, v_dims)
+            end
+            if haskey(pd.data, y_val)
+                v_dims = Set(findall(s -> s > 1, size(pd.data[y_val])))
+                y_varied = isnothing(y_varied) ? v_dims : intersect(y_varied, v_dims)
+            end
         end
+        
+        x_varied = isnothing(x_varied) ? Set{Int}() : x_varied
+        y_varied = isnothing(y_varied) ? Set{Int}() : y_varied
         
         common = sort(collect(intersect(x_varied, y_varied)))
         menu_axis.options[] = isempty(common) ? [("-", 1)] : [(dim_names[d], d) for d in common]
@@ -274,11 +306,17 @@ function build_static_plot_controls!(
         
         if menu_axis.selection[] == "-" || menu_axis.selection[] ∉ common
             menu_axis.selection[] = isempty(common) ? 1 : common[end]
+            menu_axis.i_selected = isempty(common) ? 1 : length(common)
         else
             notify(menu_axis.selection)
         end
     end
 
+    # 4. Bind Checkboxes to the UI Menus directly!
+    on(manager.methods) do _
+        # When a checkbox changes, artificially "poke" the data to force the axis menus to recalculate
+        notify(plot_data_obs)
+    end
     # --- REACTIVE LOGIC: Sliders Ranges ---
     
     on(menu_axis.selection) do axis_idx
