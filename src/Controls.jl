@@ -30,7 +30,7 @@ function create_controls(
     # 2. FIX: Attach the Figure to the Screen immediately
     display(plot_screen, plot_fig)
     
-    base_controls_fig = Figure(size = (350, 850)) 
+    base_controls_fig = Figure(size = (450, 950)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
     current_row = 1
@@ -83,7 +83,12 @@ function create_controls(
     param_nav_layout = fig_layout[current_row, 1] = GridLayout()
     create_hierarchical_param_controls!(param_nav_layout, manager)
     current_row += 1
-
+    Label(fig_layout[current_row, 1], "Dimension Overwrites", fontsize=16, font=:bold, color=:darkred)
+    current_row += 1
+    
+    lock_layout = fig_layout[current_row, 1] = GridLayout()
+    create_base_overwrite_controls!(lock_layout, manager)
+    current_row += 1
     # 5. STATIC PLOT CONTROLS SLOT
     Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
@@ -144,11 +149,15 @@ function build_static_plot_controls!(
 
     # 2. Setup Axis Menus
     Label(menu_layout[1,1],"X-Axis")
-    Label(menu_layout[2,1],"Y-Axis")
-    Label(menu_layout[3,1],"Plot-Along")
-    menu_x = Menu(menu_layout[1,2], options = ["-"])
-    menu_y = Menu(menu_layout[2,2], options = ["-"])
-    menu_axis = Menu(menu_layout[3,2], options = [("-", 1)])
+    Label(menu_layout[1,2],"Y-Axis")
+    Label(menu_layout[1,3],"Plot-Along")
+    menu_x = Menu(menu_layout[2,1], options = ["-"],width = 100)
+    menu_y = Menu(menu_layout[2,2], options = ["-"],width = 100)
+    menu_axis = Menu(menu_layout[2,3], options = [("-", 1)],width = 100)
+# Force the layout to respect these widths
+    colsize!(menu_layout, 1, Fixed(100))
+    colsize!(menu_layout, 2, Fixed(100))
+    colsize!(menu_layout, 3, Fixed(100))    
     
     manager.controls["X-Axis_Selection"] = menu_x.selection
     manager.controls["Y-Axis_Selection"] = menu_y.selection
@@ -173,7 +182,7 @@ function build_static_plot_controls!(
         end
         
         if ctrl_type == :menu
-            m = Menu(slider_layout[i, 2], options = ["1"])
+            m = Menu(slider_layout[i, 2], options = ["1"],width = 200)
             control_objects[i] = m
             selector_values[i] = Observable{Int}(1)
             on(m.selection) do s
@@ -181,7 +190,7 @@ function build_static_plot_controls!(
             end
             manager.controls["$(dim_names[i])_Selection"] = m.selection
         else
-            sl = Slider(slider_layout[i, 2], range = 0:0.1:1)
+            sl = Slider(slider_layout[i, 2], range = 0:0.1:1,width = 200)
             control_objects[i] = sl
             selector_values[i] = sl.value
             manager.controls["$(dim_names[i])_Value"] = sl.value

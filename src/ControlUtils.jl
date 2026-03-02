@@ -133,22 +133,22 @@ function createAnimationControls!(
     dim_names[n_params+3] = "Time"
 
     # --- 2. Build UI Widgets (Static Options) ---
-    Label(layout[1, 1], "Animate Target:")
+    #Label(layout[1, 1], "Animate Target:")
     
     # We populate the menu ONCE with every possible dimension
     all_opts = [(dim_names[i], i) for i in 1:length(selector_widgets)]
-    anim_target_menu = Menu(layout[1, 2], options = all_opts, width=120)
+    anim_target_menu = Menu(layout[1, 1], options = all_opts, width=120)
     # Set default to Time (the last index)
     anim_target_menu.selection[] = length(selector_widgets)
 
-    play_btn = Button(layout[1, 3], label="Play", width=60)
+    play_btn = Button(layout[1, 2], label="Play", width=60)
     on(is_animating) do animating
         play_btn.label[] = animating ? "Stop" : "Play"
     end
     
-    gif_name = Textbox(layout[1, 4], placeholder="filename", width=120)
+    gif_name = Textbox(layout[1, 3], placeholder="filename", width=120)
     gif_name.stored_string = "wave_anim"
-    save_btn = Button(layout[1, 5], label="Save GIF", buttoncolor=:lightgreen)
+    save_btn = Button(layout[1, 4], label="Save GIF", buttoncolor=:lightgreen)
 
     # --- 3. Validation Helper ---
     function check_selection_validity(idx)
@@ -351,6 +351,67 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
         end
     catch e
         @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
+    end
+end
+
+"""
+    create_base_overwrite_controls!(layout, manager)
+
+Creates a UI block with a Menu to select a base variable and a Textbox to 
+overwrite its type with a fixed numeric value. Inputting 'default' restores 
+the original widget type (slider/menu).
+"""
+function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManager{D}) where {D}
+    # 1. Setup Labels and Widgets
+    #Label(layout[1, 1], "Fix Dimension:", halign=:right, font=:bold)
+    
+    # Base variable names from Structs (Component, X, Y, Z, Time)
+    # We filter them based on the simulation dimension D
+    base_names = [Structs.VariableNames[1]; Structs.VariableNames[2:1+D]; Structs.VariableNames[5]]
+    
+    menu_var = Menu(layout[1, 1], options = base_names, width = 120, prompt = "Select...")
+    tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
+    apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
+
+    # 2. Reactive Logic
+    on(apply_btn.clicks) do _
+        var_name = menu_var.selection[]
+        input_str = tb_val.stored_string[]
+        
+        if isnothing(var_name) || isempty(input_str)
+            @warn "Overwrite Error: Please select a variable and provide an input."
+            return
+        end
+
+        # Find the index in the base_types vector (C=1, Space=2:D+1, T=D+2)
+        idx = findfirst(==(var_name), base_names)
+        
+        # Access and copy the current base_types observable [cite: 316]
+        vt = copy(manager.controls["base_types"][])
+
+        if lowercase(strip(input_str)) == "default"
+            # Restore the default symbol from Structs [cite: 167]
+            # VariableControls mapping: 1=menu, 2-4=slider, 5=slider
+            default_map = [1, (2 for _ in 1:D)..., 5]
+            vt[idx] = Structs.VariableControls[default_map[idx]]
+            @info "Restored default control for $var_name."
+        else
+            # Attempt to parse as a number to fix the dimension [cite: 227]
+            val = tryparse(Float64, input_str)
+            if isnothing(val)
+                @warn "Invalid Input: '$input_str' is not a number or 'default'."
+                return
+            end
+            vt[idx] = val
+            @info "Fixed $var_name to value/index: $val."
+        end
+
+        # Update the manager and trigger a data reload [cite: 317-318]
+        manager.controls["base_types"][] = vt
+        manager.controls["Simulation_Update"][] += 1
+        
+        # Reset textbox
+        tb_val.stored_string[] = ""
     end
 end
 
