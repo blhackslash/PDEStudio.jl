@@ -1,15 +1,3 @@
-module StatCalculation
-
-using ..Structs
-using ..Utils
-
-using Dierckx
-using QuadGK
-using ProgressMeter
-using Random
-
-export calculateAllStats!, calculateConvergenceData
-
 """
     _create_piecewise_spline_function(x_coords, y_values, domain_params, discontinuity_points, k)
 
@@ -458,11 +446,11 @@ function createReferenceFunction(ref_sim_data::AbstractSimData; discontinuity_po
 end
 
 """
-    calculateAllStats!(sim_data, ref_params::ParamDictType; ...)
+    calculateAllStats!(sim_data, ref_params::ParamDict; ...)
 
 Convenience function that loads a reference solution from disk.
 """
-function calculateAllStats!(sim_data::AbstractSimData, ref_params::ParamDictType; kwargs...)
+function calculateAllStats!(sim_data::AbstractSimData, ref_params::ParamDict; kwargs...)
     @info "Loading reference solution for stats calculation..."
     ref_sim_data = try loadSimData(ref_params) catch e; @warn "Failed to load reference SimData" exception=e; nothing end
     if isnothing(ref_sim_data)
@@ -551,7 +539,7 @@ function calculateConvergenceData(
     num_tasks = length(all_method_labels) * length(param_values_for_key)
     if num_tasks == 0; @info "No simulations to run."; return; end
 
-    tasks_params_list = Vector{ParamDictType}(undef, num_tasks)
+    tasks_params_list = Vector{ParamDict}(undef, num_tasks)
     task_identifiers = Vector{Tuple{String, Int}}(undef, num_tasks)
     
     task_idx = 0
@@ -615,6 +603,4 @@ function calculateConvergenceData(
         calculateAllStats!(sim_config,key_varied, param_values_for_key, force_int_param = force_int_param)
     end
     @info "\nStat calculation complete."
-end
-
 end

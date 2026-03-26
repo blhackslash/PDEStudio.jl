@@ -1,15 +1,3 @@
-module Structs
-
-import GLMakie: Observable
-
-export PlotManager, NestedObsDict, create_plot_manager
-
-using StaticArrays, LinearAlgebra, GLMakie
-
-export SimulationConfig, ESimData, LSimData, AbstractSimData, AbstractSimulator, UnifiedPlotData
-export createSimData, Simulator, BaseVariables, VariableNames, VariableControls
-export ParamDictType, MethodDictType, VariedDictType, FixedDictType, NestedObsDict, ParamDict, MethodDict
-
 const AtomicType = Union{Float64, Int64, Bool, Symbol, String}
 const AtomicTuple = Tuple{Vararg{AtomicType}}
 
@@ -17,17 +5,31 @@ const BaseVariables = ["c","x","y","z","t"]
 const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
 const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 
-# Types of dictionaries
-const ParamDictType = Dict{String, Any}
-const MethodDictType = Dict{String, ParamDictType}
-const VariedDictType = Dict{String, <:Vector}
-const FixedDictType = Dict{String, Any}
+# --- 1. Define the Dictionary Structs ---
+
+# --- 1. Type Aliases ---
+const ParamDict = Dict{String, Any}
+const MethodDict = Dict{String, ParamDict}
+const VariedDict = Dict{String, Vector}
+const FixedDict = ParamDict 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 
+# --- 2. Explicit Creator Functions ---
 
-# Updated Dictionary creators enforcing the right datatype
-ParamDict(args...) = Dict{String, Any}(args...)
-MethodDict(args...) = Dict{String, ParamDictType}(args...)
+# ParamDict Creators
+createParamDict(kv::Pair{String, <:Any}...) = ParamDict(kv...)
+createParamDict(kv) = ParamDict(kv) # Catches generators like (k => v for ...)
+createParamDict() = ParamDict()
+
+# MethodDict Creators
+createMethodDict(kv::Pair{String, ParamDict}...) = MethodDict(kv...)
+createMethodDict(kv) = MethodDict(kv)
+createMethodDict() = MethodDict()
+
+# VariedDict Creators
+createVariedDict(kv::Pair{String, <:Vector}...) = VariedDict(kv...)
+createVariedDict(kv) = VariedDict(kv)
+createVariedDict() = VariedDict()
 
 # --- 1. Abstract Hierarchy ---
 abstract type AbstractSimData{D} end
@@ -49,7 +51,7 @@ x: D-dimensional Array
 profiles: D-dimensional Matrix/Array per component
 """
 struct ESimData{D} <: AbstractSimData{D}
-    params::Dict{String, Any}
+    params::ParamDict
     x::Array{Float64, D}          # 1D -> Vector, 2D -> Matrix
     u::Array{Float64}        # [Component, Space..., Time]
     t::Vector{Float64}
@@ -66,7 +68,7 @@ Lagrangian data where x is a vector of positions.
 Each position is an SVector of size D.
 """
 struct LSimData{D} <: AbstractSimData{D}
-    params::Dict{String, Any}
+    params::ParamDict
     x::Vector{Vector{SVector{D, Float64}}} # Time -> Particles -> Position
     u::Vector{Vector{Matrix{Float64}}}     # Time -> Particles -> [Comp, State]
     t::Vector{Float64}
@@ -84,7 +86,7 @@ struct Simulator{D} <: AbstractSimulator{D}
 end
 
 # Enforce that the output MUST be a subtype of AbstractSimData{D}
-function (sim::Simulator{D})(params::Dict{String, Any})::AbstractSimData{D} where D
+function (sim::Simulator{D})(params::ParamDict)::AbstractSimData{D} where D
     result = sim.f(params)
     if isnothing(result)
         return NoSimData(D)
@@ -96,17 +98,17 @@ end
 
 struct SimulationConfig{D, F <: AbstractSimulator{D}}
     sim_function::F
-    methods_dict::Dict{String, Dict{String, Any}}
+    methods_dict::MethodDict
     default_methods::Vector{String}
-    shared_params::Dict{String, Any}
+    shared_params::ParamDict
     varied_params::Dict{String, Vector}
 
     function SimulationConfig(
         sim_input::Union{Function, AbstractSimulator},
-        shared_params::Dict{String, Any},
-        methods_dict::Dict{String, Dict{String, Any}},
+        shared_params,
+        methods_dict,
         default_methods::Union{Vector{String}, String};
-        varied_params::Dict{String, <:Vector} = Dict{String, Vector{Any}}()
+        varied_params = createParamDict()
     )
         # Determine D from params or metadata
         # D = min(get(shared_params,"dimension",Inf))
@@ -121,7 +123,7 @@ struct SimulationConfig{D, F <: AbstractSimulator{D}}
                   (default_methods == "all" ? all_methods : [default_methods]) : 
                   copy(default_methods)
         
-        new{D, typeof(sim_functor)}(sim_functor, methods_dict, methods, shared_params, varied_params)
+        new{D, typeof(sim_functor)}(sim_functor, createMethodDict(methods_dict), methods, createParamDict(shared_params), createParamDict(varied_params))
     end
 end
 
@@ -164,7 +166,7 @@ function createSimData(
     x::Matrix{Float64}, 
     u::Matrix{Float64}, 
     t::AbstractVector{Float64}, 
-    params::Dict{String, Any}, 
+    params::ParamDict, 
 )
     n_particles, n_time = size(x)
     
@@ -195,7 +197,7 @@ function createSimData(
     x::Matrix{SVector{D, Float64}}, 
     u::AbstractArray{T, 3}, 
     t::AbstractVector{Float64}, 
-    params::Dict{String, Any}, 
+    params::ParamDict, 
 ) where {D, T}
     
     n_particles, n_time = size(x)
@@ -226,7 +228,7 @@ function createSimData(
     x::Vector{Vector{Float64}}, 
     u::Vector{Matrix{Float64}}, 
     t::Vector{Float64}, 
-    params::Dict{String, Any}
+    params::ParamDict
 )
     # 1. Map positions to 1D SVectors (Time -> Particles -> Position)
     x_standardized = [ [SVector{1, Float64}(pos) for pos in step_x] for step_x in x ]
@@ -254,33 +256,7 @@ mutable struct PlotManager{D}
     controls::Dict{String, Observable} # NEW: Flat Dict for dynamic widget stat
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
-    last_run_params::Dict{String, Any}
-end
-
-function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) where {F,D}
-    vars = collect(keys(sim_config.varied_params))
-    push!(vars,BaseVariables[1])
-    append!(vars,BaseVariables[2:D+1])
-    push!(vars,BaseVariables[end])
-
-    base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:D+1]; [:slider]])
-    sim_obs = NestedObsDict()
-    sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
-    for (m_name, m_params) in sim_config.methods_dict
-        sim_obs[m_name] = Dict(k => Observable(v) for (k, v) in m_params)
-    end
-
-    ui_obs = NestedObsDict()
-    for (scope, keys_dict) in ui_raw
-        ui_obs[scope] = Dict(k => Observable(v) for (k, v) in keys_dict)
-    end
-
-    methods_obs = Observable(copy(sim_config.default_methods))
-
-    # Initialize empty; populated by create_plot_controls!
-    controls_obs = Dict{String, Observable}("base_types" => base_types)
-
-    return PlotManager{D}(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
+    last_run_params::ParamDict
 end
 
 # --- Plotting Data Structure ---
@@ -303,30 +279,5 @@ struct UnifiedPlotData{N}
     t_vals::Vector{Float64}
     
     # Snapshot of the configuration used to create this
-    fixed_params::FixedDictType 
-end
-
-# --- Constructors / Dispatch ---
-
-
-
-function mergeParams(shared_params::ParamDictType, methods::MethodDictType)
-    merged = copy(shared_params)
-    for (_, val) = methods
-        merged = merge(merged, val)
-    end
-    return merged
-end
-
-function parseValue(s::String)
-    try
-        # Meta.parse turns a string into a Julia expression.
-        # `eval` executes that expression.
-        return eval(Meta.parse(s))
-    catch e
-        # If parsing fails, it's probably just a plain string.
-        # We also strip quotes that CSV readers sometimes add.
-        return s == "<empty>" ? "" : string(strip(s, '\"'))
-    end
-end
+    fixed_params::FixedDict 
 end

@@ -9,10 +9,6 @@ include(path * "Structs.jl")
 include(path * "Utils.jl")
 include(path * "DataProcessing.jl")
 
-using .Structs
-using .Utils
-using .DataProcessing
-
 # --- 1. Define Dummy Simulation Function ---
 
 function dummy_simulation_func(params::ParamDictType)

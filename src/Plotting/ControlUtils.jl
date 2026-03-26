@@ -1,65 +1,117 @@
-function saveParametersToCSV(
-    base_filename::String,
-    save_dir::String,
-    manager::PlotManager,
-    metadata_general::Dict
-)::Bool
-    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+"""
+    create_method_checkboxes_figure(possible_methods, active_methods; target_layout_ratio=0.5, cell_size=(150, 30), fig_padding=20) -> (fig, fig_layout)
+
+Creates a separate Figure containing checkboxes for all `possible_methods`. The checkboxes
+are connected to the `active_methods` Observable for synchronous toggling.
+
+The figure size and number of rows/columns in the grid are automatically calculated 
+to optimize space based on the number of methods and a target layout aspect ratio.
+- `target_layout_ratio`: Target ratio of grid rows:grid columns (default 0.5, meaning twice as wide).
+- `cell_size`: Estimated pixel size (width, height) for each checkbox+label unit.
+"""
+function create_method_checkboxes_figure(
+    possible_methods::Vector{String},
+    active_methods::Observable{Vector{String}};
+    target_layout_ratio::Real = 0.5, 
+    cell_size::Tuple{Int, Int} = (150, 30),
+    fig_padding::Int = 20
+)
+    # --- 1. Calculate Optimal Layout & Figure Size ---
+    total_methods = length(possible_methods)
     
-    try
-        cats, scopes, params, vals = String[], String[], String[], String[]
+    # Handle edge case for zero or empty inputs safely
+    if total_methods == 0 || isempty(possible_methods)
+        @warn "No possible methods provided. Unable to create figure."
+        return nothing, nothing
+    end
+    
+    # Based on the formula: Rows/Cols ≈ TargetRatio AND Rows*Cols ≈ TotalMethods
+    # We solve for columns: Cols ≈ sqrt(TotalMethods / TargetRatio)
+    cols = ceil(Int, sqrt(total_methods / target_layout_ratio))
+    
+    # Safety checks for single-column/single-row cases
+    if cols < 1; cols = 1; end
+    rows = ceil(Int, total_methods / cols)
+    
+    # Add one row for the title
+    total_rows_with_title = rows + 1
+    
+    # Calculate physical figure size based on layout and estimated cell sizes
+    fig_width = cols * cell_size[1] + fig_padding
+    fig_height = total_rows_with_title * cell_size[2] + fig_padding + 10 # extra for title gap
 
-        function add_row(cat, scope, p, v)
-            push!(cats, string(cat)); push!(scopes, string(scope))
-            push!(params, string(p)); push!(vals, Utils._value_to_string_for_csv(to_value(v)))
-        end
+    # --- 2. Create Figure & GridLayout ---
+    fig = Figure(size = (fig_width, fig_height))
+    fig_layout = fig[1, 1] = GridLayout()
+    # Force the title row size, leave others flexible
+    rowsize!(fig_layout, 1, Fixed(40)) 
 
-        # --- 1. CATEGORY: Metadata ---
-        # Scope: General (Timestamp, Save Type)
-        for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
+    # --- 3. Add Figure Title ---
+    Label(fig_layout[1, 1:cols], "Toggle Active Comparison Methods", fontsize=18, font=:bold, halign=:center)
+
+    # --- 4. Create Grid of Checkboxes & Labels ---
+    checkbox_layout = fig_layout[2:total_rows_with_title, 1:cols] = GridLayout()
+
+
+    # Dictionaries to store widgets for mass updates
+    checkbox_widgets = Dict{String, Checkbox}()
+    is_internal_bulk_update = Observable(false) # Flag to prevent circular updates
+
+    for (i, method_name) in enumerate(possible_methods)
+        # Calculate cell coordinates (r: rows index, c: columns index)
+        r = ((i - 1) ÷ cols) + 1
+        c = ((i - 1) % cols) + 1
         
-        # Scope: Git
-        git_info = Utils.get_git_info(pwd()) # Uses your existing util
-        if !isnothing(git_info)
-            for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
-        end
+        # Sub-layout for Checkbox + Label inside the target cell
+        cell_layout = checkbox_layout[r, c] = GridLayout(tellwidth=false, tellheight=false)
 
-        # Scope: Julia (Versions)
-        julia_info = get_julia_info()
-        for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
-
-        # Scope: Scene (The specific snapshot settings)
-        # We flatten the scene dicts (usually manager.scene["Current"])
-        for (scope, dict) in manager.scene
-            for (k, v) in dict; add_row("Metadata", "Scene", k, v); end
-        end
-
-        # --- 2. CATEGORY: Simulation ---
-        # Shared params
-        for (k, v) in manager.simulation["shared"]
-            add_row("Simulation", "shared", k, v)
-        end
-        # Active method params
-        for m_name in manager.methods[]
-            if haskey(manager.simulation, m_name)
-                for (k, v) in manager.simulation[m_name]
-                    add_row("Simulation", m_name, k, v)
+        # Create the widgets, initial checked state based on active_methods vector
+        cb = Checkbox(cell_layout[1, 1]; checked = (method_name in active_methods[]))
+        Label(cell_layout[1, 2], method_name, halign=:right) # User requested right alignment
+        
+        checkbox_widgets[method_name] = cb
+        colsize!(cell_layout, 1, Fixed(30)) # Fixed size for the box itself
+        # Remaining area is Auto sized for the label to allow it to right align easily
+        colsize!(cell_layout, 2, Auto()) 
+        # --- 5. Observer: Update observable when checkbox is clicked (UI -> Observable) ---
+        on(cb.checked) do is_checked
+            # Only trigger logic if this isn't a bulk update from the manager
+            if !is_internal_bulk_update[]
+                # Modify active_methods
+                curr_list = active_methods[]
+                if is_checked
+                    # Add
+                    method_name ∉ curr_list && (active_methods[] = [curr_list; method_name])
+                else
+                    # Remove
+                    active_methods[] = filter(s -> s != method_name, curr_list)
                 end
             end
         end
-
-        # --- 3. CATEGORY: UI ---
-        for (scope, dict) in manager.ui
-            for (k, v) in dict; add_row("UI", scope, k, v); end
-        end
-
-        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
-        @info "Metadata and Parameters saved to $csv_filename"
-        return true
-    catch e
-        @error "CSV Save Failed" exception=(e, catch_backtrace())
-        return false
     end
+    # Align all label columns with right alignment, fixed checkbox widths
+    for r in 1:rows
+        rowsize!(checkbox_layout, r, Fixed(cell_size[2]))
+    end
+    # --- 6. Bulk Observer: Update all checkboxes when the list changes (Observable -> UI) ---
+    on(active_methods) do new_list
+        # Apply lock flag
+        is_internal_bulk_update[] = true
+        
+        # Synchronize all checkbox visual states
+        for (m_name, cb) in checkbox_widgets
+            new_checked_state = (m_name in new_list)
+            # Only trigger updates/notify visually if the state actually changes
+            if cb.checked[] != new_checked_state
+                cb.checked[] = new_checked_state
+            end
+        end
+        
+        # Release lock
+        is_internal_bulk_update[] = false
+    end
+
+    return fig, fig_layout
 end
 
 function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
@@ -72,7 +124,7 @@ function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
         if isempty(base_name); return; end
 
         # Setup directory
-        save_dir = joinpath(Utils.get_save_path(), "figures")
+        save_dir = joinpath(get_save_path(), "figures")
         if manager.ui["Various"]["create_savefolder"][]
             save_dir = joinpath(save_dir, base_name)
         end
@@ -99,7 +151,7 @@ function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
             "Timestamp" => string(Dates.now()),
             "Project Root" => pwd()
         )
-        capture_scene_metadata!(manager,)
+
         saveParametersToCSV(base_name, save_dir, manager, metadata_general)
         
         saveBox.stored_string = "" # Reset
@@ -221,7 +273,7 @@ function createAnimationControls!(
         is_animating[] = false # Stop live playback
         
         # Setup Export
-        save_path = joinpath(Utils.get_save_path(), "animations")
+        save_path = joinpath(get_save_path(), "animations")
         mkpath(save_path)
         fname = joinpath(save_path, gif_name.stored_string[] * ".gif")
         
@@ -309,51 +361,6 @@ function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{V
     end
 end
 
-
-"""
-    smart_parse_and_update!(obs::Observable, input_str::String)
-
-Attempts to parse `input_str` into the same type as the current value of `obs`.
-If parsing fails or types are incompatible, it prints a warning and leaves the 
-observable unchanged.
-"""
-function smart_parse_and_update!(obs::Observable, input_str::String)
-    # Ignore empty inputs (usually handled by the placeholder logic)
-    (isempty(input_str) || input_str == "default") && return
-    
-    current_val = to_value(obs)
-    T = typeof(current_val)
-
-    try
-        if T == String
-            obs[] = input_str
-        elseif T == Symbol
-            obs[] = Symbol(input_str)
-        elseif T == Bool
-            # Handle true/false, 1/0, yes/no
-            s = lowercase(strip(input_str))
-            obs[] = (s == "true" || s == "1" || s == "yes")
-        elseif T <: Int
-            obs[] = parse(Int, input_str)
-        elseif T <: AbstractFloat
-            obs[] = parse(Float64, input_str)
-        elseif T <: Tuple || T <: Vector
-            # For complex types, we use the general parser but check the result type
-            parsed = parseValue(input_str) 
-            if typeof(parsed) == T
-                obs[] = parsed
-            else
-                @warn "Type mismatch for complex input. Expected $T, but got $(typeof(parsed))."
-            end
-        else
-            # Fallback for any other types
-            obs[] = parse(T, input_str)
-        end
-    catch e
-        @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
-    end
-end
-
 """
     create_base_overwrite_controls!(layout, manager)
 
@@ -367,7 +374,7 @@ function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManage
     
     # Base variable names from Structs (Component, X, Y, Z, Time)
     # We filter them based on the simulation dimension D
-    base_names = [Structs.VariableNames[1]; Structs.VariableNames[2:1+D]; Structs.VariableNames[5]]
+    base_names = [VariableNames[1]; VariableNames[2:1+D]; VariableNames[5]]
     
     menu_var = Menu(layout[1, 1], options = base_names, width = 120, prompt = "Select...")
     tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
@@ -393,7 +400,7 @@ function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManage
             # Restore the default symbol from Structs [cite: 167]
             # VariableControls mapping: 1=menu, 2-4=slider, 5=slider
             default_map = [1, (2 for _ in 1:D)..., 5]
-            vt[idx] = Structs.VariableControls[default_map[idx]]
+            vt[idx] = VariableControls[default_map[idx]]
             @info "Restored default control for $var_name."
         else
             # Attempt to parse as a number to fix the dimension [cite: 227]
@@ -414,99 +421,6 @@ function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManage
         tb_val.stored_string[] = ""
     end
 end
-
-# """
-#     capture_scene_metadata!(manager::PlotManager, x_key, y_key, plot_dim_idx, selector_values, active_params)
-
-# Automatically populates the manager.scene["Current"] dictionary based on the 
-# current state of the axis selection menus and exploration sliders.
-# """
-# function capture_scene_metadata!(
-#     manager::PlotManager,
-#     x_key::String,
-#     y_key::String,
-#     plot_dim_idx::Int,
-#     selector_values::Vector{Observable},
-#     active_params::Vector{String}
-# )
-#     scene_dict = manager.scene["Current"]
-    
-#     # 1. Save Axis Context
-#     scene_dict["x_key"] = Observable(x_key)
-#     scene_dict["y_key"] = Observable(y_key)
-#     scene_dict["plot_along_idx"] = Observable(plot_dim_idx)
-
-#     # 2. Map indices back to names for clarity
-#     n_params = length(active_params)
-#     dim_names = Dict{Int, String}()
-#     for (i, p) in enumerate(active_params); dim_names[i] = p; end
-#     dim_names[n_params+1] = "Component"
-#     dim_names[n_params+2] = "Space"
-#     dim_names[n_params+3] = "Time"
-
-#     # 3. Save Slider/Menu Values
-#     for i in 1:length(selector_values)
-#         name = dim_names[i]
-#         val = to_value(selector_values[i])
-        
-#         # We mark the plotting axis value as :axis for clarity in the CSV
-#         scene_dict[name] = i == plot_dim_idx ? Observable(:axis) : Observable(val)
-#     end
-# end
-
-"""
-    capture_scene_metadata!(manager::PlotManager)
-
-Iterates through all registered UI controls and saves their current values
-into the metadata for the CSV export.
-"""
-function capture_scene_metadata!(manager::PlotManager)
-    # We grab the to_value of every observable in controls
-    return Dict(k => to_value(v) for (k, v) in manager.controls)
-end
-
-# """
-#     apply_scene_state!(manager::PlotManager, widgets::Vector{Any}, menu_x::Menu, menu_y::Menu, menu_axis::Menu)
-
-# Sets the values of UI widgets based on the state stored in manager.scene["Current"].
-# """
-# function apply_scene_state!(
-#     manager::PlotManager, 
-#     widgets::Vector{Any}, # From build_static_plot_controls!
-#     menu_x::Menu, 
-#     menu_y::Menu, 
-#     menu_axis::Menu
-# )
-#     state = manager.scene["Current"]
-#     active_params = sort(collect(keys(manager.simulation["shared"]))) # Approximation
-#     n_params = length(active_params)
-    
-#     # 1. Restore Menus
-#     if haskey(state, "x_key"); menu_x.selection[] = to_value(state["x_key"]); end
-#     yield() # Let reactive filters update menu_y options
-    
-#     if haskey(state, "y_key"); menu_y.selection[] = to_value(state["y_key"]); end
-#     yield()
-    
-#     if haskey(state, "plot_along_idx"); menu_axis.selection[] = to_value(state["plot_along_idx"]); end
-#     yield()
-
-#     # 2. Restore Sliders and Component Menus
-#     dim_names = vcat(active_params, ["Component", "Space", "Time"])
-    
-#     for (i, name) in enumerate(dim_names)
-#         !haskey(state, name) && continue
-#         saved_val = to_value(state[name])
-#         saved_val == :axis && continue # Skip the dimension being used as the X-axis
-        
-#         widget = widgets[i]
-#         if widget isa Slider
-#             set_close_to!(widget, saved_val)
-#         elseif widget isa Menu
-#             widget.selection[] = string(saved_val)
-#         end
-#     end
-# end
 
 """
     apply_scene_state!(manager::PlotManager, saved_state::Dict)

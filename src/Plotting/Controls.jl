@@ -1,18 +1,4 @@
-module Controls
-
-export PlotManager, create_controls, attach_plot_controls!
-
-using GLMakie
-using CairoMakie
-using Printf
-using Statistics
-using LibGit2
-using CSV, DataFrames
-using Dates
-using ..Structs
-using ..Utils
-
-include("ControlUtils.jl")
+include("ControlUtils.jl") 
 
 """
     create_controls(...)
@@ -69,12 +55,30 @@ function create_controls(
     end
     current_row += 1
 
-    # 2. METHOD SELECTION 
-    Label(fig_layout[current_row, 1], "Active Comparison Methods:", fontsize=16, font=:bold)
+# 2. METHOD SELECTION (Updated to Button trigger)
+    Label(fig_layout[current_row, 1], "Comparison Methods:", fontsize=16, font=:bold)
     current_row += 1
     
-    method_checkbox_layout = fig_layout[current_row, 1] = GridLayout()
-    createMethodCheckboxes!(method_checkbox_layout, manager.methods, manager) 
+    method_btn_layout = fig_layout[current_row, 1] = GridLayout()
+    method_button = Button(method_btn_layout[1, 1], label="Select Methods...", 
+                           width=250, buttoncolor=:lightgray)
+    
+    # Identify all possible methods from the simulation dictionary [cite: 291]
+    all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
+
+    on(method_button.clicks) do _
+        # Create the separate, auto-sizing figure [cite: 292]
+        m_fig, _ = create_method_checkboxes_figure(
+            all_method_names,
+            manager.methods;
+            target_layout_ratio = 0.5 # Maintain your preferred 1:2 ratio
+        )
+        
+        # Display the new window
+        if !isnothing(m_fig)
+            display(m_fig)
+        end
+    end
     current_row += 1
 
     # 3. HIERARCHICAL PARAMETER NAVIGATOR
@@ -173,11 +177,11 @@ function build_static_plot_controls!(
         if is_basevar
             base_idx = i - n_params
             if base_idx == 1
-                ctrl_type = Structs.VariableControls[1] # Component
+                ctrl_type = VariableControls[1] # Component
             elseif base_idx <= 1 + D
-                ctrl_type = Structs.VariableControls[base_idx] # Space (X, Y, Z)
+                ctrl_type = VariableControls[base_idx] # Space (X, Y, Z)
             else
-                ctrl_type = Structs.VariableControls[5] # Time
+                ctrl_type = VariableControls[5] # Time
             end
         end
         
@@ -462,6 +466,4 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     end
     mgr.controls["UI_Update"] = ui_update
     return
-end
-
 end

@@ -42,8 +42,12 @@ function run_final_test()
     shared = Dict{String, Any}("L" => 10.0, "n_steps" => 40, "n_x" => 60)
     methods = Dict(
         "Euler_Wave" => Dict{String, Any}("type" => "euler", "amplitude" => 1.0),
-        "Lagrange_Wave" => Dict{String, Any}("type" => "lagrange", "amplitude" => 1.0)
+        "Lagrange_Wave" => Dict{String, Any}("type" => "lagrange", "amplitude" => 1.0),
+        "Analytic_Wave" => Dict{String, Any}("type" => "analytic", "amplitude" => 1.0), # Added another for size testing
+        "Static_Wave" => Dict{String, Any}("type" => "euler", "amplitude" => 0.5), # Added for size testing
     )
+    # Define explicitly all possible methods here
+    possible_methods = ["Euler_Wave", "Lagrange_Wave", "Analytic_Wave", "Static_Wave"]
     # Varied parameter: frequency
     varied = Dict{String, Vector{Any}}("frequency" => [0.5, 1.0, 2.0])
 
@@ -51,10 +55,21 @@ function run_final_test()
 
     # 2. Launch Orchestrator
     println("--- Launching Orchestrator ---")
-    plot_fig, ctrl_fig, manager = show_unified_fig(
+    plot_fig, ctrl_fig, manager = Base.invokelatest(show_unified_fig,
         sim_config; 
         ui_options = :default,
     )
+# 2. Add New Method Toggling Figure
+    println("--- Launching Method Toggler Figure ---")
+    # Make sure GLMakie is active before opening a new window
+    # IPlotPDESols.Utils.GLMakie.activate!() # If Utils module re-exports GLMakie
+
+    method_fig, _ = create_method_checkboxes_figure(
+        possible_methods,
+        manager.methods
+    )
+    # Display the separate figure
+    display(method_fig)
 
     # 3. --- UI DEBUG INJECTION ---
     println("--- Attaching UI Debug Listeners ---")
