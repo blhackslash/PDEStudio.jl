@@ -28,10 +28,10 @@ module DataProcessing
                           AbstractSimData, ESimData, LSimData, SimulationConfig,
                           UnifiedPlotData, BaseVariables, PlotManager
     using GLMakie: Observable, to_value
-    using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2
+    using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg
     
     # Export only the functions the UI needs to call
-    export update_plot_data_collection!
+    export update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
     
     include("DataProcessing/TensorBuilder.jl")
 end
@@ -47,7 +47,7 @@ module UI
                           VariableControls, VariableNames, BaseVariables
         
     # Look across to the sibling module for the data pipeline
-    using ..DataProcessing: update_plot_data_collection!
+    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
     
     using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
     

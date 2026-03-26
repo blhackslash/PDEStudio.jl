@@ -61,9 +61,15 @@ function show_unified_fig(
         notify(plot_data_obs)
     end
 
+    final_scene = merge(get_base_scene_options(), scene_options)
+    # a) Trigger initial data load. This synchronously populates the UI menus.
+    sim_update[] = 1 
+    
+    # b) Apply Scene defaults safely AFTER data is populated and limits are known.
+    set_defaults!(manager, final_scene)
     # 4. Clean Render Setup
     setup_render_lift!(ax, plot_fig, plot_data_obs, manager)
-
+    
     sim_update[] = 0 
     return plot_fig, ctrl_fig, manager
 end

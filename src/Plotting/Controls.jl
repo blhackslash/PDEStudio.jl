@@ -116,16 +116,24 @@ function create_controls(
         menu_area, slider_area, plot_data_obs, active_params, manager
     )
 
-   # 4. SAVE CONTROLS
-    Label(fig_layout[current_row, 1], "Export Options:", fontsize=16, font=:bold)
+# 4. ANIMATION PREVIEW
+    Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
-    save_box_layout = fig_layout[current_row, 1] = GridLayout()
-    createSaveFigBox(save_box_layout, plot_fig, manager)
+    Label(fig_layout[current_row, 1], "Animation Preview:", fontsize=16, font=:bold, color=:darkorange)
+    current_row += 1
+    
+    anim_layout = fig_layout[current_row, 1] = GridLayout()
+    # Returns the target observable so the GIF exporter knows what to animate!
+    anim_target_obs = createAnimationPreview!(anim_layout, manager, dim_obs, widgets, active_params)
     current_row += 1
 
-    anim_layout = fig_layout[current_row, 1] = GridLayout()
-    createAnimationControls!(anim_layout, plot_fig, manager, dim_obs, widgets, active_params)
+    # 5. EXPORT OPTIONS
+    Label(fig_layout[current_row, 1], "Export Options:", fontsize=16, font=:bold, color=:purple)
+    current_row += 1
     
+    export_layout = fig_layout[current_row, 1] = GridLayout()
+    createExportOptions!(export_layout, plot_fig, manager, anim_target_obs, dim_obs, widgets, active_params)
+    current_row += 1
 
     display(GLMakie.Screen(title="Makie Controls"), base_controls_fig)
 
@@ -141,6 +149,7 @@ function build_static_plot_controls!(
 ) where {D}
     # 1. Metadata & Initialization
     dim_names = active_params
+    println(dim_names)
     total_dims = length(dim_names)
     n_params = total_dims - (D + 2) 
     
@@ -151,23 +160,32 @@ function build_static_plot_controls!(
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-    # 2. Setup Axis Menus
+# 2. Setup Axis Menus
     Label(menu_layout[1,1],"X-Axis")
     Label(menu_layout[1,2],"Y-Axis")
     Label(menu_layout[1,3],"Plot-Along")
-    menu_x = Menu(menu_layout[2,1], options = ["-"],width = 100)
-    menu_y = Menu(menu_layout[2,2], options = ["-"],width = 100)
-    menu_axis = Menu(menu_layout[2,3], options = [("-", 1)],width = 100)
-# Force the layout to respect these widths
-    colsize!(menu_layout, 1, Fixed(100))
-    colsize!(menu_layout, 2, Fixed(100))
-    colsize!(menu_layout, 3, Fixed(100))    
-    
-    manager.controls["X-Axis_Selection"] = menu_x.selection
-    manager.controls["Y-Axis_Selection"] = menu_y.selection
-    manager.controls["Plot-Along_Selection"] = menu_axis.selection
+    menu_x = Menu(menu_layout[2,1], options = ["-"], width = 120)
+    menu_y = Menu(menu_layout[2,2], options = ["-"], width = 120)
+    menu_axis = Menu(menu_layout[2,3], options = [("-", 1)], width = 120)
 
-    # 3 & 4. Unified Widget Creation (Varied Params + Base Vars)
+    colsize!(menu_layout, 1, Fixed(120))
+    colsize!(menu_layout, 2, Fixed(120))
+    colsize!(menu_layout, 3, Fixed(120))    
+    
+    # EXPOSE OPTIONS AND SELECTIONS
+    manager.controls["X-Axis_Selection"] = menu_x.selection
+    manager.controls["X-Axis_Options"]   = menu_x.options
+    manager.controls["X-Axis_Widget"]    = menu_x   # <-- ADD THIS
+
+    manager.controls["Y-Axis_Selection"] = menu_y.selection
+    manager.controls["Y-Axis_Options"]   = menu_y.options
+    manager.controls["Y-Axis_Widget"]    = menu_y   # <-- ADD THIS
+
+    manager.controls["Plot-Along_Selection"] = menu_axis.selection
+    manager.controls["Plot-Along_Options"]   = menu_axis.options
+    manager.controls["Plot-Along_Widget"]    = menu_axis # <-- ADD THIS
+
+    # 3 & 4. Unified Widget Creation 
     for i in 1:total_dims
         Label(slider_layout[i, 1], "$(dim_names[i]):", halign=:right)
         
@@ -176,29 +194,32 @@ function build_static_plot_controls!(
         
         if is_basevar
             base_idx = i - n_params
-            if base_idx == 1
-                ctrl_type = VariableControls[1] # Component
-            elseif base_idx <= 1 + D
-                ctrl_type = VariableControls[base_idx] # Space (X, Y, Z)
-            else
-                ctrl_type = VariableControls[5] # Time
-            end
+            if base_idx == 1; ctrl_type = VariableControls[1]
+            elseif base_idx <= 1 + D; ctrl_type = VariableControls[base_idx]
+            else; ctrl_type = VariableControls[5]; end
         end
         
         if ctrl_type == :menu
-            m = Menu(slider_layout[i, 2], options = ["1"],width = 200)
+            m = Menu(slider_layout[i, 2], options = ["1"], width = 200)
             control_objects[i] = m
             selector_values[i] = Observable{Int}(1)
             on(m.selection) do s
                 if !isnothing(s) && s != "-"; selector_values[i][] = parse(Int, s); end
             end
+            
+            # EXPOSE OPTIONS AND SELECTIONS
             manager.controls["$(dim_names[i])_Selection"] = m.selection
+            manager.controls["$(dim_names[i])_Options"]   = m.options 
+            manager.controls["$(dim_names[i])_Widget"]    = m  # <-- ADD THIS
         else
-            sl = Slider(slider_layout[i, 2], range = 0:0.1:1,width = 200)
+            sl = Slider(slider_layout[i, 2], range = 0:0.1:1, width = 200)
             control_objects[i] = sl
             selector_values[i] = sl.value
+            
+            # EXPOSE RANGES AND VALUES
             manager.controls["$(dim_names[i])_Value"] = sl.value
             manager.controls["$(dim_names[i])_Range"] = sl.range
+            manager.controls["$(dim_names[i])_Widget"] = sl  # <-- ADD THIS
         end
         
         Label(slider_layout[i, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
@@ -239,12 +260,6 @@ function build_static_plot_controls!(
         sorted_keys = sort(collect(all_keys))
         
         menu_x.options[] = sorted_keys
-        if menu_x.selection[] == "-" || isnothing(menu_x.selection[]) || !(menu_x.selection[] in sorted_keys)
-            menu_x.selection[] = isempty(sorted_keys) ? "-" : sorted_keys[1]
-            menu_x.i_selected = isempty(sorted_keys) ? 0 : 1
-        else
-            notify(menu_x.selection) 
-        end
     end
 
     on(menu_x.selection) do x_val
@@ -282,12 +297,6 @@ function build_static_plot_controls!(
         menu_y.options[] = valid_y
         x_key_obs[] = x_val
         
-        if menu_y.selection[] ∉ valid_y
-            menu_y.selection[] = isempty(valid_y) ? "-" : valid_y[1]
-            menu_y.i_selected = isempty(valid_y) ? 0 : 1
-        else
-            notify(menu_y.selection)
-        end
     end
 
     on(menu_y.selection) do y_val
@@ -319,7 +328,7 @@ function build_static_plot_controls!(
         
         if menu_axis.selection[] == "-" || menu_axis.selection[] ∉ common
             menu_axis.selection[] = isempty(common) ? 1 : common[end]
-            menu_axis.i_selected = isempty(common) ? 1 : length(common)
+            menu_axis.i_selected[] = isempty(common) ? 1 : length(common)
         else
             notify(menu_axis.selection)
         end
@@ -395,10 +404,12 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     # Categories are fixed strings matching the field names (capitalized for UI)
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui, "Controls" => :controls)
     sorted_cat = sort(collect(keys(cat_mapping)))
-    menu_cat = Menu(layout[1, 1:2], options = sorted_cat, default = "UI", prompt = "Category...")
-    
-    menu_scope = Menu(layout[2, 1:2], options = ["-"], default = "-", prompt = "Scope...")
-    menu_key = Menu(layout[3, 1:2], options = ["-"], default = "-", prompt = "Key...")
+    menu_cat = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...",width = 120)
+    menu_cat.i_selected[] = 0
+    menu_scope = Menu(layout[1, 2], options = ["-"], default = "-", prompt = "Scope...",width = 120)
+    menu_scope.i_selected[] = 0
+    menu_key = Menu(layout[1, 3], options = ["-"], default = "-", prompt = "Key...",width = 120)
+    menu_key.i_selected[] = 0
     
     active_target_obs = Observable{Any}(nothing)
     ui_update = Observable{Int}(0)
@@ -431,7 +442,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     end
 
     # 4. Textbox with Live Placeholder
-    Label(layout[4, 1], "Edit Value:", halign=:right)
+    Label(layout[2, 1], "Edit Value:", halign=:right)
     
     # Show what is currently loaded in the plot
     placeholder_text = lift(menu_key.selection) do k
@@ -440,7 +451,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         return "Loaded: $val"
     end
 
-    tb = Textbox(layout[4, 2], placeholder = placeholder_text, reset_on_defocus = true)
+    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true,width = 250)
 
 # When a key is selected, we update the Textbox
     on(menu_key.selection) do key

@@ -514,12 +514,17 @@ function saveParametersToCSV(
         julia_info = get_julia_info()
         for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
 
-        # Scope: Scene (The specific snapshot settings)
-        # We flatten the scene dicts (usually manager.scene["Current"])
-        for (scope, dict) in manager.scene
-            for (k, v) in dict; add_row("Metadata", "Scene", k, v); end
+        # --- NEW CATEGORY: Scene ---
+        # Dynamically pulls all active UI widget states directly from controls
+        for (key, obs) in manager.controls
+            if endswith(key, "_Value")
+                base_name = replace(key, "_Value" => "")
+                add_row("Scene", "Slider", base_name, obs)
+            elseif endswith(key, "_Selection")
+                base_name = replace(key, "_Selection" => "")
+                add_row("Scene", "Menu", base_name, obs)
+            end
         end
-        capture_scene_metadata!(manager,)
         # --- 2. CATEGORY: Simulation ---
         # Shared params
         for (k, v) in manager.simulation["shared"]

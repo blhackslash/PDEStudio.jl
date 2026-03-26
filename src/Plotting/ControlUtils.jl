@@ -114,66 +114,19 @@ function create_method_checkboxes_figure(
     return fig, fig_layout
 end
 
-function createSaveFigBox(target_layout, plot_fig::Figure, manager::PlotManager)
-    gb = target_layout[1, 1] = GridLayout()
-    Label(gb[1, 1], "Save Image+CSV:", halign=:right)
-    saveBox = Textbox(gb[1, 2], placeholder = "Filename", width=200)
-
-    on(saveBox.stored_string) do s
-        base_name = string(strip(s))
-        if isempty(base_name); return; end
-
-        # Setup directory
-        save_dir = joinpath(get_save_path(), "figures")
-        if manager.ui["Various"]["create_savefolder"][]
-            save_dir = joinpath(save_dir, base_name)
-        end
-        mkpath(save_dir)
-
-        # 1. Save Figures (Handle formats)
-        formats = manager.ui["Various"]["save_formats"][]
-        for fmt in formats
-            ext = lowercase(strip(fmt))
-            full_path = joinpath(save_dir, base_name * ".$ext")
-            
-            if ext in ["pdf", "svg"]
-                CairoMakie.activate!()
-                save(full_path, plot_fig)
-                GLMakie.activate!() # Always switch back for interactivity
-            else
-                save(full_path, plot_fig)
-            end
-        end
-
-        # 2. Gather General Metadata and Save CSV
-        metadata_general = Dict(
-            "Save Type" => "Static Frame",
-            "Timestamp" => string(Dates.now()),
-            "Project Root" => pwd()
-        )
-
-        saveParametersToCSV(base_name, save_dir, manager, metadata_general)
-        
-        saveBox.stored_string = "" # Reset
-    end
-end
-
-
 """
-    createAnimationControls!(...)
+    createAnimationPreview!(layout, manager, plot_dim_obs, selector_widgets, active_params)
 
-Populates a layout with a static target menu. 
-Validation occurs when 'Play' or 'Save' is clicked.
+Populates a layout with a menu to select a target dimension and a Play/Stop button.
+Returns the observable tracking the selected animation target index.
 """
-function createAnimationControls!(
+function createAnimationPreview!(
     layout::GridLayout,
-    plot_fig::Figure,
     manager::PlotManager,
     plot_dim_obs::Observable{Int},
     selector_widgets::Vector{Any},
     active_params::Vector{String}
 )
-    # --- 1. Setup State & Metadata ---
     is_animating = Observable(false)
     animation_timer = Ref{Union{Timer, Nothing}}(nothing)
     
@@ -184,59 +137,45 @@ function createAnimationControls!(
     dim_names[n_params+2] = "Space"
     dim_names[n_params+3] = "Time"
 
-    # --- 2. Build UI Widgets (Static Options) ---
-    #Label(layout[1, 1], "Animate Target:")
-    
-    # We populate the menu ONCE with every possible dimension
+    # Dropdown to select the target
     all_opts = [(dim_names[i], i) for i in 1:length(selector_widgets)]
     anim_target_menu = Menu(layout[1, 1], options = all_opts, width=120)
-    # Set default to Time (the last index)
-    anim_target_menu.selection[] = length(selector_widgets)
+    anim_target_menu.selection[] = length(selector_widgets) # Default to Time
 
-    play_btn = Button(layout[1, 2], label="Play", width=60)
-    on(is_animating) do animating
-        play_btn.label[] = animating ? "Stop" : "Play"
-    end
+    # Play/Stop Button
+    play_btn = Button(layout[1, 2], label="Play Preview", width=100, buttoncolor=:lightyellow)
     
-    gif_name = Textbox(layout[1, 3], placeholder="filename", width=120)
-    gif_name.stored_string = "wave_anim"
-    save_btn = Button(layout[1, 4], label="Save GIF", buttoncolor=:lightgreen)
+    on(is_animating) do animating
+        play_btn.label[] = animating ? "Stop Preview" : "Play Preview"
+    end
 
-    # --- 3. Validation Helper ---
     function check_selection_validity(idx)
         if idx == 0 || isnothing(idx)
             @warn "Animation Error: No target selected."
             return false
         end
-        
         if idx == plot_dim_obs[]
             @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is currently the plotting axis."
             return false
         end
-        
         widget = selector_widgets[idx]
         if !(widget isa Slider)
             @warn "Animation Error: '$(dim_names[idx])' is a discrete Menu. Only Sliders can be animated."
             return false
         end
-        
         if length(widget.range[]) < 2
             @warn "Animation Error: Slider for '$(dim_names[idx])' has no range to animate."
             return false
         end
-        
         return true
     end
 
-    # --- 4. Play/Stop Logic ---
     on(play_btn.clicks) do _
         if is_animating[]
-            # Stop existing animation
             is_animating[] = false
             !isnothing(animation_timer[]) && close(animation_timer[])
             animation_timer[] = nothing
         else
-            # Validate and Start
             target_idx = anim_target_menu.selection[]
             !check_selection_validity(target_idx) && return
             
@@ -252,30 +191,116 @@ function createAnimationControls!(
                 if !is_animating[]
                     close(t); return
                 end
-                
-                # Sloop/Cycle logic
                 elapsed = mod(time() - start_time, duration)
                 progress = elapsed / duration
                 val = rng[1] + progress * (rng[end] - rng[1])
-                
-                # Smoothly scrub the target slider
                 set_close_to!(target_widget, val)
             end
         end
     end
 
-    # --- 5. Record Logic ---
-    on(save_btn.clicks) do _
-        target_idx = anim_target_menu.selection[]
+    return anim_target_menu.selection
+end
+
+"""
+    createExportOptions!(...)
+
+Populates a layout with a filename textbox and save buttons for Images and GIFs.
+"""
+function createExportOptions!(
+    layout::GridLayout,
+    plot_fig::Figure,
+    manager::PlotManager,
+    anim_target_obs::Observable,
+    plot_dim_obs::Observable{Int},
+    selector_widgets::Vector{Any},
+    active_params::Vector{String}
+)
+    n_params = length(active_params)
+    dim_names = Dict{Int, String}()
+    for (i, p) in enumerate(active_params); dim_names[i] = p; end
+    dim_names[n_params+1] = "Component"
+    dim_names[n_params+2] = "Space"
+    dim_names[n_params+3] = "Time"
+
+    # UI Layout: [ Filename Box ] [ Save Image ] [ Save GIF ]
+    saveBox = Textbox(layout[1, 1], placeholder = "Filename...", width=150)
+    btn_img = Button(layout[1, 2], label="Save Image", buttoncolor=:lightblue, width=100)
+    btn_gif = Button(layout[1, 3], label="Save GIF", buttoncolor=:lightgreen, width=100)
+
+    # Helper: Validation for GIF export
+    function check_selection_validity(idx)
+        if idx == 0 || isnothing(idx)
+            @warn "Export Error: No target selected in Animation Preview."
+            return false
+        end
+        if idx == plot_dim_obs[]
+            @warn "Export Error: Cannot animate '$(dim_names[idx])' because it is the plotting axis."
+            return false
+        end
+        widget = selector_widgets[idx]
+        if !(widget isa Slider)
+            @warn "Export Error: '$(dim_names[idx])' is a discrete Menu. Only Sliders can be animated."
+            return false
+        end
+        if length(widget.range[]) < 2
+            @warn "Export Error: Slider for '$(dim_names[idx])' has no range to animate."
+            return false
+        end
+        return true
+    end
+
+    # --- Image Save Logic ---
+    on(btn_img.clicks) do _
+        base_name = string(strip(saveBox.stored_string[]))
+        if isempty(base_name)
+            @info "No filename provided, using default 'plot_export'"
+            base_name = "plot_export"
+        end
+
+        save_dir = joinpath(get_save_path(), "figures")
+        if manager.ui["Various"]["create_savefolder"][]
+            save_dir = joinpath(save_dir, base_name)
+        end
+        mkpath(save_dir)
+
+        formats = manager.ui["Various"]["save_formats"][]
+        for fmt in formats
+            ext = lowercase(strip(fmt))
+            full_path = joinpath(save_dir, base_name * ".$ext")
+            
+            if ext in ["pdf", "svg"]
+                CairoMakie.activate!()
+                save(full_path, plot_fig)
+                GLMakie.activate!() 
+            else
+                save(full_path, plot_fig)
+            end
+        end
+
+        metadata_general = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
+        saveParametersToCSV(base_name, save_dir, manager, metadata_general)
+        @info "Image saved successfully as $(base_name)!"
+        
+        saveBox.stored_string = "" # Reset
+    end
+
+    # --- GIF Save Logic ---
+    on(btn_gif.clicks) do _
+        target_idx = anim_target_obs[]
         !check_selection_validity(target_idx) && return
         
         target_widget = selector_widgets[target_idx]
-        is_animating[] = false # Stop live playback
         
-        # Setup Export
+        base_name = string(strip(saveBox.stored_string[]))
+        if isempty(base_name)
+            @info "No filename provided, using default 'anim_export'"
+            base_name = "anim_export"
+        end
+        
         save_path = joinpath(get_save_path(), "animations")
         mkpath(save_path)
-        fname = joinpath(save_path, gif_name.stored_string[] * ".gif")
+        fname = joinpath(save_path, base_name * ".gif")
         
         duration = manager.ui["Various"]["animation_duration_s"][]
         fps = manager.ui["Various"]["animation_fps"][]
@@ -286,15 +311,17 @@ function createAnimationControls!(
         try
             record(plot_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
                 set_close_to!(target_widget, val)
-                # Yield to ensure the plot lift has time to process the slider move
                 yield() 
             end
             @info "GIF Saved Successfully."
         catch e
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         end
+        
+        saveBox.stored_string = "" # Reset
     end
 end
+
 
 """
     attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
@@ -439,6 +466,130 @@ function apply_scene_state!(manager::PlotManager, saved_state::Dict)
                 obs[] = val
             elseif endswith(key, "_Selection")
                 obs[] = string(val)
+            end
+        end
+    end
+end
+
+"""
+    get_base_scene_options() -> Dict{String, Any}
+
+Returns the fallback/default configuration for the UI menus and sliders.
+These values are used as a base and can be overwritten by user input.
+"""
+function get_base_scene_options()
+    return Dict{String, Any}(
+        # 1. Main Axis Selections (Using Strings for Data Keys)
+        "X-Axis_Selection"      => "x",      # Standard spatial coordinate
+        "Y-Axis_Selection"      => "u",      # Standard solution variable
+        
+        # 2. Plotting Dimension (Using Integer Index)
+        # 1=Component, 2=Space(X), 3=Space(Y)... (Depends on your VariableNames order)
+        "Plot-Along_Selection"  => "x",        # Usually Space(X)
+        
+        # 3. Base Variable Defaults (Using Indices to be safe)
+        "c_Selection"   => 1,        # First component (e.g., Density or u[1])
+        "t_Value"            => 25,        # First time step (Index 1)
+        "x_Value"        => 50,        # First spatial point (Index 1) - ignored if X is the axis
+        
+    )
+end
+"""
+    set_defaults!(manager::PlotManager, scene_options::Dict)
+
+Safely initializes UI widgets. Programmatically sets Menus by finding the target index 
+and modifying `i_selected[]`, and moves Sliders using `set_close_to!`.
+"""
+function set_defaults!(manager::PlotManager, scene_options::Dict)
+    isempty(scene_options) && return
+
+    # --- 1. STRICT RESOLUTION ORDER FOR MENUS ---
+    priority_keys = ["X-Axis", "Y-Axis", "Plot-Along"]
+
+    for key in priority_keys
+        sel_key = "$(key)_Selection"
+        widget_key = "$(key)_Widget"
+
+        (!haskey(scene_options, sel_key) || !haskey(manager.controls, widget_key)) && continue
+
+        desired_value = scene_options[sel_key]
+        widget = manager.controls[widget_key][]
+        opts = widget.options[]
+        isempty(opts) && continue
+
+        is_tuple_opts = !isempty(opts) && opts[1] isa Tuple
+
+        idx = nothing
+        
+        if is_tuple_opts
+            # If options are Tuples (like Plot-Along): [("x", 2), ("Time", 5)]
+            if desired_value isa String
+                # User passed a String (e.g., "x"). Search the Labels (first element).
+                idx = findfirst(o -> o[1] == desired_value, opts)
+            else
+                # User passed the raw Value (e.g., 2). Search the Values (second element).
+                idx = findfirst(o -> o[2] == desired_value, opts)
+            end
+        else
+            # If options are normal Strings (like X-Axis): ["x", "u", "t"]
+            idx = findfirst(v -> string(v) == string(desired_value), opts)
+        end
+        # If not found, check if the user passed an integer index directly as a fallback
+        if isnothing(idx) && desired_value isa Integer && 1 <= desired_value <= length(valid_values)
+            idx = desired_value
+        end
+        
+        # Ultimate fallback to 1 if nothing matches
+        if isnothing(idx)
+            @warn "Plot Along Fallback was set!"
+            idx = 1 
+        else
+            idx = idx
+        end
+        
+        # Trigger Makie natively by setting the internal index pointer!
+        widget.i_selected[] = idx
+    end
+
+    # --- 2. RESOLVE SLIDERS & COMPONENT MENUS ---
+# --- 2. RESOLVE SLIDERS & COMPONENT MENUS ---
+    for (key, desired_value) in scene_options
+        if endswith(key, "_Value") || endswith(key, "_Selection")
+            base_name = replace(key, r"(_Value|_Selection)" => "")
+            widget_key = "$(base_name)_Widget"
+
+            if haskey(manager.controls, widget_key)
+                
+                # THE FIX 1: Unwrap the Observable to get the physical widget!
+                widget = manager.controls[widget_key][] 
+
+                if widget isa Slider
+                    rng_key = "$(base_name)_Range"
+                    rng = manager.controls[rng_key][]
+                    isempty(rng) && continue
+
+                    val = Float64(rng[1])
+                    if (desired_value isa Real) && (rng[1] <= desired_value <= rng[end])
+                        val = Float64(desired_value)
+                    elseif desired_value isa Integer && 1 <= desired_value <= length(rng)
+                        val = Float64(rng[desired_value])
+                    end
+                    
+                    # THE FIX 2: Pass the widget itself to set_close_to!, not widget.value
+                    set_close_to!(widget, val)
+
+                elseif widget isa Menu
+                    opts = manager.controls["$(base_name)_Options"][]
+                    isempty(opts) && continue
+                    
+                    is_tuple_opts = !isempty(opts) && opts[1] isa Tuple
+                    valid_values = is_tuple_opts ? [o[2] for o in opts] : opts
+
+                    idx = findfirst(v -> string(v) == string(desired_value), valid_values)
+                    idx = isnothing(idx) ? 1 : idx
+                    
+                    widget.i_selected[] = idx
+                end
             end
         end
     end
