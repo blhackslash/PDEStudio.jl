@@ -7,7 +7,6 @@ using Dierckx
 using QuadGK
 using ProgressMeter
 using Random
-using DelaunayTriangulation
 
 export calculateAllStats!, calculateConvergenceData
 
