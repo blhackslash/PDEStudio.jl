@@ -1,8 +1,14 @@
 include("IOUtils.jl")         
 include("ConversionUtils.jl") 
 include("StatCalculation.jl")
+
 # Helper for nearest index lookup
 find_nearest_index(vals, target) = findmin(v -> abs(v - target), vals)[2]
+
+# Dynamic D extraction so we don't need to parameterize the whole file!
+_get_D(::AbstractSimData{D}) where D = D
+safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
+safe_reshape(data::Real, dims...) = fill(data, dims...)
 
 # ==============================================================================
 # 1. TASK & CONFIGURATION ANALYSIS
@@ -48,57 +54,83 @@ end
 # 2. DATA SLICING & DIMENSION HELPERS
 # ==============================================================================
 
-function resolve_dimensions(sim_data::AbstractSimData{D}, base_types::Vector) where D
-    if sim_data isa ESimData{D}
-        raw_c, raw_space, raw_t = size(sim_data.u, 1), size(sim_data.u)[2:D+1], size(sim_data.u, D+2)
-    elseif sim_data isa LSimData{D}
-        raw_t, raw_c = length(sim_data.t), size(sim_data.u[1][1], 1)
+function resolve_dimensions(sim_data::AbstractSimData, base_types::Vector)
+    D = _get_D(sim_data)
+    
+    if sim_data isa ESimData
+        raw_c = size(sim_data.u, 1)
+        raw_space_D = size(sim_data.u)[2:D+1]
+        raw_t = size(sim_data.u, D+2)
+    elseif sim_data isa LSimData
+        raw_t = length(sim_data.t)
+        raw_c = size(sim_data.u[1][1], 1)
         max_particles = maximum(length(step) for step in sim_data.u)
-        raw_space = (max_particles,)
+        raw_space_D = (max_particles,)
     end
 
+    # Pad raw space to exactly 3D
+    raw_space = ntuple(i -> i <= length(raw_space_D) ? raw_space_D[i] : 1, 3)
+
     eff_c = base_types[1] isa Number ? 1 : raw_c
-    eff_space = sim_data isa ESimData{D} ? 
-                ntuple(i -> base_types[1+i] isa Number ? 1 : raw_space[i], D) :
-                (base_types[2] isa Number ? 1 : raw_space[1],)
-    eff_t = base_types[D+2] isa Number ? 1 : raw_t
+    
+    # Pad effective space to exactly 3D
+    eff_space = ntuple(3) do i
+        if sim_data isa ESimData
+            if i <= D
+                return base_types[1+i] isa Number ? 1 : raw_space[i]
+            else
+                return 1
+            end
+        else # LSimData
+            if i == 1
+                return base_types[2] isa Number ? 1 : raw_space[1]
+            else
+                return 1
+            end
+        end
+    end
 
-    return eff_c, eff_space, eff_t, (sim_data isa LSimData ? raw_space[1] : 0), raw_c, raw_space, raw_t
+    # base_types is now always length 5 (Comp, X, Y, Z, Time)
+    eff_t = base_types[5] isa Number ? 1 : raw_t
+
+    max_p = sim_data isa LSimData ? raw_space[1] : 0
+
+    return eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t
 end
-
 
 """
     get_source_slices(base_types, D, raw_dims..., sim_data)
 
-Generates integer indices/ranges for slicing. Performs a nearest neighbor 
-search on physical coordinates (like time or grid points) if a number is provided.
+Generates integer indices/ranges for slicing.
 """
 function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tuple, raw_t::Int, sim_data::AbstractSimData)
     is_lagrangian = sim_data isa LSimData
     
-    # 1. Component Axis (Always an integer index)
+    # 1. Component Axis
     c_idx = base_types[1] isa Number ? Int(base_types[1]) : (1:raw_c)
     
-    # 2. Spatial Axes
+    # 2. Spatial Axes (Always returns 3 spatial slices)
     space_idx = if is_lagrangian
-        # Lagrangian space maps strictly to a Particle Index
-        base_types[2] isa Number ? Int(base_types[2]) : (1:raw_space[1])
+        p_idx = base_types[2] isa Number ? Int(base_types[2]) : (1:raw_space[1])
+        (p_idx, 1:1, 1:1)
     else
-        # Eulerian space: Search the grid axes for the closest physical coordinate
-        ntuple(D) do i
-            val = base_types[1+i]
-            if val isa Number
-                # Select the 1D axis slice to search against
-                grid_axis = D == 1 ? sim_data.x : selectdim(sim_data.x, i, 1) 
-                return find_nearest_index(grid_axis, val)
+        ntuple(3) do i
+            if i <= D
+                val = base_types[1+i]
+                if val isa Number
+                    grid_axis = D == 1 ? sim_data.x : selectdim(sim_data.x, i, 1) 
+                    return find_nearest_index(grid_axis, val)
+                else
+                    return 1:raw_space[i]
+                end
             else
-                return 1:raw_space[i]
+                return 1:1
             end
         end
     end
     
     # 3. Time Axis
-    t_idx = base_types[D+2] isa Number ? find_nearest_index(sim_data.t, base_types[D+2]) : (1:raw_t)
+    t_idx = base_types[5] isa Number ? find_nearest_index(sim_data.t, base_types[5]) : (1:raw_t)
     
     return c_idx, space_idx, t_idx
 end
@@ -106,53 +138,69 @@ end
 function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, raw_c, raw_space, raw_t, category, sim_data)
     c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
     
-    # Passing an Int index automatically drops that dimension from the source slice.
-    # Julia's assignment naturally broadcasts this into the size-1 slot in the target tensor.
+    valid_space_src = space_src[1:D]
+
+    # Calculate exact lengths to guarantee shape matching for broadcasting
+    len_c = c_src isa Int ? 1 : length(c_src)
+    len_sx = space_src[1] isa Int ? 1 : length(space_src[1])
+    len_sy = space_src[2] isa Int ? 1 : length(space_src[2])
+    len_sz = space_src[3] isa Int ? 1 : length(space_src[3])
+    len_t = t_src isa Int ? 1 : length(t_src)
+
     if category == :field
-        target[dest_prefix..., :, (Colon() for _ in 1:D)..., :] = source[c_src, space_src..., t_src]
+        data = source[c_src, valid_space_src..., t_src]
+        target[dest_prefix..., :, :, :, :, :] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, len_t)
     elseif category == :scalar
-        target[dest_prefix..., :, (1 for _ in 1:D)..., 1] = source[c_src]
+        data = source[c_src]
+        target[dest_prefix..., :, 1, 1, 1, 1] = safe_reshape(data, len_c, 1, 1, 1, 1)
     elseif category == :series
-        target[dest_prefix..., :, (1 for _ in 1:D)..., :] = source[c_src, t_src]
+        data = source[c_src, t_src]
+        target[dest_prefix..., :, 1, 1, 1, :] = safe_reshape(data, len_c, 1, 1, 1, len_t)
     elseif category == :profile
-        target[dest_prefix..., :, (Colon() for _ in 1:D)..., 1] = source[c_src, space_src...]
+        data = source[c_src, valid_space_src...]
+        target[dest_prefix..., :, :, :, :, 1] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, 1)
     elseif category == :grid
-        target[dest_prefix..., 1, (Colon() for _ in 1:D)..., 1] = source[space_src...]
+        data = source[valid_space_src...]
+        target[dest_prefix..., 1, :, :, :, 1] = safe_reshape(data, 1, len_sx, len_sy, len_sz, 1)
     end
 end
 
 function slice_and_fill_lagrangian!(target, x_data, u_data, dest_prefix, base_types, D, raw_c, raw_space, raw_t, sim_data)
-    c_src, p_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
+    c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
+    p_src = space_src[1]
     max_p = raw_space[1]
     
-    # t_src might be an Int (if locked) or a UnitRange (if varied). Wrap it to iterate safely.
     t_iter = t_src isa Int ? (t_src,) : t_src
     
     for (tgt_t, src_t) in enumerate(t_iter)
-        u_step = u_data[src_t] # Vector of Matrices [Particles] -> [C, State]
-        x_step = x_data[src_t] # Vector of SVectors [Particles] -> [SVector{D}]
+        u_step = u_data[src_t]
+        x_step = x_data[src_t] 
         curr_p_len = length(x_step)
         
         if p_src isa Int
-            # Plotting a single, specific particle
             if p_src <= curr_p_len
-                target["u"][dest_prefix..., :, 1, tgt_t] = u_step[p_src][c_src, 1] 
-                target["x"][dest_prefix..., :, 1, tgt_t] = x_step[p_src]
+                target["u"][dest_prefix..., :, 1, 1, 1, tgt_t] .= u_step[p_src][c_src, 1] 
+                
+                # Pad the spatial coordinate to 3D
+                pos = x_step[p_src]
+                padded_pos = ntuple(i -> i <= D ? pos[i] : 0.0, 3)
+                target["x"][dest_prefix..., :, 1, 1, 1, tgt_t] .= padded_pos
             else
-                target["u"][dest_prefix..., :, 1, tgt_t] .= NaN
-                target["x"][dest_prefix..., :, 1, tgt_t] .= NaN
+                target["u"][dest_prefix..., :, 1, 1, 1, tgt_t] .= NaN
+                target["x"][dest_prefix..., :, 1, 1, 1, tgt_t] .= NaN
             end
         else
-            # Plotting all available particles
             for p in 1:curr_p_len
-                target["u"][dest_prefix..., :, p, tgt_t] = u_step[p][c_src, 1]
-                target["x"][dest_prefix..., :, p, tgt_t] = x_step[p]
+                target["u"][dest_prefix..., :, p, 1, 1, tgt_t] .= u_step[p][c_src, 1]
+                
+                pos = x_step[p]
+                padded_pos = ntuple(i -> i <= D ? pos[i] : 0.0, 3)
+                target["x"][dest_prefix..., :, p, 1, 1, tgt_t] .= padded_pos
             end
             
-            # Pad empty/dead particle slots with NaN
             if curr_p_len < max_p
-                target["u"][dest_prefix..., :, (curr_p_len+1):end, tgt_t] .= NaN
-                target["x"][dest_prefix..., :, (curr_p_len+1):end, tgt_t] .= NaN
+                target["u"][dest_prefix..., :, (curr_p_len+1):end, 1, 1, tgt_t] .= NaN
+                target["x"][dest_prefix..., :, (curr_p_len+1):end, 1, 1, tgt_t] .= NaN
             end
         end
     end
@@ -165,11 +213,10 @@ end
 
 function create_method_plot_data(
     base_params::ParamDict,
-    sim_config::SimulationConfig{D, F},
+    sim_config::SimulationConfig, # REMOVED the {D, F} parameters!
     fixed_params::FixedDict,
     base_types::Vector
-) where {D, F}
-    
+)
     # 1. Configuration & Task Generation
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
@@ -179,6 +226,8 @@ function create_method_plot_data(
 
     # 2. Initialization & Dimension Resolution
     first_data = loadSimData(tasks[1]) 
+    D = _get_D(first_data)
+    
     eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
     grid_dims = length.(active_values)
     n_params = length(active_keys)
@@ -186,30 +235,30 @@ function create_method_plot_data(
     data_store = Dict{String, Array{Float64}}()
     
     function allocate_tensor(category)
-        if category == :field      # [P..., C, Space..., T]
+        if category == :field      # [P..., C, X, Y, Z, T]
             return fill(NaN, grid_dims..., eff_c, eff_space..., eff_t)
-        elseif category == :scalar # [P..., C, 1..., 1]
-            return fill(NaN, grid_dims..., eff_c, (1 for _ in 1:length(eff_space))..., 1)
-        elseif category == :series # [P..., C, 1..., T]
-            return fill(NaN, grid_dims..., eff_c, (1 for _ in 1:length(eff_space))..., eff_t)
-        elseif category == :profile# [P..., C, Space..., 1]
+        elseif category == :scalar # [P..., C, 1, 1, 1, 1]
+            return fill(NaN, grid_dims..., eff_c, 1, 1, 1, 1)
+        elseif category == :series # [P..., C, 1, 1, 1, T]
+            return fill(NaN, grid_dims..., eff_c, 1, 1, 1, eff_t)
+        elseif category == :profile# [P..., C, X, Y, Z, 1]
             return fill(NaN, grid_dims..., eff_c, eff_space..., 1)
-        elseif category == :grid   # [P..., D/1, Space..., T]
-            grid_c = first_data isa LSimData{D} ? D : 1
-            grid_t = (first_data isa ESimData{D} && !(base_types[D+2] isa Number)) ? 1 : eff_t
+        elseif category == :grid   # [P..., grid_c, X, Y, Z, grid_t]
+            grid_c = first_data isa LSimData ? 3 : 1
+            grid_t = (first_data isa ESimData && !(base_types[5] isa Number)) ? 1 : eff_t
             return fill(NaN, grid_dims..., grid_c, eff_space..., grid_t)
-        elseif category == :time   # [P..., 1, 1..., T]
-            return fill(NaN, grid_dims..., 1, (1 for _ in 1:length(eff_space))..., eff_t)
+        elseif category == :time   # [P..., 1, 1, 1, 1, T]
+            return fill(NaN, grid_dims..., 1, 1, 1, 1, eff_t)
         end
     end
 
     # --- 3. Inject Parameters as Tensors ---
     for (i, key) in enumerate(active_keys)
-        param_tensor = fill(NaN, grid_dims..., 1, (1 for _ in 1:length(eff_space))..., 1)
+        param_tensor = fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
         vals = Float64.(active_values[i])
         for (v_idx, val) in enumerate(vals)
             idx = ntuple(d -> d == i ? v_idx : (:), n_params)
-            param_tensor[idx..., 1, (1 for _ in 1:length(eff_space))..., 1] = val
+            param_tensor[idx..., 1, 1, 1, 1, 1] = val
         end
         data_store[key] = param_tensor
     end
@@ -229,18 +278,17 @@ function create_method_plot_data(
         sim_data = loadSimData(params)
         dest_prefix = grid_indices[k]
         
-        # Resolve dynamic indices using nearest neighbor
         c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
         
         # Fill Time Tensor
         if eff_t == 1
-            data_store["t"][dest_prefix..., 1, (1 for _ in 1:length(eff_space))..., 1] = sim_data.t[t_src]
+            data_store["t"][dest_prefix..., 1, 1, 1, 1, 1] = sim_data.t[t_src]
         else
-            data_store["t"][dest_prefix..., 1, (1 for _ in 1:length(eff_space))..., :] = sim_data.t[t_src]
+            data_store["t"][dest_prefix..., 1, 1, 1, 1, :] .= sim_data.t[t_src]
         end
 
         # Route to specific slicers
-        if sim_data isa ESimData{D}
+        if sim_data isa ESimData
             slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
             slice_and_fill_eulerian!(data_store["x"], sim_data.x, dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
             
@@ -249,11 +297,8 @@ function create_method_plot_data(
             for (sk, sv) in sim_data.profiles; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data); end
             for (sk, sv) in sim_data.fields; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data); end
 
-        elseif sim_data isa LSimData{D}
+        elseif sim_data isa LSimData
             slice_and_fill_lagrangian!(data_store, sim_data.x, sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, sim_data)
-            
-            # --- Fill Lagrangian Buckets ---
-            # You can adapt the Eulerian logic or manually loop them here if you ever expand LSimData's usage!
         end
     end
 

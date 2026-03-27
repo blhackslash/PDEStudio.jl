@@ -6,13 +6,11 @@ include("Controls.jl")
 # In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
 # ==============================================================================
 
-function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) where {F,D}
+function create_plot_manager(sim_config::SimulationConfig{F}, ui_raw::Dict) where {F}
     vars = collect(keys(sim_config.varied_params))
-    push!(vars,BaseVariables[1])
-    append!(vars,BaseVariables[2:D+1])
-    push!(vars,BaseVariables[end])
+    append!(vars,BaseVariables)
 
-    base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:D+1]; [:slider]])
+    base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])
     sim_obs = NestedObsDict()
     sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
     for (m_name, m_params) in sim_config.methods_dict
@@ -29,13 +27,13 @@ function create_plot_manager(sim_config::SimulationConfig{D,F}, ui_raw::Dict) wh
     # Initialize empty; populated by create_plot_controls!
     controls_obs = Dict{String, Observable}("base_types" => base_types)
 
-    return PlotManager{D}(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
+    return PlotManager(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
 end
 
 function show_unified_fig(
     sim_config::SimulationConfig;
     ui_options::UIType = :default,
-    scene_options::Dict = Dict{String, Any}()
+    scene_options::Dict = Dict{String, Any}(),
 )
     # 1. Setup Manager & Figure
     manager = create_plot_manager(sim_config, createUIDict(ui_options))
@@ -50,7 +48,25 @@ function show_unified_fig(
     # 3. Pull needed observables from the manager for data loading
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
-    
+
+    final_scene = merge(get_base_scene_options(), scene_options)
+
+    if haskey(final_scene, "base_types")
+        bt_val = final_scene["base_types"]
+        
+        if bt_val isa String
+            try
+                # If loaded from CSV, it's a string like "Any[:menu, 0.5, :slider]"
+                # We use Meta.parse to convert it back to a Julia Vector
+                manager.controls["base_types"][] = eval(Meta.parse(bt_val))
+            catch
+                @warn "Could not parse base_types string: $bt_val"
+            end
+        else
+            manager.controls["base_types"][] = bt_val
+        end
+    end
+
     lift(sim_update, methods_obs) do _, active_methods
         fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
         # Reload/Simulate data
@@ -61,7 +77,7 @@ function show_unified_fig(
         notify(plot_data_obs)
     end
 
-    final_scene = merge(get_base_scene_options(), scene_options)
+
     # a) Trigger initial data load. This synchronously populates the UI menus.
     sim_update[] = 1 
     
@@ -83,7 +99,7 @@ end
 # In MakiePlotting.jl - Replace setup_render_lift!
 # ==============================================================================
 
-function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}) where {D}
+function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager)
     c = manager.controls
     dim_names = manager.plot_vars # This is natively strictly ordered!
     
@@ -102,7 +118,7 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}
 
     # Pass the ordered selector_obs into the lift
     lift(plot_data_obs, c["X-Axis_Selection"], c["Y-Axis_Selection"], 
-         c["Plot-Along_Selection"], c["UI_Update"], selector_obs...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
+         c["Plot-Along_Index"], c["UI_Update"], selector_obs...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
         
         # 1. Validation
         if isnothing(x_key) || isnothing(y_key) || isnothing(dim_idx)
@@ -126,13 +142,13 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}
             x_indices = map(1:ndims(x_tensor)) do i
                 if i == dim_idx; return (:); end
                 val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
-                return min(find_closest_index_for_dim(pd, i, val, D), size(x_tensor, i))
+                return min(find_closest_index_for_dim(pd, i, val), size(x_tensor, i))
             end
             
             y_indices = map(1:ndims(y_tensor)) do i
                 if i == dim_idx; return (:); end
                 val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
-                return min(find_closest_index_for_dim(pd, i, val, D), size(y_tensor, i))
+                return min(find_closest_index_for_dim(pd, i, val), size(y_tensor, i))
             end
             
             try
@@ -153,12 +169,11 @@ function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager{D}
 end
 
 """
-    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real, D::Int)
+    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
 
 Maps a physical value from a slider back to the correct tensor index.
-1..N = Params, N+1 = Component, N+2..N+1+D = Space, N+2+D = Time.
 """
-function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real, D::Int)
+function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
     n_params = length(pd.active_param_keys)
     
     if dim_idx <= n_params # Parameter
@@ -168,7 +183,7 @@ function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_va
     elseif dim_idx == n_params + 1 # Component
         return max(1, Int(target_val))
         
-    elseif dim_idx > n_params + 1 && dim_idx <= n_params + 1 + D # Space (X, Y, Z...)
+    elseif dim_idx > n_params + 1 && dim_idx <= n_params + 4 # Space (X, Y, Z...)
         if haskey(pd.data, "x")
             x_tensor = pd.data["x"]
             # Grab a 1D spatial vector by targeting index 1 for all non-spatial dimensions
@@ -186,7 +201,7 @@ function find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_va
         end
         return 1 
         
-    elseif dim_idx == n_params + 2 + D # Time
+    elseif dim_idx == n_params + 5 # Time
         return findmin(v -> abs(v - target_val), pd.t_vals)[2]
     end
     

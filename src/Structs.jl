@@ -10,7 +10,7 @@ const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 # --- 1. Type Aliases ---
 const ParamDict = Dict{String, Any}
 const MethodDict = Dict{String, ParamDict}
-const VariedDict = Dict{String, Vector}
+const VariedDict = Dict{String, <:Vector}
 const FixedDict = ParamDict 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 
@@ -33,7 +33,6 @@ createVariedDict() = VariedDict()
 
 # --- 1. Abstract Hierarchy ---
 abstract type AbstractSimData{D} end
-abstract type AbstractSimulator{D} end
 
 # Fix NoSimData recursion
 struct NoSimData{D} <: AbstractSimData{D} end
@@ -79,51 +78,28 @@ struct LSimData{D} <: AbstractSimData{D}
     fields::Dict{String, Vector{Vector{Matrix{Float64}}}}
 end
 
-# --- 3. The Generalized Functor ---
-
-struct Simulator{D} <: AbstractSimulator{D}
-    f::Function
-end
-
-# Enforce that the output MUST be a subtype of AbstractSimData{D}
-function (sim::Simulator{D})(params::ParamDict)::AbstractSimData{D} where D
-    result = sim.f(params)
-    if isnothing(result)
-        return NoSimData(D)
-    end
-    return result
-end
-
 # --- 4. SimulationConfig with Dimension Dispatch ---
 
-struct SimulationConfig{D, F <: AbstractSimulator{D}}
-    sim_function::F
+"""
+    SimulationConfig
+Holds the master configuration for a plot orchestrator run.
+"""
+struct SimulationConfig{F <: Function} # <-- Removed D
+    simulation_func::F
+    shared_params::ParamDict
     methods_dict::MethodDict
     default_methods::Vector{String}
-    shared_params::ParamDict
-    varied_params::Dict{String, Vector}
-
+    varied_params::VariedDict
+    
+    # Clean Inner Constructor
     function SimulationConfig(
-        sim_input::Union{Function, AbstractSimulator},
-        shared_params,
-        methods_dict,
-        default_methods::Union{Vector{String}, String};
-        varied_params = createParamDict()
-    )
-        # Determine D from params or metadata
-        # D = min(get(shared_params,"dimension",Inf))
-        D = get(shared_params, "dimension", 1)
-        
-        # Wrap raw function if necessary
-        sim_functor = sim_input isa Function ? Simulator{D}(sim_input) : sim_input
-        
-        # Method handling
-        all_methods = collect(keys(methods_dict))
-        methods = default_methods isa String ? 
-                  (default_methods == "all" ? all_methods : [default_methods]) : 
-                  copy(default_methods)
-        
-        new{D, typeof(sim_functor)}(sim_functor, createMethodDict(methods_dict), methods, createParamDict(shared_params), createParamDict(varied_params))
+        sim_func::F, 
+        shared::ParamDict, 
+        methods::MethodDict, 
+        defaults::Vector{String}; 
+        varied_params::VariedDict = VariedDict()
+    ) where {F <: Function}
+        new{F}(sim_func, shared, methods, defaults, varied_params)
     end
 end
 
@@ -249,11 +225,11 @@ function createSimData(
     )
 end
 
-# In Controls.jl
-mutable struct PlotManager{D}
+# In Controls.jl / Structs.jl
+mutable struct PlotManager 
     simulation::NestedObsDict
     ui::NestedObsDict
-    controls::Dict{String, Observable} # NEW: Flat Dict for dynamic widget stat
+    controls::Dict{String, Observable} 
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
     last_run_params::ParamDict

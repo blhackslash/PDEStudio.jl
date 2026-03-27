@@ -8,9 +8,9 @@ on the maximum dimensionality of the simulation.
 """
 function create_controls(
     plot_fig::Makie.Figure, 
-    manager::PlotManager{D}, 
+    manager::PlotManager, 
     plot_data_obs::Observable, 
-) where {D}
+)
     GLMakie.activate!()
     plot_screen = GLMakie.Screen(title = "Makie Plot")
     # 2. FIX: Attach the Figure to the Screen immediately
@@ -23,11 +23,10 @@ function create_controls(
 
     active_params = manager.plot_vars
     n_params = length(active_params)
-    total_len = n_params + 1 + D + 1
     
     if !haskey(manager.controls, "base_types")
         # Default symbols from VariableControls
-        defaults = vcat(fill(:slider, n_params), :menu, fill(:slider, D), :slider)
+        defaults = vcat(fill(:slider, n_params), :menu, fill(:slider, 4))
         manager.controls["base_types"] = Observable(defaults)
     end
 
@@ -91,7 +90,8 @@ function create_controls(
     current_row += 1
     
     lock_layout = fig_layout[current_row, 1] = GridLayout()
-    create_base_overwrite_controls!(lock_layout, manager)
+    # ADD plot_data_obs here!
+    create_base_overwrite_controls!(lock_layout, manager, plot_data_obs) 
     current_row += 1
     # 5. STATIC PLOT CONTROLS SLOT
     Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
@@ -145,13 +145,12 @@ function build_static_plot_controls!(
     slider_layout::GridLayout, 
     plot_data_obs::Observable,
     active_params::Vector{String}, 
-    manager::PlotManager{D}
-) where {D}
+    manager::PlotManager
+)
     # 1. Metadata & Initialization
     dim_names = active_params
-    println(dim_names)
     total_dims = length(dim_names)
-    n_params = total_dims - (D + 2) 
+    n_params = total_dims - 5
     
     x_key_obs = Observable{String}("-")
     y_key_obs = Observable{String}("-")
@@ -185,6 +184,9 @@ function build_static_plot_controls!(
     manager.controls["Plot-Along_Options"]   = menu_axis.options
     manager.controls["Plot-Along_Widget"]    = menu_axis # <-- ADD THIS
 
+    # NEW: Export the translated integer for the backend!
+    manager.controls["Plot-Along_Index"]     = plot_dim_idx_obs
+
     # 3 & 4. Unified Widget Creation 
     for i in 1:total_dims
         Label(slider_layout[i, 1], "$(dim_names[i]):", halign=:right)
@@ -195,7 +197,7 @@ function build_static_plot_controls!(
         if is_basevar
             base_idx = i - n_params
             if base_idx == 1; ctrl_type = VariableControls[1]
-            elseif base_idx <= 1 + D; ctrl_type = VariableControls[base_idx]
+            elseif base_idx <= 4; ctrl_type = VariableControls[base_idx]
             else; ctrl_type = VariableControls[5]; end
         end
         
@@ -228,7 +230,7 @@ function build_static_plot_controls!(
     # 5. Handle Overwrites/Locks via base_types
     on(manager.controls["Simulation_Update"]) do _
         vt = manager.controls["base_types"][]
-        for base_idx in 1:(D+2)
+        for base_idx in 1:5
             abs_idx = n_params + base_idx
             ctrl = control_objects[abs_idx]
             val = vt[base_idx]
@@ -242,6 +244,24 @@ function build_static_plot_controls!(
                 end
             end
         end
+        plot_data_dict = plot_data_obs[]
+        isempty(plot_data_dict) && return
+        active_methods = manager.methods[]
+        
+        # 1. Update X Options
+        all_keys = Set{String}()
+        for (m, pd) in plot_data_dict
+            if m in active_methods
+                for (key, tensor) in pd.data
+                    if any(s -> s > 1, size(tensor))
+                        push!(all_keys, key)
+                    end
+                end
+            end
+        end
+        sorted_keys = sort(collect(all_keys))
+        
+        menu_x.options[] = sorted_keys        
     end
 
 # --- REACTIVE LOGIC: Axis Menus Cascade ---
@@ -254,7 +274,11 @@ function build_static_plot_controls!(
         all_keys = Set{String}()
         for (m, pd) in plot_data_dict
             if m in active_methods
-                union!(all_keys, keys(pd.data))
+                for (key, tensor) in pd.data
+                    if any(s -> s > 1, size(tensor))
+                        push!(all_keys, key)
+                    end
+                end
             end
         end
         sorted_keys = sort(collect(all_keys))
@@ -323,7 +347,7 @@ function build_static_plot_controls!(
         y_varied = isnothing(y_varied) ? Set{Int}() : y_varied
         
         common = sort(collect(intersect(x_varied, y_varied)))
-        menu_axis.options[] = isempty(common) ? [("-", 1)] : [(dim_names[d], d) for d in common]
+        menu_axis.options[] = isempty(common) ? ["-"] : [dim_names[d] for d in common]
         y_key_obs[] = y_val
         
         if menu_axis.selection[] == "-" || menu_axis.selection[] ∉ common
@@ -341,9 +365,21 @@ function build_static_plot_controls!(
     end
     # --- REACTIVE LOGIC: Sliders Ranges ---
     
-    on(menu_axis.selection) do axis_idx
-        (isnothing(axis_idx) || axis_idx == "-") && return
-        plot_dim_idx_obs[] = axis_idx
+# Translator: String (UI) -> Integer (Backend)
+    on(menu_axis.selection) do axis_name
+        (isnothing(axis_name) || axis_name == "-") && return
+        
+        idx = findfirst(isequal(axis_name), dim_names)
+        if !isnothing(idx)
+            plot_dim_idx_obs[] = idx
+        end
+    end
+
+    # --- REACTIVE LOGIC: Sliders Ranges ---
+    
+    # The sliders now listen purely to the backend integer observable
+    on(plot_dim_idx_obs) do axis_idx
+        (axis_idx == 0) && return
         
         plot_data_dict = plot_data_obs[] 
         vt = manager.controls["base_types"][]
@@ -365,9 +401,30 @@ function build_static_plot_controls!(
                     vals = pd.active_param_values[i]
                 elseif i == n_params + 1 
                     vals = [1.0, Float64(size(pd.data["u"], length(pd.active_param_keys) + 1))]
-                elseif i > n_params + 1 && i < total_dims 
-                    x_data = get(pd.data, "x", nothing)
-                    if !isnothing(x_data) && !all(isnan.(x_data)); vals = filter(!isnan, x_data); end
+                    elseif i > n_params + 1 && i < total_dims 
+                    # i maps exactly to the tensor dimension: X=n_params+2, Y=n_params+3, Z=n_params+4
+                    dim_idx = i - (n_params + 1) # 1=X, 2=Y, 3=Z
+                    x_tensor = get(pd.data, "x", nothing)
+                    
+                    if !isnothing(x_tensor) && !all(isnan.(x_tensor))
+                        grid_c = size(x_tensor, n_params + 1)
+                        if grid_c == 3 
+                            # Lagrangian: Extract the specific X, Y, or Z component
+                            inds = ntuple(d -> d == n_params + 1 ? dim_idx : (:), ndims(x_tensor))
+                            vals = filter(!isnan, x_tensor[inds...])
+                        elseif dim_idx == 1 
+                            # Eulerian: The x_tensor natively holds the X-coordinates
+                            vals = filter(!isnan, x_tensor)
+                        else 
+                            # Eulerian Fallback for Y and Z: Use the tensor indices
+                            sz = size(pd.data["u"], i)
+                            vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
+                        end
+                    else
+                        # Ultimate Fallback if no coordinate tensor exists
+                        sz = size(pd.data["u"], i)
+                        vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
+                    end
                 elseif i == total_dims 
                     vals = pd.t_vals
                 end
@@ -402,7 +459,7 @@ Creates a 3-menu + 1-textbox interface to navigate and edit all parameters.
 function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManager)
     # 1. Menus
     # Categories are fixed strings matching the field names (capitalized for UI)
-    cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui, "Controls" => :controls)
+    cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
     sorted_cat = sort(collect(keys(cat_mapping)))
     menu_cat = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...",width = 120)
     menu_cat.i_selected[] = 0
@@ -419,12 +476,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         field_name = cat_mapping[cat]
         data = getproperty(mgr, field_name)
         
-        if field_name == :controls
-            menu_scope.options[] = ["Live"] # Flat dict has one virtual scope
-        else
-            menu_scope.options[] = sort(collect(keys(data)))
-        end
-        menu_scope.selection[] = nothing
+        menu_scope.options[] = sort(collect(keys(data)))
     end
 
     # 3. Scope -> Key
@@ -434,11 +486,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         field_name = cat_mapping[cat]
         data = getproperty(mgr, field_name)
         
-        if field_name == :controls
-            menu_key.options[] = sort(collect(keys(data)))
-        else
-            menu_key.options[] = sort(collect(keys(data[scope])))
-        end
+        menu_key.options[] = sort(collect(keys(data[scope])))
     end
 
     # 4. Textbox with Live Placeholder

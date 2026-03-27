@@ -58,18 +58,8 @@ function run_final_test()
     plot_fig, ctrl_fig, manager = Base.invokelatest(show_unified_fig,
         sim_config; 
         ui_options = :default,
+        scene_options = Dict("base_types" => Any[:menu,:slider,:slider,:slider,:slider])
     )
-# 2. Add New Method Toggling Figure
-    println("--- Launching Method Toggler Figure ---")
-    # Make sure GLMakie is active before opening a new window
-    # IPlotPDESols.Utils.GLMakie.activate!() # If Utils module re-exports GLMakie
-
-    method_fig, _ = create_method_checkboxes_figure(
-        possible_methods,
-        manager.methods
-    )
-    # Display the separate figure
-    display(method_fig)
 
     # 3. --- UI DEBUG INJECTION ---
     println("--- Attaching UI Debug Listeners ---")

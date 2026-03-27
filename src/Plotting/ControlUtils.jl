@@ -140,7 +140,7 @@ function createAnimationPreview!(
     # Dropdown to select the target
     all_opts = [(dim_names[i], i) for i in 1:length(selector_widgets)]
     anim_target_menu = Menu(layout[1, 1], options = all_opts, width=120)
-    anim_target_menu.selection[] = length(selector_widgets) # Default to Time
+    anim_target_menu.i_selected[] = length(selector_widgets) # Default to Time
 
     # Play/Stop Button
     play_btn = Button(layout[1, 2], label="Play Preview", width=100, buttoncolor=:lightyellow)
@@ -313,7 +313,10 @@ function createExportOptions!(
                 set_close_to!(target_widget, val)
                 yield() 
             end
+            metadata_general = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
+            saveParametersToCSV(base_name, save_path, manager, metadata_general) 
             @info "GIF Saved Successfully."
+            if !isnothing(plot_fig); display(plot_fig) end
         catch e
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         end
@@ -395,42 +398,88 @@ Creates a UI block with a Menu to select a base variable and a Textbox to
 overwrite its type with a fixed numeric value. Inputting 'default' restores 
 the original widget type (slider/menu).
 """
-function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManager{D}) where {D}
+function create_base_overwrite_controls!(
+    layout::GridLayout, 
+    manager::PlotManager, 
+    plot_data_obs::Observable
+)
     # 1. Setup Labels and Widgets
-    #Label(layout[1, 1], "Fix Dimension:", halign=:right, font=:bold)
-    
-    # Base variable names from Structs (Component, X, Y, Z, Time)
-    # We filter them based on the simulation dimension D
-    base_names = [VariableNames[1]; VariableNames[2:1+D]; VariableNames[5]]
-    
-    menu_var = Menu(layout[1, 1], options = base_names, width = 120, prompt = "Select...")
+    menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
+    menu_var.i_selected[] = 0
     tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
     apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
 
-    # 2. Reactive Logic
+    # 2. REACTIVE LOGIC: Update Options based on Data Shape
+    on(plot_data_obs) do plot_data_dict
+        isempty(plot_data_dict) && return
+        
+        active_methods = manager.methods[]
+        n_params = length(manager.plot_vars) - 5 # 5 Base Variables
+        
+        valid_base_names = String[]
+        
+        for (i, name) in enumerate(VariableNames)
+            tensor_dim = n_params + i
+            
+            # Check if this dimension has size > 1 in any active method
+            has_variation = false
+            for m in active_methods
+                if haskey(plot_data_dict, m)
+                    u_tensor = plot_data_dict[m].data["u"]
+                    if size(u_tensor, tensor_dim) > 1
+                        has_variation = true
+                        break
+                    end
+                end
+            end
+            
+            # We MUST also include it if the user currently has it fixed (so they can un-fix it)
+            is_fixed_by_user = manager.controls["base_types"][][i] isa Number
+            
+            if has_variation || is_fixed_by_user
+                push!(valid_base_names, name)
+            end
+        end
+        
+        current_sel = menu_var.selection[]
+        menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
+        
+        if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
+            menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
+        else
+            menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
+        end
+    end
+
+    # 3. Apply Button Logic
     on(apply_btn.clicks) do _
         var_name = menu_var.selection[]
         input_str = tb_val.stored_string[]
         
-        if isnothing(var_name) || isempty(input_str)
+        if isnothing(var_name) || var_name == "-" || isempty(input_str)
             @warn "Overwrite Error: Please select a variable and provide an input."
             return
         end
 
-        # Find the index in the base_types vector (C=1, Space=2:D+1, T=D+2)
-        idx = findfirst(==(var_name), base_names)
+        # Find the absolute index (1 to 5)
+        idx = findfirst(isequal(var_name), VariableNames)
+        isnothing(idx) && return
         
-        # Access and copy the current base_types observable [cite: 316]
         vt = copy(manager.controls["base_types"][])
+        
+        # Check against Plot-Along axis 
+        n_params = length(manager.plot_vars) - 5
+        abs_idx = n_params + idx
+        if manager.controls["Plot-Along_Index"][] == abs_idx
+            @warn "Cannot fix the value of the Plot Axis! Change the Plot Axis before fixing the value!"
+            return
+        end
 
         if lowercase(strip(input_str)) == "default"
-            # Restore the default symbol from Structs [cite: 167]
-            # VariableControls mapping: 1=menu, 2-4=slider, 5=slider
-            default_map = [1, (2 for _ in 1:D)..., 5]
-            vt[idx] = VariableControls[default_map[idx]]
+            # VariableControls cleanly maps exactly 1-to-1 with indices 1:5
+            vt[idx] = VariableControls[idx]
             @info "Restored default control for $var_name."
         else
-            # Attempt to parse as a number to fix the dimension [cite: 227]
             val = tryparse(Float64, input_str)
             if isnothing(val)
                 @warn "Invalid Input: '$input_str' is not a number or 'default'."
@@ -439,12 +488,9 @@ function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManage
             vt[idx] = val
             @info "Fixed $var_name to value/index: $val."
         end
-
-        # Update the manager and trigger a data reload [cite: 317-318]
+        
         manager.controls["base_types"][] = vt
         manager.controls["Simulation_Update"][] += 1
-        
-        # Reset textbox
         tb_val.stored_string[] = ""
     end
 end
@@ -517,23 +563,9 @@ function set_defaults!(manager::PlotManager, scene_options::Dict)
         opts = widget.options[]
         isempty(opts) && continue
 
-        is_tuple_opts = !isempty(opts) && opts[1] isa Tuple
+        # If options are normal Strings (like X-Axis): ["x", "u", "t"]
+        idx = findfirst(v -> string(v) == string(desired_value), opts)
 
-        idx = nothing
-        
-        if is_tuple_opts
-            # If options are Tuples (like Plot-Along): [("x", 2), ("Time", 5)]
-            if desired_value isa String
-                # User passed a String (e.g., "x"). Search the Labels (first element).
-                idx = findfirst(o -> o[1] == desired_value, opts)
-            else
-                # User passed the raw Value (e.g., 2). Search the Values (second element).
-                idx = findfirst(o -> o[2] == desired_value, opts)
-            end
-        else
-            # If options are normal Strings (like X-Axis): ["x", "u", "t"]
-            idx = findfirst(v -> string(v) == string(desired_value), opts)
-        end
         # If not found, check if the user passed an integer index directly as a fallback
         if isnothing(idx) && desired_value isa Integer && 1 <= desired_value <= length(valid_values)
             idx = desired_value
