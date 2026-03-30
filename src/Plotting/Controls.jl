@@ -100,19 +100,14 @@ function create_controls(
           fontsize=16, font=:bold, color=:darkgreen)
     current_row += 1
     
-    # We build the controls ONCE here.
-    menu_area = fig_layout[current_row, 1] = GridLayout()
-    current_row += 1
-    slider_area = fig_layout[current_row, 1] = GridLayout()
-    current_row += 1
-    
-    # STATIC PLOT CONTROLS SLOT
+# STATIC PLOT CONTROLS SLOT
     menu_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
     slider_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
 
-    x_obs, y_obs, dim_obs, selectors, widgets = build_static_plot_controls!(
+    # FIX: Updated signature to catch Z and U observables
+    x_obs, y_obs, z_obs, u_obs, dim_obs, selectors, widgets = build_static_plot_controls!(
         menu_area, slider_area, plot_data_obs, active_params, manager
     )
 
@@ -139,7 +134,6 @@ function create_controls(
 
     return base_controls_fig
 end
-
 function build_static_plot_controls!(
     menu_layout::GridLayout, 
     slider_layout::GridLayout, 
@@ -151,55 +145,88 @@ function build_static_plot_controls!(
     dim_names = active_params
     total_dims = length(dim_names)
     n_params = total_dims - 5
+    comp_idx = n_params + 1 # The exact index of the Component dimension
     
     x_key_obs = Observable{String}("-")
     y_key_obs = Observable{String}("-")
+    z_key_obs = Observable{String}("-")
+    u_key_obs = Observable{String}("-")
     plot_dim_idx_obs = Observable{Int}(0)
+    plot_dim_obs = Observable{Int}(1) # NEW: Master dimension observable
+    manager.controls["Plot_Dimension"] = plot_dim_obs
     
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-# 2. Setup Axis Menus
-    Label(menu_layout[1,1],"X-Axis")
-    Label(menu_layout[1,2],"Y-Axis")
-    Label(menu_layout[1,3],"Plot-Along")
-    menu_x = Menu(menu_layout[2,1], options = ["-"], width = 120)
-    menu_y = Menu(menu_layout[2,2], options = ["-"], width = 120)
-    menu_axis = Menu(menu_layout[2,3], options = [("-", 1)], width = 120)
+    # 2. Setup Menus Grid
+    # Row 1: Plot Type Selection
+    Label(menu_layout[1,1], "Plot Type:")
+    plot_options = ["Lines", "Heatmap", "Contour", "Surface", "Scatter 2D", "Scatter 3D"]
+    menu_type = Menu(menu_layout[1,2], options = plot_options, width = 120)
+    menu_type.i_selected[] = 1
+    btn_apply = Button(menu_layout[1,3], label="Apply", width = 120, buttoncolor=:lightgreen)
+
+
+    # Row 2 & 3: Independent Axes
+    Label(menu_layout[2,1], "X-Axis", font=:bold)
+    Label(menu_layout[2,2], "Y-Axis", font=:bold)
+    Label(menu_layout[2,3], "Z-Axis", font=:bold)
+    menu_x = Menu(menu_layout[3,1], options = ["-"], width = 120)
+    menu_y = Menu(menu_layout[3,2], options = ["disabled"], width = 120)
+    menu_z = Menu(menu_layout[3,3], options = ["disabled"], width = 120)
+
+    # Row 4 & 5: Dependent Axis, Component, Plot-Along
+    Label(menu_layout[4,1], "U-Axis (Dep)", font=:bold)
+    Label(menu_layout[4,2], "Component", font=:bold)
+    Label(menu_layout[4,3], "Plot-Along", font=:bold)
+    menu_u    = Menu(menu_layout[5,1], options = ["-"], width = 120)
+    menu_comp = Menu(menu_layout[5,2], options = ["1"], width = 120)
+    menu_axis = Menu(menu_layout[5,3], options = ["-"], width = 120)
 
     colsize!(menu_layout, 1, Fixed(120))
     colsize!(menu_layout, 2, Fixed(120))
     colsize!(menu_layout, 3, Fixed(120))    
-    
+
     # EXPOSE OPTIONS AND SELECTIONS
-    manager.controls["X-Axis_Selection"] = menu_x.selection
-    manager.controls["X-Axis_Options"]   = menu_x.options
-    manager.controls["X-Axis_Widget"]    = menu_x   # <-- ADD THIS
+    manager.controls["X-Axis_Selection"], manager.controls["X-Axis_Options"], manager.controls["X-Axis_Widget"] = menu_x.selection, menu_x.options, menu_x
+    manager.controls["Y-Axis_Selection"], manager.controls["Y-Axis_Options"], manager.controls["Y-Axis_Widget"] = menu_y.selection, menu_y.options, menu_y
+    manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
+    manager.controls["U-Axis_Selection"], manager.controls["U-Axis_Options"], manager.controls["U-Axis_Widget"] = menu_u.selection, menu_u.options, menu_u
+    manager.controls["Plot-Along_Selection"], manager.controls["Plot-Along_Options"], manager.controls["Plot-Along_Widget"] = menu_axis.selection, menu_axis.options, menu_axis
+    manager.controls["Plot-Along_Index"] = plot_dim_idx_obs
+        # We now export the Plot_Type observable
+    plot_type_obs = Observable{Symbol}(:lines)
+    manager.controls["Plot_Type"] = plot_type_obs
+    on(btn_apply.clicks) do _
+        # Convert "Scatter 2D" to :scatter2d
+        raw_str = menu_type.selection[]
+        ptype_sym = Symbol(lowercase(replace(raw_str, " " => "")))
+        
+        plot_type_obs[] = ptype_sym
+        
+        # When applied, force the Y and Z menus to respect the new dimensionality
+        notify(plot_data_obs) 
+    end
+    # Map the isolated Component Menu
+    control_objects[comp_idx] = menu_comp
+    selector_values[comp_idx] = Observable{Int}(1)
+    on(menu_comp.selection) do s
+        if !isnothing(s) && s != "-" && s != "disabled"
+            selector_values[comp_idx][] = parse(Int, s)
+        end
+    end
+    manager.controls["$(dim_names[comp_idx])_Selection"], manager.controls["$(dim_names[comp_idx])_Options"], manager.controls["$(dim_names[comp_idx])_Widget"] = menu_comp.selection, menu_comp.options, menu_comp
 
-    manager.controls["Y-Axis_Selection"] = menu_y.selection
-    manager.controls["Y-Axis_Options"]   = menu_y.options
-    manager.controls["Y-Axis_Widget"]    = menu_y   # <-- ADD THIS
-
-    manager.controls["Plot-Along_Selection"] = menu_axis.selection
-    manager.controls["Plot-Along_Options"]   = menu_axis.options
-    manager.controls["Plot-Along_Widget"]    = menu_axis # <-- ADD THIS
-
-    # NEW: Export the translated integer for the backend!
-    manager.controls["Plot-Along_Index"]     = plot_dim_idx_obs
-
-    # 3 & 4. Unified Widget Creation 
+    # 3. Unified Widget Creation (Sliders Only now)
     for i in 1:total_dims
+        if i == comp_idx
+            continue # Skipped because it's now cleanly integrated into the top menu block
+        end
+        
         Label(slider_layout[i, 1], "$(dim_names[i]):", halign=:right)
         
         is_basevar = i > n_params
-        ctrl_type = :slider
-        
-        if is_basevar
-            base_idx = i - n_params
-            if base_idx == 1; ctrl_type = VariableControls[1]
-            elseif base_idx <= 4; ctrl_type = VariableControls[base_idx]
-            else; ctrl_type = VariableControls[5]; end
-        end
+        ctrl_type = is_basevar ? VariableControls[i - n_params] : :slider
         
         if ctrl_type == :menu
             m = Menu(slider_layout[i, 2], options = ["1"], width = 200)
@@ -208,26 +235,18 @@ function build_static_plot_controls!(
             on(m.selection) do s
                 if !isnothing(s) && s != "-"; selector_values[i][] = parse(Int, s); end
             end
-            
-            # EXPOSE OPTIONS AND SELECTIONS
-            manager.controls["$(dim_names[i])_Selection"] = m.selection
-            manager.controls["$(dim_names[i])_Options"]   = m.options 
-            manager.controls["$(dim_names[i])_Widget"]    = m  # <-- ADD THIS
+            manager.controls["$(dim_names[i])_Selection"], manager.controls["$(dim_names[i])_Options"], manager.controls["$(dim_names[i])_Widget"] = m.selection, m.options, m
         else
             sl = Slider(slider_layout[i, 2], range = 0:0.1:1, width = 200)
             control_objects[i] = sl
             selector_values[i] = sl.value
-            
-            # EXPOSE RANGES AND VALUES
-            manager.controls["$(dim_names[i])_Value"] = sl.value
-            manager.controls["$(dim_names[i])_Range"] = sl.range
-            manager.controls["$(dim_names[i])_Widget"] = sl  # <-- ADD THIS
+            manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
         end
         
         Label(slider_layout[i, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
     end
 
-    # 5. Handle Overwrites/Locks via base_types
+    # 4. Handle Overwrites/Locks via base_types
     on(manager.controls["Simulation_Update"]) do _
         vt = manager.controls["base_types"][]
         for base_idx in 1:5
@@ -244,34 +263,29 @@ function build_static_plot_controls!(
                 end
             end
         end
-        plot_data_dict = plot_data_obs[]
-        isempty(plot_data_dict) && return
-        active_methods = manager.methods[]
-        
-        # 1. Update X Options
-        all_keys = Set{String}()
-        for (m, pd) in plot_data_dict
-            if m in active_methods
-                for (key, tensor) in pd.data
-                    if any(s -> s > 1, size(tensor))
-                        push!(all_keys, key)
-                    end
-                end
-            end
-        end
-        sorted_keys = sort(collect(all_keys))
-        
-        menu_x.options[] = sorted_keys        
+        notify(plot_data_obs)      
     end
 
-# --- REACTIVE LOGIC: Axis Menus Cascade ---
+    # --- REACTIVE LOGIC: Axis Menus Cascade ---
     
+    function get_varied_dims(key_val, plot_data_dict, active_methods)
+        v_dims = nothing
+        for (m, pd) in plot_data_dict
+            !(m in active_methods) && continue
+            if haskey(pd.data, key_val)
+                curr_dims = Set(findall(s -> s > 1, size(pd.data[key_val])))
+                v_dims = isnothing(v_dims) ? curr_dims : intersect(v_dims, curr_dims)
+            end
+        end
+        return isnothing(v_dims) ? Set{Int}() : v_dims
+    end
+
     on(plot_data_obs) do plot_data_dict
         isempty(plot_data_dict) && return
         active_methods = manager.methods[]
         
-        # 1. Update X Options
         all_keys = Set{String}()
+        comp_max = 1
         for (m, pd) in plot_data_dict
             if m in active_methods
                 for (key, tensor) in pd.data
@@ -279,93 +293,159 @@ function build_static_plot_controls!(
                         push!(all_keys, key)
                     end
                 end
+                if haskey(pd.data, "u")
+                    comp_max = max(comp_max, size(pd.data["u"], comp_idx))
+                end
             end
         end
         sorted_keys = sort(collect(all_keys))
-        
-        menu_x.options[] = sorted_keys
+
+        # Update Component Dropdown
+        comp_opts = [string(i) for i in 1:comp_max]
+        if menu_comp.selection[] ∉ comp_opts
+            menu_comp.options[] = comp_opts
+            menu_comp.i_selected[] = 1
+        else
+            menu_comp.options[] = comp_opts
+        end
+
+        # Update U-Axis (Dependent) Dropdown
+        current_u = menu_u.selection[]
+        menu_u.options[] = isempty(sorted_keys) ? ["-"] : sorted_keys
+        if current_u == "-" || isnothing(current_u) || current_u ∉ sorted_keys
+            u_idx = findfirst(isequal("u"), sorted_keys)
+            menu_u.i_selected[] = isnothing(u_idx) ? (isempty(sorted_keys) ? 0 : 1) : u_idx
+        else
+            menu_u.i_selected[] = findfirst(isequal(current_u), sorted_keys)
+        end
+
+        # Update X-Axis
+        current_x = menu_x.selection[]
+        menu_x.options[] = isempty(sorted_keys) ? ["-"] : sorted_keys
+        if current_x == "-" || isnothing(current_x) || current_x ∉ sorted_keys
+            menu_x.i_selected[] = isempty(sorted_keys) ? 0 : 1 
+        else
+            menu_x.i_selected[] = findfirst(isequal(current_x), sorted_keys)
+        end
+        notify(menu_x.selection)
     end
 
     on(menu_x.selection) do x_val
         (isnothing(x_val) || x_val == "-") && return
+        p_dim = PLOT_DIM_MAP[manager.controls["Plot_Type"][]]
+        if p_dim < 2
+            menu_y.options[] = ["disabled"]
+            menu_y.i_selected[] = 1
+            notify(menu_y.selection)
+            return
+        end
+        
         plot_data_dict = plot_data_obs[]
         active_methods = manager.methods[]
-        
-        # 2. Update Y Options
-        varied_dims = nothing
-        for (m, pd) in plot_data_dict
-            !(m in active_methods) && continue
-            if haskey(pd.data, x_val)
-                v_dims = Set(findall(s -> s > 1, size(pd.data[x_val])))
-                varied_dims = isnothing(varied_dims) ? v_dims : intersect(varied_dims, v_dims)
-            end
-        end
-        varied_dims = isnothing(varied_dims) ? Set{Int}() : varied_dims
+        x_varied = get_varied_dims(x_val, plot_data_dict, active_methods)
         
         valid_y = String[]
         for y_can in menu_x.options[]
-            y_varied = nothing
-            for (m, pd) in plot_data_dict
-                !(m in active_methods) && continue
-                if haskey(pd.data, y_can)
-                    v_dims = Set(findall(s -> s > 1, size(pd.data[y_can])))
-                    y_varied = isnothing(y_varied) ? v_dims : intersect(y_varied, v_dims)
-                end
-            end
-            y_varied = isnothing(y_varied) ? Set{Int}() : y_varied
-            if !isempty(intersect(varied_dims, y_varied))
+            y_varied = get_varied_dims(y_can, plot_data_dict, active_methods)
+            if !isempty(intersect(x_varied, y_varied))
                 push!(valid_y, y_can)
             end
         end
         
-        menu_y.options[] = valid_y
+        current_y = menu_y.selection[]
+        menu_y.options[] = isempty(valid_y) ? ["-"] : valid_y
+        if current_y == "-" || current_y == "disabled" || isnothing(current_y) || current_y ∉ valid_y
+            menu_y.i_selected[] = isempty(valid_y) ? 0 : 1 
+        else
+            menu_y.i_selected[] = findfirst(isequal(current_y), valid_y)
+        end
         x_key_obs[] = x_val
-        
+        notify(menu_y.selection)
     end
 
     on(menu_y.selection) do y_val
         (isnothing(y_val) || y_val == "-") && return
+        p_dim = PLOT_DIM_MAP[manager.controls["Plot_Type"][]]
+        if y_val == "disabled" || p_dim < 3
+            menu_z.options[] = ["disabled"]
+            menu_z.i_selected[] = 1
+            notify(menu_z.selection)
+            return
+        end
+        
         x_val = menu_x.selection[]
         plot_data_dict = plot_data_obs[]
         active_methods = manager.methods[]
         
-        # 3. Update Axis Options
-        x_varied, y_varied = nothing, nothing
-        for (m, pd) in plot_data_dict
-            !(m in active_methods) && continue
-            if haskey(pd.data, x_val)
-                v_dims = Set(findall(s -> s > 1, size(pd.data[x_val])))
-                x_varied = isnothing(x_varied) ? v_dims : intersect(x_varied, v_dims)
-            end
-            if haskey(pd.data, y_val)
-                v_dims = Set(findall(s -> s > 1, size(pd.data[y_val])))
-                y_varied = isnothing(y_varied) ? v_dims : intersect(y_varied, v_dims)
+        xy_varied = intersect(get_varied_dims(x_val, plot_data_dict, active_methods), 
+                              get_varied_dims(y_val, plot_data_dict, active_methods))
+        
+        valid_z = String[]
+        for z_can in menu_x.options[]
+            z_varied = get_varied_dims(z_can, plot_data_dict, active_methods)
+            if !isempty(intersect(xy_varied, z_varied))
+                push!(valid_z, z_can)
             end
         end
         
-        x_varied = isnothing(x_varied) ? Set{Int}() : x_varied
-        y_varied = isnothing(y_varied) ? Set{Int}() : y_varied
-        
-        common = sort(collect(intersect(x_varied, y_varied)))
-        menu_axis.options[] = isempty(common) ? ["-"] : [dim_names[d] for d in common]
-        y_key_obs[] = y_val
-        
-        if menu_axis.selection[] == "-" || menu_axis.selection[] ∉ common
-            menu_axis.selection[] = isempty(common) ? 1 : common[end]
-            menu_axis.i_selected[] = isempty(common) ? 1 : length(common)
+        current_z = menu_z.selection[]
+        menu_z.options[] = isempty(valid_z) ? ["-"] : valid_z
+        if current_z == "-" || current_z == "disabled" || isnothing(current_z) || current_z ∉ valid_z
+            menu_z.i_selected[] = isempty(valid_z) ? 0 : 1 
         else
-            notify(menu_axis.selection)
+            menu_z.i_selected[] = findfirst(isequal(current_z), valid_z)
+        end
+        y_key_obs[] = y_val
+        notify(menu_z.selection)
+    end
+
+    on(menu_z.selection) do z_val
+        (isnothing(z_val) || z_val == "-") && return
+        z_key_obs[] = z_val
+        
+        # Trigger Plot-Along dimension calculation
+        x_val = menu_x.selection[]
+        y_val = menu_y.selection[]
+        u_val = menu_u.selection[]
+        
+        plot_data_dict = plot_data_obs[]
+        active_methods = manager.methods[]
+        p_dim = plot_dim_obs[]
+        
+        common = get_varied_dims(x_val, plot_data_dict, active_methods)
+        if p_dim >= 2 && y_val != "disabled"
+            common = intersect(common, get_varied_dims(y_val, plot_data_dict, active_methods))
+        end
+        if p_dim >= 3 && z_val != "disabled"
+            common = intersect(common, get_varied_dims(z_val, plot_data_dict, active_methods))
+        end
+        if !isnothing(u_val) && u_val != "-" && u_val != "disabled"
+            common = intersect(common, get_varied_dims(u_val, plot_data_dict, active_methods))
+        end
+        
+        common_sorted = sort(collect(common))
+        current_axis = menu_axis.selection[]
+        new_opts = isempty(common_sorted) ? ["-"] : [dim_names[d] for d in common_sorted]
+        menu_axis.options[] = new_opts
+        
+        if current_axis == "-" || isnothing(current_axis) || current_axis ∉ new_opts
+            menu_axis.i_selected[] = isempty(common_sorted) ? 1 : length(common_sorted) 
+        else
+            menu_axis.i_selected[] = findfirst(isequal(current_axis), new_opts)
         end
     end
 
-    # 4. Bind Checkboxes to the UI Menus directly!
+    on(menu_u.selection) do u_val
+        (isnothing(u_val) || u_val == "-") && return
+        u_key_obs[] = u_val
+        notify(menu_z.selection) # Re-evaluate common dims for Plot-Along axis!
+    end
+
     on(manager.methods) do _
-        # When a checkbox changes, artificially "poke" the data to force the axis menus to recalculate
         notify(plot_data_obs)
     end
-    # --- REACTIVE LOGIC: Sliders Ranges ---
     
-# Translator: String (UI) -> Integer (Backend)
+    # Translator: String (UI) -> Integer (Backend)
     on(menu_axis.selection) do axis_name
         (isnothing(axis_name) || axis_name == "-") && return
         
@@ -401,27 +481,22 @@ function build_static_plot_controls!(
                     vals = pd.active_param_values[i]
                 elseif i == n_params + 1 
                     vals = [1.0, Float64(size(pd.data["u"], length(pd.active_param_keys) + 1))]
-                    elseif i > n_params + 1 && i < total_dims 
-                    # i maps exactly to the tensor dimension: X=n_params+2, Y=n_params+3, Z=n_params+4
-                    dim_idx = i - (n_params + 1) # 1=X, 2=Y, 3=Z
+                elseif i > n_params + 1 && i < total_dims 
+                    dim_idx = i - (n_params + 1)
                     x_tensor = get(pd.data, "x", nothing)
                     
                     if !isnothing(x_tensor) && !all(isnan.(x_tensor))
                         grid_c = size(x_tensor, n_params + 1)
                         if grid_c == 3 
-                            # Lagrangian: Extract the specific X, Y, or Z component
                             inds = ntuple(d -> d == n_params + 1 ? dim_idx : (:), ndims(x_tensor))
                             vals = filter(!isnan, x_tensor[inds...])
                         elseif dim_idx == 1 
-                            # Eulerian: The x_tensor natively holds the X-coordinates
                             vals = filter(!isnan, x_tensor)
                         else 
-                            # Eulerian Fallback for Y and Z: Use the tensor indices
                             sz = size(pd.data["u"], i)
                             vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
                         end
                     else
-                        # Ultimate Fallback if no coordinate tensor exists
                         sz = size(pd.data["u"], i)
                         vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
                     end
@@ -448,7 +523,7 @@ function build_static_plot_controls!(
         end
     end
 
-    return x_key_obs, y_key_obs, plot_dim_idx_obs, selector_values, control_objects
+    return x_key_obs, y_key_obs, z_key_obs, u_key_obs, plot_dim_idx_obs, selector_values, control_objects
 end
 
 """

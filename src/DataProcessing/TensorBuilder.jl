@@ -101,23 +101,30 @@ end
 """
     get_source_slices(base_types, D, raw_dims..., sim_data)
 
-Generates integer indices/ranges for slicing.
+Smartly generates slices based on input type:
+- Integer: Direct Array Index (e.g., 10 -> 10th step)
+- Real/Float: Physical Coordinate Search (e.g., 0.5 -> nearest grid point to 0.5)
 """
 function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tuple, raw_t::Int, sim_data::AbstractSimData)
     is_lagrangian = sim_data isa LSimData
     
-    # 1. Component Axis
+    # 1. Component Axis (Always an integer index)
     c_idx = base_types[1] isa Number ? Int(base_types[1]) : (1:raw_c)
     
-    # 2. Spatial Axes (Always returns 3 spatial slices)
+    # 2. Spatial Axes
     space_idx = if is_lagrangian
+        # Particles are always indexed by ID
         p_idx = base_types[2] isa Number ? Int(base_types[2]) : (1:raw_space[1])
         (p_idx, 1:1, 1:1)
     else
         ntuple(3) do i
             if i <= D
                 val = base_types[1+i]
-                if val isa Number
+                if val isa Integer
+                    # SMART ADAPT: Direct Indexing (clamped for safety)
+                    return clamp(Int(val), 1, raw_space[i])
+                elseif val isa Real
+                    # SMART ADAPT: Physical coordinate search
                     grid_axis = D == 1 ? sim_data.x : selectdim(sim_data.x, i, 1) 
                     return find_nearest_index(grid_axis, val)
                 else
@@ -130,7 +137,15 @@ function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tu
     end
     
     # 3. Time Axis
-    t_idx = base_types[5] isa Number ? find_nearest_index(sim_data.t, base_types[5]) : (1:raw_t)
+    t_idx = if base_types[5] isa Integer
+        # SMART ADAPT: Direct Indexing
+        clamp(Int(base_types[5]), 1, raw_t)
+    elseif base_types[5] isa Real
+        # SMART ADAPT: Physical coordinate search
+        find_nearest_index(sim_data.t, base_types[5])
+    else
+        1:raw_t
+    end
     
     return c_idx, space_idx, t_idx
 end

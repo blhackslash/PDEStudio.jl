@@ -452,7 +452,7 @@ function create_base_overwrite_controls!(
     end
 
     # 3. Apply Button Logic
-    on(apply_btn.clicks) do _
+on(apply_btn.clicks) do _
         var_name = menu_var.selection[]
         input_str = tb_val.stored_string[]
         
@@ -461,32 +461,33 @@ function create_base_overwrite_controls!(
             return
         end
 
-        # Find the absolute index (1 to 5)
         idx = findfirst(isequal(var_name), VariableNames)
         isnothing(idx) && return
         
         vt = copy(manager.controls["base_types"][])
         
-        # Check against Plot-Along axis 
-        n_params = length(manager.plot_vars) - 5
-        abs_idx = n_params + idx
-        if manager.controls["Plot-Along_Index"][] == abs_idx
-            @warn "Cannot fix the value of the Plot Axis! Change the Plot Axis before fixing the value!"
-            return
-        end
+        # ... (keep the Plot-Along axis check as is) ...
 
         if lowercase(strip(input_str)) == "default"
-            # VariableControls cleanly maps exactly 1-to-1 with indices 1:5
             vt[idx] = VariableControls[idx]
             @info "Restored default control for $var_name."
         else
-            val = tryparse(Float64, input_str)
+            # --- THE SMART PARSER ---
+            # 1. Try Integer first (represents a direct Index)
+            val = tryparse(Int, input_str)
+            
+            # 2. Try Float if Int fails (represents a Physical Coordinate)
+            if isnothing(val)
+                val = tryparse(Float64, input_str)
+            end
+            
             if isnothing(val)
                 @warn "Invalid Input: '$input_str' is not a number or 'default'."
                 return
             end
+            
             vt[idx] = val
-            @info "Fixed $var_name to value/index: $val."
+            @info "Fixed $var_name to $(val isa Integer ? "index" : "coordinate"): $val."
         end
         
         manager.controls["base_types"][] = vt

@@ -48,7 +48,7 @@ module UI
         
     # Look across to the sibling module for the data pipeline
     using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
-    
+    using Observables: ObserverFunction, onany
     using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
     
     # Submodule exports (These are re-exported globally at the bottom)

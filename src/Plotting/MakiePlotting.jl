@@ -1,7 +1,18 @@
+# Fallback error if a dimension isn't supported yet
+function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager::PlotManager, dim::Val)
+    @warn "Render setup for dimension $(typeof(dim)) is not implemented yet!"
+    return ObserverFunction[]
+end
+
+
+
 include("UIStyles.jl")
 include("PlottingUtils.jl")
 include("ControlUtils.jl")
 include("Controls.jl")
+include("Heatmap.jl")
+include("Scatter2D.jl")
+include("Lines.jl")
 # ==============================================================================
 # In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
 # ==============================================================================
@@ -25,7 +36,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, ui_raw::Dict) wher
     methods_obs = Observable(copy(sim_config.default_methods))
 
     # Initialize empty; populated by create_plot_controls!
-    controls_obs = Dict{String, Observable}("base_types" => base_types)
+    controls_obs = Dict{String, Observable}("base_types" => base_types, "Master_UI_Ref" => ui_obs)
 
     return PlotManager(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
 end
@@ -33,31 +44,64 @@ end
 function show_unified_fig(
     sim_config::SimulationConfig;
     ui_options::UIType = :default,
-    scene_options::Dict = Dict{String, Any}(),
+    scene_options::Dict = Dict{String, Any}()
 )
     # 1. Setup Manager & Figure
-    manager = create_plot_manager(sim_config, createUIDict(ui_options))
-    plot_fig = Figure(size = manager.ui["Axis"]["figsize"][])
-    ax = Axis(plot_fig[1, 1])
+    manager = create_plot_manager(sim_config, create_master_ui_observables(ui_options))
+    plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
-    # 2. Build UI (This populates manager.controls)
-    # We only return the Figure and the specific observables needed for the data-load trigger
+    # 2. Build UI 
     ctrl_fig = create_controls(plot_fig, manager, plot_data_obs)
     
-    # 3. Pull needed observables from the manager for data loading
+    # 3. Setup Data Generator Lift
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
+    
+    lift(sim_update, methods_obs) do _, active_methods
+        fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
+        
+        Base.invokelatest(update_plot_data_collection!,
+            plot_data_obs[], sim_config, active_methods, fixed_params, to_value(manager.controls["base_types"]);
+            force_reload = (sim_update[] > 0), 
+        )
+        notify(plot_data_obs)
+    end
 
+    # --- 4. RENDER PIPELINE & DIMENSION SWITCHING ---
+    # We store the active rendering listeners here so we can delete them later
+    render_observers = ObserverFunction[]
+
+    on(manager.controls["Plot_Type"]) do ptype_sym
+        # A. Clean up old rendering listeners
+        for obs in render_observers
+            off(obs) 
+        end
+        empty!(render_observers)
+        empty!(plot_fig)
+
+        # B. RESTRUCTURE THE UI DICTIONARY
+        switch_ui_plot_type!(manager, ptype_sym)
+
+        # C. Dispatch directly to the specific plot type!
+        # E.g., Val(:heatmap), Val(:scatter3d), Val(:lines)
+        new_obs = setup_render_lift!(plot_fig, plot_data_obs, manager, Val(ptype_sym))
+        
+        if !isnothing(new_obs)
+            append!(render_observers, new_obs)
+        end
+        
+        notify(plot_data_obs)
+    end
+
+    # --- 5. INITIALIZATION SEQUENCE ---
     final_scene = merge(get_base_scene_options(), scene_options)
 
+    # a) PRE-LOAD OVERWRITES
     if haskey(final_scene, "base_types")
         bt_val = final_scene["base_types"]
-        
         if bt_val isa String
             try
-                # If loaded from CSV, it's a string like "Any[:menu, 0.5, :slider]"
-                # We use Meta.parse to convert it back to a Julia Vector
                 manager.controls["base_types"][] = eval(Meta.parse(bt_val))
             catch
                 @warn "Could not parse base_types string: $bt_val"
@@ -67,26 +111,16 @@ function show_unified_fig(
         end
     end
 
-    lift(sim_update, methods_obs) do _, active_methods
-        fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
-        # Reload/Simulate data
-        Base.invokelatest(update_plot_data_collection!,
-            plot_data_obs[], sim_config, active_methods, fixed_params, to_value(manager.controls["base_types"]);
-            force_reload = (sim_update[] > 0), 
-        )
-        notify(plot_data_obs)
-    end
+    # b) Trigger the initial Plot Dimension (This fires the render pipeline builder!)
+    init_dim = get(final_scene, "Plot_Dimension", 1)
+    manager.controls["Plot_Dimension"][] = init_dim
 
-
-    # a) Trigger initial data load. This synchronously populates the UI menus.
+    # c) Trigger initial data load
     sim_update[] = 1 
     
-    # b) Apply Scene defaults safely AFTER data is populated and limits are known.
+    # d) Apply visual defaults
     set_defaults!(manager, final_scene)
-    # 4. Clean Render Setup
-    setup_render_lift!(ax, plot_fig, plot_data_obs, manager)
-    
-    sim_update[] = 0 
+
     return plot_fig, ctrl_fig, manager
 end
 
@@ -94,79 +128,10 @@ end
 # ==============================================================================
 # In MakiePlotting.jl - Replace setup_render_lift! and find_closest_index_for_dim
 # ==============================================================================
-
 # ==============================================================================
-# In MakiePlotting.jl - Replace setup_render_lift!
+# RENDER DISPATCH SYSTEM
 # ==============================================================================
 
-function setup_render_lift!(ax, plot_fig, plot_data_obs, manager::PlotManager)
-    c = manager.controls
-    dim_names = manager.plot_vars # This is natively strictly ordered!
-    
-    # 1. Gather the ordered selector observables based on plot_vars
-    selector_obs = Observable[]
-    for name in dim_names
-        # Safely fetch either the Slider Value or the Menu Selection
-        if haskey(c, "$(name)_Value")
-            push!(selector_obs, c["$(name)_Value"])
-        elseif haskey(c, "$(name)_Selection")
-            push!(selector_obs, c["$(name)_Selection"])
-        else
-            @warn "No selector widget found for dimension: $name"
-        end
-    end
-
-    # Pass the ordered selector_obs into the lift
-    lift(plot_data_obs, c["X-Axis_Selection"], c["Y-Axis_Selection"], 
-         c["Plot-Along_Index"], c["UI_Update"], selector_obs...) do data, x_key, y_key, dim_idx, _ui, sel_vals...
-        
-        # 1. Validation
-        if isnothing(x_key) || isnothing(y_key) || isnothing(dim_idx)
-            return
-        end
-        (isnothing(x_key) || isnothing(y_key) || x_key == "-" || dim_idx == 0) && return
-        isempty(data) && return
-        
-# 2. Data Slicing
-        active_methods = manager.methods[]
-        xs_to_plot, us_to_plot, valid_labels = Vector{Float64}[], Vector{Float64}[], String[]
-
-        for m_name in active_methods
-            !haskey(data, m_name) && continue
-            pd = data[m_name]
-            
-            x_tensor = pd.data[x_key]
-            y_tensor = pd.data[y_key]
-            
-            # Map values back to tensor indices (clamp to actual size to safely ignore size-1 axes!)
-            x_indices = map(1:ndims(x_tensor)) do i
-                if i == dim_idx; return (:); end
-                val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
-                return min(find_closest_index_for_dim(pd, i, val), size(x_tensor, i))
-            end
-            
-            y_indices = map(1:ndims(y_tensor)) do i
-                if i == dim_idx; return (:); end
-                val = sel_vals[i] isa String ? parse(Int, sel_vals[i]) : sel_vals[i]
-                return min(find_closest_index_for_dim(pd, i, val), size(y_tensor, i))
-            end
-            
-            try
-                push!(xs_to_plot, vec(x_tensor[x_indices...]))
-                push!(us_to_plot, vec(y_tensor[y_indices...]))
-                push!(valid_labels, m_name)
-            catch e
-                @warn "Slicing failed for method $m_name" exception=e
-            end
-        end
-
-        # 3. Plotting
-        # Make sure your generate_dynamic_title function is also updated to accept the new ordered sel_vals
-        title_str = generate_dynamic_title(dim_idx, dim_names, sel_vals)
-        update_base_plot_1D!(plot_fig, ax, valid_labels, xs_to_plot, us_to_plot, manager;
-                             xlabel=x_key, ylabel=y_key, title_str=title_str)
-    end
-end
 
 """
     find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
