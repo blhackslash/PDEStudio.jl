@@ -123,7 +123,7 @@ Returns the observable tracking the selected animation target index.
 function createAnimationPreview!(
     layout::GridLayout,
     manager::PlotManager,
-    plot_dim_obs::Observable{Int},
+    active_axes_obs::Observable{Vector{Int}}, # Update signature
     selector_widgets::Vector{Any},
     active_params::Vector{String}
 )
@@ -154,8 +154,8 @@ function createAnimationPreview!(
             @warn "Animation Error: No target selected."
             return false
         end
-        if idx == plot_dim_obs[]
-            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is currently the plotting axis."
+        if idx in active_axes_obs[]
+            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is an active plotting axis."
             return false
         end
         widget = selector_widgets[idx]
@@ -212,7 +212,7 @@ function createExportOptions!(
     plot_fig::Figure,
     manager::PlotManager,
     anim_target_obs::Observable,
-    plot_dim_obs::Observable{Int},
+    active_axes_obs::Observable{Vector{Int}}, # Update signature
     selector_widgets::Vector{Any},
     active_params::Vector{String}
 )
@@ -234,8 +234,8 @@ function createExportOptions!(
             @warn "Export Error: No target selected in Animation Preview."
             return false
         end
-        if idx == plot_dim_obs[]
-            @warn "Export Error: Cannot animate '$(dim_names[idx])' because it is the plotting axis."
+        if idx in active_axes_obs[]
+            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is an active plotting axis."
             return false
         end
         widget = selector_widgets[idx]
@@ -466,7 +466,13 @@ on(apply_btn.clicks) do _
         
         vt = copy(manager.controls["base_types"][])
         
-        # ... (keep the Plot-Along axis check as is) ...
+        # Check against Active Plot Axes [cite: 60]
+        n_params = length(manager.plot_vars) - 5
+        abs_idx = n_params + idx
+        if abs_idx in manager.controls["Active_Axes"][]
+            @warn "Cannot fix the value of an active Plot Axis! Change the Plot Axes before fixing the value!"
+            return
+        end
 
         if lowercase(strip(input_str)) == "default"
             vt[idx] = VariableControls[idx]

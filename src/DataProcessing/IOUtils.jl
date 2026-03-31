@@ -289,7 +289,7 @@ function ensure_sim_data_exists!(
         try
             if force_overwrite || !doesSimDataExist(params)
                 # invokelatest solves world-age issues if new methods were defined recently
-                sim_data = Base.invokelatest(sim_config.sim_function, params)
+                sim_data = Base.invokelatest(sim_config.simulation_func, params)
                 
                 if !isnothing(sim_data)
                     saveSimData(sim_data; overwrite = force_overwrite)

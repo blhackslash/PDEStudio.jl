@@ -16,7 +16,7 @@ function create_controls(
     # 2. FIX: Attach the Figure to the Screen immediately
     display(plot_screen, plot_fig)
     
-    base_controls_fig = Figure(size = (450, 950)) 
+    base_controls_fig = Figure(size = (450, 1000)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
     current_row = 1
@@ -37,7 +37,7 @@ function create_controls(
     
     update_layout = fig_layout[current_row, 1] = GridLayout()
     update_button = Button(update_layout[1,1], label="Refresh / Run Simulation", 
-                           halign=:center, width=250, buttoncolor=:lightblue)
+                           width=190, buttoncolor=:lightgreen)
     
     update_notifier = Observable(0)
     manager.controls["Simulation_Update"] = update_notifier
@@ -52,15 +52,9 @@ function create_controls(
             display(plot_screen, plot_fig)
         end
     end
-    current_row += 1
-
-# 2. METHOD SELECTION (Updated to Button trigger)
-    Label(fig_layout[current_row, 1], "Comparison Methods:", fontsize=16, font=:bold)
-    current_row += 1
     
-    method_btn_layout = fig_layout[current_row, 1] = GridLayout()
-    method_button = Button(method_btn_layout[1, 1], label="Select Methods...", 
-                           width=250, buttoncolor=:lightgray)
+    method_button = Button(update_layout[1, 2], label="Select Methods...", 
+                           width=190, buttoncolor=:lightgray)
     
     # Identify all possible methods from the simulation dictionary [cite: 291]
     all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
@@ -106,20 +100,19 @@ function create_controls(
     slider_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
 
-    # FIX: Updated signature to catch Z and U observables
-    x_obs, y_obs, z_obs, u_obs, dim_obs, selectors, widgets = build_static_plot_controls!(
+    # Updated to return active_axes_obs instead of plot_dim_idx_obs
+    x_obs, y_obs, z_obs, u_obs, active_axes_obs, selectors, widgets = build_static_plot_controls!(
         menu_area, slider_area, plot_data_obs, active_params, manager
     )
 
-# 4. ANIMATION PREVIEW
+    # 4. ANIMATION PREVIEW
     Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
     Label(fig_layout[current_row, 1], "Animation Preview:", fontsize=16, font=:bold, color=:darkorange)
     current_row += 1
     
     anim_layout = fig_layout[current_row, 1] = GridLayout()
-    # Returns the target observable so the GIF exporter knows what to animate!
-    anim_target_obs = createAnimationPreview!(anim_layout, manager, dim_obs, widgets, active_params)
+    anim_target_obs = createAnimationPreview!(anim_layout, manager, active_axes_obs, widgets, active_params)
     current_row += 1
 
     # 5. EXPORT OPTIONS
@@ -127,7 +120,7 @@ function create_controls(
     current_row += 1
     
     export_layout = fig_layout[current_row, 1] = GridLayout()
-    createExportOptions!(export_layout, plot_fig, manager, anim_target_obs, dim_obs, widgets, active_params)
+    createExportOptions!(export_layout, plot_fig, manager, anim_target_obs, active_axes_obs, widgets, active_params)
     current_row += 1
 
     display(GLMakie.Screen(title="Makie Controls"), base_controls_fig)
@@ -159,12 +152,7 @@ function build_static_plot_controls!(
     selector_values = Vector{Observable}(undef, total_dims)
 
     # 2. Setup Menus Grid
-    # Row 1: Plot Type Selection
-    Label(menu_layout[1,1], "Plot Type:")
-    plot_options = ["Lines", "Heatmap", "Contour", "Surface", "Scatter 2D", "Scatter 3D"]
-    menu_type = Menu(menu_layout[1,2], options = plot_options, width = 120)
-    menu_type.i_selected[] = 1
-    btn_apply = Button(menu_layout[1,3], label="Apply", width = 120, buttoncolor=:lightgreen)
+
 
 
     # Row 2 & 3: Independent Axes
@@ -175,31 +163,34 @@ function build_static_plot_controls!(
     menu_y = Menu(menu_layout[3,2], options = ["disabled"], width = 120)
     menu_z = Menu(menu_layout[3,3], options = ["disabled"], width = 120)
 
-    # Row 4 & 5: Dependent Axis, Component, Plot-Along
+# Row 4 & 5: Dependent Axis, Component (REMOVED Plot-Along)
     Label(menu_layout[4,1], "U-Axis (Dep)", font=:bold)
     Label(menu_layout[4,2], "Component", font=:bold)
-    Label(menu_layout[4,3], "Plot-Along", font=:bold)
     menu_u    = Menu(menu_layout[5,1], options = ["-"], width = 120)
     menu_comp = Menu(menu_layout[5,2], options = ["1"], width = 120)
-    menu_axis = Menu(menu_layout[5,3], options = ["-"], width = 120)
-
+    # Row 1: Plot Type Selection
+    Label(menu_layout[4,3], "Plot Type", font=:bold)
+    plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume","Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
+    menu_type = Menu(menu_layout[5,3], options = plot_options, width = 120)
+    menu_type.i_selected[] = 1
     colsize!(menu_layout, 1, Fixed(120))
     colsize!(menu_layout, 2, Fixed(120))
     colsize!(menu_layout, 3, Fixed(120))    
+
+    # --- NEW: Master Active Axes Tracker ---
+    active_axes_obs = Observable{Vector{Int}}(Int[])
+    manager.controls["Active_Axes"] = active_axes_obs
 
     # EXPOSE OPTIONS AND SELECTIONS
     manager.controls["X-Axis_Selection"], manager.controls["X-Axis_Options"], manager.controls["X-Axis_Widget"] = menu_x.selection, menu_x.options, menu_x
     manager.controls["Y-Axis_Selection"], manager.controls["Y-Axis_Options"], manager.controls["Y-Axis_Widget"] = menu_y.selection, menu_y.options, menu_y
     manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
     manager.controls["U-Axis_Selection"], manager.controls["U-Axis_Options"], manager.controls["U-Axis_Widget"] = menu_u.selection, menu_u.options, menu_u
-    manager.controls["Plot-Along_Selection"], manager.controls["Plot-Along_Options"], manager.controls["Plot-Along_Widget"] = menu_axis.selection, menu_axis.options, menu_axis
-    manager.controls["Plot-Along_Index"] = plot_dim_idx_obs
-        # We now export the Plot_Type observable
     plot_type_obs = Observable{Symbol}(:lines)
     manager.controls["Plot_Type"] = plot_type_obs
-    on(btn_apply.clicks) do _
+
+    on(menu_type.selection) do raw_str
         # Convert "Scatter 2D" to :scatter2d
-        raw_str = menu_type.selection[]
         ptype_sym = Symbol(lowercase(replace(raw_str, " " => "")))
         
         plot_type_obs[] = ptype_sym
@@ -218,18 +209,19 @@ function build_static_plot_controls!(
     manager.controls["$(dim_names[comp_idx])_Selection"], manager.controls["$(dim_names[comp_idx])_Options"], manager.controls["$(dim_names[comp_idx])_Widget"] = menu_comp.selection, menu_comp.options, menu_comp
 
     # 3. Unified Widget Creation (Sliders Only now)
+    current_row = 1
     for i in 1:total_dims
         if i == comp_idx
             continue # Skipped because it's now cleanly integrated into the top menu block
         end
         
-        Label(slider_layout[i, 1], "$(dim_names[i]):", halign=:right)
+        Label(slider_layout[current_row, 1], "$(dim_names[i]):", halign=:right)
         
         is_basevar = i > n_params
         ctrl_type = is_basevar ? VariableControls[i - n_params] : :slider
         
         if ctrl_type == :menu
-            m = Menu(slider_layout[i, 2], options = ["1"], width = 200)
+            m = Menu(slider_layout[current_row, 2], options = ["1"], width = 200)
             control_objects[i] = m
             selector_values[i] = Observable{Int}(1)
             on(m.selection) do s
@@ -237,13 +229,14 @@ function build_static_plot_controls!(
             end
             manager.controls["$(dim_names[i])_Selection"], manager.controls["$(dim_names[i])_Options"], manager.controls["$(dim_names[i])_Widget"] = m.selection, m.options, m
         else
-            sl = Slider(slider_layout[i, 2], range = 0:0.1:1, width = 200)
+            sl = Slider(slider_layout[current_row, 2], range = 0:0.1:1, width = 200)
             control_objects[i] = sl
             selector_values[i] = sl.value
             manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
         end
         
-        Label(slider_layout[i, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
+        Label(slider_layout[current_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
+        current_row += 1
     end
 
     # 4. Handle Overwrites/Locks via base_types
@@ -399,69 +392,25 @@ function build_static_plot_controls!(
         notify(menu_z.selection)
     end
 
-    on(menu_z.selection) do z_val
-        (isnothing(z_val) || z_val == "-") && return
-        z_key_obs[] = z_val
+# --- MULTIDIMENSIONAL AXES TRACKER ---
+    onany(menu_x.selection, menu_y.selection, menu_z.selection, manager.controls["Plot_Type"]) do x_val, y_val, z_val, ptype
+        p_dim = PLOT_DIM_MAP[ptype]
+        axes = Int[]
         
-        # Trigger Plot-Along dimension calculation
-        x_val = menu_x.selection[]
-        y_val = menu_y.selection[]
-        u_val = menu_u.selection[]
-        
-        plot_data_dict = plot_data_obs[]
-        active_methods = manager.methods[]
-        p_dim = plot_dim_obs[]
-        
-        common = get_varied_dims(x_val, plot_data_dict, active_methods)
-        if p_dim >= 2 && y_val != "disabled"
-            common = intersect(common, get_varied_dims(y_val, plot_data_dict, active_methods))
-        end
-        if p_dim >= 3 && z_val != "disabled"
-            common = intersect(common, get_varied_dims(z_val, plot_data_dict, active_methods))
-        end
-        if !isnothing(u_val) && u_val != "-" && u_val != "disabled"
-            common = intersect(common, get_varied_dims(u_val, plot_data_dict, active_methods))
+        for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
+            if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
+                idx = findfirst(isequal(val), dim_names)
+                !isnothing(idx) && push!(axes, idx)
+            end
         end
         
-        common_sorted = sort(collect(common))
-        current_axis = menu_axis.selection[]
-        new_opts = isempty(common_sorted) ? ["-"] : [dim_names[d] for d in common_sorted]
-        menu_axis.options[] = new_opts
-        
-        if current_axis == "-" || isnothing(current_axis) || current_axis ∉ new_opts
-            menu_axis.i_selected[] = isempty(common_sorted) ? 1 : length(common_sorted) 
-        else
-            menu_axis.i_selected[] = findfirst(isequal(current_axis), new_opts)
-        end
-    end
-
-    on(menu_u.selection) do u_val
-        (isnothing(u_val) || u_val == "-") && return
-        u_key_obs[] = u_val
-        notify(menu_z.selection) # Re-evaluate common dims for Plot-Along axis!
-    end
-
-    on(manager.methods) do _
-        notify(plot_data_obs)
-    end
-    
-    # Translator: String (UI) -> Integer (Backend)
-    on(menu_axis.selection) do axis_name
-        (isnothing(axis_name) || axis_name == "-") && return
-        
-        idx = findfirst(isequal(axis_name), dim_names)
-        if !isnothing(idx)
-            plot_dim_idx_obs[] = idx
-        end
+        active_axes_obs[] = axes
     end
 
     # --- REACTIVE LOGIC: Sliders Ranges ---
-    
-    # The sliders now listen purely to the backend integer observable
-    on(plot_dim_idx_obs) do axis_idx
-        (axis_idx == 0) && return
-        
-        plot_data_dict = plot_data_obs[] 
+    # Sliders now dynamically react to BOTH axis changes and data dictionary updates
+    onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
+        isempty(plot_data_dict) && return
         vt = manager.controls["base_types"][]
 
         for i in 1:total_dims
@@ -472,7 +421,9 @@ function build_static_plot_controls!(
             end
             
             ctrl = control_objects[i]
-            is_axis = (i == axis_idx)
+            
+            # THE CRITICAL FIX: Multidimensional slider locking!
+            is_axis = (i in active_axes) 
             
             g_min, g_max = Inf, -Inf
             for pd in values(plot_data_dict)
@@ -521,6 +472,18 @@ function build_static_plot_controls!(
                 end
             end
         end
+    end
+
+    return x_key_obs, y_key_obs, z_key_obs, u_key_obs, active_axes_obs, selector_values, control_objects
+
+    on(menu_u.selection) do u_val
+        (isnothing(u_val) || u_val == "-") && return
+        u_key_obs[] = u_val
+        notify(menu_z.selection) # Re-evaluate common dims for Plot-Along axis!
+    end
+
+    on(manager.methods) do _
+        notify(plot_data_obs)
     end
 
     return x_key_obs, y_key_obs, z_key_obs, u_key_obs, plot_dim_idx_obs, selector_values, control_objects
@@ -586,7 +549,15 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         
         active_target_obs[] = obs
         # Show the actual value as a string for editing
-        tb.stored_string[] = string(to_value(obs))
+    # 1. Convert the value to a string
+        val_str = string(to_value(obs))
+        
+        # 2. Update both the stored and the displayed observables
+        tb.stored_string[] = val_str
+        tb.displayed_string[] = val_str  # This forces the text to appear visually
+        
+        # 3. Programmatically focus the textbox
+        #tb.focused[] = true
     end
 
     # Handle Textbox Submission with the NEW Smart Parser

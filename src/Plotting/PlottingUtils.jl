@@ -1,16 +1,3 @@
-function updateUI(ui_dict::Dict, ui_input::Dict)
-    @assert issubset(Set(keys(ui_input)), Set(keys(ui_dict))) "At least one of the given UI keys is not used! Check spelling!"
-    for (key, val) in ui_input
-        # Special handling if user provides scalar for 3d markersize
-        if key == "markersize_3d" && isa(val, Real)
-            ui_dict[key] = Vec3f(val)
-        else
-            ui_dict[key] = val
-        end
-    end
-end
-# Functions for Makie Controls
-
 # This function goes into your plotting_helpers.jl file
 """
     _parse_legend_position(s::String) -> Tuple{Symbol, Symbol}
@@ -45,284 +32,6 @@ function _parse_legend_position(s_in::String)
     end
 
     return (halign, valign)
-end
-"""
-    create_or_update_legend!(fig::Figure, plotted_objects::Vector, 
-                             labels::Vector, manager::PlotManager)
-
-Clears any existing Legend from the figure and creates a new one based on the
-position specified in the manager's UI "Legend" scope[cite: 1601, 1607].
-"""
-function create_or_update_legend!(
-    fig::Figure, 
-    plotted_objects::Vector, 
-    labels::Vector, 
-    manager::PlotManager
-)
-   # --- 1. Find and Delete any existing Legend in the Figure ---
-    # We search the main layout for any existing Legend block to ensure a clean update[cite: 1149].
-    for elem in copy(contents(fig.layout))
-        if elem isa Legend
-            delete!(elem)
-        end
-    end
-
-    # --- 2. Get Legend Properties from PlotManager ---
-    # Access the scoped observables directly from the manager.
-    ui_leg = manager.ui["Legend"]
-    ui_axis = manager.ui["Axis"]
-    
-    position = ui_leg["legend_pos"][]
-    title_str = ui_leg["legend"][]
-    font_size = ui_axis["font_size"][]
-
-    if isempty(plotted_objects) || isempty(labels)
-        # If no items are plotted, clean up the layout and return[cite: 1151].
-        try
-            trim!(fig.layout) 
-        catch e
-            # Ignore if layout is already clean
-        end
-        return
-    end
-
-    # --- 3. Create and Place the New Legend ---
-    try
-        # Convert empty strings to nothing for cleaner Makie titles[cite: 1152].
-        final_title = isempty(strip(title_str)) ? nothing : title_str
-
-        if position == "detached"
-            # Places the legend in a new column to the right of the axis[cite: 1147, 1153].
-            trim!(fig.layout)
-            Legend(fig[1, end+1], plotted_objects, labels, final_title;
-                tellheight=false,
-                merge = true,
-                unique = true,
-                titlesize=font_size,
-                labelsize=font_size
-            )
-            # Ensure the new column's width is determined by the legend content[cite: 1155].
-            colsize!(fig.layout, 2, Auto())
-        else
-            # Places the legend inside the axis at a specified anchor point[cite: 1148].
-            # This uses your existing _parse_legend_position helper[cite: 1144, 1156].
-            halign, valign = _parse_legend_position(position)
-            
-            Legend(fig[1,1], plotted_objects, labels, final_title;
-                orientation = :vertical,
-                tellheight=false, 
-                tellwidth=false,
-                halign = halign,
-                valign = valign,
-                merge = true,
-                unique = true,
-                titlesize=font_size,
-                labelsize=font_size,
-                margin=(10, 10, 10, 10)
-            )
-            # Trim layout to ensure no empty ghost columns remain[cite: 1158].
-            trim!(fig.layout)
-        end
-    catch e
-        @error "Failed to create or update legend." exception=(e, catch_backtrace())
-    end
-end
-
-"""
-    set_axis_styles!(ax, ui_options_obs, final_label_obs)
-
-Applies a set of styles to a given `Axis` object. It now takes a dictionary
-of final, combined observables for the title and labels.
-"""
-function set_axis_styles!(
-    ax::Axis,
-    ui_options_obs::Dict{String, Observable}
-)
-    try
-        
-        # Set other visual properties directly from the ui_options_obs dictionary
-        ax.xgridvisible = ui_options_obs["xgridvisible"][]
-        ax.ygridvisible = ui_options_obs["ygridvisible"][]
-        ax.xticklabelsvisible = ui_options_obs["xticklabelsvisible"][]
-        ax.yticklabelsvisible = ui_options_obs["yticklabelsvisible"][]
-        
-        # Set text sizes
-        ax.titlesize = ui_options_obs["title_size"][]
-        ax.xlabelsize = ui_options_obs["label_size"][]
-        ax.ylabelsize = ui_options_obs["label_size"][]
-        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
-        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]
-
-        # --- NEW: Set Tick Positions ---
-        xtick_count = ui_options_obs["xtick_count"][]
-        ytick_count = ui_options_obs["ytick_count"][]
-        
-        # Use a tick count of 0 as a signal to use Makie's automatic default.
-        if xtick_count > 0
-            ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(xtick_count)) : LinearTicks(xtick_count)
-        end
-        if ytick_count > 0
-            ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ytick_count)) : LinearTicks(ytick_count)
-        end
-
-        # --- Set X-Axis Scale and Tick Formatting ---
-        x_offset = ui_options_obs["xscale_offset"][]
-        if x_offset != 0.0
-            #ax.xscale = identity
-            ax.xtickformat = tick_values -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", tick_values)
-        else
-            xformat = ui_options_obs["xtickformat"][]
-            ax.xtickformat = xformat == "default" ? Makie.automatic : xformat
-        end
-
-        # --- Set Y-Axis Scale and Tick Formatting ---
-        y_offset = ui_options_obs["yscale_offset"][]
-        if y_offset != 0.0
-            #ax.yscale = identity
-            ax.ytickformat = tick_values -> map(tick_values) do y
-                deviation = y - y_offset
-                offset_str = string(round(y_offset, sigdigits=3))
-                # --- THIS IS THE FIX FOR THE SIGN ---
-                sign_str = deviation < 0 ? "-" : "+"
-                "$(offset_str) $(sign_str) $(@sprintf("%.1e", abs(deviation)))"
-            end
-        else
-            yformat = ui_options_obs["ytickformat"][]
-            ax.ytickformat = yformat == "default" ? Makie.automatic : yformat
-        end
-    catch e
-        @warn "An error occurred while setting axis styles. A required key might be missing." exception=(e, catch_backtrace())
-    end
-end
-"""
-    set_axis_styles!(ax::Axis3, ui_options_obs)
-
-Dynamically switches between 3D perspective and 2D top-down views.
-Assumes all required keys exist in `ui_options_obs`.
-"""
-function set_axis_styles!(
-    ax::Axis3,
-    ui_options_obs::Dict{String, Observable}
-)
-    try
-        plot_type = ui_options_obs["plot_type"][]
-        is_3d_view = plot_type in [:surface, :scatter3d] 
-
-        # --- Common Font Sizes ---
-        ax.titlesize = ui_options_obs["title_size"][]
-        ax.xlabelsize = ui_options_obs["label_size"][]
-        ax.ylabelsize = ui_options_obs["label_size"][]
-        ax.xticklabelsize = ui_options_obs["ticklabel_size"][]
-        ax.yticklabelsize = ui_options_obs["ticklabel_size"][]
-
-        if is_3d_view
-            # --- 3D Perspective Configuration ---
-            ax.zlabel = "z"
-            ax.zlabelsize = ui_options_obs["label_size"][]
-            ax.zticklabelsize = ui_options_obs["ticklabel_size"][]
-            
-            ax.aspect = (1, 1, 0.6) 
-            ax.perspectiveness = 0.5
-            #ax.viewmode = :fit
-
-            ax.xgridvisible = true; ax.ygridvisible = true; ax.zgridvisible = true
-            ax.xticklabelsvisible = true; ax.yticklabelsvisible = true; ax.zticklabelsvisible = true
-            
-            # --- 3D Offsets & Pads ---
-            ax.xlabeloffset = ui_options_obs["xlabel_offset_3d"][]
-            ax.ylabeloffset = ui_options_obs["ylabel_offset_3d"][]
-            ax.zlabeloffset = ui_options_obs["zlabel_offset_3d"][]
-            
-
-        else
-            # Use Mixed alignmode to force padding at the bottom
-            b_margin = ui_options_obs["bottom_margin_2d"][]
-            
-            # Mixed(bottom = X) reserves X pixels at the bottom, shrinking the axis height
-            ax.alignmode = Mixed(bottom = b_margin, left = 0, right = 0, top = 0)
-            # --- 2D Top-Down Configuration ---
-            ax.zlabel = "" 
-            ax.zlabelsize = 0
-            ax.zticklabelsvisible = false
-            ax.zgridvisible = false
-            
-            ax.perspectiveness = 0.0 
-            ax.elevation = pi/2       
-            ax.azimuth = -pi/2        
-            ax.aspect = :data 
-
-            
-            # Move Labels away from the Ticks
-            ax.xlabeloffset = ui_options_obs["xlabel_offset_2d"][]
-            ax.ylabeloffset = ui_options_obs["ylabel_offset_2d"][]
-            
-            ax.xgridvisible = true; ax.ygridvisible = true
-        end
-
-    catch e
-        @warn "Error setting axis styles. A required key might be missing in ui_options_obs." exception=(e, catch_backtrace())
-    end
-end
-
-function set_scene_options!(scene_obs::Dict{String,Observable}, scene_options::Dict{String,Any})
-    for (key, val) = scene_obs
-        if haskey(scene_options, key); val[] = scene_options[key] end
-    end
-end
-
-function save_scene_info!(scene_obs::Dict{String,Observable}, scene_info::Dict{String,Any})
-    for (key,val) = scene_obs
-        scene_info[key] = to_value(val)
-    end
-end
-
-"""
-    create_axis_label_observables(ui_options_obs, default_values) -> Dict
-
-Creates a dictionary of final, combined observables for axis labels and titles.
-
-It iterates through a `default_values` dictionary. For each entry, it creates
-a `lift` that combines the user's input from `ui_options_obs` with the
-provided default. If the user's input is "default", the fallback value is used.
-The fallback can be static (e.g., a String) or dynamic (an Observable).
-
-# Arguments
-- `ui_options_obs::Dict{String, Observable}`: The dictionary of raw UI observables.
-- `default_values::Dict{String, Any}`: Maps a UI key (e.g., "xlabel") to its default value.
-
-# Returns
-- `Dict{String, Observable}`: A dictionary mapping UI keys to the final observables
-  that should be used to set axis properties.
-"""
-function create_axis_label_observables(
-    ui_options_obs::Dict{String, Observable},
-    default_values::Dict{String, Any}
-)
-    final_label_obs_dict = Dict{String, Observable}()
-
-    for (key, default_val) in default_values
-        if !haskey(ui_options_obs, key)
-            @warn "UI option key '$key' not found in ui_options_obs. Skipping label creation."
-            continue
-        end
-
-        ui_obs = ui_options_obs[key]
-
-        local final_obs # Ensure it's scoped for the if/else block
-        if isa(default_val, Observable)
-            # Dynamic default: lift on both user input and the default's observable
-            final_obs = lift(ui_obs, default_val) do user_input, dynamic_default
-                user_input == "default" ? dynamic_default : user_input
-            end
-        else # Static default (e.g., a simple String)
-            final_obs = lift(ui_obs) do user_input
-                user_input == "default" ? default_val : user_input
-            end
-        end
-        final_label_obs_dict[key] = final_obs
-    end
-
-    return final_label_obs_dict
 end
 
 """
@@ -608,126 +317,6 @@ function _find_outlier_indices(
     return CartesianIndices(matrix)[linear_outlier_indices]
 end
 
-
-"""
-    create_or_update_colorbar!(fig::Figure, ui_options_obs, color_range_obs, label)
-
-Creates a Colorbar explicitly linked to the global colormap and colorrange observables.
-This avoids errors when plotting objects like Contours which contain Text elements.
-"""
-function create_or_update_colorbar!(
-    fig::Figure,
-    plot_object, # We keep this argument to check if a plot exists, but we won't extract from it
-    ui_options_obs::Dict{String, Observable},
-    color_range_obs::Observable{Tuple{Float64, Float64}}, # Pass the observable directly
-    label::String,
-)
-    # --- 1. Find and Delete any existing Colorbar ---
-    for elem in copy(contents(fig.layout))
-        if elem isa Colorbar
-            delete!(elem)
-        end
-    end
-
-    # If no plot was actually created (e.g. empty data), don't draw a colorbar
-    if isnothing(plot_object)
-        return
-    end
-
-    # --- 2. Create the New Colorbar Explicitly ---
-    try
-        # Instead of passing `plot_object`, we pass the attributes explicitly.
-        # This bypasses the "Text" error for contours.
-        cb = Colorbar(fig[1, 2];
-            colormap = ui_options_obs["colormap"],
-            colorrange = color_range_obs,
-            label = label,
-            labelsize = ui_options_obs["label_size"][],
-            ticklabelsize = ui_options_obs["ticklabel_size"][],
-            # Optional: Add highclip/lowclip here if you use them in the main plot
-        )
-        
-        # Ensure the colsize adjusts automatically
-        colsize!(fig.layout, 2, Auto())
-        
-    catch e
-        @error "Failed to create or update colorbar." exception=(e, catch_backtrace())
-    end
-end
-
-"""
-    extract_line_cut_data(x_points, u_values, line_point, line_vector, tolerance_dist)
-
-Extracts a 1D slice of data from a 2D snapshot, preserving all solution components.
-
-It finds all points within a specified orthogonal distance (`tolerance_dist`) of a line
-and projects them to get a 1D coordinate. It returns these coordinates along with their
-corresponding `u` values, which can be a vector (single component) or a matrix
-(multiple components). The new 1D coordinate system is centered at `line_point`.
-
-# Arguments
-- `x_points::Vector{NTuple{2, Float64}}`: The (x,y) coordinates of the 2D data.
-- `u_values::VecOrMat{<:Real}`: The solution values (Vector or Matrix) at each point.
-- `line_point::NTuple{2, <:Real}`: The point `p` that the cut line passes through.
-- `line_vector::NTuple{2, <:Real}`: The direction vector `v` of the cut line.
-- `tolerance_dist::Real`: The maximum orthogonal distance for a point to be included.
-
-# Returns
-- A tuple `(cut_x_coords, cut_u_values::VecOrMat)` containing the sorted 1D data.
-"""
-function extract_line_cut_data(
-    x_points::Vector{NTuple{2, Float64}},
-    u_values::VecOrMat{<:Real},
-    line_point::NTuple{2, <:Real},
-    line_vector::NTuple{2, <:Real},
-    tolerance_dist::Real
-)
-    if isempty(x_points) || isempty(u_values); return (Float64[], eltype(u_values)[]); end
-
-    v_norm = sqrt(line_vector[1]^2 + line_vector[2]^2)
-    if v_norm < 1e-9; return (Float64[], eltype(u_values)[]); end
-    v_unit = (line_vector[1] / v_norm, line_vector[2] / v_norm)
-
-    p = line_point
-    cut_x = Float64[]
-    
-    # Store indices of points that are part of the cut
-    valid_indices = Int[]
-
-    for i in eachindex(x_points)
-        q = x_points[i]
-        w = (q[1] - p[1], q[2] - p[2])
-        
-        projected_coord = w[1] * v_unit[1] + w[2] * v_unit[2]
-        dist_sq = (w[1]^2 + w[2]^2) - projected_coord^2
-        orthogonal_dist = dist_sq > 0 ? sqrt(dist_sq) : 0.0
-        
-        if orthogonal_dist <= tolerance_dist
-            push!(cut_x, projected_coord)
-            push!(valid_indices, i)
-        end
-    end
-
-    if !isempty(valid_indices)
-        # Sort the results by the new 1D coordinate
-        p = sortperm(cut_x)
-        
-        # Select and sort the u_values based on the valid indices and permutation
-        if u_values isa AbstractMatrix
-            cut_u = u_values[valid_indices, :]
-            return (cut_x[p], cut_u[p, :])
-        else # It's a Vector
-            cut_u = u_values[valid_indices]
-            return (cut_x[p], cut_u[p])
-        end
-    else
-        # Return empty arrays with the correct type
-        empty_u = u_values isa AbstractMatrix ? Matrix{eltype(u_values)}(undef, 0, size(u_values, 2)) : Vector{eltype(u_values)}()
-        return (Float64[], empty_u)
-    end
-end
-
-
 """
     generate_dynamic_title(x_key, y_key, dim_idx, manager, dim_names, sel_vals)
 
@@ -759,5 +348,291 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
+# --- Legend Helpers ---
+function _parse_legend_position(s_in::String)
+    s = lowercase(s_in)
+    if s == "center"; return (:center, :center); end
+
+    valign = occursin("top", s) ? :top : (occursin("bottom", s) ? :bottom : :center)
+    halign = occursin("left", s) ? :left : (occursin("right", s) ? :right : :center)
+
+    return (halign, valign)
+end
+
+function create_or_update_legend!(
+    fig::Figure, 
+    plotted_objects::Vector, 
+    labels::Vector, 
+    manager::PlotManager
+)
+    # 1. Clean up old legends
+    for elem in copy(contents(fig.layout))
+        if elem isa Legend; delete!(elem); end
+    end
+
+    # 2. Extract properties hierarchically
+    ui_style = manager.ui["Plot-Style"]
+    
+    # If the current Plot-Style doesn't support legends (like Heatmaps), skip entirely!
+    if !haskey(ui_style, "legend_pos"); return; end 
+
+    position = ui_style["legend_pos"][]
+    title_str = manager.ui["Labels"]["legend"][]
+    font_size = manager.ui["Axis-General"]["font_size"][]
+
+    if isempty(plotted_objects) || isempty(labels)
+        try trim!(fig.layout) catch; end
+        return
+    end
+
+    final_title = isempty(strip(title_str)) ? nothing : title_str
+
+    # 3. Create new Legend
+    try
+        if position == "detached"
+            trim!(fig.layout)
+            Legend(fig[1, end+1], plotted_objects, labels, final_title;
+                tellheight=false, merge=true, unique=true,
+                titlesize=font_size, labelsize=font_size
+            )
+            colsize!(fig.layout, 2, Auto())
+        else
+            halign, valign = _parse_legend_position(position)
+            Legend(fig[1,1], plotted_objects, labels, final_title;
+                orientation=:vertical, tellheight=false, tellwidth=false,
+                halign=halign, valign=valign, merge=true, unique=true,
+                titlesize=font_size, labelsize=font_size, margin=(10, 10, 10, 10)
+            )
+            trim!(fig.layout)
+        end
+    catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
+end
 
 
+# --- Axis Styling Helpers ---
+"""
+    set_axis_styles!(ax::Axis, manager, def_x, def_y, def_title)
+
+Pulls from the hierarchical UI dictionary to style a 2D axis. 
+Automatically applies Labels, Limits, Grids, and Offsets.
+"""
+function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
+    ui_gen = manager.ui["Axis-General"]
+    ui_lbl = manager.ui["Labels"]
+    ui_x   = manager.ui["X-Axis"]
+    ui_y   = manager.ui["Y-Axis"]
+    ui_stl = manager.ui["Plot-Style"]
+
+    # 1. Labels
+    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
+    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
+    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+
+    # 2. Font Sizes
+    ax.titlesize = ui_gen["title_size"][]
+    ax.xlabelsize = ui_gen["label_size"][]
+    ax.ylabelsize = ui_gen["label_size"][]
+    ax.xticklabelsize = ui_gen["ticklabel_size"][]
+    ax.yticklabelsize = ui_gen["ticklabel_size"][]
+
+    # 3. Offsets & Margins
+    if haskey(ui_stl, "xlabel_offset")
+        ax.xlabelpadding = ui_stl["xlabel_offset"][]
+        ax.ylabelpadding = ui_stl["ylabel_offset"][]
+    end
+    if haskey(ui_stl, "bottom_margin")
+        ax.alignmode = Mixed(bottom = ui_stl["bottom_margin"][], left=0, right=0, top=0)
+    end
+
+    # 4. Grids & Visibility
+    ax.xgridvisible = ui_x["gridvisible"][]
+    ax.ygridvisible = ui_y["gridvisible"][]
+    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]
+    ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]
+
+    # 5. Ticks & Formats
+    if ui_x["tick_count"][] > 0
+        ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(ui_x["tick_count"][])) : LinearTicks(ui_x["tick_count"][])
+    end
+    if ui_y["tick_count"][] > 0
+        ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ui_y["tick_count"][])) : LinearTicks(ui_y["tick_count"][])
+    end
+
+    x_offset = ui_x["scale_offset"][]
+    if x_offset != 0.0
+        ax.xtickformat = ticks -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", ticks)
+    else
+        ax.xtickformat = ui_x["tickformat"][] == "default" ? Makie.automatic : ui_x["tickformat"][]
+    end
+
+    y_offset = ui_y["scale_offset"][]
+    if y_offset != 0.0
+        ax.ytickformat = ticks -> map(ticks) do y
+            dev = y - y_offset
+            "$(round(y_offset, sigdigits=3)) $(dev < 0 ? "-" : "+") $(@sprintf("%.1e", abs(dev)))"
+        end
+    else
+        ax.ytickformat = ui_y["tickformat"][] == "default" ? Makie.automatic : ui_y["tickformat"][]
+    end
+end
+
+"""
+    set_axis_styles!(ax::Axis3, manager, def_x, def_y, def_z, def_title)
+
+Pulls from the hierarchical UI dictionary to style a 3D perspective axis.
+"""
+function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y::String, def_z::String, def_title::String)
+    ui_gen = manager.ui["Axis-General"]
+    ui_lbl = manager.ui["Labels"]
+    ui_x, ui_y, ui_z = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
+    ui_stl = manager.ui["Plot-Style"]
+
+    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
+    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
+    ax.zlabel = ui_lbl["zlabel"][] == "default" ? def_z : ui_lbl["zlabel"][]
+    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+
+    ax.titlesize = ui_gen["title_size"][]
+    ax.xlabelsize = ui_gen["label_size"][]; ax.ylabelsize = ui_gen["label_size"][]; ax.zlabelsize = ui_gen["label_size"][]
+    ax.xticklabelsize = ui_gen["ticklabel_size"][]; ax.yticklabelsize = ui_gen["ticklabel_size"][]; ax.zticklabelsize = ui_gen["ticklabel_size"][]
+
+    ax.xgridvisible = ui_x["gridvisible"][]; ax.ygridvisible = ui_y["gridvisible"][]; ax.zgridvisible = ui_z["gridvisible"][]
+    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]; ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]; ax.zticklabelsvisible = ui_z["ticklabelsvisible"][]
+
+    if haskey(ui_stl, "xlabel_offset")
+        ax.xlabeloffset = ui_stl["xlabel_offset"][]
+        ax.ylabeloffset = ui_stl["ylabel_offset"][]
+        ax.zlabeloffset = ui_stl["zlabel_offset"][]
+    end
+
+    ax.perspectiveness = 0.5
+    ax.aspect = (1, 1, 0.6)
+end
+
+
+# --- Utility Functions ---
+function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
+    min_raw, max_raw = raw_limits
+    if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw); return (0.0, 1.0); end
+
+    use_log = is_log_scale && (min_raw > 0)
+    
+    if use_log
+        pad = padding_factor
+        return (min_raw / (1 + pad), max_raw * (1 + pad))
+    else
+        data_range = max_raw - min_raw
+        pad = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
+        return (min_raw - pad, max_raw + pad)
+    end
+end
+
+function _safe_extrema(data_slices)
+    mins, maxs = Float64[], Float64[]
+    for slice in data_slices
+        valid_data = filter(isfinite, slice)
+        if !isempty(valid_data)
+            push!(mins, minimum(valid_data))
+            push!(maxs, maximum(valid_data))
+        end
+    end
+    isempty(mins) && return (0.0, 1.0)
+    return (minimum(mins), maximum(maxs))
+end
+
+function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
+    ui_x = manager.ui["X-Axis"]
+    ui_y = manager.ui["Y-Axis"]
+    
+    raw_xlims = _safe_extrema(xs)
+    raw_ylims = _safe_extrema(us)
+
+    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], ui_x["logscale"][])
+    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], ui_y["logscale"][])
+
+    try limits!(ax, final_xlims..., final_ylims...) catch; end
+    
+    ax.xscale[] = final_xlims[1] > 0 && ui_x["logscale"][] ? log10 : identity
+    ax.yscale[] = final_ylims[1] > 0 && ui_y["logscale"][] ? log10 : identity
+end
+
+function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
+    ui_var = manager.ui["Various"]
+    ui_stl = manager.ui["Plot-Style"]
+    
+    track_max = ui_var["track_max"][]
+    track_min = ui_var["track_min"][]
+    (!track_max && !track_min) && return
+
+    valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
+    isempty(valid_pairs) && return
+    
+    color = ui_stl["colors"][][mod1(plot_idx, end)]
+    lw = haskey(ui_stl, "linewidth") ? (ui_stl["linewidth"][] / 2) : 2.0
+
+    if track_max
+        max_u, idx = findmax(p -> p[2], valid_pairs)
+        max_x = valid_pairs[idx][1]
+        linesegments!(ax, [Point2f(max_x, 0), Point2f(max_x, max_u)]; color=(color, 0.7), linestyle=:dash, linewidth=lw)
+    end
+    if track_min
+        min_u, idx = findmin(p -> p[2], valid_pairs)
+        min_x = valid_pairs[idx][1]
+        linesegments!(ax, [Point2f(min_x, 0), Point2f(min_x, min_u)]; color=(color, 0.7), linestyle=:dot, linewidth=lw)
+    end
+end
+
+function _find_outlier_indices(y_data::AbstractVector, threshold::Real)
+    if length(y_data) < 5; return Int[]; end
+    finite_y_data = filter(isfinite, y_data)
+    if length(finite_y_data) < 5; return Int[]; end
+
+    q1, q3 = quantile(finite_y_data, 0.25), quantile(finite_y_data, 0.75)
+    iqr = q3 - q1
+    lower_bound, upper_bound = q1 - threshold * iqr, q3 + threshold * iqr
+    
+    return findall(y -> isfinite(y) && (y < lower_bound || y > upper_bound), y_data)
+end
+
+function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{CartesianIndex}
+    flat_vector = vec(matrix)
+    linear_outlier_indices = _find_outlier_indices(flat_vector, threshold)
+    return CartesianIndices(matrix)[linear_outlier_indices]
+end
+
+
+function create_or_update_colorbar!(
+    fig::Figure,
+    plot_object,
+    manager::PlotManager,
+    color_range_obs::Observable,
+    default_label::String,
+)
+    for elem in copy(contents(fig.layout))
+        if elem isa Colorbar; delete!(elem); end
+    end
+    isnothing(plot_object) && return
+
+    ui_stl = manager.ui["Plot-Style"]
+    
+    # If the plot style doesn't have a colormap (like Lines), it shouldn't have a colorbar!
+    if !haskey(ui_stl, "colormap"); return; end 
+
+    ui_lbl = manager.ui["Labels"]
+    ui_gen = manager.ui["Axis-General"]
+
+    final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
+
+    try
+        cb = Colorbar(fig[1, 2];
+            colormap = ui_stl["colormap"][],
+            colorrange = color_range_obs,
+            label = final_label,
+            labelsize = ui_gen["label_size"][],
+            ticklabelsize = ui_gen["ticklabel_size"][],
+        )
+        colsize!(fig.layout, 2, Auto())
+    catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
+end
+
+# (Keep plot_reference_lines! and delete_plots_by_label! exactly as they were...)
