@@ -84,23 +84,22 @@ end
     SimulationConfig
 Holds the master configuration for a plot orchestrator run.
 """
-struct SimulationConfig{F <: Function} # <-- Removed D
+mutable struct SimulationConfig{F <: Function} # <-- Removed D
     simulation_func::F
     shared_params::ParamDict
     methods_dict::MethodDict
     default_methods::Vector{String}
     varied_params::VariedDict
-    
-    # Clean Inner Constructor
-    function SimulationConfig(
-        sim_func::F, 
-        shared::ParamDict, 
-        methods::MethodDict, 
-        defaults::Vector{String}; 
-        varied_params::VariedDict = VariedDict()
-    ) where {F <: Function}
-        new{F}(sim_func, shared, methods, defaults, varied_params)
-    end
+end
+
+function SimulationConfig(
+    sim_func::F, 
+    shared::ParamDict, 
+    methods::MethodDict, 
+    defaults::Vector{String}; 
+    varied_params::VariedDict = VariedDict()
+) where {F <: Function}
+    SimulationConfig{F}(sim_func, shared, methods, defaults, varied_params)
 end
 
 # --- 5. Dispatch for createSimData ---
@@ -229,6 +228,7 @@ end
 mutable struct PlotManager 
     simulation::NestedObsDict
     ui::NestedObsDict
+    config::ParamDict
     controls::Dict{String, Observable} 
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}

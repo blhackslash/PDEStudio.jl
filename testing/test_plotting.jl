@@ -57,7 +57,7 @@ function run_final_test()
     println("--- Launching Orchestrator ---")
     plot_fig, ctrl_fig, manager = Base.invokelatest(show_unified_fig,
         sim_config; 
-        ui_options = :default,
+        ui_style = :default,
         scene_options = Dict("base_types" => Any[:menu,:slider,:slider,:slider,:slider])
     )
 

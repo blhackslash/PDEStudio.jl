@@ -402,22 +402,35 @@ end
 """
     _value_to_string_for_csv(v)
 
-A robust helper to convert a Julia object to a string for CSV saving,
-paying special attention to `Symbol`s to ensure they can be parsed back correctly.
+A robust helper to convert a Julia object to a string for CSV saving.
+Explicitly strips type prefixes (like 'Any' or 'Vector{Float64}') from 
+containers to ensure they are saved as clean, parsable Julia expressions.
 """
 function _value_to_string_for_csv(v)
-    # If the value is a Symbol, prepend a colon to its string representation.
-    # This saves `:periodic` as the string `":periodic"`.
+    # 1. Handle Symbols (Prepend colon so they parse back as Symbols)
     if isa(v, Symbol)
         return ":" * string(v)
     end
 
+    # 2. Handle empty strings
     if v == ""
         return "<empty>"
     end
-    # For all other types (Tuples, Vectors, Numbers, Strings), the default
-    # `string` representation is usually a valid Julia expression that
-    # `parseValue` can handle.
+
+    # 3. Handle Arrays/Vectors (Strip type prefix: Any[...] -> [...])
+    if isa(v, AbstractArray)
+        s = string(v)
+        # Replaces any alphanumeric + curly brace prefix before the first '['
+        return replace(s, r"^[a-zA-Z0-9_{}, ]*\[" => "[")
+    end
+    
+    # 4. Handle Tuples (Strip type prefix: NamedTuple(...) -> (...))
+    if isa(v, Tuple)
+        s = string(v)
+        return replace(s, r"^[a-zA-Z0-9_{}, ]*\(" => "(")
+    end
+
+    # 5. Fallback for Numbers and basic Strings
     return string(v)
 end
 
@@ -490,7 +503,7 @@ function saveParametersToCSV(
     manager::PlotManager,
     metadata_general::Dict
 )::Bool
-    csv_filename = joinpath(save_dir, base_filename * "_params.csv")
+    csv_filename = joinpath(save_dir, base_filename * ".csv")
     
     try
         cats, scopes, params, vals = String[], String[], String[], String[]
@@ -542,6 +555,10 @@ function saveParametersToCSV(
         # --- 3. CATEGORY: UI ---
         for (scope, dict) in manager.ui
             for (k, v) in dict; add_row("UI", scope, k, v); end
+        end
+        # --- 4. CATEGORY: Config ---
+        for (scope, dict) in manager.config
+            for (k, v) in dict; add_row("Config", scope, k, v); end
         end
 
         CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))

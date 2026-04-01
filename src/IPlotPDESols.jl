@@ -10,9 +10,9 @@ export loadSimData, getStats, doesSimDataExist, deleteSimData,
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, VariedDict, SimulationConfig, createSimData,
        AbstractSimData, calculateConvergenceData, allMethodNames,
-       calculateAllStats!, create_sim_config_from_csv, plotFromCSV, interactiveCSVLauncher,
+       calculateAllStats!,
        registerSimFunction!, getSimFunction, registerAllFunctions, 
-       show_unified_fig, create_method_checkboxes_figure
+       show_unified_fig, create_method_checkboxes_figure, launch_csv_interface
 
 # --- 3. Core Types (Defined directly in the main module) ---
 # Included FIRST so submodules can use them.
@@ -52,7 +52,7 @@ module UI
     using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
     
     # Submodule exports (These are re-exported globally at the bottom)
-    export show_unified_fig, create_method_checkboxes_figure
+    export show_unified_fig, create_method_checkboxes_figure, launch_csv_interface
     
     include("Plotting/MakiePlotting.jl") 
 end

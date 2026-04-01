@@ -156,22 +156,22 @@ function build_static_plot_controls!(
 
 
     # Row 2 & 3: Independent Axes
-    Label(menu_layout[2,1], "X-Axis", font=:bold)
-    Label(menu_layout[2,2], "Y-Axis", font=:bold)
-    Label(menu_layout[2,3], "Z-Axis", font=:bold)
-    menu_x = Menu(menu_layout[3,1], options = ["-"], width = 120)
-    menu_y = Menu(menu_layout[3,2], options = ["disabled"], width = 120)
-    menu_z = Menu(menu_layout[3,3], options = ["disabled"], width = 120)
+    Label(menu_layout[1,1], "X-Axis", font=:bold)
+    Label(menu_layout[1,2], "Y-Axis", font=:bold)
+    Label(menu_layout[1,3], "Z-Axis", font=:bold)
+    menu_x = Menu(menu_layout[2,1], options = ["-"], width = 120)
+    menu_y = Menu(menu_layout[2,2], options = ["disabled"], width = 120)
+    menu_z = Menu(menu_layout[2,3], options = ["disabled"], width = 120)
 
 # Row 4 & 5: Dependent Axis, Component (REMOVED Plot-Along)
-    Label(menu_layout[4,1], "U-Axis (Dep)", font=:bold)
-    Label(menu_layout[4,2], "Component", font=:bold)
-    menu_u    = Menu(menu_layout[5,1], options = ["-"], width = 120)
-    menu_comp = Menu(menu_layout[5,2], options = ["1"], width = 120)
+    Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold)
+    Label(menu_layout[3,2], "Component", font=:bold)
+    menu_u    = Menu(menu_layout[4,1], options = ["-"], width = 120)
+    menu_comp = Menu(menu_layout[4,2], options = ["1"], width = 120)
     # Row 1: Plot Type Selection
-    Label(menu_layout[4,3], "Plot Type", font=:bold)
+    Label(menu_layout[3,3], "Plot Type", font=:bold)
     plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume","Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
-    menu_type = Menu(menu_layout[5,3], options = plot_options, width = 120)
+    menu_type = Menu(menu_layout[4,3], options = plot_options, width = 120)
     menu_type.i_selected[] = 1
     colsize!(menu_layout, 1, Fixed(120))
     colsize!(menu_layout, 2, Fixed(120))
@@ -187,7 +187,7 @@ function build_static_plot_controls!(
     manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
     manager.controls["U-Axis_Selection"], manager.controls["U-Axis_Options"], manager.controls["U-Axis_Widget"] = menu_u.selection, menu_u.options, menu_u
     plot_type_obs = Observable{Symbol}(:lines)
-    manager.controls["Plot_Type"] = plot_type_obs
+    manager.controls["Plot-Type_Selection"] = plot_type_obs
 
     on(menu_type.selection) do raw_str
         # Convert "Scatter 2D" to :scatter2d
@@ -325,7 +325,7 @@ function build_static_plot_controls!(
 
     on(menu_x.selection) do x_val
         (isnothing(x_val) || x_val == "-") && return
-        p_dim = PLOT_DIM_MAP[manager.controls["Plot_Type"][]]
+        p_dim = PLOT_DIM_MAP[manager.controls["Plot-Type_Selection"][]]
         if p_dim < 2
             menu_y.options[] = ["disabled"]
             menu_y.i_selected[] = 1
@@ -358,7 +358,7 @@ function build_static_plot_controls!(
 
     on(menu_y.selection) do y_val
         (isnothing(y_val) || y_val == "-") && return
-        p_dim = PLOT_DIM_MAP[manager.controls["Plot_Type"][]]
+        p_dim = PLOT_DIM_MAP[manager.controls["Plot-Type_Selection"][]]
         if y_val == "disabled" || p_dim < 3
             menu_z.options[] = ["disabled"]
             menu_z.i_selected[] = 1
@@ -393,7 +393,7 @@ function build_static_plot_controls!(
     end
 
 # --- MULTIDIMENSIONAL AXES TRACKER ---
-    onany(menu_x.selection, menu_y.selection, menu_z.selection, manager.controls["Plot_Type"]) do x_val, y_val, z_val, ptype
+    onany(menu_x.selection, menu_y.selection, menu_z.selection, manager.controls["Plot-Type_Selection"]) do x_val, y_val, z_val, ptype
         p_dim = PLOT_DIM_MAP[ptype]
         axes = Int[]
         

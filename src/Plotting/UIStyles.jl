@@ -1,4 +1,4 @@
-const UIType = Union{Symbol,Dict}
+const UIType = Union{Symbol,MethodDict}
 
 # --- Source of Truth for Dimensionality ---
 const PLOT_DIM_MAP = Dict(

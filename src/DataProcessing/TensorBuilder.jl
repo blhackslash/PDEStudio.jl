@@ -230,13 +230,14 @@ function create_method_plot_data(
     base_params::ParamDict,
     sim_config::SimulationConfig, # REMOVED the {D, F} parameters!
     fixed_params::FixedDict,
-    base_types::Vector
+    base_types::Vector;
+    parallel=false
 )
     # 1. Configuration & Task Generation
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
     
-    ensure_sim_data_exists!(tasks, sim_config)
+    ensure_sim_data_exists!(tasks, sim_config; parallel = parallel)
     if isempty(tasks); return nothing; end
 
     # 2. Initialization & Dimension Resolution
@@ -322,12 +323,12 @@ function create_method_plot_data(
     )
 end
 
-function update_plot_data_collection!(plot_data_dict, sim_config, active_methods, fixed_params, base_types; force_reload=false)
+function update_plot_data_collection!(plot_data_dict, sim_config, active_methods, fixed_params, base_types; force_reload=false, parallel=false)
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
-            new_data = Base.invokelatest(create_method_plot_data, base_params, sim_config, fixed_params, base_types)
+            new_data = Base.invokelatest(create_method_plot_data, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end

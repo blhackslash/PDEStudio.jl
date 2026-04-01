@@ -11,6 +11,7 @@ include("PlottingUtils.jl")
 include("ControlUtils.jl")
 include("Controls.jl")
 include("Render.jl")
+include("CSVLauncher.jl")
 # ==============================================================================
 # In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
 # ==============================================================================
@@ -37,21 +38,42 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict) w
         "Master_UI_Ref" => Observable(master_ui)
     )
 
-    manager = PlotManager(sim_obs, ui_obs, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
+    config_dict = ParamDict(
+        "Parameters" => copy(sim_config.varied_params),
+        "General"    => Dict{String, Any}("simulation_func" => string(sim_config.simulation_func))
+    )
+
+    # Add config_dict to the constructor
+    manager = PlotManager(sim_obs, ui_obs, config_dict, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
     
     # 3. Populate the active UI immediately so `manager.ui["Axis-General"]` exists for Figure creation!
     switch_ui_plot_type!(manager, :lines)
     
     return manager
 end
-
 function show_unified_fig(
     sim_config::SimulationConfig;
-    ui_options::UIType = :default,
-    scene_options::Dict = Dict{String, Any}()
+    ui_style::UIType = :default,
+    ui_overwrite::Dict = Dict{String, Any}(), # Uses your MethodDict equivalent
+    var_overwrite::Vector{Any} = Any[:menu, :slider, :slider, :slider, :slider],
+    scene_options::Dict = Dict{String, Any}(),
+    parallel = false,
 )
+    ui_obs = create_master_ui_observables(ui_style)
+    
+    # --- APPLY UI OVERWRITES BEFORE MANAGER CREATION ---
+    for (scope, keys_dict) in ui_overwrite
+        if haskey(ui_obs, scope)
+            for (k, v) in keys_dict
+                if haskey(ui_obs[scope], k)
+                    ui_obs[scope][k][] = v
+                end
+            end
+        end
+    end
+
     # 1. Setup Manager & Figure
-    manager = create_plot_manager(sim_config, create_master_ui_observables(ui_options))
+    manager = create_plot_manager(sim_config, ui_obs)
     plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
@@ -67,28 +89,22 @@ function show_unified_fig(
         
         Base.invokelatest(update_plot_data_collection!,
             plot_data_obs[], sim_config, active_methods, fixed_params, to_value(manager.controls["base_types"]);
-            force_reload = (sim_update[] > 0), 
+            force_reload = (sim_update[] > 0), parallel = parallel, 
         )
         notify(plot_data_obs)
     end
 
     # --- 4. RENDER PIPELINE & DIMENSION SWITCHING ---
-    # We store the active rendering listeners here so we can delete them later
     render_observers = ObserverFunction[]
 
-    on(manager.controls["Plot_Type"]) do ptype_sym
-        # A. Clean up old rendering listeners
-        for obs in render_observers
-            off(obs) 
-        end
+    # Note: Ensure this matches the key exposed in `build_static_plot_controls!`
+    on(manager.controls["Plot-Type_Selection"]) do ptype_sym
+        for obs in render_observers; off(obs); end
         empty!(render_observers)
         empty!(plot_fig)
 
-        # B. RESTRUCTURE THE UI DICTIONARY
         switch_ui_plot_type!(manager, ptype_sym)
 
-        # C. Dispatch directly to the specific plot type!
-        # E.g., Val(:heatmap), Val(:scatter3d), Val(:lines)
         new_obs = setup_render_lift!(plot_fig, plot_data_obs, manager, Val(ptype_sym))
         
         if !isnothing(new_obs)
@@ -98,31 +114,25 @@ function show_unified_fig(
         notify(plot_data_obs)
     end
 
-# --- 5. INITIALIZATION SEQUENCE ---
+    # --- 5. INITIALIZATION SEQUENCE ---
     final_scene = merge(get_base_scene_options(), scene_options)
 
-    # a) PRE-LOAD OVERWRITES
-    if haskey(final_scene, "base_types")
-        bt_val = final_scene["base_types"]
-        if bt_val isa String
-            try
-                manager.controls["base_types"][] = eval(Meta.parse(bt_val))
-            catch
-                @warn "Could not parse base_types string: $bt_val"
-            end
-        else
-            manager.controls["base_types"][] = bt_val
-        end
-    end
+    # a) Apply Variable Overwrites directly to the controls
+    manager.controls["base_types"][] = var_overwrite
 
-    # b) Trigger the initial Plot Type (This fires the render pipeline builder!)
-    init_type = get(final_scene, "Plot_Type", :lines)
-    manager.controls["Plot_Type"][] = init_type
+    # b) Trigger the initial Plot Type 
+    # Try reading from Scene first, fallback to :lines
+    init_type = :lines
+    if haskey(final_scene, "Menu") && haskey(final_scene["Menu"], "Plot-Type_Selection")
+        raw_type = final_scene["Menu"]["Plot-Type_Selection"]
+        init_type = raw_type isa String ? Symbol(raw_type) : raw_type
+    end
+    manager.controls["Plot-Type_Selection"][] = init_type
 
     # c) Trigger initial data load
     sim_update[] = 1 
     
-    # d) Apply visual defaults
+    # d) Apply visual defaults (like limits/menus from Scene options)
     set_defaults!(manager, final_scene)
 
     return plot_fig, ctrl_fig, manager
