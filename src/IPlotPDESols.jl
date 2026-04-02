@@ -10,9 +10,9 @@ export loadSimData, getStats, doesSimDataExist, deleteSimData,
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, VariedDict, SimulationConfig, createSimData,
        AbstractSimData, calculateConvergenceData, allMethodNames,
-       calculateAllStats!,
+       calculateAllStats!, process_existing_data,
        registerSimFunction!, getSimFunction, registerAllFunctions, 
-       show_unified_fig, create_method_checkboxes_figure, launch_csv_interface
+       show_unified_fig, launch_csv_interface
 
 # --- 3. Core Types (Defined directly in the main module) ---
 # Included FIRST so submodules can use them.
@@ -31,7 +31,7 @@ module DataProcessing
     using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg
     
     # Export only the functions the UI needs to call
-    export update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
+    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path, saveParametersToCSV, resolve_simulation_function, process_existing_data
     
     include("DataProcessing/TensorBuilder.jl")
 end
@@ -47,12 +47,12 @@ module UI
                           VariableControls, VariableNames, BaseVariables
         
     # Look across to the sibling module for the data pipeline
-    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
+    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV, resolve_simulation_function
     using Observables: ObserverFunction, onany
     using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
     
     # Submodule exports (These are re-exported globally at the bottom)
-    export show_unified_fig, create_method_checkboxes_figure, launch_csv_interface
+    export show_unified_fig, launch_csv_interface
     
     include("Plotting/MakiePlotting.jl") 
 end

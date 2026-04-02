@@ -7,16 +7,53 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     ui_app = manager.ui["Plot-Style"]
 
     plotted_objects, labels_for_legend = [], String[]
+    
     for (plot_idx, label) in enumerate(active_methods)
+        # Cycle through colors and markers
         color = ui_app["colors"][][mod1(plot_idx, end)]
-        linestyle = ui_app["lineStyles"][][mod1(plot_idx, end)]
+        marker = ui_app["markers"][][mod1(plot_idx, end)]
         
-        l = lines!(ax, xs_slices[plot_idx], us_slices[plot_idx]; color=color, linewidth=ui_app["linewidth"][], linestyle=linestyle, label=label)
-        push!(plotted_objects, [l]); push!(labels_for_legend, label)
+        # Apply dashed lines only if the toggle is true, otherwise force solid
+        linestyle = ui_app["dashed_lines"][] ? ui_app["lineStyles"][][mod1(plot_idx, end)] : :solid
+        
+        # We group the plots for this method so the legend can combine them
+        group_plots = []
+        
+        # 1. Plot Lines
+        if ui_app["show_lines"][]
+            l = lines!(ax, xs_slices[plot_idx], us_slices[plot_idx]; 
+                color=color, linewidth=ui_app["linewidth"][], linestyle=linestyle)
+            push!(group_plots, l)
+        end
+        
+        # 2. Plot Scatter Markers
+        if ui_app["show_scatter"][]
+            s = scatter!(ax, xs_slices[plot_idx], us_slices[plot_idx]; 
+                color=color, markersize=ui_app["markersize"][], marker=marker)
+            push!(group_plots, s)
+        end
+
+        # Ensure we actually drew something to prevent legend crashes
+        if !isempty(group_plots)
+            push!(plotted_objects, group_plots)
+            push!(labels_for_legend, label)
+        end
+        
+        # Extrema Tracking (Max/Min lines)
+        plot_extrema_lines_manager!(ax, xs_slices[plot_idx], us_slices[plot_idx], manager, plot_idx)
     end
 
+    # --- Feature: Sort Legend ---
+    if ui_app["sort_legend"][]
+        sort_idx = sortperm(labels_for_legend)
+        plotted_objects = plotted_objects[sort_idx]
+        labels_for_legend = labels_for_legend[sort_idx]
+    end
+
+    # Apply standard styling and limits
     set_axis_styles!(ax, manager, x_key, u_key, title_str)
     set_axis_limits_manager!(ax, xs_slices, us_slices, manager)
+    
     create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
 

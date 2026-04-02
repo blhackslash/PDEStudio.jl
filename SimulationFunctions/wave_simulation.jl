@@ -1,32 +1,55 @@
-function wave_simulation(params::Dict{String, Any})
-    # DEBUG: Prove the simulation is being called by the orchestrator
-    @info "[SIMULATION] Running wave_simulation | Type: $(get(params, "type", "unknown")) | Freq: $(get(params, "frequency", "unknown"))"
+function wave_simulation(params::ParamDict)
+    @info "--- Starting Wave Simulation ---"
     
-    # Extract Params
-    A = get(params, "amplitude", 1.0)
-    f = get(params, "frequency", 1.0)
-    L = get(params, "L", 10.0)
-    nx = get(params, "n_x", 100)
-    nt = get(params, "n_steps", 50)
-    type = get(params, "type", "euler")
-
-    t = collect(range(0.0, 2.0, length=nt))
-    x_base = collect(range(0.0, L, length=nx))
+    # 1. Extract Parameters (Using defaults if not found)
+    n_x       = get(params, "n_x", 60)
+    n_steps   = get(params, "n_steps", 40)
+    L         = Float64(get(params, "L", 10.0))
+    amplitude = Float64(get(params, "amplitude", 1.0))
+    frequency = Float64(get(params, "frequency", 0.5))
     
-    # Placeholder for buckets
-    stats = Dict{String, Any}()
+    c = 1.0 # Wave speed
 
-    if type == "euler"
-        # Eulerian: Fixed Grid
-        u = zeros(1, nx, nt) # [Component, Space, Time]
-        for i in 1:nt, j in 1:nx
-            u[1, j, i] = A * sin(f * x_base[j] - 2π * t[i])
-        end
-        return createSimData(repeat(x_base, 1, nt), u, t, params)
-    else
-        # Lagrangian: Moving Particles
-        x_data = [x_base .+ (0.1 * A * sin(2π * ti)) for ti in t]
-        u_data = [reshape(A * sin.(f .* x_data[i] .- 2π * t[i]), 1, :) for i in 1:nt]
-        return createSimData(x_data, u_data, t, params)
+    # 2. Setup Spatial and Temporal Grids
+    x = collect(range(0, L, length=n_x))
+    t = collect(range(0, 5.0, length=n_steps)) # Simulating up to t = 5.0
+    
+    # Inject domain bounds into params so StatCalculation can find them easily
+    params["xmin"] = x[1]
+    params["xmax"] = x[end]
+
+    # 3. Preallocate Eulerian Tensor: [Component, Space, Time]
+    u = zeros(Float64, 1, n_x, n_steps)
+
+    # 4. Define the Analytical Solution locally!
+    function analytical_solution(x_val, t_val)
+        return amplitude * sin(2 * π * frequency * (x_val - c * t_val))
     end
+
+    # 5. Populate the Numerical Data
+    for m in 1:n_steps
+        for i in 1:n_x
+            true_val = analytical_solution(x[i], t[m])
+            
+            # Inject a tiny, time-growing numerical error so we can actually 
+            # see convergence metrics and L2 norms in the plotter!
+            artificial_error = 0.05 * sin(π * x[i] / L) * (t[m] / 5.0) 
+            
+            u[1, i, m] = true_val + artificial_error
+        end
+    end
+
+    # 6. Create the AbstractSimData container (ESimData{1} for 1D Eulerian)
+    sim_data = createSimData(x, u, t, params)
+    sim_data = loadSimData(params)
+    # 7. INJECT: Run the Stat Calculation inline before returning!
+    @info "Calculating statistics..."
+    calculateAllStats!(
+        sim_data, 
+        analytical_solution; 
+        dierckx_k = 3,
+        force_overwrite = false,
+    )
+
+    return sim_data
 end

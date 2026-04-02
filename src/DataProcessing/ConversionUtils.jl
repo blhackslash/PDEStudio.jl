@@ -124,3 +124,72 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
         @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
     end
 end
+# ==============================================================================
+# --- EULERIAN CONVERSIONS ---
+# ==============================================================================
+
+"""
+    createSimData(x::Vector, u::Matrix, t::Vector, params)
+
+1D Scalar Eulerian. Auto-expands the `[Space, Time]` matrix into 
+the required `[Component, Space, Time]` tensor.
+"""
+function createSimData(x::AbstractVector{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict)
+    u_expanded = reshape(u, 1, size(u, 1), size(u, 2))
+    return ESimData{1}(params, Float64.(x), Float64.(u_expanded), Float64.(t), Dict(), Dict(), Dict(), Dict())
+end
+
+"""
+    createSimData(x::Vector, u::Array{T,3}, t::Vector, params)
+
+1D System Eulerian. Directly maps the `[Comp, Space, Time]` array.
+"""
+function createSimData(x::AbstractVector{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict)
+    return ESimData{1}(params, Float64.(x), Float64.(u), Float64.(t), Dict(), Dict(), Dict(), Dict())
+end
+
+"""
+    createSimData(x_grid::Matrix, y_grid::Matrix, u::Array{T,3}, t::Vector, params)
+
+2D Scalar Eulerian. Accepts standard meshgrids and a `[X, Y, Time]` tensor.
+"""
+function createSimData(x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict)
+    # Stack x and y grids into a single coordinate tensor
+    xy_coords = cat(x_grid, y_grid, dims=3)
+    u_expanded = reshape(u, 1, size(u, 1), size(u, 2), size(u, 3))
+    return ESimData{2}(params, Float64.(xy_coords), Float64.(u_expanded), Float64.(t), Dict(), Dict(), Dict(), Dict())
+end
+
+# ==============================================================================
+# --- LAGRANGIAN CONVERSIONS ---
+# ==============================================================================
+
+"""
+    createSimData(x::Matrix, u::Matrix, t::Vector, params)
+
+1D Scalar Lagrangian. Converts flat `[Particle, Time]` matrices into 
+nested `SVector` time-steps.
+"""
+function createSimData(x::AbstractMatrix{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict)
+    n_p, n_t = size(x)
+    
+    x_vec = [[SVector{1, Float64}(x[p, m]) for p in 1:n_p] for m in 1:n_t]
+    u_vec = [[SVector{1, Float64}(u[p, m]) for p in 1:n_p] for m in 1:n_t]
+    
+    return LSimData{1, 1}(params, x_vec, u_vec, Float64.(t), Dict(), Dict(), Dict(), Dict())
+end
+
+"""
+    createSimData(x::Vector{Vector{Space{D}}}, u::Vector{Vector{State{M}}}, t, params)
+
+Native Multi-D / Multi-Component Lagrangian. 
+Directly maps your simulation package's output!
+"""
+function createSimData(
+    x::Vector{Vector{SVector{D, Float64}}}, 
+    u::Vector{Vector{SVector{M, Float64}}}, 
+    t::Vector{Float64}, 
+    params::ParamDict
+) where {D, M}
+    return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
+end

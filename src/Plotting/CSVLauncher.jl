@@ -91,40 +91,6 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     )
 end
 
-const _SAVE_ROOT_PATH = Ref{String}(pwd())
-
-"""
-    resolve_simulation_function(parsed_dict::Dict, sim_func::Union{Function, Nothing})
-
-If `sim_func` is a Function, it returns it immediately. 
-If `sim_func` is `nothing`, it reads the function name from the parsed CSV dictionary, 
-attempts to `include` the corresponding `.jl` file from the SimulationFunctions directory, 
-and returns the evaluated function.
-"""
-function resolve_simulation_function(parsed_dict::Dict, sim_func::Union{Function, Nothing})
-    if !isnothing(sim_func)
-        return sim_func
-    end
-
-    try
-        func_name_str = parsed_dict["Config"]["General"]["simulation_func"]
-        func_file = joinpath(_SAVE_ROOT_PATH[], "SimulationFunctions", func_name_str * ".jl")
-        
-        if isfile(func_file)
-            @info "Found simulation function file: $func_file"
-            include(func_file)
-        else
-            @warn "Could not find $func_file. Assuming function '$func_name_str' is already loaded in current scope."
-        end
-        
-        # Convert the string name back to a runnable Julia function
-        return eval(Symbol(func_name_str))
-    catch e
-        @error "Failed to dynamically resolve simulation function from CSV metadata." exception=(e, catch_backtrace())
-        return nothing
-    end
-end
-
 function create_varied_param_overwrites_figure(varied_params::Dict, active_overwrites::Dict)
     n_params = length(varied_params)
     if n_params == 0
@@ -284,7 +250,7 @@ function launch_csv_interface(sim_func::Union{Function, Nothing} = nothing)
         parsed_dict = parsed_csv_ref[]
         
         # --- A. RESOLVE SIMULATION FUNCTION ---
-        resolved_func = resolve_simulation_function(parsed_dict, sim_func)
+        resolved_func = resolve_simulation_function(parsed_dict["Config"]["General"]["simulation_func"], sim_func)
         if isnothing(resolved_func)
             return # Stop launch if we couldn't resolve the function
         end

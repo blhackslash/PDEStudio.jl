@@ -138,6 +138,10 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
     @info "SimData saved to new file: $file_name"
 end
 
+function saveSimData(::NoSimData; kwargs...)
+    return
+end
+
 """
 Returns the filename of the simulation data corresponding to the given params dictionary.
 Searches all files matching the hash prefix to find the one with matching parameters.
@@ -266,53 +270,6 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
             @warn "Could not load file $file for deletion check" exception=e
         end
     end
-end
-
-function ensure_sim_data_exists!(
-    tasks::Union{Vector{ParamDict}, Matrix{ParamDict}},
-    sim_config::SimulationConfig;
-    force_overwrite::Bool = false,
-    parallel::Bool = false
-)
-    # 1. Flatten tasks for uniform handling (if it's a matrix)
-    # generic iteration handles both, but length() works better on a flat view or vec
-    all_tasks = vec(tasks)
-    num_tasks = length(all_tasks)
-    if num_tasks == 0; return; end
-    
-    @debug "Checking data for $num_tasks simulations..."
-    p = Progress(num_tasks; desc = "Running simulations...", showspeed=true)
-    counter = Threads.Atomic{Int}(0)
-
-    # 2. Define the core worker function (closure captures config/options)
-    function process_task(params)
-        try
-            if force_overwrite || !doesSimDataExist(params)
-                # invokelatest solves world-age issues if new methods were defined recently
-                sim_data = Base.invokelatest(sim_config.simulation_func, params)
-                
-                if !isnothing(sim_data)
-                    saveSimData(sim_data; overwrite = force_overwrite)
-                end
-            end
-        catch e
-            @error "Simulation failed." exception=(e, catch_backtrace())
-        end
-        # Update progress safely
-        Threads.atomic_add!(counter, 1)
-        ProgressMeter.update!(p, counter[])
-    end
-
-    # 3. Execution Strategy
-    if parallel
-        Threads.@threads for task in all_tasks
-            process_task(task)
-        end
-    else
-        foreach(process_task, all_tasks)
-    end
-    
-    @debug "Simulation check complete."
 end
 
 """
@@ -579,4 +536,41 @@ into the metadata for the CSV export.
 function capture_scene_metadata!(manager::PlotManager)
     # We grab the to_value of every observable in controls
     return Dict(k => to_value(v) for (k, v) in manager.controls)
+end
+
+
+"""
+    resolve_simulation_function(parsed_dict::Dict, sim_func::Union{Function, Nothing})
+
+If `sim_func` is a Function, it returns it immediately. 
+If `sim_func` is `nothing`, it reads the function name from the parsed CSV dictionary, 
+attempts to `include` the corresponding `.jl` file from the SimulationFunctions directory, 
+and returns the evaluated function.
+"""
+function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing})
+    if !isnothing(sim_func)
+        return sim_func
+    end
+
+    try
+        func_file = joinpath(_SAVE_ROOT_PATH[], "SimulationFunctions", func_name_str * ".jl")
+        
+        if isfile(func_file)
+            @info "Found simulation function file: $func_file"
+            include(func_file)
+        else
+            @warn "Could not find $func_file. Assuming function '$func_name_str' is already loaded in current scope."
+        end
+        
+        # Convert the string name back to a runnable Julia function
+        return eval(Symbol(func_name_str))
+    catch e
+        @error "Failed to dynamically resolve simulation function from CSV metadata." exception=(e, catch_backtrace())
+        return nothing
+    end
+end
+
+function SimulationConfig(sim_func::String, kwargs...)
+    f = resolve_simulation_function(sim_func, nothing)
+    SimulationConfig{typeof(f)}(f, kwargs...)
 end

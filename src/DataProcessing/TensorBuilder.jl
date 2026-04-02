@@ -228,20 +228,42 @@ end
 
 function create_method_plot_data(
     base_params::ParamDict,
-    sim_config::SimulationConfig, # REMOVED the {D, F} parameters!
+    sim_config::SimulationConfig, 
     fixed_params::FixedDict,
     base_types::Vector;
     parallel=false
 )
     # 1. Configuration & Task Generation
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
-    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
     
-    ensure_sim_data_exists!(tasks, sim_config; parallel = parallel)
+    # Generate tasks exclusively for THIS method
+    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
     if isempty(tasks); return nothing; end
 
-    # 2. Initialization & Dimension Resolution
+    # 2. Smart Execution (Replaces ensure_sim_data_exists!)
+    # Runs the solver only if the data doesn't already exist on disk
+    if parallel
+        Threads.@threads for params in tasks
+            try
+                run_simulation(sim_config.simulation_func, params; force_overwrite=false)
+            catch e
+                @error "Simulation Error" exception=(e, catch_backtrace())
+            end
+        end
+    else
+        for params in tasks
+            run_simulation(sim_config.simulation_func, params; force_overwrite=false)
+        end
+    end
+
+    # 3. Initialization & Dimension Resolution
+    # Load the first file from disk to figure out array shapes
     first_data = loadSimData(tasks[1]) 
+    if isnothing(first_data)
+        @warn "Failed to load simulation data after execution."
+        return nothing
+    end
+    
     D = _get_D(first_data)
     
     eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
@@ -268,7 +290,7 @@ function create_method_plot_data(
         end
     end
 
-    # --- 3. Inject Parameters as Tensors ---
+    # --- 4. Inject Parameters as Tensors ---
     for (i, key) in enumerate(active_keys)
         param_tensor = fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
         vals = Float64.(active_values[i])
@@ -279,7 +301,7 @@ function create_method_plot_data(
         data_store[key] = param_tensor
     end
 
-    # --- 4. Allocate Results & Time ---
+    # --- 5. Allocate Results & Time ---
     data_store["u"] = allocate_tensor(:field)
     data_store["x"] = allocate_tensor(:grid)
     data_store["t"] = allocate_tensor(:time)
@@ -289,7 +311,8 @@ function create_method_plot_data(
     for k in keys(first_data.profiles); data_store[k] = allocate_tensor(:profile); end
     for k in keys(first_data.fields); data_store[k] = allocate_tensor(:field); end
 
-    # --- 5. Data Filling Loop ---
+    # --- 6. Data Filling Loop ---
+    # Loads SimData from disk one by one, keeping RAM usage low
     for (k, params) in enumerate(tasks)
         sim_data = loadSimData(params)
         dest_prefix = grid_indices[k]

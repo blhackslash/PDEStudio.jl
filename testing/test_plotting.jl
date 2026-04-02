@@ -51,7 +51,7 @@ function run_final_test()
     # Varied parameter: frequency
     varied = Dict{String, Vector{Any}}("frequency" => [0.5, 1.0, 2.0])
 
-    sim_config = SimulationConfig(wave_simulation, shared, methods, ["Euler_Wave", "Lagrange_Wave"]; varied_params=varied)
+    sim_config = SimulationConfig("wave_simulation", shared, methods, ["Euler_Wave", "Lagrange_Wave"], varied)
 
     # 2. Launch Orchestrator
     println("--- Launching Orchestrator ---")
