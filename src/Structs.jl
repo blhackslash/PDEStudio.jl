@@ -60,7 +60,7 @@ struct ESimData{D} <: AbstractSimData{D}
     u::Array{Float64}        # [Component, Space..., Time]
     t::Vector{Float64}
 
-    scalars::Dict{String, Vector{Float64}} 
+    scalars::Dict{String, Float64} 
     series::Dict{String, Matrix{Float64}} 
     profiles::Dict{String, Array{Float64}} # [Component, Space...]
     fields::Dict{String, Array{Float64}}   # [Component, Space..., Time]
@@ -79,7 +79,7 @@ struct LSimData{D, M} <: AbstractSimData{D}
     t::Vector{Float64}
 
     # The strongly typed stat dictionaries
-    scalars::Dict{String, Vector{Float64}} 
+    scalars::Dict{String, Float64} 
     series::Dict{String, Matrix{Float64}} 
     profiles::Dict{String, Vector{Vector{SVector{D, Float64}}}} 
     fields::Dict{String, Vector{Vector{SVector{M, Float64}}}}
@@ -99,15 +99,6 @@ mutable struct SimulationConfig{F <: Function} # <-- Removed D
     varied_params::VariedDict
 end
 
-function SimulationConfig(
-    sim_func::F, 
-    shared::ParamDict, 
-    methods::MethodDict, 
-    defaults::Vector{String}; 
-    varied_params::VariedDict = VariedDict()
-) where {F <: Function}
-    SimulationConfig{F}(sim_func, shared, methods, defaults, varied_params)
-end
 function SimulationConfig(
     sim_func::F, 
     shared::ParamDict, 

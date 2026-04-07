@@ -167,7 +167,7 @@ function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, ra
         target[dest_prefix..., :, :, :, :, :] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, len_t)
     elseif category == :scalar
         data = source[c_src]
-        target[dest_prefix..., :, 1, 1, 1, 1] = safe_reshape(data, len_c, 1, 1, 1, 1)
+        target[dest_prefix..., 1, 1, 1, 1, 1] = safe_reshape(data, 1, 1, 1, 1, 1)
     elseif category == :series
         data = source[c_src, t_src]
         target[dest_prefix..., :, 1, 1, 1, :] = safe_reshape(data, len_c, 1, 1, 1, len_t)
@@ -276,7 +276,7 @@ function create_method_plot_data(
         if category == :field      # [P..., C, X, Y, Z, T]
             return fill(NaN, grid_dims..., eff_c, eff_space..., eff_t)
         elseif category == :scalar # [P..., C, 1, 1, 1, 1]
-            return fill(NaN, grid_dims..., eff_c, 1, 1, 1, 1)
+            return fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
         elseif category == :series # [P..., C, 1, 1, 1, T]
             return fill(NaN, grid_dims..., eff_c, 1, 1, 1, eff_t)
         elseif category == :profile# [P..., C, X, Y, Z, 1]

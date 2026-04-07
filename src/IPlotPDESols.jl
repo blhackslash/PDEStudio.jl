@@ -9,6 +9,7 @@ using ProgressMeter, LinearAlgebra, StaticArrays, SHA, Pkg, JLD2, FileIO
 export loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
        ParamDict, MethodDict, VariedDict, SimulationConfig, createSimData,
+       createParamDict, createMethodDict, createVariedDict,
        AbstractSimData, calculateConvergenceData, allMethodNames,
        calculateAllStats!, process_existing_data,
        registerSimFunction!, getSimFunction, registerAllFunctions, 
@@ -26,12 +27,12 @@ module DataProcessing
     # Look UP to the parent module (IPlotPDESols) to grab the core types
     using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict,
                           AbstractSimData, ESimData, LSimData, SimulationConfig,
-                          UnifiedPlotData, BaseVariables, PlotManager
+                          UnifiedPlotData, BaseVariables, PlotManager, NoSimData
     using GLMakie: Observable, to_value
     using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg
     
     # Export only the functions the UI needs to call
-    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path, saveParametersToCSV, resolve_simulation_function, process_existing_data
+    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path, set_save_path!, saveParametersToCSV, resolve_simulation_function, process_existing_data
     
     include("DataProcessing/TensorBuilder.jl")
 end

@@ -540,14 +540,12 @@ end
 
 
 """
-    resolve_simulation_function(parsed_dict::Dict, sim_func::Union{Function, Nothing})
+    resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
 
-If `sim_func` is a Function, it returns it immediately. 
-If `sim_func` is `nothing`, it reads the function name from the parsed CSV dictionary, 
-attempts to `include` the corresponding `.jl` file from the SimulationFunctions directory, 
-and returns the evaluated function.
+Resolves the simulation function. Evaluates the script in the `target_module` namespace 
+(defaulting to `Main`) to avoid dependency bleed into the plotting package.
 """
-function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing})
+function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
     if !isnothing(sim_func)
         return sim_func
     end
@@ -556,21 +554,28 @@ function resolve_simulation_function(func_name_str::String, sim_func::Union{Func
         func_file = joinpath(_SAVE_ROOT_PATH[], "SimulationFunctions", func_name_str * ".jl")
         
         if isfile(func_file)
-            @info "Found simulation function file: $func_file"
-            include(func_file)
+            @info "Dynamically loading function file into $target_module: $func_file"
+            # Evaluate the file in the requested module scope
+            Base.include(target_module, func_file)
         else
-            @warn "Could not find $func_file. Assuming function '$func_name_str' is already loaded in current scope."
+            @warn "File $func_file not found. Assuming function '$func_name_str' is already in $target_module scope."
         end
         
-        # Convert the string name back to a runnable Julia function
-        return eval(Symbol(func_name_str))
+        # Fetch the compiled function directly from the requested module
+        return getfield(target_module, Symbol(func_name_str))
+        
     catch e
-        @error "Failed to dynamically resolve simulation function from CSV metadata." exception=(e, catch_backtrace())
+        @error "Failed to dynamically resolve simulation function." exception=(e, catch_backtrace())
         return nothing
     end
 end
 
-function SimulationConfig(sim_func::String, kwargs...)
-    f = resolve_simulation_function(sim_func, nothing)
-    SimulationConfig{typeof(f)}(f, kwargs...)
+function SimulationConfig(sim_func::String, args...; target_module::Module = Main, kwargs...)
+    f = resolve_simulation_function(sim_func, nothing; target_module = target_module)
+    
+    if isnothing(f)
+        error("Aborting: Could not resolve simulation function '$sim_func' in module $target_module.")
+    end
+    
+    SimulationConfig(f, args...; kwargs...)
 end
