@@ -10,9 +10,11 @@ const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 # --- 1. Type Aliases ---
 const ParamDict = Dict{String, Any}
 const MethodDict = Dict{String, ParamDict}
-const VariedDict = Dict{String, <:Vector}
+const VariedDict = Dict{String, Vector}
 const FixedDict = ParamDict 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
+
+const _SAVE_ROOT_PATH = Ref{String}(pwd())
 
 # --- 2. Explicit Creator Functions ---
 
@@ -104,7 +106,7 @@ function SimulationConfig(
     shared::ParamDict, 
     methods::MethodDict, 
     defaults::Vector{String}; 
-    varied_params::VariedDict = VariedDict()
+    varied_params::VariedDict = createVariedDict()
 ) where {F <: Function}
     SimulationConfig{F}(sim_func, shared, methods, defaults, varied_params)
 end

@@ -10,7 +10,8 @@ include("CSVLauncher.jl")
 # ==============================================================================
 
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict) where {F}
-    vars = collect(keys(sim_config.varied_params))
+    varied_dict = sim_config.varied_params
+    vars = isempty(varied_dict) ? [] : collect(keys(varied_dict))
     append!(vars, BaseVariables)
 
     base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])

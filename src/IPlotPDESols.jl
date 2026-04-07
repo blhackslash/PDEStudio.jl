@@ -25,14 +25,15 @@ include("Structs.jl")
 # ==============================================================================
 module DataProcessing
     # Look UP to the parent module (IPlotPDESols) to grab the core types
-    using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict, 
+    using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict, _SAVE_ROOT_PATH,
                           AbstractSimData, ESimData, LSimData, SimulationConfig,
                           UnifiedPlotData, BaseVariables, PlotManager, NoSimData
     using GLMakie: Observable, to_value
     using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg
     
     # Export only the functions the UI needs to call
-    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path, set_save_path!, saveParametersToCSV, process_existing_data
+    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path,
+           set_save_path!, saveParametersToCSV, process_existing_data
     
     include("DataProcessing/TensorBuilder.jl")
 end
@@ -48,7 +49,8 @@ module UI
                           VariableControls, VariableNames, BaseVariables
         
     # Look across to the sibling module for the data pipeline
-    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, saveParametersToCSV
+    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, 
+                            saveParametersToCSV
     using Observables: ObserverFunction, onany
     using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
     

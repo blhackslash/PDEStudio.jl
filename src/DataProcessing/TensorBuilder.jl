@@ -1,6 +1,7 @@
 include("IOUtils.jl")         
 include("ConversionUtils.jl") 
 include("StatCalculation.jl")
+include("Simulations.jl")
 
 # Helper for nearest index lookup
 find_nearest_index(vals, target) = findmin(v -> abs(v - target), vals)[2]

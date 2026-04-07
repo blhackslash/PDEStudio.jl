@@ -1,5 +1,3 @@
-const _SAVE_ROOT_PATH = Ref{String}(pwd())
-
 """
 Custom error type indicating that a specific simulation data file,
 matching the provided parameters, was not found.
