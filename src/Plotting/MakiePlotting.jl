@@ -1,10 +1,3 @@
-# Fallback error if a dimension isn't supported yet
-function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager::PlotManager, dim::Val)
-    @warn "Render setup for dimension $(typeof(dim)) is not implemented yet!"
-    return ObserverFunction[]
-end
-
-
 include("DataExtraction.jl")
 include("UIStyles.jl")
 include("PlottingUtils.jl")

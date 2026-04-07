@@ -108,12 +108,46 @@ function SimulationConfig(
 ) where {F <: Function}
     SimulationConfig{F}(sim_func, shared, methods, defaults, varied_params)
 end
-# --- 5. Dispatch for createSimData ---
+"""
+    resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
 
-# function createSimData(x, u, t, params, stats)
-#     @warn "Types: x = " * string(typeof(x)) * " u = " * string(typeof(u)) * " t = " * string(typeof(t))
-#     error("Wrong input types or requested dimension not implemented yet!")
-# end
+Resolves the simulation function. Evaluates the script in the `target_module` namespace 
+(defaulting to `Main`) to avoid dependency bleed into the plotting package.
+"""
+function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
+    if !isnothing(sim_func)
+        return sim_func
+    end
+
+    try
+        func_file = joinpath(_SAVE_ROOT_PATH[], "SimulationFunctions", func_name_str * ".jl")
+        
+        if isfile(func_file)
+            @info "Dynamically loading function file into $target_module: $func_file"
+            # Evaluate the file in the requested module scope
+            Base.include(target_module, func_file)
+        else
+            @warn "File $func_file not found. Assuming function '$func_name_str' is already in $target_module scope."
+        end
+        
+        # Fetch the compiled function directly from the requested module
+        return getfield(target_module, Symbol(func_name_str))
+        
+    catch e
+        @error "Failed to dynamically resolve simulation function." exception=(e, catch_backtrace())
+        return nothing
+    end
+end
+
+function SimulationConfig(sim_func::String, args...; target_module::Module = Main, kwargs...)
+    f = resolve_simulation_function(sim_func, nothing; target_module = target_module)
+    
+    if isnothing(f)
+        error("Aborting: Could not resolve simulation function '$sim_func' in module $target_module.")
+    end
+    
+    SimulationConfig(f, args...; kwargs...)
+end
 
 # In Controls.jl / Structs.jl
 mutable struct PlotManager 
