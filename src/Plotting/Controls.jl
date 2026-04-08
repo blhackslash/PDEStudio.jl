@@ -271,142 +271,112 @@ function build_static_plot_controls!(
         return isnothing(v_dims) ? Set{Int}() : v_dims
     end
 
-    on(plot_data_obs) do plot_data_dict
+# Helper to safely update Menus
+    function _update_menu!(menu, new_options)
+        curr = menu.selection[]
+        menu.options[] = isempty(new_options) ? ["-"] : new_options
+        if curr == "-" || isnothing(curr) || curr ∉ new_options
+            menu.i_selected[] = isempty(new_options) ? 0 : 1
+        else
+            menu.i_selected[] = findfirst(isequal(curr), new_options)
+        end
+    end
+
+    # --- 1. Populate Dropdowns (Variation Rule Applied to Both) ---
+    onany(plot_data_obs, plot_type_obs) do plot_data_dict, ptype
         isempty(plot_data_dict) && return
-        active_methods = manager.methods[]
         
-        all_keys = Set{String}()
+        dim_names = manager.plot_vars
+        valid_axes = String[]
+        valid_fields = String[]
         comp_max = 1
-        for (m, pd) in plot_data_dict
-            if m in active_methods
-                for (key, tensor) in pd.data
-                    if any(s -> s > 1, size(tensor))
-                        push!(all_keys, key)
-                    end
+        
+        pd_first = first(values(plot_data_dict))
+        n_params = length(pd_first.active_param_keys)
+        
+        for (key, tensor) in pd_first.data
+            varying = findall(s -> s > 1, size(tensor))
+            
+            # THE RULE: If it does not vary at all (pure scalar), it is hidden from BOTH menus!
+            if isempty(varying)
+                continue
+            end
+            
+            # 1. Add to Dependent Menu (since we know it varies)
+            push!(valid_fields, key)
+            
+            # 2. Add to Independent Axis Menu if it fits the Metric Rule
+            idx = findfirst(isequal(key), dim_names)
+            if !isnothing(idx)
+                # It's a Base Variable that varies
+                push!(valid_axes, key)
+            else
+                # It's a Field/Metric. Only allow if it's physically 1D (ignoring params)
+                phys_varying = filter(d -> d > n_params, varying)
+                if length(phys_varying) <= 1
+                    push!(valid_axes, key)
                 end
-                if haskey(pd.data, "u")
-                    comp_max = max(comp_max, size(pd.data["u"], comp_idx))
-                end
             end
-        end
-        sorted_keys = sort(collect(all_keys))
-
-        # Update Component Dropdown
-        comp_opts = [string(i) for i in 1:comp_max]
-        if menu_comp.selection[] ∉ comp_opts
-            menu_comp.options[] = comp_opts
-            menu_comp.i_selected[] = 1
-        else
-            menu_comp.options[] = comp_opts
-        end
-
-        # Update U-Axis (Dependent) Dropdown
-        current_u = menu_u.selection[]
-        menu_u.options[] = isempty(sorted_keys) ? ["-"] : sorted_keys
-        if current_u == "-" || isnothing(current_u) || current_u ∉ sorted_keys
-            u_idx = findfirst(isequal("u"), sorted_keys)
-            menu_u.i_selected[] = isnothing(u_idx) ? (isempty(sorted_keys) ? 0 : 1) : u_idx
-        else
-            menu_u.i_selected[] = findfirst(isequal(current_u), sorted_keys)
-        end
-
-        # Update X-Axis
-        current_x = menu_x.selection[]
-        menu_x.options[] = isempty(sorted_keys) ? ["-"] : sorted_keys
-        if current_x == "-" || isnothing(current_x) || current_x ∉ sorted_keys
-            menu_x.i_selected[] = isempty(sorted_keys) ? 0 : 1 
-        else
-            menu_x.i_selected[] = findfirst(isequal(current_x), sorted_keys)
-        end
-        notify(menu_x.selection)
-    end
-
-    on(menu_x.selection) do x_val
-        (isnothing(x_val) || x_val == "-") && return
-        p_dim = PLOT_DIM_MAP[manager.controls["Plot-Type_Selection"][]]
-        if p_dim < 2
-            menu_y.options[] = ["disabled"]
-            menu_y.i_selected[] = 1
-            notify(menu_y.selection)
-            return
-        end
-        
-        plot_data_dict = plot_data_obs[]
-        active_methods = manager.methods[]
-        x_varied = get_varied_dims(x_val, plot_data_dict, active_methods)
-        
-        valid_y = String[]
-        for y_can in menu_x.options[]
-            y_varied = get_varied_dims(y_can, plot_data_dict, active_methods)
-            if !isempty(intersect(x_varied, y_varied))
-                push!(valid_y, y_can)
+            
+            if key == "u"
+                comp_max = max(comp_max, size(tensor, n_params + 1))
             end
         end
         
-        current_y = menu_y.selection[]
-        menu_y.options[] = isempty(valid_y) ? ["-"] : valid_y
-        if current_y == "-" || current_y == "disabled" || isnothing(current_y) || current_y ∉ valid_y
-            menu_y.i_selected[] = isempty(valid_y) ? 0 : 1 
-        else
-            menu_y.i_selected[] = findfirst(isequal(current_y), valid_y)
-        end
-        x_key_obs[] = x_val
-        notify(menu_y.selection)
-    end
-
-    on(menu_y.selection) do y_val
-        (isnothing(y_val) || y_val == "-") && return
-        p_dim = PLOT_DIM_MAP[manager.controls["Plot-Type_Selection"][]]
-        if y_val == "disabled" || p_dim < 3
-            menu_z.options[] = ["disabled"]
-            menu_z.i_selected[] = 1
-            notify(menu_z.selection)
-            return
-        end
+        sort!(valid_axes); sort!(valid_fields)
         
-        x_val = menu_x.selection[]
-        plot_data_dict = plot_data_obs[]
-        active_methods = manager.methods[]
+        # Apply standard Options to the Menus
+        _update_menu!(menu_x, valid_axes)
+        _update_menu!(menu_u, valid_fields)
+        _update_menu!(menu_comp, [string(i) for i in 1:comp_max])
         
-        xy_varied = intersect(get_varied_dims(x_val, plot_data_dict, active_methods), 
-                              get_varied_dims(y_val, plot_data_dict, active_methods))
-        
-        valid_z = String[]
-        for z_can in menu_x.options[]
-            z_varied = get_varied_dims(z_can, plot_data_dict, active_methods)
-            if !isempty(intersect(xy_varied, z_varied))
-                push!(valid_z, z_can)
-            end
-        end
-        
-        current_z = menu_z.selection[]
-        menu_z.options[] = isempty(valid_z) ? ["-"] : valid_z
-        if current_z == "-" || current_z == "disabled" || isnothing(current_z) || current_z ∉ valid_z
-            menu_z.i_selected[] = isempty(valid_z) ? 0 : 1 
-        else
-            menu_z.i_selected[] = findfirst(isequal(current_z), valid_z)
-        end
-        y_key_obs[] = y_val
-        notify(menu_z.selection)
-    end
-
-# --- MULTIDIMENSIONAL AXES TRACKER ---
-    onany(menu_x.selection, menu_y.selection, menu_z.selection, manager.controls["Plot-Type_Selection"]) do x_val, y_val, z_val, ptype
+        # Handle Y/Z visibility based on Plot Type
         p_dim = PLOT_DIM_MAP[ptype]
-        axes = Int[]
+        if p_dim >= 2
+            _update_menu!(menu_y, valid_axes)
+        else
+            menu_y.options[] = ["disabled"]; menu_y.i_selected[] = 1
+        end
+        
+        if p_dim >= 3
+            _update_menu!(menu_z, valid_axes)
+        else
+            menu_z.options[] = ["disabled"]; menu_z.i_selected[] = 1
+        end
+    end
+
+    # Safe Key Observers to prevent `Nothing to String` errors
+    on(menu_x.selection) do x_val; x_key_obs[] = isnothing(x_val) ? "-" : x_val; end
+    on(menu_y.selection) do y_val; y_key_obs[] = isnothing(y_val) ? "-" : y_val; end
+    on(menu_z.selection) do z_val; z_key_obs[] = isnothing(z_val) ? "-" : z_val; end
+    
+    on(menu_u.selection) do u_val
+        (isnothing(u_val) || u_val == "-") && return
+        u_key_obs[] = u_val
+        notify(menu_z.selection) 
+    end
+
+    # --- 2. MULTIDIMENSIONAL SLIDER LOCKER ---
+    onany(menu_x.selection, menu_y.selection, menu_z.selection, plot_type_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
+        isempty(plot_data_dict) && return
+        p_dim = PLOT_DIM_MAP[ptype]
+        axes = Set{Int}()
+        
+        pd_first = first(values(plot_data_dict))
+        dim_names = manager.plot_vars
         
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
             if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
-                idx = findfirst(isequal(val), dim_names)
+                # THE METRIC FIX: Safely map whatever axis they chose back to its Base Dimension
+                idx = get_base_dim_idx(pd_first, val, dim_names)
                 !isnothing(idx) && push!(axes, idx)
             end
         end
         
-        active_axes_obs[] = axes
+        active_axes_obs[] = collect(axes)
     end
 
-    # --- REACTIVE LOGIC: Sliders Ranges ---
-    # Sliders now dynamically react to BOTH axis changes and data dictionary updates
+    # --- 3. SLIDER RANGE UPDATER ---
     onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
         isempty(plot_data_dict) && return
         vt = manager.controls["base_types"][]
@@ -419,8 +389,6 @@ function build_static_plot_controls!(
             end
             
             ctrl = control_objects[i]
-            
-            # THE CRITICAL FIX: Multidimensional slider locking!
             is_axis = (i in active_axes) 
             
             g_min, g_max = Inf, -Inf
@@ -432,27 +400,21 @@ function build_static_plot_controls!(
                     vals = [1.0, Float64(size(pd.data["u"], length(pd.active_param_keys) + 1))]
                 elseif i > n_params + 1 && i < total_dims 
                     dim_idx = i - (n_params + 1)
-                    x_tensor = get(pd.data, "x", nothing)
                     
-                    if !isnothing(x_tensor) && !all(isnan.(x_tensor))
-                        grid_c = size(x_tensor, n_params + 1)
-                        if grid_c == 3 
-                            inds = ntuple(d -> d == n_params + 1 ? dim_idx : (:), ndims(x_tensor))
-                            vals = filter(!isnan, x_tensor[inds...])
-                        elseif dim_idx == 1 
-                            vals = filter(!isnan, x_tensor)
-                        else 
-                            sz = size(pd.data["u"], i)
-                            vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
-                        end
-                    else
+                    # Fetch coordinate mapping directly from split spatial tensors
+                    tensor_key = dim_idx == 1 ? "x" : (dim_idx == 2 ? "y" : "z")
+                    coord_tensor = get(pd.data, tensor_key, nothing)
+                    
+                    if !isnothing(coord_tensor) && !all(isnan.(coord_tensor))
+                        vals = filter(!isnan, coord_tensor)
+                    else 
                         sz = size(pd.data["u"], i)
                         vals = sz == 1 ? [0.0] : [1.0, Float64(sz)]
                     end
                 elseif i == total_dims 
                     vals = pd.t_vals
                 end
-                
+               
                 if !isnothing(vals) && !isempty(vals)
                     l, h = extrema(vals)
                     if l < g_min; g_min = l; end

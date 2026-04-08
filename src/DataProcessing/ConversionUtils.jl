@@ -193,3 +193,113 @@ function createSimData(
 ) where {D, M}
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
+"""
+    convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
+
+Interpolates unstructured Lagrangian particle data onto a structured Eulerian grid.
+Automatically interpolates spatial 'fields' and 'profiles' alongside 'u'.
+"""
+function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
+    D = length(ldata.x[1][1]) 
+    T = length(ldata.t)
+    C = length(ldata.u[1][1]) 
+
+    # 1. Bounding Box & Grid axes
+    mins = fill(Inf, D); maxs = fill(-Inf, D)
+    for step in ldata.x
+        for p in step
+            for d in 1:D
+                mins[d] = min(mins[d], p[d])
+                maxs[d] = max(maxs[d], p[d])
+            end
+        end
+    end
+
+    for d in 1:D
+        pad = max(1e-5, (maxs[d] - mins[d]) * 0.01)
+        mins[d] -= pad; maxs[d] += pad
+    end
+
+    grid_axes = ntuple(d -> range(mins[d], maxs[d], length=N_grid), D)
+    grid_shape = ntuple(d -> N_grid, D)
+
+# 2. Allocate Eulerian Tensors
+    if D == 1; x_euler = collect(grid_axes[1]); else
+        x_euler = zeros(Float64, grid_shape..., D)
+        for idx in CartesianIndices(grid_shape)
+            for d in 1:D; x_euler[Tuple(idx)..., d] = grid_axes[d][idx[d]]; end
+        end
+    end
+
+    u_euler = zeros(Float64, C, grid_shape..., T)
+    
+    # --- THE FIX: Explicitly typed dictionaries ---
+    e_fields = Dict{String, Array{Float64}}()
+    for (k, v) in ldata.fields
+        e_fields[k] = zeros(Float64, size(v, 1), grid_shape..., T)
+    end
+    
+    e_profiles = Dict{String, Array{Float64}}()
+    for (k, v) in ldata.profiles
+        e_profiles[k] = zeros(Float64, size(v, 1), grid_shape...)
+    end
+
+    # 3. Time-Dependent Interpolation (u & fields)
+    Threads.@threads for t_idx in 1:T
+        x_step = ldata.x[t_idx]
+        N_p = length(x_step)
+        N_p == 0 && continue
+
+        for idx in CartesianIndices(grid_shape)
+            pos = SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], D))
+            
+            w_sum = 0.0
+            u_sum = zeros(C)
+            f_sums = Dict(k => zeros(size(v, 1)) for (k, v) in ldata.fields)
+
+            for p_idx in 1:N_p
+                dist = norm(pos - x_step[p_idx])
+                
+                # Exact coordinate match bypass
+                if dist < 1e-10 
+                    for c in 1:C; u_sum[c] = ldata.u[t_idx][p_idx][c]; end
+                    for (k, v) in ldata.fields; for c in 1:size(v, 1); f_sums[k][c] = v[c, p_idx, t_idx]; end; end
+                    w_sum = 1.0
+                    break
+                end
+
+                w = 1.0 / (dist^2)
+                w_sum += w
+                for c in 1:C; u_sum[c] += ldata.u[t_idx][p_idx][c] * w; end
+                for (k, v) in ldata.fields; for c in 1:size(v, 1); f_sums[k][c] += v[c, p_idx, t_idx] * w; end; end
+            end
+
+            for c in 1:C; u_euler[c, Tuple(idx)..., t_idx] = u_sum[c] / w_sum; end
+            for (k, v) in ldata.fields; for c in 1:size(v, 1); e_fields[k][c, Tuple(idx)..., t_idx] = f_sums[k][c] / w_sum; end; end
+        end
+    end
+
+    # 4. Time-Independent Interpolation (Profiles)
+    if !isempty(ldata.profiles)
+        x_step = ldata.x[1]
+        for idx in CartesianIndices(grid_shape)
+            pos = SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], D))
+            w_sum = 0.0
+            p_sums = Dict(k => zeros(size(v, 1)) for (k, v) in ldata.profiles)
+
+            for p_idx in 1:length(x_step)
+                dist = norm(pos - x_step[p_idx])
+                if dist < 1e-10
+                    for (k, v) in ldata.profiles; for c in 1:size(v, 1); p_sums[k][c] = v[c, p_idx]; end; end
+                    w_sum = 1.0; break
+                end
+                w = 1.0 / (dist^2)
+                w_sum += w
+                for (k, v) in ldata.profiles; for c in 1:size(v, 1); p_sums[k][c] += v[c, p_idx] * w; end; end
+            end
+            for (k, v) in ldata.profiles; for c in 1:size(v, 1); e_profiles[k][c, Tuple(idx)...] = p_sums[k][c] / w_sum; end; end
+        end
+    end
+
+    return ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
+end

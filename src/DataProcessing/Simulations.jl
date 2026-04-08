@@ -34,7 +34,7 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
         task_params = copy(base_params)
         for (k, v) in sim_fixes; task_params[k] = v; end
         
-        indices = isempty(active_values) ? (1,) : Tuple(CartesianIndices(param_grid)[linear_idx])
+        indices = isempty(active_values) ? () : Tuple(CartesianIndices(param_grid)[linear_idx])
         
         for (i, val) in enumerate(p_vals)
             task_params[active_keys[i]] = val

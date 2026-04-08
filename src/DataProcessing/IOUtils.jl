@@ -90,107 +90,89 @@ function calculateHash(params::ParamDict)
     return bytes2hex(sha256(stringToHash))
 end
 using Dates # Ensure this is imported
-
-"""
-Saves the given simulation mesh in the folder given by save_data.
-Generates a filename based on Hash + Timestamp.
-
-If a file with the exact same parameters already exists:
-- Overwrites it if `overwrite=true`.
-- Skips saving if `overwrite=false`.
-
-If no matching parameters are found (even if the hash collides), a new file is created.
-"""
-function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
-    
-    # 1. Check if this exact simulation already exists
+function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false, suffix::String = "")
     try
-        existing_file = getFileName(sim_data.params)
-        
-        # --- CASE: File Exists ---
+        existing_file = getFileName(sim_data.params; suffix=suffix)
         if overwrite
             save(existing_file, "sim_data", sim_data)
             @warn "Existing simulation data overwritten at: $existing_file"
         else
             @info "Simulation data already exists at: $existing_file. Skipping save."
         end
-        return # Exit, job done
+        return
     catch e
         if !isa(e, SimFileNotFoundError)
             rethrow(e)
         end
-        # If SimFileNotFoundError, we proceed to save a new file
     end
 
-    # --- CASE: New File Needed ---
     hash_val = calculateHash(sim_data.params)
-    timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss") # Millisecond precision to be safe
+    timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
     
-    save_data = get_save_path() * "/data/"
+    save_data = joinpath(get_save_path(), "data")
     if !isdir(save_data); mkpath(save_data); end
 
-    # Pattern: Hash_Timestamp.jld2
-    file_name = joinpath(save_data, "$(hash_val)_$(timestamp).jld2")
+    # Inject the suffix seamlessly
+    suffix_str = isempty(suffix) ? "" : "_$(suffix)"
+    file_name = joinpath(save_data, "$(hash_val)$(suffix_str)_$(timestamp).jld2")
 
     save(file_name, "sim_data", sim_data)
     @info "SimData saved to new file: $file_name"
 end
 
-function saveSimData(::NoSimData; kwargs...)
-    return
-end
-
-"""
-Returns the filename of the simulation data corresponding to the given params dictionary.
-Searches all files matching the hash prefix to find the one with matching parameters.
-Throws SimFileNotFoundError if no matching file is found.
-"""
-function getFileName(params::ParamDict)
+function getFileName(params::ParamDict; suffix::String="")
     hash_val = calculateHash(params)
-    save_data = get_save_path() * "/data/"
+    save_data = joinpath(get_save_path(), "data")
     
     if !isdir(save_data)
         throw(SimFileNotFoundError("Data directory does not exist."))
     end
 
-    # Get all files in directory
     all_files = readdir(save_data)
 
-    # Filter for files that start with the hash
-    # Expecting format: HASH_TIMESTAMP.jld2
-    candidate_files = filter(f -> startswith(f, hash_val) && endswith(f, ".jld2"), all_files)
-
-    # Loop through candidates to check actual parameters
-    for file in candidate_files
-        full_path = joinpath(save_data, file)
-        try
-            # Load only the data needed to check parameters
-            # Note: We load the whole object because JLD2 structure usually requires it 
-            # to check nested params, unless you stored params separately.
-            sim_data_saved = load(full_path, "sim_data")
-            
-            if params == sim_data_saved.params
-                @debug "Found matching file: $full_path"
-                return full_path
-            end
-        catch e
-            @warn "Failed to load candidate file $file during search." exception=(e, catch_backtrace())
-            # Continue searching other candidates
+    candidate_files = filter(all_files) do f
+        !endswith(f, ".jld2") && return false
+        
+        if isempty(suffix)
+            # Must match "HASH_" followed by a digit (the timestamp) to exclude "HASH_conv"
+            return startswith(f, "$(hash_val)_") && occursin(r"^[0-9]", replace(f, "$(hash_val)_" => ""))
+        else
+            # Must match "HASH_conv_"
+            return startswith(f, "$(hash_val)_$(suffix)_")
         end
     end
 
-    # If loop finishes without returning
-    throw(SimFileNotFoundError("Requested file with matching parameters does not exist (searched $(length(candidate_files)) candidates with hash $hash_val)."))
+    for file in candidate_files
+        full_path = joinpath(save_data, file)
+        try
+            sim_data_saved = load(full_path, "sim_data")
+            if params == sim_data_saved.params
+                return full_path
+            end
+        catch e
+            @warn "Failed to load candidate file $file during search."
+        end
+    end
+
+    throw(SimFileNotFoundError("File with matching parameters and suffix '$suffix' not found."))
 end
 
-"""
-Loads the simulation data corresponding to the given params dictionary as a simulation mesh
-"""
-function loadSimData(params::ParamDict)
-    # getFileName does the heavy lifting of finding the correct timestamped file
-    return load(getFileName(params))["sim_data"]
+function loadSimData(params::ParamDict; suffix::String="")
+    return load(getFileName(params; suffix=suffix))["sim_data"]
 end
 
+function doesSimDataExist(params::ParamDict; suffix::String="")
+    try
+        getFileName(params; suffix=suffix)
+        return true
+    catch e
+        if isa(e, SimFileNotFoundError)
+             return false
+        else
+            rethrow(e)
+        end
+    end
+end
 # Overload for loading directly by hash is tricky now because multiple files 
 # might share the hash (collisions). This function assumes you want *any* file 
 # with that hash, or strictly expects only one.
@@ -217,24 +199,6 @@ Loads only the stats field of the simulation mesh
 function getStats(params::ParamDict)
     sim_data = loadSimData(params)
     return sim_data.stats
-end
-
-"""
-Checks if simulation data already exists for the given parameter dictionary.
-Returns true if found, false only if specifically not found.
-"""
-function doesSimDataExist(params::ParamDict)
-    try
-        getFileName(params)
-        return true
-    catch e
-        if isa(e, SimFileNotFoundError)
-            return false
-        else
-            @error "Unexpected error during file existence check!" exception=(e, catch_backtrace())
-            rethrow(e)
-        end
-    end
 end
 
 """

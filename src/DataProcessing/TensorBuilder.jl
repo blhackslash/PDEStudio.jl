@@ -36,21 +36,6 @@ function analyze_configuration(sim_config::SimulationConfig, fixed_params::Fixed
     return active_keys, active_values, sim_fixes
 end
 
-function generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
-    param_grid = collect(Iterators.product(active_values...))
-    tasks, grid_indices = Vector{ParamDict}(), Vector{Tuple}()
-
-    for (linear_idx, p_vals) in enumerate(param_grid)
-        task_params = copy(base_params)
-        for (k, v) in sim_fixes; task_params[k] = v; end
-        indices = Tuple(CartesianIndices(param_grid)[linear_idx])
-        for (i, val) in enumerate(p_vals); task_params[active_keys[i]] = val; end
-        push!(tasks, task_params)
-        push!(grid_indices, indices)
-    end
-    return tasks, grid_indices
-end
-
 # ==============================================================================
 # 2. DATA SLICING & DIMENSION HELPERS
 # ==============================================================================
@@ -181,48 +166,6 @@ function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, ra
     end
 end
 
-function slice_and_fill_lagrangian!(target, x_data, u_data, dest_prefix, base_types, D, raw_c, raw_space, raw_t, sim_data)
-    c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
-    p_src = space_src[1]
-    max_p = raw_space[1]
-    
-    t_iter = t_src isa Int ? (t_src,) : t_src
-    
-    for (tgt_t, src_t) in enumerate(t_iter)
-        u_step = u_data[src_t]
-        x_step = x_data[src_t] 
-        curr_p_len = length(x_step)
-        
-        if p_src isa Int
-            if p_src <= curr_p_len
-                target["u"][dest_prefix..., :, 1, 1, 1, tgt_t] .= u_step[p_src][c_src, 1] 
-                
-                # Pad the spatial coordinate to 3D
-                pos = x_step[p_src]
-                padded_pos = ntuple(i -> i <= D ? pos[i] : 0.0, 3)
-                target["x"][dest_prefix..., :, 1, 1, 1, tgt_t] .= padded_pos
-            else
-                target["u"][dest_prefix..., :, 1, 1, 1, tgt_t] .= NaN
-                target["x"][dest_prefix..., :, 1, 1, 1, tgt_t] .= NaN
-            end
-        else
-            for p in 1:curr_p_len
-                target["u"][dest_prefix..., :, p, 1, 1, tgt_t] .= u_step[p][c_src, 1]
-                
-                pos = x_step[p]
-                padded_pos = ntuple(i -> i <= D ? pos[i] : 0.0, 3)
-                target["x"][dest_prefix..., :, p, 1, 1, tgt_t] .= padded_pos
-            end
-            
-            if curr_p_len < max_p
-                target["u"][dest_prefix..., :, (curr_p_len+1):end, 1, 1, tgt_t] .= NaN
-                target["x"][dest_prefix..., :, (curr_p_len+1):end, 1, 1, tgt_t] .= NaN
-            end
-        end
-    end
-end
-
-
 # ==============================================================================
 # MAIN TENSOR CREATION ROUTINE
 # ==============================================================================
@@ -257,12 +200,22 @@ function create_method_plot_data(
         end
     end
 
-    # 3. Initialization & Dimension Resolution
-    # Load the first file from disk to figure out array shapes
     first_data = loadSimData(tasks[1]) 
     if isnothing(first_data)
         @warn "Failed to load simulation data after execution."
         return nothing
+    end
+    
+    # --- CACHED INTERCEPT ---
+    if first_data isa LSimData
+        try
+            first_data = loadSimData(tasks[1]; suffix="conv")
+            @info "Loaded cached Eulerian conversion."
+        catch
+            @info "Converting LSimData to ESimData for plotting (this only happens once)..."
+            first_data = convert_to_eulerian(first_data, 50) # Use your preferred grid resolution!
+            saveSimData(first_data; suffix="conv", overwrite=true)
+        end
     end
     
     D = _get_D(first_data)
@@ -282,10 +235,9 @@ function create_method_plot_data(
             return fill(NaN, grid_dims..., eff_c, 1, 1, 1, eff_t)
         elseif category == :profile# [P..., C, X, Y, Z, 1]
             return fill(NaN, grid_dims..., eff_c, eff_space..., 1)
-        elseif category == :grid   # [P..., grid_c, X, Y, Z, grid_t]
-            grid_c = first_data isa LSimData ? 3 : 1
+        elseif category == :grid   # [P..., 1, X, Y, Z, grid_t]
             grid_t = (first_data isa ESimData && !(base_types[5] isa Number)) ? 1 : eff_t
-            return fill(NaN, grid_dims..., grid_c, eff_space..., grid_t)
+            return fill(NaN, grid_dims..., 1, eff_space..., grid_t)
         elseif category == :time   # [P..., 1, 1, 1, 1, T]
             return fill(NaN, grid_dims..., 1, 1, 1, 1, eff_t)
         end
@@ -304,7 +256,11 @@ function create_method_plot_data(
 
     # --- 5. Allocate Results & Time ---
     data_store["u"] = allocate_tensor(:field)
+    
     data_store["x"] = allocate_tensor(:grid)
+    if D >= 2; data_store["y"] = allocate_tensor(:grid); end
+    if D == 3; data_store["z"] = allocate_tensor(:grid); end
+    
     data_store["t"] = allocate_tensor(:time)
 
     for k in keys(first_data.scalars); data_store[k] = allocate_tensor(:scalar); end
@@ -316,8 +272,19 @@ function create_method_plot_data(
     # Loads SimData from disk one by one, keeping RAM usage low
     for (k, params) in enumerate(tasks)
         sim_data = loadSimData(params)
+        # --- CACHED INTERCEPT ---
+        if sim_data isa LSimData
+            try
+                sim_data = loadSimData(params; suffix="conv")
+            catch
+                sim_data = convert_to_eulerian(sim_data, 50)
+                saveSimData(sim_data; suffix="conv", overwrite=true)
+            end
+        end
+        
         dest_prefix = grid_indices[k]
         
+        # NOTE: D is derived from the Eulerian data now, so it will slice perfectly!
         c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
         
         # Fill Time Tensor
@@ -327,18 +294,19 @@ function create_method_plot_data(
             data_store["t"][dest_prefix..., 1, 1, 1, 1, :] .= sim_data.t[t_src]
         end
 
-        # Route to specific slicers
-        if sim_data isa ESimData
-            slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
-            slice_and_fill_eulerian!(data_store["x"], sim_data.x, dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-            
-            for (sk, sv) in sim_data.scalars; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data); end
-            for (sk, sv) in sim_data.series; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data); end
-            for (sk, sv) in sim_data.profiles; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data); end
-            for (sk, sv) in sim_data.fields; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data); end
 
-        elseif sim_data isa LSimData
-            slice_and_fill_lagrangian!(data_store, sim_data.x, sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, sim_data)
+        slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
+        
+        # Split Eulerian Coordinates
+        if D == 1
+            slice_and_fill_eulerian!(data_store["x"], sim_data.x, dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+        elseif D == 2
+            slice_and_fill_eulerian!(data_store["x"], selectdim(sim_data.x, D+1, 1), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+            slice_and_fill_eulerian!(data_store["y"], selectdim(sim_data.x, D+1, 2), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+        elseif D == 3
+            slice_and_fill_eulerian!(data_store["x"], selectdim(sim_data.x, D+1, 1), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+            slice_and_fill_eulerian!(data_store["y"], selectdim(sim_data.x, D+1, 2), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+            slice_and_fill_eulerian!(data_store["z"], selectdim(sim_data.x, D+1, 3), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
         end
     end
 
