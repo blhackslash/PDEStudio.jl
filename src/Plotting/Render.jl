@@ -72,8 +72,17 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     hm = heatmap!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs)
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
-    xlims!(ax, extrema(filter(isfinite, x_data))...)
-    ylims!(ax, extrema(filter(isfinite, y_data))...)
+    
+    valid_x = filter(isfinite, x_data)
+    valid_y = filter(isfinite, y_data)
+    
+    # Only update limits if there is actually valid coordinate data
+    if !isempty(valid_x)
+        xlims!(ax, extrema(valid_x)...)
+    end
+    if !isempty(valid_y)
+        ylims!(ax, extrema(valid_y)...)
+    end
 
     create_or_update_colorbar!(plot_fig, hm, manager, cr_obs, active_methods[1])
 end
@@ -106,8 +115,17 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     )
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
-    xlims!(ax, extrema(filter(isfinite, x_data))...)
-    ylims!(ax, extrema(filter(isfinite, y_data))...)
+    
+    valid_x = filter(isfinite, x_data)
+    valid_y = filter(isfinite, y_data)
+    
+    # Only update limits if there is actually valid coordinate data
+    if !isempty(valid_x)
+        xlims!(ax, extrema(valid_x)...)
+    end
+    if !isempty(valid_y)
+        ylims!(ax, extrema(valid_y)...)
+    end
 
     create_or_update_colorbar!(plot_fig, sc, manager, cr_obs, active_methods[1])
 end
@@ -131,8 +149,17 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     end
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
-    xlims!(ax, extrema(filter(isfinite, xs_slices[1]))...)
-    ylims!(ax, extrema(filter(isfinite, ys_slices[1]))...)
+    
+    valid_x = filter(isfinite, xs_slices[1])
+    valid_y = filter(isfinite, ys_slices[1])
+    
+    # Only update limits if there is actually valid coordinate data
+    if !isempty(valid_x)
+        xlims!(ax, extrema(valid_x)...)
+    end
+    if !isempty(valid_y)
+        ylims!(ax, extrema(valid_y)...)
+    end
 end
 
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf})
@@ -165,8 +192,17 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     end
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
-    xlims!(ax, extrema(filter(isfinite, x_data))...)
-    ylims!(ax, extrema(filter(isfinite, y_data))...)
+    
+    valid_x = filter(isfinite, x_data)
+    valid_y = filter(isfinite, y_data)
+    
+    # Only update limits if there is actually valid coordinate data
+    if !isempty(valid_x)
+        xlims!(ax, extrema(valid_x)...)
+    end
+    if !isempty(valid_y)
+        ylims!(ax, extrema(valid_y)...)
+    end
     
     create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[1])
 end
@@ -203,32 +239,6 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     create_or_update_colorbar!(plot_fig, sc, manager, cr_obs, active_methods[1])
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d})
-    xs_slices, ys_slices, zs_slices, us_slices = data_tuples
-    
-    empty!(ax); isempty(active_methods) && return
-    ui_app = manager.ui["Plot-Style"]
-
-    # Overlay all methods as 3D Isosurfaces
-    for (plot_idx, label) in enumerate(active_methods)
-        color = ui_app["colors"][][mod1(plot_idx, end)]
-        
-        # FIX 1: Use `contour!` for true 3D isosurfaces instead of `contour3d!`
-        # FIX 2: Wrap coordinates in `extrema()` just like the volume! fix
-        contour!(ax, 
-            extrema(xs_slices[plot_idx]), 
-            extrema(ys_slices[plot_idx]), 
-            extrema(zs_slices[plot_idx]), 
-            us_slices[plot_idx]; 
-            levels=ui_app["levels"][], 
-            color=color, 
-            alpha=0.5 # Highly recommended: adds 50% transparency so you can see nested inner surfaces!
-        )
-    end
-
-    set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
-end
-
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:surface})
     # Notice we unpack 3 items because PLOT_DIM_MAP[:surface] == 2
     xs_slices, ys_slices, us_slices = data_tuples 
@@ -253,6 +263,29 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     create_or_update_colorbar!(plot_fig, sf, manager, cr_obs, active_methods[1])
 end
 
+function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d})
+    xs_slices, ys_slices, zs_slices, us_slices = data_tuples
+    
+    empty!(ax); isempty(active_methods) && return
+    ui_app = manager.ui["Plot-Style"]
+
+    for (plot_idx, label) in enumerate(active_methods)
+        color = ui_app["colors"][][mod1(plot_idx, end)]
+        
+        # THE FIX: Just pass the 1D vectors directly! Makie handles the meshgrid natively.
+        contour!(ax, 
+            xs_slices[plot_idx], 
+            ys_slices[plot_idx], 
+            zs_slices[plot_idx], 
+            us_slices[plot_idx]; 
+            levels=ui_app["levels"][], 
+            color=color, 
+            alpha=0.5 
+        )
+    end
+    set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
+end
+
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:volume})
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     
@@ -266,8 +299,8 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if l_u == h_u; h_u += 1e-6; end
     cr_obs = Observable((l_u, h_u))
 
-    # FIX: Wrap the coordinate vectors in extrema() to provide the (start, stop) tuples Makie wants
-    vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; 
+    # THE FIX: Just pass the 1D vectors directly!
+    vol = volume!(ax, x_data, y_data, z_data, u_data; 
         colormap=ui_app["colormap"][], 
         colorrange=cr_obs
     )

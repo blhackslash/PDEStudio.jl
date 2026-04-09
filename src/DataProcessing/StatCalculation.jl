@@ -20,7 +20,7 @@ function _get_dense_tensors(sim_data::ESimData)
     return sim_data.x, sim_data.u
 end
 
-function _get_dense_tensors(sim_data::LSimData{1})
+function _get_dense_tensors(sim_data::LSimData{1,M}) where M
     n_steps = length(sim_data.t)
     max_p = maximum(length.(sim_data.x))
     n_comps = size(sim_data.u[1][1], 1)

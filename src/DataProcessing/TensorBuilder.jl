@@ -7,9 +7,31 @@ include("Simulations.jl")
 find_nearest_index(vals, target) = findmin(v -> abs(v - target), vals)[2]
 
 # Dynamic D extraction so we don't need to parameterize the whole file!
-_get_D(::AbstractSimData{D}) where D = D
+_get_D(sim_data::ESimData) = ndims(sim_data.u) - 2
+_get_D(sim_data::AbstractSimData) = length(sim_data.x[1][1])
+
 safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
-safe_reshape(data::Real, dims...) = fill(data, dims...)
+safe_reshape(data::Real, dims...) = data
+
+"""
+Safely assigns a 1D vector (or flat scalar) into an N-Dimensional target tensor.
+`target_dim` is relative to the core 5 dimensions (C, X, Y, Z, T):
+X = 2, Y = 3, Z = 4, T = 5.
+"""
+function safe_fill_axis!(target_tensor, dest_prefix, src_data, eff_len, target_dim)
+    if eff_len == 1
+        # If flat, safely extract the scalar and place it in the exact corner
+        target_tensor[dest_prefix..., 1, 1, 1, 1, 1] = first(src_data)
+    else
+        # Dynamically create the slice (e.g., target_dim 2 becomes (1, :, 1, 1, 1))
+        idx = ntuple(i -> i == target_dim ? (:) : 1, 5)
+        try
+            target_tensor[dest_prefix..., idx...] .= src_data
+        catch
+            target_tensor[dest_prefix..., idx...] = src_data
+        end
+    end
+end
 
 # ==============================================================================
 # 1. TASK & CONFIGURATION ANALYSIS
@@ -96,7 +118,9 @@ function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tu
     
     # 1. Component Axis (Always an integer index)
     c_idx = base_types[1] isa Number ? Int(base_types[1]) : (1:raw_c)
-    
+    if c_idx == 1:1
+        c_idx = 1
+    end
     # 2. Spatial Axes
     space_idx = if is_lagrangian
         # Particles are always indexed by ID
@@ -111,13 +135,13 @@ function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tu
                     return clamp(Int(val), 1, raw_space[i])
                 elseif val isa Real
                     # SMART ADAPT: Physical coordinate search
-                    grid_axis = D == 1 ? sim_data.x : selectdim(sim_data.x, i, 1) 
+                    grid_axis = sim_data.x[i] 
                     return find_nearest_index(grid_axis, val)
                 else
                     return 1:raw_space[i]
                 end
             else
-                return 1:1
+                return 1
             end
         end
     end
@@ -219,7 +243,7 @@ function create_method_plot_data(
     end
     
     D = _get_D(first_data)
-    
+    println(D)    
     eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
     grid_dims = length.(active_values)
     n_params = length(active_keys)
@@ -254,7 +278,7 @@ function create_method_plot_data(
         data_store[key] = param_tensor
     end
 
-    # --- 5. Allocate Results & Time ---
+# --- 5. Allocate Results & Time ---
     data_store["u"] = allocate_tensor(:field)
     
     data_store["x"] = allocate_tensor(:grid)
@@ -286,27 +310,37 @@ function create_method_plot_data(
         
         # NOTE: D is derived from the Eulerian data now, so it will slice perfectly!
         c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
-        
-        # Fill Time Tensor
-        if eff_t == 1
-            data_store["t"][dest_prefix..., 1, 1, 1, 1, 1] = sim_data.t[t_src]
-        else
-            data_store["t"][dest_prefix..., 1, 1, 1, 1, :] .= sim_data.t[t_src]
-        end
+        len_sx = space_src[1] isa Int ? 1 : length(space_src[1])
+        len_sy = space_src[2] isa Int ? 1 : length(space_src[2])
+        len_sz = space_src[3] isa Int ? 1 : length(space_src[3])
 
-
-        slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
         
-        # Split Eulerian Coordinates
-        if D == 1
-            slice_and_fill_eulerian!(data_store["x"], sim_data.x, dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-        elseif D == 2
-            slice_and_fill_eulerian!(data_store["x"], selectdim(sim_data.x, D+1, 1), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-            slice_and_fill_eulerian!(data_store["y"], selectdim(sim_data.x, D+1, 2), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-        elseif D == 3
-            slice_and_fill_eulerian!(data_store["x"], selectdim(sim_data.x, D+1, 1), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-            slice_and_fill_eulerian!(data_store["y"], selectdim(sim_data.x, D+1, 2), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
-            slice_and_fill_eulerian!(data_store["z"], selectdim(sim_data.x, D+1, 3), dest_prefix, base_types, D, 1, raw_space, 1, :grid, sim_data) 
+        # --- Safely Extract Time (T is dim 5) ---
+        safe_fill_axis!(data_store["t"], dest_prefix, sim_data.t[t_src], eff_t, 5)
+        
+        if sim_data isa ESimData
+            slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
+            
+            # --- THE NEW CLEAN ORTHOGONAL AXIS EXTRACTION ---
+            # X is dim 2
+            safe_fill_axis!(data_store["x"], dest_prefix, sim_data.x[1][space_src[1]], len_sx, 2)
+            
+            if D >= 2
+                # Y is dim 3
+                safe_fill_axis!(data_store["y"], dest_prefix, sim_data.x[2][space_src[2]], len_sy, 3)
+            end
+            if D == 3
+                # Z is dim 4
+                safe_fill_axis!(data_store["z"], dest_prefix, sim_data.x[3][space_src[3]], len_sz, 4)
+            end
+            
+            for (sk, sv) in sim_data.scalars; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data); end
+            for (sk, sv) in sim_data.series; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data); end
+            
+            for (sk, sv) in sim_data.scalars; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data); end
+            for (sk, sv) in sim_data.series; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data); end
+            for (sk, sv) in sim_data.profiles; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data); end
+            for (sk, sv) in sim_data.fields; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data); end
         end
     end
 

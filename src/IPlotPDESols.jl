@@ -13,7 +13,7 @@ export loadSimData, getStats, doesSimDataExist, deleteSimData,
        AbstractSimData, calculateConvergenceData, allMethodNames,
        calculateAllStats!, process_existing_data,
        registerSimFunction!, getSimFunction, registerAllFunctions, 
-       show_unified_fig, launch_csv_interface
+       show_unified_fig, launch_csv_interface, calculateAllStats!
 
 # --- 3. Core Types (Defined directly in the main module) ---
 # Included FIRST so submodules can use them.
@@ -33,7 +33,7 @@ module DataProcessing
     
     # Export only the functions the UI needs to call
     export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path,
-           set_save_path!, saveParametersToCSV, process_existing_data
+           set_save_path!, saveParametersToCSV, process_existing_data, calculateAllStats!
     
     include("DataProcessing/TensorBuilder.jl")
 end

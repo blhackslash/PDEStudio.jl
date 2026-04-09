@@ -532,19 +532,14 @@ These values are used as a base and can be overwritten by user input.
 """
 function get_base_scene_options()
     return Dict{String, Any}(
-        # 1. Main Axis Selections (Using Strings for Data Keys)
+        # 1. Main Axis Selections
         "X-Axis_Selection"      => "x",      # Standard spatial coordinate
-        "Y-Axis_Selection"      => "u",      # Standard solution variable
+        "U-Axis_Selection"      => "u",      # THE FIX: Updated from Y-Axis to U-Axis
         
-        # 2. Plotting Dimension (Using Integer Index)
-        # 1=Component, 2=Space(X), 3=Space(Y)... (Depends on your VariableNames order)
-        "Plot-Along_Selection"  => "x",        # Usually Space(X)
-        
-        # 3. Base Variable Defaults (Using Indices to be safe)
-        "c_Selection"   => 1,        # First component (e.g., Density or u[1])
-        "t_Value"            => 25,        # First time step (Index 1)
-        "x_Value"        => 50,        # First spatial point (Index 1) - ignored if X is the axis
-        
+        # 2. Base Variable Defaults (Set to 1 to snap to the minimum value)
+        "c_Selection"   => 1,        
+        "t_Value"       => 1,        # THE FIX: Was 25
+        "x_Value"       => 1,        # THE FIX: Was 50
     )
 end
 """

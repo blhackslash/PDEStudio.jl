@@ -58,14 +58,14 @@ profiles: D-dimensional Matrix/Array per component
 """
 struct ESimData{D} <: AbstractSimData{D}
     params::ParamDict
-    x::Array{Float64, D}          # 1D -> Vector, 2D -> Matrix
-    u::Array{Float64}        # [Component, Space..., Time]
+    x::NTuple{D, Vector{Float64}}  # ONLY stores the 1D coordinate axes!
+    u::Array{Float64}              # [Component, Space..., Time]
     t::Vector{Float64}
 
     scalars::Dict{String, Float64} 
     series::Dict{String, Matrix{Float64}} 
-    profiles::Dict{String, Array{Float64}} # [Component, Space...]
-    fields::Dict{String, Array{Float64}}   # [Component, Space..., Time]
+    profiles::Dict{String, Array{Float64}} 
+    fields::Dict{String, Array{Float64}}   
 end
 
 """

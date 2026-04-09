@@ -282,13 +282,12 @@ function build_static_plot_controls!(
         end
     end
 
-    # --- 1. Populate Dropdowns (Variation Rule Applied to Both) ---
+# --- 1. Populate Dropdowns (Strict Independent Menus) ---
     onany(plot_data_obs, plot_type_obs) do plot_data_dict, ptype
         isempty(plot_data_dict) && return
         
         dim_names = manager.plot_vars
         valid_axes = String[]
-        valid_fields = String[]
         comp_max = 1
         
         pd_first = first(values(plot_data_dict))
@@ -296,24 +295,22 @@ function build_static_plot_controls!(
         
         for (key, tensor) in pd_first.data
             varying = findall(s -> s > 1, size(tensor))
+            isempty(varying) && continue
             
-            # THE RULE: If it does not vary at all (pure scalar), it is hidden from BOTH menus!
-            if isempty(varying)
-                continue
-            end
-            
-            # 1. Add to Dependent Menu (since we know it varies)
-            push!(valid_fields, key)
-            
-            # 2. Add to Independent Axis Menu if it fits the Metric Rule
-            idx = findfirst(isequal(key), dim_names)
-            if !isnothing(idx)
-                # It's a Base Variable that varies
+            if key in dim_names
                 push!(valid_axes, key)
             else
-                # It's a Field/Metric. Only allow if it's physically 1D (ignoring params)
-                phys_varying = filter(d -> d > n_params, varying)
-                if length(phys_varying) <= 1
+                # Metric / Derived Quantity Check
+                param_varying = filter(d -> d <= n_params, varying)
+                phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
+                
+                # Pure Series: Varies ONLY in Time (n_params + 5)
+                is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
+                
+                # Pure Param Metric: Varies ONLY in exactly one Parameter
+                is_pure_param = isempty(phys_varying) && length(param_varying) == 1
+                
+                if is_pure_series || is_pure_param
                     push!(valid_axes, key)
                 end
             end
@@ -323,11 +320,10 @@ function build_static_plot_controls!(
             end
         end
         
-        sort!(valid_axes); sort!(valid_fields)
+        sort!(valid_axes)
         
-        # Apply standard Options to the Menus
+        # Apply strict Independent Options
         _update_menu!(menu_x, valid_axes)
-        _update_menu!(menu_u, valid_fields)
         _update_menu!(menu_comp, [string(i) for i in 1:comp_max])
         
         # Handle Y/Z visibility based on Plot Type
@@ -335,13 +331,14 @@ function build_static_plot_controls!(
         if p_dim >= 2
             _update_menu!(menu_y, valid_axes)
         else
-            menu_y.options[] = ["disabled"]; menu_y.i_selected[] = 1
+            menu_y.options[] = ["disabled"]
+            menu_y.i_selected[] = 1
         end
-        
         if p_dim >= 3
             _update_menu!(menu_z, valid_axes)
         else
-            menu_z.options[] = ["disabled"]; menu_z.i_selected[] = 1
+            menu_z.options[] = ["disabled"]
+            menu_z.i_selected[] = 1
         end
     end
 
@@ -357,23 +354,82 @@ function build_static_plot_controls!(
     end
 
     # --- 2. MULTIDIMENSIONAL SLIDER LOCKER ---
+# --- 2. MULTIDIMENSIONAL SLIDER LOCKER & DYNAMIC DEPENDENT FILTERING ---
     onany(menu_x.selection, menu_y.selection, menu_z.selection, plot_type_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
         isempty(plot_data_dict) && return
         p_dim = PLOT_DIM_MAP[ptype]
         axes = Set{Int}()
+        active_indep_keys = String[]
         
         pd_first = first(values(plot_data_dict))
         dim_names = manager.plot_vars
+        n_params = length(pd_first.active_param_keys)
         
+        # 1. Gather Selected Independent Axes
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
             if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
-                # THE METRIC FIX: Safely map whatever axis they chose back to its Base Dimension
                 idx = get_base_dim_idx(pd_first, val, dim_names)
                 !isnothing(idx) && push!(axes, idx)
+                push!(active_indep_keys, val)
             end
         end
         
         active_axes_obs[] = collect(axes)
+        
+        # --- NEW: Dynamic U-Axis Filtering (Intersection Logic) ---
+        req_space = false
+        req_time = false
+        req_params = Int[]
+        
+        # A. Map selected independent variables to their fundamental dimensions
+        for key in active_indep_keys
+            tensor = get(pd_first.data, key, nothing)
+            isnothing(tensor) && continue
+            varying = findall(s -> s > 1, size(tensor))
+            
+            # If the key is a base variable itself, force its native dimension
+            idx = findfirst(isequal(key), dim_names)
+            !isnothing(idx) && push!(varying, idx)
+            
+            if any(d -> d in (n_params+2, n_params+3, n_params+4), varying)
+                req_space = true
+            end
+            if any(d -> d == n_params+5, varying)
+                req_time = true
+            end
+            for d in varying
+                if d <= n_params && !(d in req_params)
+                    push!(req_params, d)
+                end
+            end
+        end
+        
+        # B. Filter available metrics based on requirements
+        valid_fields = String[]
+        for (key, tensor) in pd_first.data
+            varying = findall(s -> s > 1, size(tensor))
+            isempty(varying) && continue
+            
+            has_space = any(d -> d in (n_params+2, n_params+3, n_params+4), varying)
+            has_time = any(d -> d == n_params+5, varying)
+            has_params = filter(d -> d <= n_params, varying)
+            
+            is_valid = true
+            
+            # The Intersection Test: Does the Dependent metric support the Independent axes?
+            req_space && !has_space && (is_valid = false)
+            req_time && !has_time && (is_valid = false)
+            for p in req_params
+                !(p in has_params) && (is_valid = false)
+            end
+            
+            if is_valid
+                push!(valid_fields, key)
+            end
+        end
+        
+        sort!(valid_fields)
+        _update_menu!(menu_u, valid_fields)
     end
 
     # --- 3. SLIDER RANGE UPDATER ---
