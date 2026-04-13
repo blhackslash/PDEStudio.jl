@@ -15,6 +15,8 @@ const FixedDict = ParamDict
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
+const _LAGRANGE_N_GRID = Ref{Int}(50)
+set_lagrange_resolution!(n::Int) = (_LAGRANGE_N_GRID[] = n)
 
 # --- 2. Explicit Creator Functions ---
 

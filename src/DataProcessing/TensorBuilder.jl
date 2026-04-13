@@ -230,15 +230,18 @@ function create_method_plot_data(
         return nothing
     end
     
-    # --- CACHED INTERCEPT ---
+# --- CACHED INTERCEPT ---
     if first_data isa LSimData
+        N_grid = _LAGRANGE_N_GRID[]
+        cache_name = "conv_$(N_grid)"
+        
         try
-            first_data = loadSimData(tasks[1]; suffix="conv")
-            @info "Loaded cached Eulerian conversion."
+            first_data = loadSimData(tasks[1]; suffix=cache_name)
+            @info "Loaded cached Eulerian conversion ($cache_name)."
         catch
-            @info "Converting LSimData to ESimData for plotting (this only happens once)..."
-            first_data = convert_to_eulerian(first_data, 50) # Use your preferred grid resolution!
-            saveSimData(first_data; suffix="conv", overwrite=true)
+            @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
+            first_data = convert_to_eulerian(first_data, N_grid)
+            saveSimData(first_data; suffix=cache_name, overwrite=true)
         end
     end
     

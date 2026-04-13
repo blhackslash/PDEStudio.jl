@@ -11,7 +11,7 @@ export loadSimData, getStats, doesSimDataExist, deleteSimData,
        ParamDict, MethodDict, VariedDict, SimulationConfig, createSimData,
        createParamDict, createMethodDict, createVariedDict,
        AbstractSimData, calculateConvergenceData, allMethodNames,
-       calculateAllStats!, process_existing_data,
+       calculateAllStats!, process_existing_data, set_lagrange_resolution!,
        registerSimFunction!, getSimFunction, registerAllFunctions, 
        show_unified_fig, launch_csv_interface, calculateAllStats!
 
@@ -26,7 +26,7 @@ include("Structs.jl")
 module DataProcessing
     # Look UP to the parent module (IPlotPDESols) to grab the core types
     using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict, _SAVE_ROOT_PATH,
-                          AbstractSimData, ESimData, LSimData, SimulationConfig,
+                          AbstractSimData, ESimData, LSimData, SimulationConfig, _LAGRANGE_N_GRID,
                           UnifiedPlotData, BaseVariables, PlotManager, NoSimData
     using GLMakie: Observable, to_value
     using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg

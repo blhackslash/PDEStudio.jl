@@ -8,41 +8,32 @@ using Random
 # ==============================================================================
 
 """
-    _get_dense_tensors(sim_data)
+    calculateAllStats!(::LSimData, ...)
 
-Converts any simulation data into a dense Eulerian tensor format.
-For Lagrangian data, moving/ragged particles are padded into a dense grid 
-where unpopulated particles are marked with `NaN`.
+Interceptor for Lagrangian data. Converts to Eulerian (or loads cache) 
+before calculating stats, massively simplifying the integration logic.
 """
-function _get_dense_tensors(sim_data::ESimData)
-    # Eulerian is already dense! 
-    # x is Vector (1D) or Matrix (2D). u is [Comp, Space..., Time]
-    return sim_data.x, sim_data.u
-end
+function calculateAllStats!(
+    sim_data::LSimData,
+    ref_func::Union{Function, Nothing} = nothing;
+    stats_to_calculate::Union{Symbol, Vector{Symbol}} = [:series],
+    kwargs...
+)
+    N_grid = _LAGRANGE_N_GRID[]
+    cache_name = "conv_$(N_grid)"
 
-function _get_dense_tensors(sim_data::LSimData{1,M}) where M
-    n_steps = length(sim_data.t)
-    max_p = maximum(length.(sim_data.x))
-    n_comps = size(sim_data.u[1][1], 1)
-
-    # x_dense: [Particle/Space, Time]
-    x_dense = fill(NaN, max_p, n_steps)
-    # u_dense: [Component, Particle/Space, Time]
-    u_dense = fill(NaN, n_comps, max_p, n_steps)
-
-    for m in 1:n_steps
-        n_p = length(sim_data.x[m])
-        for p in 1:n_p
-            x_dense[p, m] = sim_data.x[m][p][1] # Extract position from SVector
-            for c in 1:n_comps
-                u_dense[c, p, m] = sim_data.u[m][p][c] # Extract state
-            end
-        end
+    @info "Lagrangian data detected. Fetching Eulerian conversion ($cache_name) for stats..."
+    conv_data = try 
+        loadSimData(sim_data.params; suffix=cache_name) 
+    catch 
+        @info "No cached conversion found. Generating new ESimData at N=$N_grid..."
+        converted = convert_to_eulerian(sim_data, N_grid)
+        saveSimData(converted; suffix=cache_name, overwrite=true)
+        converted
     end
     
-    return x_dense, u_dense
+    calculateAllStats!(conv_data, ref_func; stats_to_calculate=stats_to_calculate, kwargs...)
 end
-
 # ==============================================================================
 # --- SECTION 2: THE MATHEMATICAL WORKERS (Stateless & Safe) ---
 # ==============================================================================
@@ -76,6 +67,19 @@ function _create_piecewise_spline_function(x_coords, y_values, breakpoints, dier
         idx = searchsortedlast(breakpoints, x)
         return splines[clamp(idx == 0 ? 1 : idx, 1, length(splines))](x)
     end
+end
+
+# For Eulerian (Gridded) Data ONLY
+function _create_2d_spline(x_coords::Tuple, u_values::AbstractMatrix, k=3)
+    x_vec, y_vec = x_coords[1], x_coords[2]
+    
+    kx = min(length(x_vec)-1, k)
+    ky = min(length(y_vec)-1, k)
+    
+    # Replace NaNs (empty space) with 0.0 for stable integration
+    u_clean = replace(u_values, NaN => 0.0)
+    
+    return Dierckx.Spline2D(x_vec, y_vec, u_clean; kx=kx, ky=ky, s=0.0)
 end
 
 function _calc_series_with_ref(::Val{1}, u_valid, ana_func, x_valid, domain, disc_pts, k, tol)
@@ -135,6 +139,71 @@ function _calc_series_no_ref(::Val{1}, u_valid, x_valid, domain, disc_pts, k, to
     res["wave_position"] = x_valid[idx]
     return res
 end
+function _calc_series_no_ref(::Val{2}, u_valid, x_valid::Tuple, domain, disc_pts, k, tol)
+    res = Dict{String, Float64}()
+    
+    xmin = get(domain, :xmin, minimum(x_valid[1]))
+    xmax = get(domain, :xmax, maximum(x_valid[1]))
+    ymin = get(domain, :ymin, minimum(x_valid[2]))
+    ymax = get(domain, :ymax, maximum(x_valid[2]))
+
+    spl_u = _create_2d_spline(x_valid, u_valid, k)
+    spl_u_abs = _create_2d_spline(x_valid, abs.(u_valid), k)
+    spl_u_sq = _create_2d_spline(x_valid, u_valid.^2, k)
+
+    res["mass"] = Dierckx.integrate(spl_u, xmin, xmax, ymin, ymax)
+    res["l1norm"] = Dierckx.integrate(spl_u_abs, xmin, xmax, ymin, ymax)
+    res["l2norm"] = sqrt(max(0.0, Dierckx.integrate(spl_u_sq, xmin, xmax, ymin, ymax)))
+
+    h_num, idx = findmax(replace(u_valid, NaN => -Inf))
+    res["wave_height"] = h_num
+    res["wave_position_x"] = x_valid[1][idx[1]]
+    res["wave_position_y"] = x_valid[2][idx[2]]
+
+    return res
+end
+
+function _calc_series_with_ref(::Val{2}, u_valid, ana_func, x_valid::Tuple, domain, disc_pts, k, tol)
+    res = Dict{String, Float64}()
+
+    xmin = get(domain, :xmin, minimum(x_valid[1]))
+    xmax = get(domain, :xmax, maximum(x_valid[1]))
+    ymin = get(domain, :ymin, minimum(x_valid[2]))
+    ymax = get(domain, :ymax, maximum(x_valid[2]))
+
+    ana_vals = [ana_func([x, y]) for x in x_valid[1], y in x_valid[2]]
+    err_vals = u_valid .- ana_vals
+    
+    spl_err_abs = _create_2d_spline(x_valid, abs.(err_vals), k)
+    spl_err_sq  = _create_2d_spline(x_valid, err_vals.^2, k)
+    spl_u       = _create_2d_spline(x_valid, u_valid, k)
+    
+    spl_ana_abs = _create_2d_spline(x_valid, abs.(ana_vals), k)
+    spl_ana_sq  = _create_2d_spline(x_valid, ana_vals.^2, k)
+    spl_ana     = _create_2d_spline(x_valid, ana_vals, k)
+
+    ana_l1 = Dierckx.integrate(spl_ana_abs, xmin, xmax, ymin, ymax)
+    ana_l2_sq = Dierckx.integrate(spl_ana_sq, xmin, xmax, ymin, ymax)
+    mass_ana = Dierckx.integrate(spl_ana, xmin, xmax, ymin, ymax)
+
+    l1_err = Dierckx.integrate(spl_err_abs, xmin, xmax, ymin, ymax)
+    l2_sq_err = Dierckx.integrate(spl_err_sq, xmin, xmax, ymin, ymax)
+
+    res["l1error"] = l1_err
+    res["l2error"] = sqrt(max(0.0, l2_sq_err))
+    res["relative_l1error"] = ana_l1 > 1e-12 ? l1_err / ana_l1 : l1_err
+    res["relative_l2error"] = sqrt(max(0.0, ana_l2_sq)) > 1e-12 ? sqrt(max(0.0, l2_sq_err)) / sqrt(ana_l2_sq) : sqrt(max(0.0, l2_sq_err))
+
+    mass_num = Dierckx.integrate(spl_u, xmin, xmax, ymin, ymax)
+    res["mass"] = mass_num
+    res["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
+
+    res["supnorm"] = maximum(abs.(replace(err_vals, NaN => 0.0)))
+    sup_ana = maximum(abs.(ana_vals))
+    res["relative_supnorm"] = sup_ana > 1e-12 ? res["supnorm"] / sup_ana : res["supnorm"]
+
+    return res
+end
 
 # ==============================================================================
 # --- SECTION 3: SYMBOL DISPATCH ARCHITECTURE ---
@@ -155,6 +224,11 @@ function _calculate_stats!(::Val{:series}, sim_data::AbstractSimData{D}, x_dense
     keys = isnothing(ref_func) ? 
         ["mass", "wave_height", "wave_position", "l1norm", "l2norm"] : 
         ["l1error", "l2error", "supnorm", "relative_l1error", "relative_l2error", "relative_supnorm", "mass", "relative_mass"]
+    if D==2; 
+        deleteat!(keys,findfirst(k->k=="wave_position",keys));
+        push!(keys,"wave_position_x")
+        push!(keys,"wave_position_y")
+    end
     filter!(k -> !haskey(sim_data.series, k) || force_overwrite, keys)
     # Preallocate into the strictly typed series dictionary
     for k in keys
@@ -166,16 +240,13 @@ function _calculate_stats!(::Val{:series}, sim_data::AbstractSimData{D}, x_dense
     p = Progress(n_steps; desc = "Calculating :series Stats...")
     
     Threads.@threads for m in 1:n_steps
-        t = sim_data.t[m]
-        x_m = x_dense isa AbstractVector ? x_dense : @view x_dense[:, m]
+t = sim_data.t[m]
         disc_pts = discontinuity_points_func(t)
 
-        # Drop the Eulerian "Unpopulated Particles" (NaNs)
-        valid_idx = findall(!isnan, x_m)
-        x_valid = x_m[valid_idx]
+        x_valid = x_dense # Thi
 
         for c in 1:n_comps
-            u_valid = u_dense[c, valid_idx, m]
+            u_valid = D == 1 ? u_dense[c, :, m] : u_dense[c, :, :, m]
             
             if !isnothing(ref_func)
                 ana_func = (D == 1) ? (x -> ref_func(x, t)[c]) : (pos -> ref_func(pos, t)[c])
@@ -231,12 +302,9 @@ function calculateAllStats!(
 )
     stats_list = stats_to_calculate isa Symbol ? [stats_to_calculate] : stats_to_calculate
 
-    # 1. Unify into Dense Tensors (Auto-padding Lagrange to Euler)
-    x_dense, u_dense = _get_dense_tensors(sim_data)
-
     # 2. Dispatch by Category Symbol!
     for stat_type in stats_list
-        _calculate_stats!(Val(stat_type), sim_data, x_dense, u_dense, ref_func; kwargs...)
+        _calculate_stats!(Val(stat_type), sim_data, sim_data.x, sim_data.u, ref_func; kwargs...)
     end
     
     saveSimData(sim_data; overwrite = true)
@@ -244,7 +312,7 @@ end
 
 # --- 1D Numerical Reference Generator ---
 function createReferenceFunction(ref_sim_data::AbstractSimData{1}; discontinuity_points_func::Function = t -> Float64[])
-    x_dense, u_dense = _get_dense_tensors(ref_sim_data)
+    x_dense, u_dense = ref_sim_data.x, ref_sim_data.u
     n_steps, n_comps = length(ref_sim_data.t), size(u_dense, 1)
     
     ref_splines = Vector{Vector{Dierckx.Spline1D}}(undef, n_steps)

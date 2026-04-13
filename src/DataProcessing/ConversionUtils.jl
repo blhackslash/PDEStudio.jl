@@ -191,6 +191,7 @@ function createSimData(
 ) where {D, M}
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
+
 function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
     D = length(ldata.x[1][1]) 
     T = length(ldata.t)
