@@ -67,8 +67,10 @@ function show_unified_fig(
     end
 
     # 1. Setup Manager & Figure
+    GLMakie.activate!()
     manager = create_plot_manager(sim_config, ui_obs)
     plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
+    plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
     # 2. Build UI 
@@ -77,7 +79,14 @@ function show_unified_fig(
     # 3. Setup Data Generator Lift
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
-    
+
+    on(sim_update) do _
+        if !GLMakie.isopen(plot_screen_ref[])
+            plot_screen_ref[] = GLMakie.Screen(title = "Makie Plot")
+            display(plot_screen_ref[], plot_fig)
+        end
+    end
+
     lift(sim_update, methods_obs) do _, active_methods
         fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
         
@@ -105,6 +114,12 @@ function show_unified_fig(
             append!(render_observers, new_obs)
         end
         
+        if GLMakie.isopen(plot_screen_ref[])
+            GLMakie.destroy!(plot_screen_ref[])
+        end
+        plot_screen_ref[] = GLMakie.Screen(title = "Makie Plot")
+        display(plot_screen_ref[], plot_fig)
+        
         notify(plot_data_obs)
     end
 
@@ -128,7 +143,7 @@ function show_unified_fig(
     
     # d) Apply visual defaults (like limits/menus from Scene options)
     set_defaults!(manager, final_scene)
-
+    display(plot_screen_ref[], plot_fig)
     return plot_fig, ctrl_fig, manager
 end
 

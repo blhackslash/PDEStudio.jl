@@ -16,7 +16,10 @@ const NestedObsDict = Dict{String, Dict{String, Observable}}
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _LAGRANGE_N_GRID = Ref{Int}(50)
+const _REFERENCE_RESOLUTION = Ref{Int}(500)
+
 set_lagrange_resolution!(n::Int) = (_LAGRANGE_N_GRID[] = n)
+set_reference_resolution!(n::Int) = (_REFERENCE_RESOLUTION[] = n)
 
 # --- 2. Explicit Creator Functions ---
 
@@ -89,68 +92,107 @@ struct LSimData{D, M} <: AbstractSimData{D}
     fields::Dict{String, Vector{Vector{SVector{M, Float64}}}}
 end
 
-# --- 4. SimulationConfig with Dimension Dispatch ---
-
-"""
-    SimulationConfig
-Holds the master configuration for a plot orchestrator run.
-"""
-mutable struct SimulationConfig{F <: Function} # <-- Removed D
+mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     simulation_func::F
+    reference_func::A 
+    reference_name::Union{String, Nothing} # NEW: Store the name for dynamic matching
     shared_params::ParamDict
     methods_dict::MethodDict
     default_methods::Vector{String}
     varied_params::VariedDict
 end
 
+function safe_string(s::AbstractString)
+    # Replace whitespace and hyphens with underscores, then lowercase
+    s_clean = replace(strip(s), r"[\s-]+" => "_")
+    return lowercase(s_clean)
+end
+
+function nice_string(s::AbstractString)
+    # Replace underscores with spaces and titlecase the result
+    return titlecase(replace(s, "_" => " "))
+end
+
+# Update the constructor to auto-inject the method dictionary!
 function SimulationConfig(
-    sim_func::F, 
+    sim_func_name::String, 
+    ref_func_name::String, 
     shared::ParamDict, 
     methods::MethodDict, 
     defaults::Vector{String}; 
-    varied_params::VariedDict = createVariedDict()
-) where {F <: Function}
-    SimulationConfig{F}(sim_func, shared, methods, defaults, varied_params)
-end
-"""
-    resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
-
-Resolves the simulation function. Evaluates the script in the `target_module` namespace 
-(defaulting to `Main`) to avoid dependency bleed into the plotting package.
-"""
-function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
-    if !isnothing(sim_func)
-        return sim_func
+    varied_params::VariedDict = createVariedDict(),
+    target_module::Module = Main
+)
+    ref_func_name = safe_string(ref_func_name)
+    sim_func_name = safe_string(sim_func_name)
+    # 1. Resolve Simulation Function
+    sim_f = resolve_simulation_function(sim_func_name, nothing; target_module = target_module)
+    if isnothing(sim_f)
+        error("Aborting: Could not resolve simulation function '$sim_func_name' in module $target_module.")
     end
 
+    # 2. Resolve Reference Factory Function
+    ref_factory = resolve_reference_function(ref_func_name; target_module = target_module)
+    ref_f = isnothing(ref_factory) ? nothing : Base.invokelatest(ref_factory, shared)
+
+    # 3. AUTO-INJECT: Add the reference method to the methods dictionary if it exists
+    if !isnothing(ref_func_name) && !haskey(methods, ref_func_name)
+        methods[nice_string(ref_func_name)] = ParamDict()
+    end
+
+    # 4. Pass the resolved string and functions to the base constructor
+    return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
+        sim_f, ref_f, ref_func_name, shared, methods, defaults, varied_params
+    )
+end
+
+function resolve_simulation_function(func_name_str::String, sim_func::Union{Function, Nothing}; target_module::Module = Main)
+    return resolve_dynamic_function(func_name_str, "SimulationFunctions", sim_func; target_module=target_module)
+end
+
+# Update the wrapper name to match the new folder and terminology:
+function resolve_reference_function(func_name::Union{String, Nothing}; target_module::Module = Main)
+    return resolve_dynamic_function(func_name, "ReferenceFunctions", nothing; target_module=target_module)
+end
+
+"""
+    resolve_dynamic_function(func_name::Union{String, Nothing}, dir_name::String, provided_func::Union{Function, Nothing} = nothing; target_module::Module = Main)
+
+Dynamically resolves and loads a function from a specified directory. Evaluates the script in the `target_module` namespace 
+(defaulting to `Main`) to avoid dependency bleed into the plotting package.
+"""
+function resolve_dynamic_function(
+    func_name::Union{String, Nothing}, 
+    dir_name::String, 
+    provided_func::Union{Function, Nothing} = nothing; 
+    target_module::Module = Main
+)
+    # 1. If the function is already explicitly provided (e.g., from a direct struct call), return it
+    if !isnothing(provided_func)
+        return provided_func
+    end
+
+    # 2. If no name string is provided (e.g., no analytical function assigned), return nothing
+    isnothing(func_name) && return nothing
+
     try
-        func_file = joinpath(_SAVE_ROOT_PATH[], "SimulationFunctions", func_name_str * ".jl")
+        # Build the path using the injected directory string
+        func_file = joinpath(_SAVE_ROOT_PATH[], dir_name, func_name * ".jl")
         
         if isfile(func_file)
             @info "Dynamically loading function file into $target_module: $func_file"
-            # Evaluate the file in the requested module scope
             Base.include(target_module, func_file)
         else
-            @warn "File $func_file not found. Assuming function '$func_name_str' is already in $target_module scope."
+            @warn "File $func_file not found. Assuming function '$func_name' is already in $target_module scope."
         end
         
         # Fetch the compiled function directly from the requested module
-        return getfield(target_module, Symbol(func_name_str))
+        return getfield(target_module, Symbol(func_name))
         
     catch e
-        @error "Failed to dynamically resolve simulation function." exception=(e, catch_backtrace())
+        @error "Failed to dynamically resolve function '$func_name' from '$dir_name'." exception=(e, catch_backtrace())
         return nothing
     end
-end
-
-function SimulationConfig(sim_func::String, args...; target_module::Module = Main, kwargs...)
-    f = resolve_simulation_function(sim_func, nothing; target_module = target_module)
-    
-    if isnothing(f)
-        error("Aborting: Could not resolve simulation function '$sim_func' in module $target_module.")
-    end
-    
-    SimulationConfig(f, args...; kwargs...)
 end
 
 # In Controls.jl / Structs.jl

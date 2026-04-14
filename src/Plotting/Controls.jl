@@ -9,10 +9,7 @@ function create_controls(
     manager::PlotManager, 
     plot_data_obs::Observable, 
 )
-    GLMakie.activate!()
-    plot_screen = GLMakie.Screen(title = "Makie Plot")
     # 2. FIX: Attach the Figure to the Screen immediately
-    display(plot_screen, plot_fig)
     
     base_controls_fig = Figure(size = (450, 1000)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
@@ -41,14 +38,6 @@ function create_controls(
     manager.controls["Simulation_Update"] = update_notifier
     on(update_button.clicks) do _
         update_notifier[] += 1
-        if !GLMakie.isopen(plot_screen)
-            display(plot_fig)
-        end
-# 3. FIX: Safely recreate and display if the user accidentally closed the window
-        if !GLMakie.isopen(plot_screen)
-            plot_screen = GLMakie.Screen(title = "Makie Plot")
-            display(plot_screen, plot_fig)
-        end
     end
     
     method_button = Button(update_layout[1, 2], label="Select Methods...", 

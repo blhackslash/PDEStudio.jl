@@ -289,3 +289,39 @@ function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
 
     return ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
 end
+
+function generate_reference_simdata(reference_data::AbstractSimData, ref_func::Function, params::ParamDict)
+    N = _REFERENCE_RESOLUTION[]
+    D = length(reference_data.x)
+    T = length(reference_data.t)
+    
+    # 1. Build the high-res spatial axes based on the numerical domain
+    axes_list = ntuple(D) do d
+        xmin = minimum(reference_data.x[d])
+        xmax = maximum(reference_data.x[d])
+        collect(range(xmin, xmax, length=N))
+    end
+    
+    # Evaluate one point to find the number of components (C)
+    sample_val = ref_func(D == 1 ? axes_list[1][1] : [axes_list[d][1] for d in 1:D], reference_data.t[1])
+    C = length(sample_val)
+    
+    # 2. Allocate the dense tensor
+    grid_shape = ntuple(d -> N, D)
+    u_exact = zeros(Float64, C, grid_shape..., T)
+    
+    # 3. Evaluate the exact function on the fly
+    Threads.@threads for t_idx in 1:T
+        t = reference_data.t[t_idx]
+        for idx in CartesianIndices(grid_shape)
+            pos = D == 1 ? axes_list[1][idx[1]] : [axes_list[d][idx[d]] for d in 1:D]
+            exact_val = ref_func(pos, t)
+            for c in 1:C
+                u_exact[c, Tuple(idx)..., t_idx] = exact_val[c]
+            end
+        end
+    end
+    
+    # Return a lightweight ESimData that exists ONLY in RAM
+    return ESimData{D}(params, axes_list, u_exact, reference_data.t, Dict(), Dict(), Dict(), Dict())
+end

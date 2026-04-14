@@ -176,7 +176,7 @@ function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, ra
         data = source[c_src, valid_space_src..., t_src]
         target[dest_prefix..., :, :, :, :, :] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, len_t)
     elseif category == :scalar
-        data = source[c_src]
+        data = source
         target[dest_prefix..., 1, 1, 1, 1, 1] = safe_reshape(data, 1, 1, 1, 1, 1)
     elseif category == :series
         data = source[c_src, t_src]
@@ -195,58 +195,69 @@ end
 # ==============================================================================
 
 function create_method_plot_data(
+    method_name::String, 
     base_params::ParamDict,
     sim_config::SimulationConfig, 
     fixed_params::FixedDict,
     base_types::Vector;
     parallel=false
 )
-    # 1. Configuration & Task Generation
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
-    
-    # Generate tasks exclusively for THIS method
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
-    if isempty(tasks); return nothing; end
+    isempty(tasks) && return nothing
 
-    # 2. Smart Execution (Replaces ensure_sim_data_exists!)
-    # Runs the solver only if the data doesn't already exist on disk
-    if parallel
-        Threads.@threads for params in tasks
-            try
+    local first_data
+
+    # --- THE VIRTUAL METHOD INTERCEPTOR ---
+    # Match dynamically against the requested reference string!
+    if !isnothing(sim_config.reference_name) && safe_string(method_name) == sim_config.reference_name
+        isnothing(sim_config.reference_func) && return nothing
+        
+        # Load a standard numerical run just to steal its time vector
+        temp_data = loadSimData(tasks[1]) 
+        isnothing(temp_data) && return nothing
+        
+        @info "Generating high-res Reference solution in-memory (N=$(_REFERENCE_RESOLUTION[]))..."
+        first_data = generate_reference_simdata(temp_data, sim_config.reference_func, tasks[1])
+    else
+        # --- Standard Numerical Run Logic ---
+        if parallel
+            Threads.@threads for params in tasks
+                try
+                    run_simulation(sim_config.simulation_func, params; force_overwrite=false)
+                catch e
+                    @error "Simulation Error" exception=(e, catch_backtrace())
+                end
+            end
+        else
+            for params in tasks
                 run_simulation(sim_config.simulation_func, params; force_overwrite=false)
-            catch e
-                @error "Simulation Error" exception=(e, catch_backtrace())
             end
         end
-    else
-        for params in tasks
-            run_simulation(sim_config.simulation_func, params; force_overwrite=false)
-        end
-    end
 
-    first_data = loadSimData(tasks[1]) 
-    if isnothing(first_data)
-        @warn "Failed to load simulation data after execution."
-        return nothing
-    end
-    
-# --- CACHED INTERCEPT ---
-    if first_data isa LSimData
-        N_grid = _LAGRANGE_N_GRID[]
-        cache_name = "conv_$(N_grid)"
+        first_data = loadSimData(tasks[1]) 
+        if isnothing(first_data)
+            @warn "Failed to load simulation data after execution."
+            return nothing
+        end
         
-        try
-            first_data = loadSimData(tasks[1]; suffix=cache_name)
-            @info "Loaded cached Eulerian conversion ($cache_name)."
-        catch
-            @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
-            first_data = convert_to_eulerian(first_data, N_grid)
-            saveSimData(first_data; suffix=cache_name, overwrite=true)
+        # --- CACHED INTERCEPT ---
+        if first_data isa LSimData
+            N_grid = _LAGRANGE_N_GRID[]
+            cache_name = "conv_$(N_grid)"
+            
+            try
+                first_data = loadSimData(tasks[1]; suffix=cache_name)
+                @info "Loaded cached Eulerian conversion ($cache_name)."
+            catch
+                @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
+                first_data = convert_to_eulerian(first_data, N_grid)
+                saveSimData(first_data; suffix=cache_name, overwrite=true)
+            end
         end
     end
     
-    D = _get_D(first_data)
-    println(D)    
+    D = _get_D(first_data)   
     eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
     grid_dims = length.(active_values)
     n_params = length(active_keys)
@@ -357,7 +368,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
-            new_data = Base.invokelatest(create_method_plot_data, base_params, sim_config, fixed_params, base_types; parallel=parallel)
+            new_data = Base.invokelatest(create_method_plot_data, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end
