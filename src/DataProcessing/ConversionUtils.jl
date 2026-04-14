@@ -290,32 +290,50 @@ function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
     return ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
 end
 
-function generate_reference_simdata(reference_data::AbstractSimData, ref_func::Function, params::ParamDict)
+function generate_reference_simdata(ref_func::Function, params::ParamDict)
     N = _REFERENCE_RESOLUTION[]
-    D = length(reference_data.x)
-    T = length(reference_data.t)
     
-    # 1. Build the high-res spatial axes based on the numerical domain
+    # 1. Extract physical bounds directly from parameters (Strict requires)
+    xmin = params["xmin"]
+    xmax = params["xmax"]
+    tmax = params["tmax"]
+    snapshots = params["snapshots"]
+    
+    # Optional parameters
+    tmin = get(params, "tmin", 0.0)
+    
+    # Determine dimensionality based on the type of xmin
+    D = xmin isa Number ? 1 : length(xmin)
+    
+    # 2. Build the high-res spatial axes
     axes_list = ntuple(D) do d
-        xmin = minimum(reference_data.x[d])
-        xmax = maximum(reference_data.x[d])
-        collect(range(xmin, xmax, length=N))
+        min_val = D == 1 ? Float64(xmin) : Float64(xmin[d])
+        max_val = D == 1 ? Float64(xmax) : Float64(xmax[d])
+        collect(range(min_val, max_val, length=N))
     end
     
+    # 3. Build the time vector (snapshots + 1 ensures we include t=0)
+    t_vec = tmax > tmin ? collect(range(tmin, tmax, length=snapshots+1)) : [Float64(tmin)]
+    T = length(t_vec)
+    
     # Evaluate one point to find the number of components (C)
-    sample_val = ref_func(D == 1 ? axes_list[1][1] : [axes_list[d][1] for d in 1:D], reference_data.t[1])
+    # --- THE FIX: Create an SVector cleanly using ntuple ---
+    sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
+    sample_val = ref_func(sample_pos, t_vec[1])
     C = length(sample_val)
     
-    # 2. Allocate the dense tensor
+    # 4. Allocate the dense tensor
     grid_shape = ntuple(d -> N, D)
     u_exact = zeros(Float64, C, grid_shape..., T)
     
-    # 3. Evaluate the exact function on the fly
+    # 5. Evaluate the exact function on the fly
     Threads.@threads for t_idx in 1:T
-        t = reference_data.t[t_idx]
+        t = t_vec[t_idx]
         for idx in CartesianIndices(grid_shape)
-            pos = D == 1 ? axes_list[1][idx[1]] : [axes_list[d][idx[d]] for d in 1:D]
+            # --- THE FIX: Native, allocation-free SVector creation ---
+            pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
             exact_val = ref_func(pos, t)
+            
             for c in 1:C
                 u_exact[c, Tuple(idx)..., t_idx] = exact_val[c]
             end
@@ -323,5 +341,5 @@ function generate_reference_simdata(reference_data::AbstractSimData, ref_func::F
     end
     
     # Return a lightweight ESimData that exists ONLY in RAM
-    return ESimData{D}(params, axes_list, u_exact, reference_data.t, Dict(), Dict(), Dict(), Dict())
+    return ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
 end

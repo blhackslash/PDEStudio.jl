@@ -26,7 +26,7 @@ include("Structs.jl")
 module DataProcessing
     # Look UP to the parent module (IPlotPDESols) to grab the core types
     using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict, _SAVE_ROOT_PATH,
-                          AbstractSimData, ESimData, LSimData, SimulationConfig, _LAGRANGE_N_GRID,
+                          AbstractSimData, ESimData, LSimData, SimulationConfig, _LAGRANGE_N_GRID, _REFERENCE_RESOLUTION,
                           UnifiedPlotData, BaseVariables, PlotManager, NoSimData, safe_string
     using GLMakie: Observable, to_value
     using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg

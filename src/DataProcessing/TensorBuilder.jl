@@ -208,17 +208,16 @@ function create_method_plot_data(
 
     local first_data
 
-    # --- THE VIRTUAL METHOD INTERCEPTOR ---
-    # Match dynamically against the requested reference string!
-    if !isnothing(sim_config.reference_name) && safe_string(method_name) == sim_config.reference_name
+# --- THE VIRTUAL METHOD INTERCEPTOR ---
+    safe_method = safe_string(method_name)
+    safe_ref = isnothing(sim_config.reference_name) ? nothing : safe_string(sim_config.reference_name)
+    
+    is_reference = !isnothing(safe_ref) && safe_method == safe_ref
+
+    if is_reference
         isnothing(sim_config.reference_func) && return nothing
-        
-        # Load a standard numerical run just to steal its time vector
-        temp_data = loadSimData(tasks[1]) 
-        isnothing(temp_data) && return nothing
-        
         @info "Generating high-res Reference solution in-memory (N=$(_REFERENCE_RESOLUTION[]))..."
-        first_data = generate_reference_simdata(temp_data, sim_config.reference_func, tasks[1])
+        first_data = generate_reference_simdata(sim_config.reference_func, tasks[1])
     else
         # --- Standard Numerical Run Logic ---
         if parallel
@@ -306,17 +305,29 @@ function create_method_plot_data(
     for k in keys(first_data.profiles); data_store[k] = allocate_tensor(:profile); end
     for k in keys(first_data.fields); data_store[k] = allocate_tensor(:field); end
 
-    # --- 6. Data Filling Loop ---
+# --- 6. Data Filling Loop ---
     # Loads SimData from disk one by one, keeping RAM usage low
     for (k, params) in enumerate(tasks)
-        sim_data = loadSimData(params)
-        # --- CACHED INTERCEPT ---
-        if sim_data isa LSimData
-            try
-                sim_data = loadSimData(params; suffix="conv")
-            catch
-                sim_data = convert_to_eulerian(sim_data, 50)
-                saveSimData(sim_data; suffix="conv", overwrite=true)
+        
+        local sim_data
+        
+        # THE FIX: Intercept the loop loading for Reference methods!
+        if is_reference
+            # Reuse first_data for the first frame, generate the rest on the fly
+            sim_data = k == 1 ? first_data : generate_reference_simdata(sim_config.reference_func, params)
+        else
+            sim_data = loadSimData(params)
+            
+            # --- CACHED INTERCEPT ---
+            if sim_data isa LSimData
+                N_grid = _LAGRANGE_N_GRID[]
+                cache_name = "conv_$(N_grid)"
+                try
+                    sim_data = loadSimData(params; suffix=cache_name)
+                catch
+                    sim_data = convert_to_eulerian(sim_data, N_grid)
+                    saveSimData(sim_data; suffix=cache_name, overwrite=true)
+                end
             end
         end
         
