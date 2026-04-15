@@ -274,9 +274,9 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
         
         # THE FIX: Just pass the 1D vectors directly! Makie handles the meshgrid natively.
         contour!(ax, 
-            xs_slices[plot_idx], 
-            ys_slices[plot_idx], 
-            zs_slices[plot_idx], 
+            extrema(xs_slices[plot_idx]), 
+            extrema(ys_slices[plot_idx]), 
+            extrema(zs_slices[plot_idx]), 
             us_slices[plot_idx]; 
             levels=ui_app["levels"][], 
             color=color, 
@@ -300,7 +300,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     cr_obs = Observable((l_u, h_u))
 
     # THE FIX: Just pass the 1D vectors directly!
-    vol = volume!(ax, x_data, y_data, z_data, u_data; 
+    vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; 
         colormap=ui_app["colormap"][], 
         colorrange=cr_obs
     )

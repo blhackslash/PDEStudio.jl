@@ -12,8 +12,8 @@ export loadSimData, getStats, doesSimDataExist, deleteSimData,
        createParamDict, createMethodDict, createVariedDict,
        AbstractSimData, calculateConvergenceData, allMethodNames,
        calculateAllStats!, process_existing_data, set_lagrange_resolution!, set_reference_resolution!,
-       registerSimFunction!, getSimFunction, registerAllFunctions, 
-       show_unified_fig, launch_csv_interface, calculateAllStats!
+       registerSimFunction!, getSimFunction, runAllSimulations,
+       show_unified_fig, launch_csv_interface
 
 # --- 3. Core Types (Defined directly in the main module) ---
 # Included FIRST so submodules can use them.
@@ -33,7 +33,7 @@ module DataProcessing
     
     # Export only the functions the UI needs to call
     export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path,
-           set_save_path!, saveParametersToCSV, process_existing_data, calculateAllStats!
+           set_save_path!, saveParametersToCSV, process_existing_data, calculateAllStats!, runAllSimulations
     
     include("DataProcessing/TensorBuilder.jl")
 end
@@ -66,28 +66,5 @@ end
 # ==============================================================================
 using .DataProcessing
 using .UI
-
-const SIMULATION_FUNCTION_REGISTRY = Dict{Symbol, Function}()
-
-function register_simulation_function!(name::Symbol, func::Function)
-    if haskey(SIMULATION_FUNCTION_REGISTRY, name)
-        @warn "Redefining simulation function: $name"
-    end
-    SIMULATION_FUNCTION_REGISTRY[name] = func
-    @info "Registered simulation function: :$name"
-end
-
-function getSimFunction(name::Symbol)
-    func = get(SIMULATION_FUNCTION_REGISTRY, name, nothing)
-    if isnothing(func)
-        @error "Simulation function :$name not found in registry."
-    end
-    return func
-end
-
-function registerAllFunctions()
-    # Your existing directory scanning logic here...
-    @info "Finished registering simulation functions."
-end
 
 end

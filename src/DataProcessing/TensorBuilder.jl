@@ -379,6 +379,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
+            if isempty(base_params); continue end
             new_data = Base.invokelatest(create_method_plot_data, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end

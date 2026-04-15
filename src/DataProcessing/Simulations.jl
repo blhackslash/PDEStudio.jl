@@ -59,6 +59,7 @@ function runAllSimulations(
     varied_params::VariedDict = sim_config.varied_params,
     fixed_params::ParamDict = ParamDict(),
     force_overwrite::Bool = false,
+    convert_eulerian::Bool = false, # NEW: Toggle for eager conversion
     parallel::Bool = false
 )
     active_keys = collect(keys(varied_params))
@@ -67,6 +68,7 @@ function runAllSimulations(
     # 1. Generate all parameter combinations across all methods
     all_tasks = Vector{ParamDict}()
     local grid_indices
+    println(active_methods)
     for method in active_methods
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params)
@@ -83,11 +85,35 @@ function runAllSimulations(
     p = Progress(num_tasks; desc="Running Simulations...")
     counter = Threads.Atomic{Int}(0)
     
-    # 2. Execute tasks using the smart `run_simulation` wrapper
+    # --- NEW: Helper for eager Eulerian conversion ---
+    function _process_task(params)
+        # 1. Run the simulation (or skip if it exists and !force_overwrite)
+        run_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+        
+        # 2. Handle eager Eulerian conversion
+        if convert_eulerian
+            sim_data = loadSimData(params)
+            
+            if sim_data isa LSimData
+                N_grid = _LAGRANGE_N_GRID[]
+                cache_name = "conv_$(N_grid)"
+                try
+                    # If the cache already exists, we skip doing the heavy math
+                    loadSimData(params; suffix=cache_name)
+                catch
+                    # Cache missing, convert and save it eagerly
+                    conv_data = convert_to_eulerian(sim_data, N_grid)
+                    saveSimData(conv_data; suffix=cache_name, overwrite=true)
+                end
+            end
+        end
+    end
+
+    # 2. Execute tasks using the smart wrapper
     if parallel
         Threads.@threads for params in all_tasks
             try
-                run_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+                _process_task(params)
             catch e
                 @error "Simulation Thread Error" exception=(e, catch_backtrace())
             end
@@ -96,7 +122,7 @@ function runAllSimulations(
         end
     else
         for params in all_tasks
-            run_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+            _process_task(params)
             counter[] += 1
             ProgressMeter.update!(p, counter[])
         end

@@ -12,7 +12,7 @@ function assembleParams(
     method_name::String
     )::ParamDict # Assuming ParamDict = Dict{String, Any}
 
-    method_specific_obs_dict = haskey(method_params_collection_obs, method_name) ? method_params_collection_obs[method_name] : nothing
+    method_specific_obs_dict = haskey(method_params_collection_obs, method_name) ? method_params_collection_obs[method_name] : return Dict()
     # --- CORRECTED: Safely get the list of keys to ignore from the observable ---
     ignore_keys = String[] # Default to an empty list
     if haskey(method_specific_obs_dict, "ignore")
@@ -294,8 +294,8 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
     N = _REFERENCE_RESOLUTION[]
     
     # 1. Extract physical bounds directly from parameters (Strict requires)
-    xmin = params["xmin"]
-    xmax = params["xmax"]
+    xmin = params["mins"]
+    xmax = params["maxs"]
     tmax = params["tmax"]
     snapshots = params["snapshots"]
     
@@ -303,12 +303,12 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
     tmin = get(params, "tmin", 0.0)
     
     # Determine dimensionality based on the type of xmin
-    D = xmin isa Number ? 1 : length(xmin)
+    D = length(xmin)
     
     # 2. Build the high-res spatial axes
     axes_list = ntuple(D) do d
-        min_val = D == 1 ? Float64(xmin) : Float64(xmin[d])
-        max_val = D == 1 ? Float64(xmax) : Float64(xmax[d])
+        min_val = Float64(xmin[d])
+        max_val = Float64(xmax[d])
         collect(range(min_val, max_val, length=N))
     end
     

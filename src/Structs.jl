@@ -190,7 +190,7 @@ function resolve_dynamic_function(
         return getfield(target_module, Symbol(func_name))
         
     catch e
-        @error "Failed to dynamically resolve function '$func_name' from '$dir_name'." exception=(e, catch_backtrace())
+        @warn "Failed to dynamically resolve function '$func_name' from '$dir_name'." # exception=(e, catch_backtrace())
         return nothing
     end
 end
