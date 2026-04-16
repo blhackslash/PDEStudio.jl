@@ -1,109 +1,70 @@
 module IPlotPDESols
 
-export show1DSolutionFig, show2DSolutionFig, showDynamicDependence, showConvergencePlot, saveSimData,show2DConvergencePlot,
-       calculateHash, getFileName, loadSimData, getStats, doesSimDataExist, deleteSimData, 
+# --- 1. Global Dependencies ---
+using GLMakie, CairoMakie, Printf, Statistics, LibGit2, CSV, DataFrames, Dates
+using ProgressMeter, LinearAlgebra, StaticArrays, SHA, Pkg, JLD2, FileIO
+
+# --- 2. Top-Level Exports ---
+# Everything exported here is instantly available to the user when they do `using IPlotPDESols`
+export loadSimData, getStats, doesSimDataExist, deleteSimData, 
        getAllSimData, changeStats, set_save_path!, get_save_path,
-       ParamDict, MethodDict, SimulationConfig, SimData1D, SimData2D, createSimData,
-       AbstractSimData, ParamDictType, MethodDictType, calculateConvergenceData, allMethodNames,
-       calculateAllStats!, AtomicType, AtomicTuple, create_sim_config_from_csv, plotFromCSV, interactiveCSVLauncher,
-       show2DCutFig, registerSimFunction!, getSimFunction, registerAllFunctions
+       ParamDict, MethodDict, VariedDict, SimulationConfig, createSimData,
+       createParamDict, createMethodDict, createVariedDict,
+       AbstractSimData, calculateConvergenceData, allMethodNames,
+       calculateAllStats!, process_existing_data, set_lagrange_resolution!, set_reference_resolution!,
+       registerSimFunction!, getSimFunction, runAllSimulations,
+       show_unified_fig, launch_csv_interface
 
-const SIMULATION_FUNCTION_REGISTRY = Dict{Symbol, Function}()
+# --- 3. Core Types (Defined directly in the main module) ---
+# Included FIRST so submodules can use them.
+include("Structs.jl") 
 
-"""
-    register_simulation_function!(name::Symbol, func::Function)
 
-Registers a simulation function handle with the plotting package.
-This should be called from your main script.
-"""
-function register_simulation_function!(name::Symbol, func::Function)
-    if haskey(SIMULATION_FUNCTION_REGISTRY, name)
-        @warn "Redefining simulation function: $name"
-    end
-    SIMULATION_FUNCTION_REGISTRY[name] = func
-    @info "Registered simulation function: :$name"
+# ==============================================================================
+# 4. DATA PROCESSING MODULE (Backend)
+# ==============================================================================
+module DataProcessing
+    # Look UP to the parent module (IPlotPDESols) to grab the core types
+    using ..IPlotPDESols: ParamDict, MethodDict, FixedDict, VariedDict, _SAVE_ROOT_PATH,
+                          AbstractSimData, ESimData, LSimData, SimulationConfig, _LAGRANGE_N_GRID, _REFERENCE_RESOLUTION,
+                          UnifiedPlotData, BaseVariables, PlotManager, NoSimData, safe_string
+    using GLMakie: Observable, to_value
+    using LinearAlgebra, StaticArrays, ProgressMeter, JLD2, FileIO, SHA, CSV, DataFrames, LibGit2, Pkg
+    
+    # Export only the functions the UI needs to call
+    export update_plot_data_collection!, createSimData, smart_parse_and_update!, get_save_path,
+           set_save_path!, saveParametersToCSV, process_existing_data, calculateAllStats!, runAllSimulations
+    
+    include("DataProcessing/TensorBuilder.jl")
 end
 
-"""
-    getSimFunction(name::Symbol) -> Union{Function, Nothing}
 
-Retrieves a registered simulation function handle by its name.
-"""
-function getSimFunction(name::Symbol)
-    func = get(SIMULATION_FUNCTION_REGISTRY, name, nothing)
-    if isnothing(func)
-        @error "No simulation function found for name ':$name'. 
-               Was it registered from your main script?"
-    end
-    return func
+# ==============================================================================
+# 5. USER INTERFACE MODULE (Frontend)
+# ==============================================================================
+module UI
+    # Look UP to the parent module to grab UI-specific structs and constants
+    using ..IPlotPDESols: PlotManager, SimulationConfig, UnifiedPlotData, ParamDict,
+                          MethodDict, NestedObsDict, resolve_simulation_function,
+                          VariableControls, VariableNames, BaseVariables
+        
+    # Look across to the sibling module for the data pipeline
+    using ..DataProcessing: update_plot_data_collection!, smart_parse_and_update!, get_save_path, 
+                            saveParametersToCSV
+    using Observables: ObserverFunction, onany
+    using GLMakie, CairoMakie, Printf, Statistics, CSV, DataFrames, Dates
+    
+    # Submodule exports (These are re-exported globally at the bottom)
+    export show_unified_fig, launch_csv_interface
+    
+    include("Plotting/MakiePlotting.jl") 
 end
 
-"""
-    register_functions_from_directory(sim_dir::String)
 
-Scans the specified directory and registers functions
-where the function name (as a Symbol) matches the filename.
-Assumes functions are loaded into the `Main` module.
-"""
-function registerAllFunctions(sim_dir::String = (pwd() * "/SimulationFunctions"))
-    if !isdir(sim_dir)
-        @error "Directory not found: $sim_dir"
-        @error "Cannot register functions. Make sure 'SimulationFunctions' exists."
-        return
-    end
-
-    @info "Scanning $sim_dir for functions to register..."
-
-    # Loop through files in the directory
-    for file in readdir(sim_dir)
-        # Check if it's a Julia file
-        if endswith(file, ".jl")
-            # Extract the name without the .jl extension
-            # e.g., "my_function.jl" -> "my_function"
-            name_str = first(split(file, ".jl"))
-
-            # Convert the string name to a Symbol
-            # e.g., "my_function" -> :my_function
-            name_sym = Symbol(name_str)
-
-            try
-                # Get the function from the Main module scope
-                # This assumes the 'include' was done in Main
-                # and the function name matches the filename.
-                func = getfield(Main, name_sym)
-
-                if func isa Function
-                    # Register the function
-                    register_simulation_function!(name_sym, func)
-                else
-                    @warn "Found :$name_sym, but it is not a Function. Skipping."
-                end
-            catch e
-                @error "Could not register :$name_sym."
-                if e isa UndefVarError
-                    @error "Error: Function :$name_sym is not defined in Main."
-                    @error "Ensure $file defines a function named '$name_str'."
-                else
-                    showerror(stderr, e)
-                    println(stderr) # Add a newline
-                end
-            end
-        end
-    end
-    @info "Finished registering simulation functions."
-    @info "Current registry: $(keys(SIMULATION_FUNCTION_REGISTRY))"
-end
-
-include("Structs.jl")
-using .Structs
-
-include("Utils.jl")
-using .Utils
-
-include("StatCalculation.jl")
-using .StatCalculation
-
-include("MakiePlotting.jl")
-using .MakiePlotting
+# ==============================================================================
+# 6. RE-EXPORTS & REGISTRY
+# ==============================================================================
+using .DataProcessing
+using .UI
 
 end
