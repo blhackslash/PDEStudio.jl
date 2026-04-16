@@ -1,6 +1,6 @@
 name = "IPlotPDESols"
 uuid = "9dcd72ad-f481-4c48-9703-3c94083dcfc3"
-version = "0.1.0"
+version = "0.5.0"
 authors = ["Pascal Jung <pajung@rptu.de>"]
 
 [deps]
