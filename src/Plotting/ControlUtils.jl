@@ -325,7 +325,6 @@ function createExportOptions!(
     end
 end
 
-
 """
     attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
 
@@ -628,3 +627,4 @@ function set_defaults!(manager::PlotManager, scene_options::Dict)
         end
     end
 end
+

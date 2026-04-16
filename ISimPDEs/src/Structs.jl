@@ -1,18 +1,9 @@
-const AtomicType = Union{Float64, Int64, Bool, Symbol, String}
-const AtomicTuple = Tuple{Vararg{AtomicType}}
-
-const BaseVariables = ["c","x","y","z","t"]
-const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
-const VariableControls = [:menu,:slider,:slider,:slider,:slider]
-
-# --- 1. Define the Dictionary Structs ---
-
 # --- 1. Type Aliases ---
 const ParamDict = Dict{String, Any}
 const MethodDict = Dict{String, ParamDict}
 const VariedDict = Dict{String, Vector}
 const FixedDict = ParamDict 
-const NestedObsDict = Dict{String, Dict{String, Observable}}
+
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _LAGRANGE_N_GRID = Ref{Int}(50)
@@ -195,36 +186,4 @@ function resolve_dynamic_function(
     end
 end
 
-# In Controls.jl / Structs.jl
-mutable struct PlotManager 
-    simulation::NestedObsDict
-    ui::NestedObsDict
-    config::ParamDict
-    controls::Dict{String, Observable} 
-    methods::Observable{Vector{String}}
-    plot_vars::Vector{String}
-    last_run_params::ParamDict
-end
 
-# --- Plotting Data Structure ---
-
-"""
-    UnifiedPlotData
-The cached tensor ready for plotting.
-It contains the subset of data where specific parameters are fixed.
-Tensor Shape: [Component, ActiveParam1, ActiveParam2, ..., Space, Time]
-"""
-struct UnifiedPlotData{N}
-    # The Tensor Dictionary
-    # Keys: "u", "x", "mass", etc.
-    data::Dict{String, Array{Float64, N}}
-    
-    # Metadata for Axes
-    active_param_keys::Vector{String}       # Names of P1, P2...
-    active_param_values::Vector{Vector{Any}} # Values of P1, P2...
-    
-    t_vals::Vector{Float64}
-    
-    # Snapshot of the configuration used to create this
-    fixed_params::FixedDict 
-end

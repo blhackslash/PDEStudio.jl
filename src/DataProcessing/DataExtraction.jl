@@ -2,6 +2,42 @@
 # DATA EXTRACTION PIPELINE (Dispatched by Val{D})
 # ==============================================================================
 
+
+"""
+    find_closest_index_for_dim(pd::UnifiedPlotData, dim_idx::Int, target_val::Real)
+
+Maps a physical value from a slider back to the correct tensor index.
+"""
+function find_closest_index_for_dim(pd::UnifiedPlotData{N}, dim_idx::Int, target_val::Real) where N
+    n_params = length(pd.active_param_keys)
+    
+    if dim_idx <= n_params 
+        p_vals = pd.active_param_values[dim_idx]
+        return findmin(v -> abs(v - target_val), p_vals)[2]
+        
+    elseif dim_idx == n_params + 1 
+        return max(1, Int(target_val))
+        
+    elseif dim_idx > n_params + 1 && dim_idx <= n_params + 4 
+        # --- THE FIX: Route to correct orthogonal axis natively ---
+        tensor_key = dim_idx == n_params + 2 ? "x" : (dim_idx == n_params + 3 ? "y" : "z")
+        
+        if haskey(pd.data, tensor_key)
+            # Filter out the NaN padding to reveal the pure 1D coordinate axis
+            coord_vec = filter(isfinite, vec(pd.data[tensor_key]))
+            if isempty(coord_vec)
+                return 1
+            end
+            return findmin(v -> abs(v - target_val), coord_vec)[2]
+        end
+        
+    elseif dim_idx == n_params + 5 
+        return findmin(v -> abs(v - target_val), pd.t_vals)[2]
+    end
+    
+    return 1
+end
+
 function _get_desired_indices(pd::UnifiedPlotData, target_dims::Tuple, sel_vals)
     return map(1:length(sel_vals)) do i
         if i in target_dims; return (:); end

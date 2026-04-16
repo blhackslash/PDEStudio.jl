@@ -110,37 +110,6 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
-"""
-    generate_dynamic_title(x_key, y_key, dim_idx, manager, dim_names, sel_vals)
-
-Constructs the plot title dynamically. It lists all fixed parameters and base variables,
-marks the actively plotted dimension, and allows for a user-defined override via `manager.ui`.
-"""
-function generate_dynamic_title(
-    dim_idx::Int, 
-    dim_names::Vector{String}, 
-    sel_vals
-)
-    # 2. Build the Default Dynamic Title
-    title_parts = String[]
-    
-    for i in 1:length(dim_names)
-        name = dim_names[i]
-        
-        if i == dim_idx
-            # This is the axis we are currently plotting along (the colon ':' in the tensor slice)
-            push!(title_parts, "$name = [Axis]")
-        else
-            val = sel_vals[i]
-            # Format floats neatly to 3 decimal places to prevent title bloat
-            val_str = val isa AbstractFloat ? @sprintf("%.3f", val) : string(val)
-            push!(title_parts, "$name = $val_str")
-        end
-    end
-    
-    # Join all the parts together with a separator
-    return join(title_parts, " | ")
-end
 # --- Legend Helpers ---
 function _parse_legend_position(s_in::String)
     s = lowercase(s_in)
