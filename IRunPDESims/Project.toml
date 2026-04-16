@@ -1,4 +1,4 @@
-name = "ISimPDEs"
+name = "IRunPDESims"
 uuid = "93766fa7-4b93-4712-aa47-391c0d405e89"
 version = "0.5.0"
 authors = ["Pascal Jung <pajung@rptu.de>"]

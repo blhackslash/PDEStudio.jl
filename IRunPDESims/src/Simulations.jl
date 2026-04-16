@@ -113,7 +113,6 @@ function runAllSimulations(
     # 1. Generate all parameter combinations across all methods
     all_tasks = Vector{ParamDict}()
     local grid_indices
-    println(active_methods)
     for method in active_methods
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params)

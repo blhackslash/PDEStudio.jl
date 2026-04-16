@@ -6,11 +6,13 @@ const FixedDict = ParamDict
 
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
+const _SIM_ROOT_PATH = Ref{String}(pwd())
 const _LAGRANGE_N_GRID = Ref{Int}(50)
 const _REFERENCE_RESOLUTION = Ref{Int}(500)
 
 set_lagrange_resolution!(n::Int) = (_LAGRANGE_N_GRID[] = n)
 set_reference_resolution!(n::Int) = (_REFERENCE_RESOLUTION[] = n)
+set_sim_path!(path::String) = (_SIM_ROOT_PATH[] = path)
 
 # --- 2. Explicit Creator Functions ---
 
@@ -168,7 +170,7 @@ function resolve_dynamic_function(
 
     try
         # Build the path using the injected directory string
-        func_file = joinpath(_SAVE_ROOT_PATH[], dir_name, func_name * ".jl")
+        func_file = joinpath(_SIM_ROOT_PATH[], dir_name, func_name * ".jl")
         
         if isfile(func_file)
             @info "Dynamically loading function file into $target_module: $func_file"

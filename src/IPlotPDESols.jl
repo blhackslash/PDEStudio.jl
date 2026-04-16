@@ -4,7 +4,7 @@ module IPlotPDESols
 
 using GLMakie, CairoMakie, Observables, Reexport
 
-@reexport using ISimPDEs # <-- Your new backend!
+@reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
 export show_unified_fig, launch_csv_interface
 
@@ -55,7 +55,7 @@ module DataProcessing
     # Grab UI structs
     using ..IPlotPDESols: UnifiedPlotData, PlotManager, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs/functions directly
-    using ISimPDEs, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf
+    using IRunPDESims, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf
     
     using GLMakie: Observable, to_value
     
@@ -71,7 +71,7 @@ module UI
     # Grab UI structs
     using ..IPlotPDESols: PlotManager, UnifiedPlotData, NestedObsDict, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs
-    using ISimPDEs, Dates
+    using IRunPDESims, Dates
     # Grab the DataBuilder
     using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV
     

@@ -1,4 +1,4 @@
-module ISimPDEs
+module IRunPDESims
 
 # --- 1. Headless-Safe Dependencies ---
 using LinearAlgebra, StaticArrays, ProgressMeter, Polyester
@@ -11,8 +11,8 @@ export ParamDict, MethodDict, VariedDict, FixedDict
 export createParamDict, createMethodDict, createVariedDict, createSimData
 
 # Globals & Settings
-export _SAVE_ROOT_PATH, _LAGRANGE_N_GRID, _REFERENCE_RESOLUTION
-export set_save_path!, get_save_path, set_lagrange_resolution!, set_reference_resolution!
+export _SAVE_ROOT_PATH, _LAGRANGE_N_GRID, _REFERENCE_RESOLUTION, _SIM_ROOT_PATH
+export set_save_path!, get_save_path, set_lagrange_resolution!, set_reference_resolution!, set_sim_path!
 
 # Simulation & Data Pipeline
 export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
