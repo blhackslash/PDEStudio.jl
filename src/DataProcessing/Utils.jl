@@ -1,57 +1,49 @@
 """
-    assembleParams(shared_obs, method_obs_collection, method_name)
+    assembleParams(shared_obs::Dict, method_obs_collection::Dict, method_name::String)
 
-Constructs a flat parameter dictionary for a simulation run by combining
-current shared parameter values and current method-specific parameter values.
-
-Method-specific parameters override shared parameters if keys conflict.
+UI version: Extracts values from nested Observables to build the parameter dictionary.
 """
 function assembleParams(
-    shared_params_obs::Union{Dict{String, Observable},ParamDict},
-    method_params_collection_obs::Union{Dict{String, Dict{String, Observable}},MethodDict},
+    shared_obs::Dict{String, Observable},
+    method_obs_collection::Dict{String, Dict{String, Observable}},
     method_name::String
-    )::ParamDict # Assuming ParamDict = Dict{String, Any}
+)::ParamDict
 
-    method_specific_obs_dict = haskey(method_params_collection_obs, method_name) ? method_params_collection_obs[method_name] : return Dict()
-    # --- CORRECTED: Safely get the list of keys to ignore from the observable ---
-    ignore_keys = String[] # Default to an empty list
-    if haskey(method_specific_obs_dict, "ignore")
-        # Get the value from the "ignore" observable
-        val = to_value(method_specific_obs_dict["ignore"])
+    # Fetch the method observable dictionary, fallback to empty if missing
+    method_obs_dict = get(method_obs_collection, method_name, Dict{String, Observable}())
+    
+    # Safely get the list of keys to ignore from the observable
+    ignore_keys = String[]
+    if haskey(method_obs_dict, "ignore")
+        val = to_value(method_obs_dict["ignore"])
         if val isa AbstractVector{<:AbstractString}
             ignore_keys = val
         end
     end
-    # Start with current values of shared parameters
-    current_params = Dict{String,Any}()
-    for (key, obs) in shared_params_obs
-        if key in ignore_keys; continue end
+
+    current_params = ParamDict()
+    
+    # 1. Extract shared parameters (skipping ignored ones)
+    for (key, obs) in shared_obs
+        key in ignore_keys && continue
+        
         val = to_value(obs)
-        if isa(val, Tuple) && length(val) == 2 && val[1] == :const
-            current_params[key] = to_value(val[2])
+        if val isa Tuple && length(val) == 2 && val[1] == :const
+            current_params[key] = val[2]
         else
             current_params[key] = val
         end
     end
 
-    # Get the specific observable dictionary for the requested method
-    if !isnothing(method_specific_obs_dict)
-        # Merge/override with current values of method-specific parameters
-        for (key, obs) in method_specific_obs_dict
-            val = to_value(obs)
-            if isa(val, Tuple) && length(val) == 2 && val[1] == :const
-                current_params[key] = to_value(val[2])
-            else
-                current_params[key] = val
-            end
+    # 2. Extract/Override with method-specific parameters
+    for (key, obs) in method_obs_dict
+        val = to_value(obs)
+        if val isa Tuple && length(val) == 2 && val[1] == :const
+            current_params[key] = val[2]
+        else
+            current_params[key] = val
         end
-    else
-        # This might be expected if a method uses only shared params
-        @warn "No specific parameters found for method '$method_name' in observable collection."
     end
-
-    # Add method name itself (optional, but often useful for saving/loading)
-    #current_params["method"] = method_name
 
     return current_params
 end

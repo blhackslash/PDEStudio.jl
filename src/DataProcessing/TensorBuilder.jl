@@ -221,14 +221,14 @@ function create_method_plot_data(
         if parallel
             Threads.@threads for params in tasks
                 try
-                    run_simulation(sim_config.simulation_func, params; force_overwrite=false)
+                    run_smart_simulation(sim_config.simulation_func, params; force_overwrite=false)
                 catch e
                     @error "Simulation Error" exception=(e, catch_backtrace())
                 end
             end
         else
             for params in tasks
-                run_simulation(sim_config.simulation_func, params; force_overwrite=false)
+                run_smart_simulation(sim_config.simulation_func, params; force_overwrite=false)
             end
         end
 

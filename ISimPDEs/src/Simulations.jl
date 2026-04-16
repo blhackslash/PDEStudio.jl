@@ -1,11 +1,11 @@
 """
-    run_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
+    run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
 
 Smart wrapper for single simulations. Checks if `SimData` already exists on disk.
 If it does (and `force_overwrite` is false), it skips execution and returns `NoSimData`.
 Otherwise, it executes the simulation, saves the result, and returns the data.
 """
-function run_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
+function run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
     if !force_overwrite && doesSimDataExist(params)
         return NoSimData()
     end
@@ -45,6 +45,51 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
     end
     
     return tasks, grid_indices
+end
+
+"""
+    assembleParams(shared_params::ParamDict, method_collection::MethodDict, method_name::String)
+
+Backend version: Constructs a flat parameter dictionary for a simulation run by combining
+shared parameters and method-specific parameters.
+"""
+function assembleParams(
+    shared_params::ParamDict,
+    method_collection::MethodDict,
+    method_name::String
+)::ParamDict
+
+    # Fetch the method dictionary, fallback to empty if missing
+    method_dict = get(method_collection, method_name, ParamDict())
+    
+    # Get keys to ignore
+    raw_ignore = get(method_dict, "ignore", String[])
+    ignore_keys = raw_ignore isa AbstractVector{<:AbstractString} ? raw_ignore : String[]
+
+    current_params = ParamDict()
+    
+    # 1. Add shared parameters (skipping ignored ones)
+    for (key, val) in shared_params
+        key in ignore_keys && continue
+        
+        # Unpack (:const, val) tuples if present
+        if val isa Tuple && length(val) == 2 && val[1] == :const
+            current_params[key] = val[2]
+        else
+            current_params[key] = val
+        end
+    end
+
+    # 2. Add/Override with method-specific parameters
+    for (key, val) in method_dict
+        if val isa Tuple && length(val) == 2 && val[1] == :const
+            current_params[key] = val[2]
+        else
+            current_params[key] = val
+        end
+    end
+
+    return current_params
 end
 
 """
@@ -88,7 +133,7 @@ function runAllSimulations(
     # --- NEW: Helper for eager Eulerian conversion ---
     function _process_task(params)
         # 1. Run the simulation (or skip if it exists and !force_overwrite)
-        run_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
+        run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
         
         # 2. Handle eager Eulerian conversion
         if convert_eulerian
@@ -99,6 +144,7 @@ function runAllSimulations(
                 cache_name = "conv_$(N_grid)"
                 try
                     # If the cache already exists, we skip doing the heavy math
+                    if force_overwrite; error("Overwrite Forced!") end
                     loadSimData(params; suffix=cache_name)
                 catch
                     # Cache missing, convert and save it eagerly

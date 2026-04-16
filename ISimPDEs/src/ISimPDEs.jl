@@ -1,7 +1,7 @@
 module ISimPDEs
 
 # --- 1. Headless-Safe Dependencies ---
-using LinearAlgebra, StaticArrays, ProgressMeter
+using LinearAlgebra, StaticArrays, ProgressMeter, Polyester
 using JLD2, FileIO, SHA, Dates
 
 # --- 2. Top-Level Exports ---
@@ -15,7 +15,7 @@ export _SAVE_ROOT_PATH, _LAGRANGE_N_GRID, _REFERENCE_RESOLUTION
 export set_save_path!, get_save_path, set_lagrange_resolution!, set_reference_resolution!
 
 # Simulation & Data Pipeline
-export run_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
+export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
 export doesSimDataExist, deleteSimData, getAllSimData, getStats, changeStats
 export calculateAllStats!, process_existing_data, convert_to_eulerian
 
@@ -29,6 +29,6 @@ include("Structs.jl")             # Backend structs only (No Observables!)
 include("IOUtils.jl")             # Saving, loading, hashing
 include("ConversionUtils.jl")     # Lagrange -> Euler, parsing
 include("StatCalculation.jl")     # Dierckx, QuadGK, Norms
-include("Simulations.jl")         # run_simulation, runAllSimulations
+include("Simulations.jl")         # run_smart_simulation, runAllSimulations
 
 end

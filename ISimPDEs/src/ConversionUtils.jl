@@ -62,10 +62,8 @@ function createSimData(
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
 
-function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
-    D = length(ldata.x[1][1]) 
-    T = length(ldata.t)
-    C = length(ldata.u[1][1]) 
+function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
+    T_len = length(ldata.t)
 
     mins = fill(Inf, D); maxs = fill(-Inf, D)
     for step in ldata.x; for p in step; for d in 1:D
@@ -77,82 +75,157 @@ function convert_to_eulerian(ldata::LSimData, N_grid::Int=50)
         mins[d] -= pad; maxs[d] += pad
     end
 
-    grid_axes = ntuple(d -> range(mins[d], maxs[d], length=N_grid), D)
-    grid_shape = ntuple(d -> N_grid, D)
+    grid_axes = ntuple(d -> collect(range(mins[d], maxs[d], length=N_grid)), Val(D))
+    grid_shape = ntuple(d -> N_grid, Val(D))
 
-    # 1. NEW COMPACT X ALLOCATION (Strictly 1D Vectors)
-    x_euler = ntuple(d -> collect(grid_axes[d]), D)
+    x_euler = ntuple(d -> grid_axes[d], Val(D))
 
-    u_euler = zeros(Float64, C, grid_shape..., T)
+    # Preallocate Eulerian grids
+    u_euler = zeros(Float64, M, grid_shape..., T_len)
+    
     e_fields = Dict{String, Array{Float64}}()
-    for (k, v) in ldata.fields; e_fields[k] = zeros(Float64, size(v, 1), grid_shape..., T); end
+    for (k, v) in ldata.fields
+        e_fields[k] = zeros(Float64, M, grid_shape..., T_len) 
+    end
     
     e_profiles = Dict{String, Array{Float64}}()
-    for (k, v) in ldata.profiles; e_profiles[k] = zeros(Float64, size(v, 1), grid_shape...); end
+    for (k, v) in ldata.profiles
+        e_profiles[k] = zeros(Float64, D, grid_shape...) 
+    end
 
-    # --- THE FIX: Localized Search Radius ---
-    # Calculates a typical grid-cell size and sets a compact support radius
     cell_sizes = [(maxs[d] - mins[d]) / max(1, N_grid - 1) for d in 1:D]
-    radius = norm(cell_sizes) * 3.0
+    radius = (norm(cell_sizes) * 3.0)^2
 
-    Threads.@threads for t_idx in 1:T
-        x_step = ldata.x[t_idx]; N_p = length(x_step)
-        N_p == 0 && continue
+    field_keys = collect(keys(ldata.fields))
+    field_vals = collect(values(ldata.fields))
 
-        for idx in CartesianIndices(grid_shape)
-            pos = SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], D))
-            w_sum = 0.0; u_sum = zeros(C)
-            f_sums = Dict(k => zeros(size(v, 1)) for (k, v) in ldata.fields)
+    profile_keys = collect(keys(ldata.profiles))
+    profile_vals = collect(values(ldata.profiles))
+
+    # =========================================================================
+    # 1. SPATIAL BATCH LOOP (Dynamic, Time-Series Data)
+    # =========================================================================
+    @batch for idx in CartesianIndices(grid_shape)
+        pos = if D == 1
+            SVector{1, Float64}(grid_axes[1][idx[1]])
+        elseif D == 2
+            SVector{2, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]])
+        elseif D == 3
+            SVector{3, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]], grid_axes[3][idx[3]])
+        else
+            # Fallback for 4D+, Polyester might still warn but typically physical sims are <= 3D
+            SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], Val(D))) 
+        end
+        
+        for t_idx in 1:T_len
+            x_step = ldata.x[t_idx]
+            u_step = ldata.u[t_idx]
+            N_p = length(x_step)
+            
+            if N_p == 0
+                for c in 1:M; u_euler[c, idx, t_idx] = NaN; end
+                for i in 1:length(field_keys)
+                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = NaN; end
+                end
+                continue
+            end
+
+            w_sum = 0.0
+            u_sum = zero(SVector{M, Float64})
+            
+            # Zero out the target array positions for direct accumulation
+            for i in 1:length(field_keys)
+                for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = 0.0; end
+            end
 
             for p_idx in 1:N_p
-                dist = norm(pos - x_step[p_idx])
+                dist = sum(abs2,pos - x_step[p_idx])
+                
                 if dist < 1e-10 
-                    for c in 1:C; u_sum[c] = ldata.u[t_idx][p_idx][c]; end
-                    for (k, v) in ldata.fields; for c in 1:size(v, 1); f_sums[k][c] = v[c, p_idx, t_idx]; end; end
+                    u_sum = u_step[p_idx]
+                    for i in 1:length(field_vals)
+                        for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = field_vals[i][t_idx][p_idx][c]; end
+                    end
                     w_sum = 1.0; break
                     
-                # ONLY apply particles within the physically relevant cutoff!
                 elseif dist <= radius
-                    w = 1.0 / (dist^4) # p=4 provides a sharper, more accurate local falloff
+                    w = 1.0 / (dist^2)
                     w_sum += w
-                    for c in 1:C; u_sum[c] += ldata.u[t_idx][p_idx][c] * w; end
-                    for (k, v) in ldata.fields; for c in 1:size(v, 1); f_sums[k][c] += v[c, p_idx, t_idx] * w; end; end
+                    u_sum += u_step[p_idx] * w
+                    
+                    # Accumulate DIRECTLY into the output array (Zero allocations!)
+                    for i in 1:length(field_vals)
+                        for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] += field_vals[i][t_idx][p_idx][c] * w; end
+                    end
                 end
             end
 
-            # If particles were found, set the average. Otherwise, it's EMPTY space (NaN).
+            # Finalize averages
             if w_sum > 0.0
-                for c in 1:C; u_euler[c, Tuple(idx)..., t_idx] = u_sum[c] / w_sum; end
-                for (k, v) in ldata.fields; for c in 1:size(v, 1); e_fields[k][c, Tuple(idx)..., t_idx] = f_sums[k][c] / w_sum; end; end
+                u_avg = u_sum / w_sum
+                for c in 1:M; u_euler[c, idx, t_idx] = u_avg[c]; end
+                
+                for i in 1:length(field_keys)
+                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] /= w_sum; end
+                end
             else
-                for c in 1:C; u_euler[c, Tuple(idx)..., t_idx] = NaN; end
-                for (k, v) in ldata.fields; for c in 1:size(v, 1); e_fields[k][c, Tuple(idx)..., t_idx] = NaN; end; end
+                for c in 1:M; u_euler[c, idx, t_idx] = NaN; end
+                for i in 1:length(field_keys)
+                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = NaN; end
+                end
             end
         end
     end
 
-    if !isempty(ldata.profiles)
+    # =========================================================================
+    # 2. SPATIAL BATCH LOOP (Static Profile Data)
+    # =========================================================================
+    if !isempty(profile_keys)
         x_step = ldata.x[1]
-        for idx in CartesianIndices(grid_shape)
-            pos = SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], D))
+        
+        @batch for idx in CartesianIndices(grid_shape)
+        pos = if D == 1
+            SVector{1, Float64}(grid_axes[1][idx[1]])
+        elseif D == 2
+            SVector{2, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]])
+        elseif D == 3
+            SVector{3, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]], grid_axes[3][idx[3]])
+        else
+            # Fallback for 4D+, Polyester might still warn but typically physical sims are <= 3D
+            SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], Val(D))) 
+        end
             w_sum = 0.0
-            p_sums = Dict(k => zeros(size(v, 1)) for (k, v) in ldata.profiles)
+            
+            # Zero out the target array positions
+            for i in 1:length(profile_keys)
+                for c in 1:D; e_profiles[profile_keys[i]][c, idx] = 0.0; end
+            end
 
             for p_idx in 1:length(x_step)
                 dist = norm(pos - x_step[p_idx])
+                
                 if dist < 1e-10
-                    for (k, v) in ldata.profiles; for c in 1:size(v, 1); p_sums[k][c] = v[c, p_idx]; end; end
+                    for i in 1:length(profile_vals)
+                        for c in 1:D; e_profiles[profile_keys[i]][c, idx] = profile_vals[i][1][p_idx][c]; end
+                    end
                     w_sum = 1.0; break
+                    
                 elseif dist <= radius
-                    w = 1.0 / (dist^4); w_sum += w
-                    for (k, v) in ldata.profiles; for c in 1:size(v, 1); p_sums[k][c] += v[c, p_idx] * w; end; end
+                    w = 1.0 / (dist^2); w_sum += w
+                    for i in 1:length(profile_vals)
+                        for c in 1:D; e_profiles[profile_keys[i]][c, idx] += profile_vals[i][1][p_idx][c] * w; end
+                    end
                 end
             end
             
             if w_sum > 0.0
-                for (k, v) in ldata.profiles; for c in 1:size(v, 1); e_profiles[k][c, Tuple(idx)...] = p_sums[k][c] / w_sum; end; end
+                for i in 1:length(profile_keys)
+                    for c in 1:D; e_profiles[profile_keys[i]][c, idx] /= w_sum; end
+                end
             else
-                for (k, v) in ldata.profiles; for c in 1:size(v, 1); e_profiles[k][c, Tuple(idx)...] = NaN; end; end
+                for i in 1:length(profile_keys)
+                    for c in 1:D; e_profiles[profile_keys[i]][c, idx] = NaN; end
+                end
             end
         end
     end
