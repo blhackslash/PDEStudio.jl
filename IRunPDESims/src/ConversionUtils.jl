@@ -61,7 +61,6 @@ function createSimData(
 ) where {D, M}
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
-
 function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     T_len = length(ldata.t)
 
@@ -94,7 +93,13 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     end
 
     cell_sizes = [(maxs[d] - mins[d]) / max(1, N_grid - 1) for d in 1:D]
+    # Use squared radius for fast distance checking
     radius = (norm(cell_sizes) * 3.0)^2
+
+    # --- Precompute SVector bounds for algebraic pos calculation ---
+    s_mins = SVector{D, Float64}(mins)
+    s_maxs = SVector{D, Float64}(maxs)
+    s_dx = (s_maxs - s_mins) / max(1, N_grid - 1)
 
     field_keys = collect(keys(ldata.fields))
     field_vals = collect(values(ldata.fields))
@@ -106,20 +111,16 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     # 1. SPATIAL BATCH LOOP (Dynamic, Time-Series Data)
     # =========================================================================
     @batch for idx in CartesianIndices(grid_shape)
-        pos = if D == 1
-            SVector{1, Float64}(grid_axes[1][idx[1]])
-        elseif D == 2
-            SVector{2, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]])
-        elseif D == 3
-            SVector{3, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]], grid_axes[3][idx[3]])
-        else
-            # Fallback for 4D+, Polyester might still warn but typically physical sims are <= 3D
-            SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], Val(D))) 
-        end
         
-        for t_idx in 1:T_len
+        # Pure SVector algebraic position calculation (Zero allocations, No branching)
+        s_idx = SVector{D, Float64}(Tuple(idx))
+        pos = s_mins + s_dx .* (s_idx .- 1.0)
+        
+        @inbounds for t_idx in 1:T_len
+            # Explicit type assertions
             x_step = ldata.x[t_idx]
             u_step = ldata.u[t_idx]
+            
             N_p = length(x_step)
             
             if N_p == 0
@@ -131,15 +132,17 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
             end
 
             w_sum = 0.0
-            u_sum = zero(SVector{M, Float64})
+            # Instance-based zero allocation (No GC dispatch)
+            u_sum = zero(u_step[1])
             
             # Zero out the target array positions for direct accumulation
             for i in 1:length(field_keys)
                 for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = 0.0; end
             end
 
-            for p_idx in 1:N_p
-                dist = sum(abs2,pos - x_step[p_idx])
+            @inbounds for p_idx in 1:N_p
+                # Squared distance calculation (No sqrt() overhead)
+                dist = sum(abs2, pos - x_step[p_idx])
                 
                 if dist < 1e-10 
                     u_sum = u_step[p_idx]
@@ -149,11 +152,12 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
                     w_sum = 1.0; break
                     
                 elseif dist <= radius
+                    # 1/r^4 falloff achieved by squaring the squared distance
                     w = 1.0 / (dist^2)
                     w_sum += w
                     u_sum += u_step[p_idx] * w
                     
-                    # Accumulate DIRECTLY into the output array (Zero allocations!)
+                    # Accumulate DIRECTLY into the output array
                     for i in 1:length(field_vals)
                         for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] += field_vals[i][t_idx][p_idx][c] * w; end
                     end
@@ -181,19 +185,16 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     # 2. SPATIAL BATCH LOOP (Static Profile Data)
     # =========================================================================
     if !isempty(profile_keys)
-        x_step = ldata.x[1]
+        # Explicit type assertion for the static positions
+        x_step = ldata.x[1]::Vector{SVector{D, Float64}}
+        N_p = length(x_step)
         
         @batch for idx in CartesianIndices(grid_shape)
-        pos = if D == 1
-            SVector{1, Float64}(grid_axes[1][idx[1]])
-        elseif D == 2
-            SVector{2, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]])
-        elseif D == 3
-            SVector{3, Float64}(grid_axes[1][idx[1]], grid_axes[2][idx[2]], grid_axes[3][idx[3]])
-        else
-            # Fallback for 4D+, Polyester might still warn but typically physical sims are <= 3D
-            SVector{D, Float64}(ntuple(d -> grid_axes[d][idx[d]], Val(D))) 
-        end
+            
+            # Pure SVector algebraic position calculation
+            s_idx = SVector{D, Float64}(Tuple(idx))
+            pos = s_mins + s_dx .* (s_idx .- 1.0)
+            
             w_sum = 0.0
             
             # Zero out the target array positions
@@ -201,8 +202,9 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
                 for c in 1:D; e_profiles[profile_keys[i]][c, idx] = 0.0; end
             end
 
-            for p_idx in 1:length(x_step)
-                dist = norm(pos - x_step[p_idx])
+            @inbounds for p_idx in 1:N_p
+                # Squared distance calculation applied here too
+                dist = sum(abs2, pos - x_step[p_idx])
                 
                 if dist < 1e-10
                     for i in 1:length(profile_vals)
@@ -211,7 +213,9 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
                     w_sum = 1.0; break
                     
                 elseif dist <= radius
-                    w = 1.0 / (dist^2); w_sum += w
+                    # 1/r^4 falloff from squared distance
+                    w = 1.0 / (dist^2)
+                    w_sum += w
                     for i in 1:length(profile_vals)
                         for c in 1:D; e_profiles[profile_keys[i]][c, idx] += profile_vals[i][1][p_idx][c] * w; end
                     end
@@ -232,7 +236,6 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
 
     return ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
 end
-
 function generate_reference_simdata(ref_func::Function, params::ParamDict)
     N = _REFERENCE_RESOLUTION[]
     
