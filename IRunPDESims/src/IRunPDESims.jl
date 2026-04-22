@@ -20,7 +20,7 @@ export doesSimDataExist, deleteSimData, getAllSimData, getStats, changeStats
 export calculateAllStats!, process_existing_data, convert_to_eulerian
 
 # Utilities
-export safe_string, nice_string, smart_parse_and_update!
+export safe_string, nice_string, smart_parse_and_update!, get_ignore_keys
 export resolve_simulation_function, resolve_reference_function, resolve_dynamic_function
 
 # --- 3. Core Logic Inclusions ---

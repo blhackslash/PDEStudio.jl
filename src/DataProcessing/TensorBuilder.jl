@@ -201,7 +201,12 @@ function create_method_plot_data(
     parallel=false
 )
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
-    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
+    
+    # THE FIX: Fetch ignore keys using the backend helper
+    ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
+    
+    # Pass them into the generator
+    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
     local first_data
@@ -376,7 +381,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
-            base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
+            base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
             if isempty(base_params); continue end
             new_data = Base.invokelatest(create_method_plot_data, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end

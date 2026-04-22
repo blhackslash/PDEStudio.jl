@@ -20,8 +20,7 @@ function run_smart_simulation(sim_func::Function, params::ParamDict; force_overw
     return sim_data
 end
 
-function generate_method_tasks(base_params, active_keys, active_values, sim_fixes)
-    # Handle the edge case of no varied parameters gracefully
+function generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys::Vector{String}=String[])
     if isempty(active_values)
         param_grid = [()]
     else
@@ -32,11 +31,18 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
 
     for (linear_idx, p_vals) in enumerate(param_grid)
         task_params = copy(base_params)
-        for (k, v) in sim_fixes; task_params[k] = v; end
+       
+        # THE FIX: Block ignored fixed parameters from the UI
+        for (k, v) in sim_fixes
+            k in ignore_keys && continue
+            task_params[k] = v
+        end
         
         indices = isempty(active_values) ? () : Tuple(CartesianIndices(param_grid)[linear_idx])
         
+        # THE FIX: Block ignored varied parameters
         for (i, val) in enumerate(p_vals)
+            active_keys[i] in ignore_keys && continue
             task_params[active_keys[i]] = val
         end
         
@@ -45,6 +51,24 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
     end
     
     return tasks, grid_indices
+end
+
+"""
+    get_ignore_keys(method_collection::MethodDict, method_name::String)
+
+Safely extracts the list of keys a specific method wishes to ignore.
+"""
+function get_ignore_keys(method_collection::MethodDict, method_name::String)
+    method_dict = get(method_collection, method_name, ParamDict())
+    raw_ignore = get(method_dict, "ignore", String[])
+    
+    if raw_ignore isa AbstractVector || raw_ignore isa Tuple
+        return String.(raw_ignore)
+    elseif raw_ignore isa AbstractString
+        return [String(raw_ignore)]
+    else
+        return String[]
+    end
 end
 
 """
@@ -59,20 +83,17 @@ function assembleParams(
     method_name::String
 )::ParamDict
 
-    # Fetch the method dictionary, fallback to empty if missing
     method_dict = get(method_collection, method_name, ParamDict())
     
-    # Get keys to ignore
-    raw_ignore = get(method_dict, "ignore", String[])
-    ignore_keys = raw_ignore isa AbstractVector{<:AbstractString} ? raw_ignore : String[]
-
+    # Use the new helper!
+    ignore_keys = get_ignore_keys(method_collection, method_name)
+    
     current_params = ParamDict()
     
     # 1. Add shared parameters (skipping ignored ones)
     for (key, val) in shared_params
         key in ignore_keys && continue
         
-        # Unpack (:const, val) tuples if present
         if val isa Tuple && length(val) == 2 && val[1] == :const
             current_params[key] = val[2]
         else
@@ -82,13 +103,13 @@ function assembleParams(
 
     # 2. Add/Override with method-specific parameters
     for (key, val) in method_dict
+        key == "ignore" && continue 
         if val isa Tuple && length(val) == 2 && val[1] == :const
             current_params[key] = val[2]
         else
             current_params[key] = val
         end
     end
-
     return current_params
 end
 
@@ -115,7 +136,11 @@ function runAllSimulations(
     local grid_indices
     for method in active_methods
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
-        tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params)
+        
+        # THE FIX: Fetch and pass ignore keys
+        ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
+        tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)
+        
         append!(all_tasks, tasks)
     end
     
