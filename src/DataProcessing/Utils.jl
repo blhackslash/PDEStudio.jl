@@ -286,3 +286,56 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
+function generate_reference_simdata(ref_func::Function, params::ParamDict)
+    N = _REFERENCE_RESOLUTION[]
+    
+    # 1. Extract physical bounds directly from parameters (Strict requires)
+    xmin = params["mins"]
+    xmax = params["maxs"]
+    tmax = params["tmax"]
+    snapshots = params["snapshots"]
+    
+    # Optional parameters
+    tmin = get(params, "tmin", 0.0)
+    
+    # Determine dimensionality based on the type of xmin
+    D = length(xmin)
+    
+    # 2. Build the high-res spatial axes
+    axes_list = ntuple(D) do d
+        min_val = Float64(xmin[d])
+        max_val = Float64(xmax[d])
+        collect(range(min_val, max_val, length=N))
+    end
+    
+    # 3. Build the time vector (snapshots + 1 ensures we include t=0)
+    t_vec = tmax > tmin ? collect(range(tmin, tmax, length=snapshots+1)) : [Float64(tmin)]
+    T = length(t_vec)
+    
+    # Evaluate one point to find the number of components (C)
+    # --- THE FIX: Create an SVector cleanly using ntuple ---
+    sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
+    sample_val = ref_func(sample_pos, t_vec[1])
+    C = length(sample_val)
+    
+    # 4. Allocate the dense tensor
+    grid_shape = ntuple(d -> N, D)
+    u_exact = zeros(Float64, C, grid_shape..., T)
+    
+    # 5. Evaluate the exact function on the fly
+    Threads.@threads for t_idx in 1:T
+        t = t_vec[t_idx]
+        for idx in CartesianIndices(grid_shape)
+            # --- THE FIX: Native, allocation-free SVector creation ---
+            pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
+            exact_val = ref_func(pos, t)
+            
+            for c in 1:C
+                u_exact[c, Tuple(idx)..., t_idx] = exact_val[c]
+            end
+        end
+    end
+    
+    # Return a lightweight ESimData that exists ONLY in RAM
+    return ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
+end

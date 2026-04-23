@@ -55,7 +55,7 @@ module DataProcessing
     # Grab UI structs
     using ..IPlotPDESols: UnifiedPlotData, PlotManager, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs/functions directly
-    using IRunPDESims, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf
+    using IRunPDESims, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf, StaticArrays
     
     using GLMakie: Observable, to_value
     
