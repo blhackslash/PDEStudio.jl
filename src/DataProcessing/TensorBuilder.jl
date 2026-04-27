@@ -42,17 +42,20 @@ function analyze_configuration(sim_config::SimulationConfig, fixed_params::Fixed
     sorted_keys = sort(collect(keys(all_varied)))
     sim_fixes = FixedDict()
 
-    for (k, v) in fixed_params
-        if !(k in BaseVariables); sim_fixes[k] = v; end
+    # 1. Guarantee all varied parameters form the tensor grid
+    for key in sorted_keys
+        push!(active_keys, key)
+        push!(active_values, all_varied[key])
     end
 
-    for key in sorted_keys
-        if haskey(sim_fixes, key); continue 
-        else
-            push!(active_keys, key)
-            push!(active_values, all_varied[key])
+    # 2. Only apply fixed params from the UI if they are NOT actively varied!
+    # (If they are varied, the grid loop will naturally overwrite them anyway)
+    for (k, v) in fixed_params
+        if !(k in BaseVariables) && !(k in sorted_keys)
+            sim_fixes[k] = v
         end
     end
+
     return active_keys, active_values, sim_fixes
 end
 
