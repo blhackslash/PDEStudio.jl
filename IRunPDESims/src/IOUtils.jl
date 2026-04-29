@@ -99,11 +99,11 @@ function getFileName(params::ParamDict)
 
     all_files = readdir(save_data)
     
-    # Trust the SHA256 hash! No need to open the file and deserialize the dictionary.
+    # We only care about the prefix.
     candidate_files = filter(f -> startswith(f, "$(hash_val)_") && endswith(f, ".jld2"), all_files)
 
     if !isempty(candidate_files)
-        # Sort descending to always grab the absolute newest run for these parameters
+        # Sort descending to always grab the newest run for these parameters (if there are duplicates)
         sort!(candidate_files, rev=true)
         return joinpath(save_data, candidate_files[1])
     end
@@ -119,7 +119,7 @@ function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw
         if !isa(e, SimFileNotFoundError); rethrow(e); end
     end
 
-    # 1. If the file doesn't exist at all, generate a new filename
+    # 1. If the file doesn't exist, create it with a timestamp
     if isempty(file_name)
         hash_val = calculateHash(sim_data.params)
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
@@ -128,66 +128,22 @@ function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw
         file_name = joinpath(save_data, "$(hash_val)_$(timestamp).jld2")
     end
 
-    # 2. Open the file in Append/Update mode
-    jldopen(file_name, "a+") do file
+    # 2. Open the file safely. Use "a+" to append/create, "r+" to update
+    # If the file is brand new, we must use "w" first to initialize it.
+    mode = isfile(file_name) ? "a+" : "w"
+    
+    jldopen(file_name, mode) do file
         if haskey(file, data_key)
             if overwrite
-                delete!(file, data_key) # JLD2 requires explicit deletion before overwriting a key
+                delete!(file, data_key)
                 file[data_key] = sim_data
-                @info "Overwrote existing '$data_key' in $file_name"
+                @info "Overwrote existing '$data_key' in $(basename(file_name))"
             else
-                @info "'$data_key' already exists in $file_name. Skipping save."
+                @info "'$data_key' already exists in $(basename(file_name)). Skipping save."
             end
         else
             file[data_key] = sim_data
-            @info "Saved '$data_key' to $file_name"
-        end
-    end
-end
-
-"""
-    loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
-
-Manually loads a simulation file by its hash (or a partial hash prefix). 
-If multiple files match the hash (e.g., re-runs of the same parameters), 
-`index` determines which one to load, sorted by creation date (1 = newest, 2 = second newest).
-"""
-function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
-    # 1. Clean up the input in case you copy-pasted the exact filename with extension
-    clean_prefix = replace(hash_prefix, ".jld2" => "")
-    
-    save_data = joinpath(get_save_path(), "data")
-    if !isdir(save_data)
-        throw(SimFileNotFoundError("Data directory does not exist."))
-    end
-
-    all_files = readdir(save_data)
-    
-    # 2. Filter files that start with the prefix and are jld2 files
-    candidates = filter(f -> startswith(f, clean_prefix) && endswith(f, ".jld2"), all_files)
-    
-    if isempty(candidates)
-         throw(SimFileNotFoundError("No files found matching the hash prefix: $clean_prefix"))
-    end
-
-    # 3. Sort lexicographically (which naturally sorts by your timestamp naming convention).
-    # We use rev=true so that index 1 is always the NEWEST file.
-    sort!(candidates, rev=true)
-    
-    if index > length(candidates) || index < 1
-        error("Requested index $index, but only $(length(candidates)) files match the hash '$clean_prefix'.")
-    end
-
-    file_name = joinpath(save_data, candidates[index])
-    @info "Manual Load: Found $(length(candidates)) matching files. Loading index $index: $(candidates[index])"
-    
-    # 4. Safely load the specific key, or print available keys if you made a typo
-    jldopen(file_name, "r") do file
-        if haskey(file, data_key)
-            return file[data_key]
-        else
-            available_keys = join(keys(file), ", ")
-            throw(SimFileNotFoundError("Key '$data_key' not found in $(candidates[index]). Available keys are: $available_keys"))
+            @info "Saved '$data_key' to $(basename(file_name))"
         end
     end
 end
@@ -214,13 +170,6 @@ function doesSimDataExist(params::ParamDict; data_key::String="sim_data_raw")
     end
 end
 
-"""
-    loadBestConversion(params::ParamDict, min_N::Int)
-
-Smart Resolution Tracker: Scans the JLD2 file for all converted Eulerian grids.
-Returns the grid with the lowest resolution that is >= `min_N`. 
-If no suitable grid exists, it throws a SimFileNotFoundError.
-"""
 function loadBestConversion(params::ParamDict, min_N::Int)
     file_name = getFileName(params)
     best_key = ""
@@ -245,6 +194,38 @@ function loadBestConversion(params::ParamDict, min_N::Int)
     
     @info "Found suitable high-res conversion: '$best_key' (Requested minimum: $min_N)"
     return loadSimData(params; data_key=best_key)
+end
+
+function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
+    clean_prefix = replace(hash_prefix, ".jld2" => "")
+    save_data = joinpath(get_save_path(), "data")
+    
+    if !isdir(save_data); throw(SimFileNotFoundError("Data directory does not exist.")); end
+
+    all_files = readdir(save_data)
+    candidates = filter(f -> startswith(f, clean_prefix) && endswith(f, ".jld2"), all_files)
+    
+    if isempty(candidates)
+         throw(SimFileNotFoundError("No files found matching the hash prefix: $clean_prefix"))
+    end
+
+    sort!(candidates, rev=true)
+    
+    if index > length(candidates) || index < 1
+        error("Requested index $index, but only $(length(candidates)) files match the hash '$clean_prefix'.")
+    end
+
+    file_name = joinpath(save_data, candidates[index])
+    @info "Manual Load: Found $(length(candidates)) matching files. Loading index $index: $(candidates[index])"
+    
+    jldopen(file_name, "r") do file
+        if haskey(file, data_key)
+            return file[data_key]
+        else
+            available_keys = join(keys(file), ", ")
+            throw(SimFileNotFoundError("Key '$data_key' not found in $(candidates[index]). Available keys are: $available_keys"))
+        end
+    end
 end
 
 """
@@ -326,13 +307,6 @@ function check_data(data::AbstractSimData)
     return df
 end
 
-"""
-Loads only the stats field of the simulation mesh
-"""
-function getStats(params::ParamDict)
-    sim_data = loadSimData(params)
-    return sim_data.stats
-end
 
 """
 Deletes all saved simulation meshes with the given keys and values in its parameter dictionary.
@@ -365,71 +339,4 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
             @warn "Could not load file $file for deletion check" exception=e
         end
     end
-end
-
-"""
-Changes the paramseter dictionary of a simulation mesh from the old values to the new ones. Helpful if unused paramseters need to be changed or the type 
-is wrong (e.g. Int instead of Float). Note that the values are not changed, hence use with caution.
-
-"""
-function changeparams(ks::Vector{String}, oldVals::Vector, newVals::Vector)
-    save_data = get_save_path() * "/data/"
-    files = readdir(save_data)
-    for file = files
-        sim_data = load(save_data * file)["sim_data"]
-        for (i,key) = enumerate(ks)
-            if (key in keys(sim_data.params))
-                if sim_data.params[key] == oldVals[i]
-                    sim_data.params[key] = newVals[i]
-                    saveSimData(sim_data; overwrite = true)
-                    @info "Changed simulation mesh is saved!"
-                end
-            end
-        end
-    end
-end
-
-"""
-Returns all saved simulation meshes with the given parameters.
-"""
-function getAllSimData(ks::Vector{String}, vals::Vector)
-    save_data = get_save_path() * "/data/"
-    res = []
-    files = readdir(save_data)
-    for file = files
-        sim_data = load(save_data * file)["sim_data"]
-        hit = true
-        for (i,key) = enumerate(ks)
-            if (key in keys(sim_data.params))
-                hit = hit & (sim_data.params[key] == vals[i])
-            else
-                hit = false
-            end
-        end
-        if hit
-            push!(res, sim_data)
-        end
-    end
-    return res
-end
-
-"""
-Changes the given stat of all simulation meshes using the given function f. The function has to be of the
-form f(u,x) or f(u,x,t) for the static and dynamic case respectively. It can also be used to add a new stat
-to the simulation meshes.
-"""
-function changeStats(statsName::String, f::Function, simulation::String)
-    save_data = get_save_path() * "/data/"
-    files = readdir(save_data)
-    for file = files
-        sim_data = load(save_data * file)["sim_data"]
-        if sim_data.params["simulation"] == simulation
-            if simulation == "PDE"
-                sim_data.stats[statsName] = f(sim_data.u, sim_data.x, sim_data.t)
-            else
-                sim_data.stats[statsName] = f(sim_data.u, sim_data.x)
-            end
-            saveSimData(sim_data; overwrite = true)
-        end
-    end    
 end

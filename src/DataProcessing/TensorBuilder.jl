@@ -381,16 +381,36 @@ function create_method_plot_data(
     )
 end
 
-function update_plot_data_collection!(plot_data_dict, sim_config, active_methods, fixed_params, base_types; force_reload=false, parallel=false)
+function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods, base_types; force_reload=false, parallel=false)
     if force_reload; empty!(plot_data_dict); end
+    
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
+            # 1. Base math params from config
             base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
             if isempty(base_params); continue end
+            
+            # 2. Extract UI observables for THIS specific method
+            shared_ui = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
+            method_ui = haskey(manager.simulation, m_name) ? ParamDict(k => v[] for (k, v) in manager.simulation[m_name]) : ParamDict()
+            
+            # 3. Merge them correctly (method overrides shared!)
+            fixed_params = ParamDict()
+            for (k, v) in shared_ui
+                k == "ignore" && continue # Safety catch
+                fixed_params[k] = v
+            end
+            for (k, v) in method_ui
+                k == "ignore" && continue # THE FIX: Strip the meta-parameter!
+                fixed_params[k] = v
+            end
+            
+            # 4. Generate the plot data with the correctly merged UI params
             new_data = Base.invokelatest(create_method_plot_data, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end
+    
     for k in keys(plot_data_dict); if !(k in active_methods); delete!(plot_data_dict, k); end; end
     return plot_data_dict
 end

@@ -70,7 +70,7 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     end; end; end
 
     for d in 1:D
-        pad = max(1e-5, (maxs[d] - mins[d]) * 0.01)
+        pad = 0. # max(1e-5, (maxs[d] - mins[d]) * 0.01)
         mins[d] -= pad; maxs[d] += pad
     end
 
@@ -93,8 +93,21 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
     end
 
     cell_sizes = [(maxs[d] - mins[d]) / max(1, N_grid - 1) for d in 1:D]
-    # Use squared radius for fast distance checking
-    radius = (norm(cell_sizes) * 3.0)^2
+    
+    # --- THE FIX: Dynamic Particle-Aware Smoothing ---
+    # 1. Estimate average particle spacing based on the initial state
+    N_p_initial = max(1, length(ldata.x[1]))
+    
+    # N_p^(1/D) correctly estimates the 1D count along a single axis for 1D, 2D, and 3D!
+    pts_per_dim = max(1.0, N_p_initial^(1 / D) - 1.0)
+    particle_spacings = [(maxs[d] - mins[d]) / pts_per_dim for d in 1:D]
+    
+    # 2. Use the larger of the two spacings to ensure we bridge particle gaps
+    effective_spacing = max.(cell_sizes, particle_spacings)
+    
+    # 3. Calculate squared radius for fast distance checking
+    # 1.5x to 2.0x is usually the sweet spot to overlap the kernels
+    radius = (norm(effective_spacing) * 1.5)^2
 
     # --- Precompute SVector bounds for algebraic pos calculation ---
     s_mins = SVector{D, Float64}(mins)

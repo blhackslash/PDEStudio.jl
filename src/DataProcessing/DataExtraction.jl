@@ -19,16 +19,22 @@ function find_closest_index_for_dim(pd::UnifiedPlotData{N}, dim_idx::Int, target
         return max(1, Int(target_val))
         
     elseif dim_idx > n_params + 1 && dim_idx <= n_params + 4 
-        # --- THE FIX: Route to correct orthogonal axis natively ---
         tensor_key = dim_idx == n_params + 2 ? "x" : (dim_idx == n_params + 3 ? "y" : "z")
         
         if haskey(pd.data, tensor_key)
-            # Filter out the NaN padding to reveal the pure 1D coordinate axis
-            coord_vec = filter(isfinite, vec(pd.data[tensor_key]))
-            if isempty(coord_vec)
+            # --- THE FIX: Isolate the 1D axis natively to prevent vec() from flattening the grid! ---
+            slice_idx = ntuple(i -> i == dim_idx ? (:) : 1, ndims(pd.data[tensor_key]))
+            coord_vec = pd.data[tensor_key][slice_idx...]
+            
+            # Safely find the closest index while ignoring NaNs
+            valid_pairs = filter(p -> isfinite(p[2]), collect(enumerate(coord_vec)))
+            if isempty(valid_pairs)
                 return 1
             end
-            return findmin(v -> abs(v - target_val), coord_vec)[2]
+            
+            # Find the minimum difference, and extract the original index
+            best_idx = findmin(p -> abs(p[2] - target_val), valid_pairs)[2]
+            return valid_pairs[best_idx][1]
         end
         
     elseif dim_idx == n_params + 5 
@@ -87,8 +93,8 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         des_idx = _get_desired_indices(pd, (slice_dim_idx,), sel_vals)
         n_params = length(pd.active_param_keys)
         # Force orthogonal dimensions (dims > n_params) to index 1 to avoid NaN padding
-        safe_x = map(i -> i == slice_dim_idx ? (:) : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i))), 1:ndims(x_tensor))
-        safe_u = map(i -> i == slice_dim_idx ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        safe_x = map(i -> i == slice_dim_idx ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
+        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
         
         try
             x_val = x_tensor[safe_x...]
@@ -131,9 +137,9 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         
         des_idx = _get_desired_indices(pd, (dim1, dim2), sel_vals)
         n_params = length(pd.active_param_keys)
-        safe_x = map(i -> i == dim1 ? (:) : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i))), 1:ndims(x_tensor))
-        safe_y = map(i -> i == dim2 ? (:) : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i))), 1:ndims(y_tensor))
-        safe_u = map(i -> i in (dim1, dim2) ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        safe_x = map(i -> i == dim1 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
+        safe_y = map(i -> i == dim2 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i)))), 1:ndims(y_tensor))
+        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
         
         try
             x_val = x_tensor[safe_x...]; y_val = y_tensor[safe_y...]
@@ -183,10 +189,10 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         
         des_idx = _get_desired_indices(pd, (dim1, dim2, dim3), sel_vals)
         n_params = length(pd.active_param_keys)
-        safe_x = map(i -> i == dim1 ? (:) : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i))), 1:ndims(x_tensor))
-        safe_y = map(i -> i == dim2 ? (:) : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i))), 1:ndims(y_tensor))
-        safe_z = map(i -> i == dim3 ? (:) : (i > n_params ? 1 : min(des_idx[i], size(z_tensor, i))), 1:ndims(z_tensor))
-        safe_u = map(i -> i in (dim1, dim2, dim3) ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        safe_x = map(i -> i == dim1 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
+        safe_y = map(i -> i == dim2 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i)))), 1:ndims(y_tensor))
+        safe_z = map(i -> i == dim3 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(z_tensor, i)))), 1:ndims(z_tensor))
+        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
         
         try
             x_val = x_tensor[safe_x...]; y_val = y_tensor[safe_y...]; z_val = z_tensor[safe_z...]

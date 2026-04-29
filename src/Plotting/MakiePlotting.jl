@@ -86,11 +86,10 @@ function show_unified_fig(
         end
     end
 
-    lift(sim_update, methods_obs) do _, active_methods
-        fixed_params = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
-        
+lift(sim_update, methods_obs) do _, active_methods
+        # THE FIX: Pass the 'manager' directly instead of a hardcoded fixed_params dict
         Base.invokelatest(update_plot_data_collection!,
-            plot_data_obs[], sim_config, active_methods, fixed_params, to_value(manager.controls["base_types"]);
+            plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
             force_reload = (sim_update[] > 0), parallel = parallel, 
         )
         notify(plot_data_obs)

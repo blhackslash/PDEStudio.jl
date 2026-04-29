@@ -6,10 +6,11 @@ If it does (and `force_overwrite` is false), it skips execution and returns `NoS
 Otherwise, it executes the simulation, saves the result, and returns the data.
 """
 function run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
+    println(params)
     if !force_overwrite && doesSimDataExist(params)
         return NoSimData()
     end
-    
+    error("Should exist")
     # Run the actual simulation
     sim_data = Base.invokelatest(sim_func, params)
     

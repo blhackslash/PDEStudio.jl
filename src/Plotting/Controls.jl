@@ -331,10 +331,39 @@ function build_static_plot_controls!(
         end
     end
 
-    # Safe Key Observers to prevent `Nothing to String` errors
-    on(menu_x.selection) do x_val; x_key_obs[] = isnothing(x_val) ? "-" : x_val; end
-    on(menu_y.selection) do y_val; y_key_obs[] = isnothing(y_val) ? "-" : y_val; end
-    on(menu_z.selection) do z_val; z_key_obs[] = isnothing(z_val) ? "-" : z_val; end
+# --- Safe Key Observers & Anti-Collision Cascade ---
+    on(menu_x.selection) do x_val
+        x_key_obs[] = isnothing(x_val) ? "-" : x_val
+        
+        # Anti-Collision: Shift Y if it matches X
+        opts_y = menu_y.options[]
+        if opts_y != ["disabled"] && menu_y.selection[] == x_val && length(opts_y) > 1
+            idx = findfirst(isequal(x_val), opts_y)
+            menu_y.i_selected[] = mod1(idx + 1, length(opts_y))
+        end
+    end
+
+    on(menu_y.selection) do y_val
+        y_key_obs[] = isnothing(y_val) ? "-" : y_val
+        
+        # Anti-Collision: Shift Z if it matches Y or X
+        opts_z = menu_z.options[]
+        if opts_z != ["disabled"] && length(opts_z) > 2
+            while menu_z.selection[] in (menu_x.selection[], menu_y.selection[])
+                menu_z.i_selected[] = mod1(menu_z.i_selected[] + 1, length(opts_z))
+            end
+        end
+    end
+
+    on(menu_z.selection) do z_val
+        z_key_obs[] = isnothing(z_val) ? "-" : z_val
+    end
+    
+    on(menu_u.selection) do u_val
+        (isnothing(u_val) || u_val == "-") && return
+        u_key_obs[] = u_val
+        notify(menu_z.selection) 
+    end
     
     on(menu_u.selection) do u_val
         (isnothing(u_val) || u_val == "-") && return
