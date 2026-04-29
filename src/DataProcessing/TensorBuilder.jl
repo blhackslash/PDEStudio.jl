@@ -246,15 +246,16 @@ function create_method_plot_data(
         # --- CACHED INTERCEPT ---
         if first_data isa LSimData
             N_grid = _LAGRANGE_N_GRID[]
-            cache_name = "conv_$(N_grid)"
-            
             try
-                first_data = loadSimData(tasks[1]; suffix=cache_name)
-                @info "Loaded cached Eulerian conversion ($cache_name)."
-            catch
+                # Smart Tracker: Grab the closest pre-converted resolution
+                first_data = loadBestConversion(tasks[1], N_grid)
+                @info "Loaded cached Eulerian conversion for plotting."
+            catch e
+                if !(e isa SimFileNotFoundError); e end
                 @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
                 first_data = convert_to_eulerian(first_data, N_grid)
-                saveSimData(first_data; suffix=cache_name, overwrite=true)
+                # Save the new conversion using the data_key format
+                saveSimData(first_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
             end
         end
     end
@@ -324,12 +325,12 @@ function create_method_plot_data(
             # --- CACHED INTERCEPT ---
             if sim_data isa LSimData
                 N_grid = _LAGRANGE_N_GRID[]
-                cache_name = "conv_$(N_grid)"
                 try
-                    sim_data = loadSimData(params; suffix=cache_name)
-                catch
+                    sim_data = loadBestConversion(params, N_grid)
+                catch e
+                    if !(e isa SimFileNotFoundError); e end
                     sim_data = convert_to_eulerian(sim_data, N_grid)
-                    saveSimData(sim_data; suffix=cache_name, overwrite=true)
+                    saveSimData(sim_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
                 end
             end
         end

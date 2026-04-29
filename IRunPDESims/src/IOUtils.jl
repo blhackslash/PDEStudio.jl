@@ -89,38 +89,7 @@ function calculateHash(params::ParamDict)
     stringToHash = join(map(key -> "$key => $(params[key])", sorted_keys))
     return bytes2hex(sha256(stringToHash))
 end
-
-function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false, suffix::String = "")
-    try
-        existing_file = getFileName(sim_data.params; suffix=suffix)
-        if overwrite
-            save(existing_file, "sim_data", sim_data)
-            @warn "Existing simulation data overwritten at: $existing_file"
-        else
-            @info "Simulation data already exists at: $existing_file. Skipping save."
-        end
-        return
-    catch e
-        if !isa(e, SimFileNotFoundError)
-            rethrow(e)
-        end
-    end
-
-    hash_val = calculateHash(sim_data.params)
-    timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
-    
-    save_data = joinpath(get_save_path(), "data")
-    if !isdir(save_data); mkpath(save_data); end
-
-    # Inject the suffix seamlessly
-    suffix_str = isempty(suffix) ? "" : "_$(suffix)"
-    file_name = joinpath(save_data, "$(hash_val)$(suffix_str)_$(timestamp).jld2")
-
-    save(file_name, "sim_data", sim_data)
-    @info "SimData saved to new file: $file_name"
-end
-
-function getFileName(params::ParamDict; suffix::String="")
+function getFileName(params::ParamDict)
     hash_val = calculateHash(params)
     save_data = joinpath(get_save_path(), "data")
     
@@ -129,68 +98,232 @@ function getFileName(params::ParamDict; suffix::String="")
     end
 
     all_files = readdir(save_data)
+    
+    # Trust the SHA256 hash! No need to open the file and deserialize the dictionary.
+    candidate_files = filter(f -> startswith(f, "$(hash_val)_") && endswith(f, ".jld2"), all_files)
 
-    candidate_files = filter(all_files) do f
-        !endswith(f, ".jld2") && return false
-        
-        if isempty(suffix)
-            # Must match "HASH_" followed by a digit (the timestamp) to exclude "HASH_conv"
-            return startswith(f, "$(hash_val)_") && occursin(r"^[0-9]", replace(f, "$(hash_val)_" => ""))
-        else
-            # Must match "HASH_conv_"
-            return startswith(f, "$(hash_val)_$(suffix)_")
-        end
+    if !isempty(candidate_files)
+        # Sort descending to always grab the absolute newest run for these parameters
+        sort!(candidate_files, rev=true)
+        return joinpath(save_data, candidate_files[1])
     end
 
-    for file in candidate_files
-        full_path = joinpath(save_data, file)
-        try
-            sim_data_saved = load(full_path, "sim_data")
-            if params == sim_data_saved.params
-                return full_path
-            end
-        catch e
-            @warn "Failed to load candidate file $file during search."
-        end
-    end
-
-    throw(SimFileNotFoundError("File with matching parameters and suffix '$suffix' not found."))
+    throw(SimFileNotFoundError("File with matching parameters not found."))
 end
 
-function loadSimData(params::ParamDict; suffix::String="")
-    return load(getFileName(params; suffix=suffix))["sim_data"]
-end
-
-function doesSimDataExist(params::ParamDict; suffix::String="")
+function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw", overwrite::Bool = false)
+    file_name = ""
     try
-        getFileName(params; suffix=suffix)
-        return true
+        file_name = getFileName(sim_data.params)
     catch e
-        if isa(e, SimFileNotFoundError)
-             return false
+        if !isa(e, SimFileNotFoundError); rethrow(e); end
+    end
+
+    # 1. If the file doesn't exist at all, generate a new filename
+    if isempty(file_name)
+        hash_val = calculateHash(sim_data.params)
+        timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
+        save_data = joinpath(get_save_path(), "data")
+        if !isdir(save_data); mkpath(save_data); end
+        file_name = joinpath(save_data, "$(hash_val)_$(timestamp).jld2")
+    end
+
+    # 2. Open the file in Append/Update mode
+    jldopen(file_name, "a+") do file
+        if haskey(file, data_key)
+            if overwrite
+                delete!(file, data_key) # JLD2 requires explicit deletion before overwriting a key
+                file[data_key] = sim_data
+                @info "Overwrote existing '$data_key' in $file_name"
+            else
+                @info "'$data_key' already exists in $file_name. Skipping save."
+            end
         else
-            rethrow(e)
+            file[data_key] = sim_data
+            @info "Saved '$data_key' to $file_name"
         end
     end
 end
-# Overload for loading directly by hash is tricky now because multiple files 
-# might share the hash (collisions). This function assumes you want *any* file 
-# with that hash, or strictly expects only one.
-function loadSimData(hash_prefix::String)
-    save_data = get_save_path() * "/data/"
+
+"""
+    loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
+
+Manually loads a simulation file by its hash (or a partial hash prefix). 
+If multiple files match the hash (e.g., re-runs of the same parameters), 
+`index` determines which one to load, sorted by creation date (1 = newest, 2 = second newest).
+"""
+function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
+    # 1. Clean up the input in case you copy-pasted the exact filename with extension
+    clean_prefix = replace(hash_prefix, ".jld2" => "")
+    
+    save_data = joinpath(get_save_path(), "data")
+    if !isdir(save_data)
+        throw(SimFileNotFoundError("Data directory does not exist."))
+    end
+
     all_files = readdir(save_data)
-    candidates = filter(f -> startswith(f, hash_prefix) && endswith(f, ".jld2"), all_files)
+    
+    # 2. Filter files that start with the prefix and are jld2 files
+    candidates = filter(f -> startswith(f, clean_prefix) && endswith(f, ".jld2"), all_files)
     
     if isempty(candidates)
-         error("No files found with hash prefix: $hash_prefix")
+         throw(SimFileNotFoundError("No files found matching the hash prefix: $clean_prefix"))
     end
 
-    # Sort by time (assuming standard naming) to get the latest? 
-    # Or just pick the first one. Let's pick the latest.
-    sort!(candidates) 
-    file_name = joinpath(save_data, candidates[end])
+    # 3. Sort lexicographically (which naturally sorts by your timestamp naming convention).
+    # We use rev=true so that index 1 is always the NEWEST file.
+    sort!(candidates, rev=true)
     
-    return load(file_name)["sim_data"]
+    if index > length(candidates) || index < 1
+        error("Requested index $index, but only $(length(candidates)) files match the hash '$clean_prefix'.")
+    end
+
+    file_name = joinpath(save_data, candidates[index])
+    @info "Manual Load: Found $(length(candidates)) matching files. Loading index $index: $(candidates[index])"
+    
+    # 4. Safely load the specific key, or print available keys if you made a typo
+    jldopen(file_name, "r") do file
+        if haskey(file, data_key)
+            return file[data_key]
+        else
+            available_keys = join(keys(file), ", ")
+            throw(SimFileNotFoundError("Key '$data_key' not found in $(candidates[index]). Available keys are: $available_keys"))
+        end
+    end
+end
+
+function loadSimData(params::ParamDict; data_key::String="sim_data_raw")
+    file_name = getFileName(params)
+    jldopen(file_name, "r") do file
+        if haskey(file, data_key)
+            return file[data_key]
+        else
+            throw(SimFileNotFoundError("Key '$data_key' not found in file."))
+        end
+    end
+end
+
+function doesSimDataExist(params::ParamDict; data_key::String="sim_data_raw")
+    try
+        file_name = getFileName(params)
+        jldopen(file_name, "r") do file
+            return haskey(file, data_key)
+        end
+    catch e
+        if isa(e, SimFileNotFoundError); return false; else; rethrow(e); end
+    end
+end
+
+"""
+    loadBestConversion(params::ParamDict, min_N::Int)
+
+Smart Resolution Tracker: Scans the JLD2 file for all converted Eulerian grids.
+Returns the grid with the lowest resolution that is >= `min_N`. 
+If no suitable grid exists, it throws a SimFileNotFoundError.
+"""
+function loadBestConversion(params::ParamDict, min_N::Int)
+    file_name = getFileName(params)
+    best_key = ""
+    best_N = typemax(Int)
+    
+    jldopen(file_name, "r") do file
+        for k in keys(file)
+            if startswith(k, "sim_data_plot_")
+                N_str = replace(k, "sim_data_plot_" => "")
+                N = tryparse(Int, N_str)
+                if !isnothing(N) && N >= min_N && N < best_N
+                    best_N = N
+                    best_key = k
+                end
+            end
+        end
+    end
+    
+    if isempty(best_key)
+        throw(SimFileNotFoundError("No conversion found with N >= $min_N"))
+    end
+    
+    @info "Found suitable high-res conversion: '$best_key' (Requested minimum: $min_N)"
+    return loadSimData(params; data_key=best_key)
+end
+
+"""
+    check_data(data::AbstractSimData)
+
+Generates a fast, allocation-free DataFrame summarizing the Min, Max, Mean, 
+and NaN count for every component at every timestep. Works natively on both 
+ESimData and LSimData.
+"""
+function check_data(data::AbstractSimData)
+    T_len = length(data.t)
+    
+    # Dynamically determine the number of components (M)
+    M = if data isa ESimData
+        size(data.u, 1)
+    else
+        # For Lagrangian, peek at the first valid particle of the first timestep
+        length(data.u) > 0 && length(data.u[1]) > 0 ? length(data.u[1][1]) : 1
+    end
+    
+    # Preallocate the dictionary to build the DataFrame
+    df_dict = Dict{Symbol, Vector{Float64}}()
+    df_dict[:Time] = data.t
+    
+    for c in 1:M
+        df_dict[Symbol("C$(c)_Min")]  = zeros(T_len)
+        df_dict[Symbol("C$(c)_Max")]  = zeros(T_len)
+        df_dict[Symbol("C$(c)_Mean")] = zeros(T_len)
+        df_dict[Symbol("C$(c)_NaNs")] = zeros(T_len)
+    end
+    
+    for m in 1:T_len
+        for c in 1:M
+            # Fast, allocation-free accumulators
+            min_v, max_v = Inf, -Inf
+            sum_v = 0.0
+            valid_count, nan_count = 0, 0
+            
+            # 1. Extract the data iterator based on the struct type
+            iterator = if data isa ESimData
+                # Slice: [Component, X, Y, Z..., Time] -> extract specific component & time
+                selectdim(selectdim(data.u, ndims(data.u), m), 1, c)
+            else
+                # Map lazily over the particles at this timestep
+                (p[c] for p in data.u[m])
+            end
+            
+            # 2. Single-pass evaluation (Zero memory allocations!)
+            for val in iterator
+                if isnan(val)
+                    nan_count += 1
+                else
+                    min_v = min(min_v, val)
+                    max_v = max(max_v, val)
+                    sum_v += val
+                    valid_count += 1
+                end
+            end
+            
+            # 3. Save to our DataFrame dictionary
+            df_dict[Symbol("C$(c)_NaNs")][m] = nan_count
+            
+            if valid_count > 0
+                df_dict[Symbol("C$(c)_Min")][m]  = min_v
+                df_dict[Symbol("C$(c)_Max")][m]  = max_v
+                df_dict[Symbol("C$(c)_Mean")][m] = sum_v / valid_count
+            else
+                df_dict[Symbol("C$(c)_Min")][m]  = NaN
+                df_dict[Symbol("C$(c)_Max")][m]  = NaN
+                df_dict[Symbol("C$(c)_Mean")][m] = NaN
+            end
+        end
+    end
+    
+    # Construct the DataFrame and force the 'Time' column to be first
+    df = DataFrame(df_dict)
+    select!(df, :Time, Not(:Time))
+    
+    return df
 end
 
 """

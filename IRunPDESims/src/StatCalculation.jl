@@ -1,7 +1,7 @@
-using Dierckx
-using QuadGK
 using ProgressMeter
 using Random
+using StaticArrays
+using LinearAlgebra
 
 # ==============================================================================
 # --- SECTION 1: EULERIAN UNIFICATION (Dense Tensors with NaN Padding) ---
@@ -20,186 +20,90 @@ function calculateAllStats!(
     kwargs...
 )
     N_grid = _LAGRANGE_N_GRID[]
-    cache_name = "conv_$(N_grid)"
 
-    @info "Lagrangian data detected. Fetching Eulerian conversion ($cache_name) for stats..."
+    @info "Lagrangian data detected. Searching for Eulerian conversion (N >= $N_grid) for stats..."
     conv_data = try 
-        loadSimData(sim_data.params; suffix=cache_name) 
+        loadBestConversion(sim_data.params, N_grid) 
     catch 
-        @info "No cached conversion found. Generating new ESimData at N=$N_grid..."
+        @info "No suitable conversion found. Generating new ESimData at N=$N_grid..."
         converted = convert_to_eulerian(sim_data, N_grid)
-        saveSimData(converted; suffix=cache_name, overwrite=true)
+        # THE FIX: Save as a new field in the existing file
+        saveSimData(converted; data_key="sim_data_plot_$(N_grid)", overwrite=true)
         converted
     end
     
-    calculateAllStats!(conv_data, ref_func; stats_to_calculate=stats_to_calculate, kwargs...)
+    # We no longer need to pass suffixes around! We just save it back to the specific plot key.
+    target_key = "sim_data_plot_$(size(conv_data.u, 2))"
+    calculateAllStats!(conv_data, ref_func; stats_to_calculate=stats_to_calculate, data_key=target_key, kwargs...)
 end
+
 # ==============================================================================
-# --- SECTION 2: THE MATHEMATICAL WORKERS (Stateless & Safe) ---
+# --- SECTION 2: THE MATHEMATICAL WORKERS (Discrete Riemann Sums) ---
 # ==============================================================================
 
-function _create_piecewise_spline_function(x_coords, y_values, breakpoints, dierckx_k)
-    isempty(x_coords) && return x -> 0.0 
-    splines = Dierckx.Spline1D[] 
-
-    for i in 1:(length(breakpoints)-1)
-        xa, xb = breakpoints[i], breakpoints[i+1]
-        epsilon = 1e-9
-        idx_sub = findall(x -> (xa - epsilon) <= x <= (xb + epsilon), x_coords)
-
-        current_k = length(idx_sub) < dierckx_k + 1 ? 1 : dierckx_k
-        if length(idx_sub) < 2
-            val = isempty(idx_sub) ? y_values[findmin(v -> abs(v - (xa+xb)/2), x_coords)[2]] : y_values[idx_sub[1]]
-            push!(splines, Dierckx.Spline1D([xa, xb], [val, val]; k=1, bc="nearest"))
-            continue
-        end
-        
-        x_p, y_p = x_coords[idx_sub], y_values[idx_sub]
-        if abs(x_p[1] - xa) > epsilon; insert!(x_p, 1, xa); insert!(y_p, 1, y_p[1]); end
-        if abs(x_p[end] - xb) > epsilon; push!(x_p, xb); push!(y_p, y_p[end]); end
-
-        try
-            push!(splines, Dierckx.Spline1D(x_p, y_p; k=current_k, s=0., bc="nearest"))
-        catch; push!(splines, Dierckx.Spline1D([xa, xb], [0.0, 0.0]; k=1)); end
-    end
-
-    return function(x)
-        idx = searchsortedlast(breakpoints, x)
-        return splines[clamp(idx == 0 ? 1 : idx, 1, length(splines))](x)
-    end
-end
-
-# For Eulerian (Gridded) Data ONLY
-function _create_2d_spline(x_coords::Tuple, u_values::AbstractMatrix, k=3)
-    x_vec, y_vec = x_coords[1], x_coords[2]
-    
-    kx = min(length(x_vec)-1, k)
-    ky = min(length(y_vec)-1, k)
-    
-    # Replace NaNs (empty space) with 0.0 for stable integration
-    u_clean = replace(u_values, NaN => 0.0)
-    
-    return Dierckx.Spline2D(x_vec, y_vec, u_clean; kx=kx, ky=ky, s=0.0)
-end
-
-function _calc_series_with_ref(::Val{1}, u_valid, ana_func, x_valid, domain, disc_pts, k, tol)
+function _calc_series_no_ref(::Val{D}, u_valid, axes) where {D}
     res = Dict{String, Float64}()
-    isempty(u_valid) && return res
-
-    ana_vals = [ana_func(x) for x in x_valid]
-    err_vals = u_valid .- ana_vals
-    bps = unique(sort([domain.xmin; disc_pts; domain.xmax]))
-
-    perm = sortperm(x_valid)
-    x_sort = x_valid[perm]
-    spl_err = _create_piecewise_spline_function(x_sort, err_vals[perm], bps, k)
-    spl_u = _create_piecewise_spline_function(x_sort, u_valid[perm], bps, k)
-
-    # 1. Calculate Norms first (these are fast and provide a scale)
-    ana_l1, _ = QuadGK.quadgk(x -> abs(ana_func(x)), bps...; rtol=tol)
-    ana_l2_sq, _ = QuadGK.quadgk(x -> ana_func(x)^2, bps...; rtol=tol)
     
-    # 2. FIX: Use ana_l1 to set a floor for the absolute tolerance.
-    # This prevents the integrator from diving into infinity if mass_ana is 0.
-    mass_atol = ana_l1 * tol
-    mass_ana, _ = QuadGK.quadgk(ana_func, bps...; rtol=tol, atol=mass_atol)
+    # Calculate cell volume
+    dx = ntuple(d -> length(axes[d]) > 1 ? axes[d][2] - axes[d][1] : 1.0, Val(D))
+    dV = prod(dx)
 
-    l1_err, _ = QuadGK.quadgk(x -> abs(spl_err(x)), bps...; rtol=tol, atol=mass_atol)
-    l2_sq_err, _ = QuadGK.quadgk(x -> spl_err(x)^2, bps...; rtol=tol, atol=mass_atol)
+    # Clean NaNs from empty Eulerian space
+    u_clean = replace(u_valid, NaN => 0.0)
+
+    # 1. Pure Discrete Integration
+    res["mass"] = sum(u_clean) * dV
+    res["l1norm"] = sum(abs, u_clean) * dV
+    res["l2norm"] = sqrt(sum(abs2, u_clean) * dV)
+
+    # 2. Extract Wave Height & Position natively
+    h_num, linear_idx = findmax(replace(u_valid, NaN => -Inf))
+    res["wave_height"] = h_num
+    
+    idx = CartesianIndices(u_valid)[linear_idx]
+    if D == 1
+        res["wave_position"] = axes[1][idx[1]]
+    elseif D >= 2
+        res["wave_position_x"] = axes[1][idx[1]]
+        res["wave_position_y"] = axes[2][idx[2]]
+        if D == 3
+            res["wave_position_z"] = axes[3][idx[3]]
+        end
+    end
+
+    return res
+end
+
+function _calc_series_with_ref(::Val{D}, u_valid, ana_vals, axes) where {D}
+    res = Dict{String, Float64}()
+    
+    dx = ntuple(d -> length(axes[d]) > 1 ? axes[d][2] - axes[d][1] : 1.0, Val(D))
+    dV = prod(dx)
+
+    u_clean = replace(u_valid, NaN => 0.0)
+    err_vals = u_clean .- ana_vals
+
+    # 1. Analytical Norms
+    ana_l1 = sum(abs, ana_vals) * dV
+    ana_l2_sq = sum(abs2, ana_vals) * dV
+    mass_ana = sum(ana_vals) * dV
+    
+    # 2. Error Norms
+    l1_err = sum(abs, err_vals) * dV
+    l2_sq_err = sum(abs2, err_vals) * dV
     
     res["l1error"] = l1_err
     res["l2error"] = sqrt(l2_sq_err)
     res["relative_l1error"] = ana_l1 > 1e-12 ? l1_err / ana_l1 : l1_err
-    res["relative_l2error"] = sqrt(ana_l2_sq) > 1e-12 ? sqrt(l2_sq_err) / sqrt(ana_l2_sq) : sqrt(l2_sq_err)
+    res["relative_l2error"] = ana_l2_sq > 1e-12 ? sqrt(l2_sq_err) / sqrt(ana_l2_sq) : sqrt(l2_sq_err)
 
-    mass_num, _ = QuadGK.quadgk(spl_u, bps...; rtol=tol)
+    # 3. Mass & Supnorm
+    mass_num = sum(u_clean) * dV
     res["mass"] = mass_num
     res["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
 
-    res["supnorm"] = maximum(abs.(err_vals))
-    sup_ana = maximum(abs.(ana_vals))
-    res["relative_supnorm"] = sup_ana > 1e-12 ? res["supnorm"] / sup_ana : res["supnorm"]
-    return res
-end
-
-function _calc_series_no_ref(::Val{1}, u_valid, x_valid, domain, disc_pts, k, tol)
-    res = Dict{String, Float64}()
-    isempty(u_valid) && return res
-
-    bps = unique(sort([domain.xmin; disc_pts; domain.xmax]))
-    perm = sortperm(x_valid)
-    spl_u = _create_piecewise_spline_function(x_valid[perm], u_valid[perm], bps, k)
-
-    res["mass"], _ = QuadGK.quadgk(spl_u, bps...; rtol=tol)
-    res["l1norm"], _ = QuadGK.quadgk(x -> abs(spl_u(x)), bps...; rtol=tol)
-    res["l2norm"] = sqrt(QuadGK.quadgk(x -> spl_u(x)^2, bps...; rtol=tol)[1])
-
-    h_num, idx = findmax(u_valid)
-    res["wave_height"] = h_num
-    res["wave_position"] = x_valid[idx]
-    return res
-end
-function _calc_series_no_ref(::Val{2}, u_valid, x_valid::Tuple, domain, disc_pts, k, tol)
-    res = Dict{String, Float64}()
-    
-    xmin = get(domain, :xmin, minimum(x_valid[1]))
-    xmax = get(domain, :xmax, maximum(x_valid[1]))
-    ymin = get(domain, :ymin, minimum(x_valid[2]))
-    ymax = get(domain, :ymax, maximum(x_valid[2]))
-
-    spl_u = _create_2d_spline(x_valid, u_valid, k)
-    spl_u_abs = _create_2d_spline(x_valid, abs.(u_valid), k)
-    spl_u_sq = _create_2d_spline(x_valid, u_valid.^2, k)
-
-    res["mass"] = Dierckx.integrate(spl_u, xmin, xmax, ymin, ymax)
-    res["l1norm"] = Dierckx.integrate(spl_u_abs, xmin, xmax, ymin, ymax)
-    res["l2norm"] = sqrt(max(0.0, Dierckx.integrate(spl_u_sq, xmin, xmax, ymin, ymax)))
-
-    h_num, idx = findmax(replace(u_valid, NaN => -Inf))
-    res["wave_height"] = h_num
-    res["wave_position_x"] = x_valid[1][idx[1]]
-    res["wave_position_y"] = x_valid[2][idx[2]]
-
-    return res
-end
-
-function _calc_series_with_ref(::Val{2}, u_valid, ana_func, x_valid::Tuple, domain, disc_pts, k, tol)
-    res = Dict{String, Float64}()
-
-    xmin = get(domain, :xmin, minimum(x_valid[1]))
-    xmax = get(domain, :xmax, maximum(x_valid[1]))
-    ymin = get(domain, :ymin, minimum(x_valid[2]))
-    ymax = get(domain, :ymax, maximum(x_valid[2]))
-
-    ana_vals = [ana_func([x, y]) for x in x_valid[1], y in x_valid[2]]
-    err_vals = u_valid .- ana_vals
-    
-    spl_err_abs = _create_2d_spline(x_valid, abs.(err_vals), k)
-    spl_err_sq  = _create_2d_spline(x_valid, err_vals.^2, k)
-    spl_u       = _create_2d_spline(x_valid, u_valid, k)
-    
-    spl_ana_abs = _create_2d_spline(x_valid, abs.(ana_vals), k)
-    spl_ana_sq  = _create_2d_spline(x_valid, ana_vals.^2, k)
-    spl_ana     = _create_2d_spline(x_valid, ana_vals, k)
-
-    ana_l1 = Dierckx.integrate(spl_ana_abs, xmin, xmax, ymin, ymax)
-    ana_l2_sq = Dierckx.integrate(spl_ana_sq, xmin, xmax, ymin, ymax)
-    mass_ana = Dierckx.integrate(spl_ana, xmin, xmax, ymin, ymax)
-
-    l1_err = Dierckx.integrate(spl_err_abs, xmin, xmax, ymin, ymax)
-    l2_sq_err = Dierckx.integrate(spl_err_sq, xmin, xmax, ymin, ymax)
-
-    res["l1error"] = l1_err
-    res["l2error"] = sqrt(max(0.0, l2_sq_err))
-    res["relative_l1error"] = ana_l1 > 1e-12 ? l1_err / ana_l1 : l1_err
-    res["relative_l2error"] = sqrt(max(0.0, ana_l2_sq)) > 1e-12 ? sqrt(max(0.0, l2_sq_err)) / sqrt(ana_l2_sq) : sqrt(max(0.0, l2_sq_err))
-
-    mass_num = Dierckx.integrate(spl_u, xmin, xmax, ymin, ymax)
-    res["mass"] = mass_num
-    res["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
-
-    res["supnorm"] = maximum(abs.(replace(err_vals, NaN => 0.0)))
-    sup_ana = maximum(abs.(ana_vals))
+    res["supnorm"] = maximum(abs, err_vals)
+    sup_ana = maximum(abs, ana_vals)
     res["relative_supnorm"] = sup_ana > 1e-12 ? res["supnorm"] / sup_ana : res["supnorm"]
 
     return res
@@ -213,73 +117,71 @@ end
     _calculate_stats!(::Val{:series}, ...)
 
 Calculates time-dependent series (Norms, Integrals, Masses).
-Populates `sim_data.series` which is a `Matrix` of shape `[Time, Component]`.
+Populates `sim_data.series` which is a `Matrix` of shape `[Component, Time]`.
 """
-function _calculate_stats!(::Val{:series}, sim_data::AbstractSimData{D}, x_dense, u_dense, ref_func; 
-                           discontinuity_points_func = _ -> Float64[], dierckx_k=3, quad_tol=1e-12, force_overwrite=false) where {D}
-    
+function _calculate_stats!(::Val{:series}, sim_data::AbstractSimData{D}, x_dense, u_dense, ref_func; force_overwrite=false, kwargs...) where {D}
     n_steps = length(sim_data.t)
     n_comps = size(u_dense, 1)
 
-    keys = isnothing(ref_func) ? 
+    # Establish keys dynamically
+    keys_list = isnothing(ref_func) ? 
         ["mass", "wave_height", "wave_position", "l1norm", "l2norm"] : 
         ["l1error", "l2error", "supnorm", "relative_l1error", "relative_l2error", "relative_supnorm", "mass", "relative_mass"]
-    if D==2; 
-        deleteat!(keys,findfirst(k->k=="wave_position",keys));
-        push!(keys,"wave_position_x")
-        push!(keys,"wave_position_y")
+    
+    if D >= 2
+        filter!(k -> k != "wave_position", keys_list)
+        push!(keys_list, "wave_position_x", "wave_position_y")
+        if D == 3
+            push!(keys_list, "wave_position_z")
+        end
     end
-    filter!(k -> !haskey(sim_data.series, k) || force_overwrite, keys)
-    # Preallocate into the strictly typed series dictionary
-    for k in keys
+
+    filter!(k -> !haskey(sim_data.series, k) || force_overwrite, keys_list)
+    
+    # Preallocate output vectors
+    for k in keys_list
         sim_data.series[k] = fill(NaN, n_comps, n_steps)
     end
-    if isempty(keys); return end
+    isempty(keys_list) && return
 
-    domain = (xmin=get(sim_data.params, "xmin", 0.0), xmax=get(sim_data.params, "xmax", 1.0))
+    axes = D == 1 ? (x_dense[1],) : x_dense
+    grid_shape = size(u_dense)[2:end-1]
+    
     p = Progress(n_steps; desc = "Calculating :series Stats...")
     
     Threads.@threads for m in 1:n_steps
-t = sim_data.t[m]
-        disc_pts = discontinuity_points_func(t)
-
-        x_valid = x_dense # Thi
-
+        t = sim_data.t[m]
+        
+        # Allocate analytical tensor ONCE per timestep per thread!
+        local_ana = isnothing(ref_func) ? nothing : zeros(Float64, grid_shape)
+        
         for c in 1:n_comps
-            u_valid = D == 1 ? u_dense[c, :, m] : u_dense[c, :, :, m]
+            # Dynamic slicing: extracts `[X, Y, Z]` perfectly regardless of dimension!
+            u_valid = selectdim(selectdim(u_dense, ndims(u_dense), m), 1, c)
             
             if !isnothing(ref_func)
-                ana_func = (D == 1) ? (x -> ref_func(x, t)[c]) : (pos -> ref_func(pos, t)[c])
-                res = _calc_series_with_ref(Val(D), u_valid, ana_func, x_valid, domain, disc_pts, dierckx_k, quad_tol)
+                # Evaluate analytical solution natively onto the grid
+                for idx in CartesianIndices(grid_shape)
+                    pos = SVector{D, Float64}(ntuple(d -> axes[d][idx[d]], Val(D)))
+                    local_ana[idx] = ref_func(pos, t)[c]
+                end
+                res = _calc_series_with_ref(Val(D), u_valid, local_ana, axes)
             else
-                res = _calc_series_no_ref(Val(D), u_valid, x_valid, domain, disc_pts, dierckx_k, quad_tol)
+                res = _calc_series_no_ref(Val(D), u_valid, axes)
             end
             
-            for k in keys
+            for k in keys_list
                 sim_data.series[k][c, m] = res[k]
             end
         end
-        ProgressMeter.update!(p, 1)
+        ProgressMeter.next!(p)
     end
 end
 
-"""
-    _calculate_stats!(::Val{:fields}, ...)
-
-Placeholder for Spatio-temporal stats (e.g. pointwise errors over time).
-Populates `sim_data.fields` `[Component, Space..., Time]`.
-"""
 function _calculate_stats!(::Val{:fields}, sim_data::AbstractSimData, x_dense, u_dense, ref_func; kwargs...)
     @info "Calculating :fields stats..."
-    # e.g., sim_data.fields["pointwise_error"] = u_dense .- analytical_tensor
 end
 
-"""
-    _calculate_stats!(::Val{:profiles}, ...)
-
-Placeholder for purely spatial stats at the final timestep.
-Populates `sim_data.profiles` `[Component, Space...]`.
-"""
 function _calculate_stats!(::Val{:profiles}, sim_data::AbstractSimData, x_dense, u_dense, ref_func; kwargs...)
     @info "Calculating :profiles stats..."
 end
@@ -291,8 +193,7 @@ end
 """
     calculateAllStats!(sim_data, ref_func=nothing; stats_to_calculate=:series, ...)
 
-The Universal Stat Orchestrator. 
-Converts incoming data to dense Eulerian tensors and dispatches entirely by Symbol.
+The Universal Stat Orchestrator.
 """
 function calculateAllStats!(
     sim_data::AbstractSimData,
@@ -302,46 +203,98 @@ function calculateAllStats!(
 )
     stats_list = stats_to_calculate isa Symbol ? [stats_to_calculate] : stats_to_calculate
 
-    # 2. Dispatch by Category Symbol!
     for stat_type in stats_list
         _calculate_stats!(Val(stat_type), sim_data, sim_data.x, sim_data.u, ref_func; kwargs...)
     end
     
-    saveSimData(sim_data; overwrite = true)
+    saveSimData(sim_data; data_key=kwargs[:data_key], overwrite = true)
 end
 
-# --- 1D Numerical Reference Generator ---
-function createReferenceFunction(ref_sim_data::AbstractSimData{1}; discontinuity_points_func::Function = t -> Float64[])
+# --- N-Dimensional Native Nearest Neighbor Reference Generator ---
+function createReferenceFunction(ref_sim_data::AbstractSimData{D}) where {D}
     x_dense, u_dense = ref_sim_data.x, ref_sim_data.u
-    n_steps, n_comps = length(ref_sim_data.t), size(u_dense, 1)
-    
-    ref_splines = Vector{Vector{Dierckx.Spline1D}}(undef, n_steps)
-    
-    for m in 1:n_steps
-        t = ref_sim_data.t[m]
-        x_m = x_dense isa AbstractVector ? x_dense : @view x_dense[:, m]
-        valid_idx = findall(!isnan, x_m)
-        x_valid = x_m[valid_idx]
-        
-        bps = unique(sort([x_valid[1]; discontinuity_points_func(t); x_valid[end]]))
-        
-        comp_splines = Dierckx.Spline1D[]
-        for c in 1:n_comps
-            u_valid = u_dense[c, valid_idx, m]
-            push!(comp_splines, _create_piecewise_spline_function(x_valid, u_valid, bps, 1))
-        end
-        ref_splines[m] = comp_splines
-    end
+    axes = D == 1 ? (x_dense[1],) : x_dense
+    n_comps = size(u_dense, 1)
 
-    return function ref_func(x, t)
+    return function ref_func(pos::SVector{D, Float64}, t::Float64)
         _, t_idx = findmin(abs.(ref_sim_data.t .- t))
-        return Tuple(ref_splines[t_idx][c](x) for c in 1:n_comps)
+        
+        # 1. Find the nearest grid indices dynamically
+        idx = CartesianIndex(ntuple(Val(D)) do d
+            findmin(abs.(axes[d] .- pos[d]))[2]
+        end)
+        
+        # 2. Isolate the Space Grid for the correct timestep
+        u_space = selectdim(u_dense, ndims(u_dense), t_idx)
+        
+        # 3. Extract components natively
+        return SVector{n_comps, Float64}(Tuple(u_space[c, idx] for c in 1:n_comps))
     end
 end
 
 function calculateAllStats!(sim_data::AbstractSimData, ref_params::ParamDict; kwargs...)
-    @info "Loading reference solution for stats calculation..."
+    @info "Loading numerical reference solution for stats calculation..."
     ref_sim_data = try loadSimData(ref_params) catch e; @warn "Failed" exception=e; nothing end
     if isnothing(ref_sim_data); return; end
+    
     calculateAllStats!(sim_data, createReferenceFunction(ref_sim_data); kwargs...)
+end
+
+"""
+    calculateAllStats!(sim_config::SimulationConfig; kwargs...)
+
+Batch calculates statistics for all simulations defined in a `SimulationConfig`.
+"""
+function calculateAllStats!(
+    sim_config::SimulationConfig;
+    active_methods::Vector{String} = sim_config.default_methods,
+    varied_params::VariedDict = sim_config.varied_params,
+    fixed_params::ParamDict = ParamDict(),
+    stats_to_calculate::Union{Symbol, Vector{Symbol}} = [:series],
+    parallel::Bool = false,
+    kwargs...
+)
+    active_keys = collect(keys(varied_params))
+    active_values = collect(values(varied_params))
+    all_tasks = Vector{ParamDict}()
+    
+    for method in active_methods
+        base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
+        ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
+        tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)
+        append!(all_tasks, tasks)
+    end
+    
+    num_tasks = length(all_tasks)
+    if num_tasks == 0
+        @info "No simulations found to calculate stats for."
+        return
+    end
+    
+    @info "Calculating stats for $num_tasks simulations (Parallel: $parallel)..."
+    p = Progress(num_tasks; desc="Calculating Stats...")
+    counter = Threads.Atomic{Int}(0)
+    
+    ref_func = sim_config.reference_func
+    
+    function _process_stats(params)
+        sim_data = try loadSimData(params) catch; nothing end
+        if !isnothing(sim_data)
+            calculateAllStats!(sim_data, ref_func; stats_to_calculate=stats_to_calculate, kwargs...)
+        end
+    end
+    
+    if parallel
+        Threads.@threads for params in all_tasks
+            _process_stats(params)
+            Threads.atomic_add!(counter, 1)
+            ProgressMeter.update!(p, counter[])
+        end
+    else
+        for params in all_tasks
+            _process_stats(params)
+            counter[] += 1
+            ProgressMeter.update!(p, counter[])
+        end
+    end
 end
