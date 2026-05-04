@@ -55,23 +55,28 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         shared_params = parsed_csv["Simulation"]["shared"]
     end
 
-    # 2. Extract Methods & their Specific Parameters
+    # 2. Extract Methods & Identify the Reference Solution
     methods_dict = Dict{String, Dict{String, Any}}()
+    ref_name = nothing
+    
     if haskey(parsed_csv, "Simulation")
         for (scope, params) in parsed_csv["Simulation"]
             if scope != "shared"
                 methods_dict[scope] = params
+                
+                # Dynamically identify the analytical/reference method 
+                lower_scope = lowercase(scope)
+                if contains(lower_scope, "analytic") || contains(lower_scope, "reference")
+                    ref_name = scope
+                end
             end
         end
     end
 
-    # 3. Extract Varied Parameters from the new Config Category
+    # 3. Extract Varied Parameters from the Config Category
     varied_params = Dict{String, Vector}()
     if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "Parameters")
-        # Ensure the parsed arrays/ranges are correctly formatted
         for (k, v) in parsed_csv["Config"]["Parameters"]
-            # If your CSV parser returns strings like "[0.0, 1.0, 2.0]", 
-            # make sure it evals them: eval(Meta.parse(v))
             varied_params[k] = v
         end
     else
@@ -81,13 +86,33 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 4. Default Methods (All methods found in the CSV are active by default)
     default_methods = collect(keys(methods_dict))
 
-    # Construct and return the SimulationConfig
+    # 5. Resolve the Analytical Solution Factory
+    ref_func = nothing
+    if !isnothing(ref_name)
+        # Convert the UI string (e.g. "Analytical Solution") back to a safe function name (e.g. "analytical_solution")
+        safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
+        
+        ref_factory = try
+            resolve_reference_function(safe_ref_name)
+        catch
+            nothing
+        end
+        
+        # Instantiate the exact mathematical closure using the loaded shared parameters
+        if !isnothing(ref_factory)
+            ref_func = Base.invokelatest(ref_factory, shared_params)
+        end
+    end
+
+    # 6. Construct and return the 7-argument SimulationConfig
     return SimulationConfig(
         sim_func,
+        ref_func,
+        ref_name,
         shared_params,
         methods_dict,
         default_methods,
-        varied_params,
+        varied_params
     )
 end
 
@@ -296,9 +321,9 @@ function launch_csv_interface(sim_func::Union{Function, Nothing} = nothing)
         @info "Launching Plotter Pipeline..."
         
         # --- D. LAUNCH PLOTTER ---
-        ui_overwrite = get(parsed_dict, "UI", Dict{String, Any}())
-        scene_options = get(parsed_dict, "Scene", Dict{String, Any}())
-        
+        ui_overwrite = parsed_dict["UI"]
+        scene_options = parsed_dict["Scene"]
+
         show_unified_fig(
             sim_config;
             ui_style = :default, 

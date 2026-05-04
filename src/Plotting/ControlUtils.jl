@@ -1,49 +1,37 @@
 """
-    create_method_checkboxes_figure(possible_methods, active_methods; target_layout_ratio=0.5, cell_size=(150, 30), fig_padding=20) -> (fig, fig_layout)
+    create_method_checkboxes_figure(possible_methods, active_methods; target_rows=20, cell_size=(250, 30), fig_padding=20) -> (fig, fig_layout)
 
-Creates a separate Figure containing checkboxes for all `possible_methods`. The checkboxes
-are connected to the `active_methods` Observable for synchronous toggling.
-
-The figure size and number of rows/columns in the grid are automatically calculated 
-to optimize space based on the number of methods and a target layout aspect ratio.
-- `target_layout_ratio`: Target ratio of grid rows:grid columns (default 0.5, meaning twice as wide).
-- `cell_size`: Estimated pixel size (width, height) for each checkbox+label unit.
+Creates a separate Figure containing checkboxes for all `possible_methods`. 
+Fills downwards up to `target_rows`, then automatically spills into new columns.
 """
 function create_method_checkboxes_figure(
     possible_methods::Vector{String},
     active_methods::Observable{Vector{String}};
-    target_layout_ratio::Real = 0.5, 
-    cell_size::Tuple{Int, Int} = (150, 30),
+    target_rows::Int = 20, 
+    cell_size::Tuple{Int, Int} = (250, 30), # Increased width to fit explicit labels
     fig_padding::Int = 20
 )
     # --- 1. Calculate Optimal Layout & Figure Size ---
     total_methods = length(possible_methods)
     
-    # Handle edge case for zero or empty inputs safely
     if total_methods == 0 || isempty(possible_methods)
         @warn "No possible methods provided. Unable to create figure."
         return nothing, nothing
     end
     
-    # Based on the formula: Rows/Cols ≈ TargetRatio AND Rows*Cols ≈ TotalMethods
-    # We solve for columns: Cols ≈ sqrt(TotalMethods / TargetRatio)
-    cols = ceil(Int, sqrt(total_methods / target_layout_ratio))
+    # THE FIX: Column-major layout based on a fixed maximum row count
+    rows = min(total_methods, target_rows)
+    cols = ceil(Int, total_methods / rows)
     
-    # Safety checks for single-column/single-row cases
-    if cols < 1; cols = 1; end
-    rows = ceil(Int, total_methods / cols)
-    
-    # Add one row for the title
     total_rows_with_title = rows + 1
     
-    # Calculate physical figure size based on layout and estimated cell sizes
+    # Calculate physical figure size
     fig_width = cols * cell_size[1] + fig_padding
-    fig_height = total_rows_with_title * cell_size[2] + fig_padding + 10 # extra for title gap
+    fig_height = 1050#2*total_rows_with_title * cell_size[2] + fig_padding + 10
 
     # --- 2. Create Figure & GridLayout ---
     fig = Figure(size = (fig_width, fig_height))
     fig_layout = fig[1, 1] = GridLayout()
-    # Force the title row size, leave others flexible
     rowsize!(fig_layout, 1, Fixed(40)) 
 
     # --- 3. Add Figure Title ---
@@ -52,62 +40,56 @@ function create_method_checkboxes_figure(
     # --- 4. Create Grid of Checkboxes & Labels ---
     checkbox_layout = fig_layout[2:total_rows_with_title, 1:cols] = GridLayout()
 
-
-    # Dictionaries to store widgets for mass updates
     checkbox_widgets = Dict{String, Checkbox}()
-    is_internal_bulk_update = Observable(false) # Flag to prevent circular updates
+    is_internal_bulk_update = Observable(false) 
 
     for (i, method_name) in enumerate(possible_methods)
-        # Calculate cell coordinates (r: rows index, c: columns index)
-        r = ((i - 1) ÷ cols) + 1
-        c = ((i - 1) % cols) + 1
+        # THE FIX: Column-major coordinate mapping
+        c = ((i - 1) ÷ rows) + 1
+        r = ((i - 1) % rows) + 1
         
-        # Sub-layout for Checkbox + Label inside the target cell
         cell_layout = checkbox_layout[r, c] = GridLayout(tellwidth=false, tellheight=false)
 
-        # Create the widgets, initial checked state based on active_methods vector
         cb = Checkbox(cell_layout[1, 1]; checked = (method_name in active_methods[]))
-        Label(cell_layout[1, 2], method_name, halign=:right) # User requested right alignment
+        
+        # Changed to :left alignment for a much cleaner grid appearance
+        Label(cell_layout[1, 2], method_name, halign=:left) 
         
         checkbox_widgets[method_name] = cb
-        colsize!(cell_layout, 1, Fixed(30)) # Fixed size for the box itself
-        # Remaining area is Auto sized for the label to allow it to right align easily
-        colsize!(cell_layout, 2, Auto()) 
-        # --- 5. Observer: Update observable when checkbox is clicked (UI -> Observable) ---
+        
+        # THE FIX: Explicitly fix both the checkbox and the label width
+        colsize!(cell_layout, 1, Fixed(30)) 
+        colsize!(cell_layout, 2, Fixed(cell_size[1] - 40)) 
+        
         on(cb.checked) do is_checked
-            # Only trigger logic if this isn't a bulk update from the manager
             if !is_internal_bulk_update[]
-                # Modify active_methods
                 curr_list = active_methods[]
                 if is_checked
-                    # Add
                     method_name ∉ curr_list && (active_methods[] = [curr_list; method_name])
                 else
-                    # Remove
                     active_methods[] = filter(s -> s != method_name, curr_list)
                 end
             end
         end
     end
-    # Align all label columns with right alignment, fixed checkbox widths
+    
+    # Force strict alignment across the entire parent grid
     for r in 1:rows
         rowsize!(checkbox_layout, r, Fixed(cell_size[2]))
     end
-    # --- 6. Bulk Observer: Update all checkboxes when the list changes (Observable -> UI) ---
+    for c in 1:cols
+        colsize!(checkbox_layout, c, Fixed(cell_size[1]))
+    end
+
+    # --- 5. Bulk Observer (UI <-> Observable sync) ---
     on(active_methods) do new_list
-        # Apply lock flag
         is_internal_bulk_update[] = true
-        
-        # Synchronize all checkbox visual states
         for (m_name, cb) in checkbox_widgets
             new_checked_state = (m_name in new_list)
-            # Only trigger updates/notify visually if the state actually changes
             if cb.checked[] != new_checked_state
                 cb.checked[] = new_checked_state
             end
         end
-        
-        # Release lock
         is_internal_bulk_update[] = false
     end
 
@@ -366,30 +348,6 @@ function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManag
     createMethodCheckboxes(layout, methods_obs, all_method_names)
 end
 
-function createMethodCheckboxes(cb_layout::GridLayout, methods_obs::Observable{Vector{String}}, methods::Vector{String}; n = 20)
-    
-    toLayout = cb_layout[end,1:div(length(methods),n)+1] = GridLayout() # n hard coded atm can be added to ui_dict
-
-    for (i,method) = enumerate(methods)
-        j = div(i-1,n) + 1
-        Label(toLayout[mod1(i,n),j*2-1], method)
-        init_methods = methods_obs[]
-        if method in init_methods
-            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = true)
-        else
-            tmp = Checkbox(toLayout[mod1(i,n),j*2], checked = false)
-        end
-        on(tmp.checked) do checked 
-            if to_value(checked) & !(methods[i] in methods_obs[])
-                push!(methods_obs[], methods[i])
-            elseif !to_value(checked) & (methods[i] in methods_obs[])
-                deleteat!(methods_obs[],findfirst(isequal(methods[i]),to_value(methods_obs)))
-            end
-            notify(methods_obs)
-        end
-    end
-end
-
 """
     create_base_overwrite_controls!(layout, manager)
 
@@ -531,14 +489,12 @@ These values are used as a base and can be overwritten by user input.
 """
 function get_base_scene_options()
     return Dict{String, Any}(
-        # 1. Main Axis Selections
-        "X-Axis_Selection"      => "x",      # Standard spatial coordinate
-        "U-Axis_Selection"      => "u",      # THE FIX: Updated from Y-Axis to U-Axis
-        
-        # 2. Base Variable Defaults (Set to 1 to snap to the minimum value)
+        "X-Axis_Selection"      => "x",      
+        "U-Axis_Selection"      => "u",      
+        "Plot-Type_Selection"   => "Lines",  # THE FIX: Added to base options
         "c_Selection"   => 1,        
-        "t_Value"       => 1,        # THE FIX: Was 25
-        "x_Value"       => 1,        # THE FIX: Was 50
+        "t_Value"       => 0.0,      # THE FIX: Changed to Float for coordinate snapping
+        "x_Value"       => 0.0,      
     )
 end
 """

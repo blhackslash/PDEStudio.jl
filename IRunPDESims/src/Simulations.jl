@@ -6,11 +6,9 @@ If it does (and `force_overwrite` is false), it skips execution and returns `NoS
 Otherwise, it executes the simulation, saves the result, and returns the data.
 """
 function run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
-    println(params)
     if !force_overwrite && doesSimDataExist(params)
         return NoSimData()
     end
-    error("Should exist")
     # Run the actual simulation
     sim_data = Base.invokelatest(sim_func, params)
     
@@ -222,6 +220,7 @@ function runAllSimulations(
     all_tasks = Vector{ParamDict}()
     local grid_indices
     for method in active_methods
+        if contains(safe_string(method), "analytic") || contains(safe_string(method), "reference"); continue; end
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)
@@ -247,27 +246,26 @@ function runAllSimulations(
         if convert_eulerian || calculate_stats
             sim_data = loadSimData(params)
             
-            if convert_eulerian && sim_data isa LSimData
-                N_grid = _LAGRANGE_N_GRID[]
-                try
-                    if force_overwrite; error("Overwrite Forced!") end
-                    sim_data = loadBestConversion(params, N_grid)
-                catch
-                    conv_data = convert_to_eulerian(sim_data, N_grid)
-                    saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
-                    sim_data = conv_data 
-                end
-            end
+            # if convert_eulerian && sim_data isa LSimData
+            #     N_grid = _LAGRANGE_N_GRID[]
+            #     try
+            #         if force_overwrite; error("Overwrite Forced!") end
+            #         sim_data = loadBestConversion(params, N_grid)
+            #     catch
+            #         conv_data = convert_to_eulerian(sim_data, N_grid)
+            #         saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
+            #         sim_data = conv_data 
+            #     end
+            # end
             
             if calculate_stats && !isnothing(sim_data)
                 # Determine which key we are calculating stats for based on the data type
-                target_key = sim_data isa LSimData ? "sim_data_raw" : "sim_data_plot_$(size(sim_data.u, 2))"
                 
                 calculateAllStats!(
                     sim_data, 
                     sim_config.reference_func; 
                     stats_to_calculate=stats_to_calculate, 
-                    data_key=target_key,
+                    data_key="sim_data_raw",
                     force_overwrite=force_overwrite,
                     ana_cache=ana_cache
                 )

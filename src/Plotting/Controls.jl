@@ -8,9 +8,9 @@ function create_controls(
     plot_fig::Makie.Figure, 
     manager::PlotManager, 
     plot_data_obs::Observable, 
+    scene_options::Dict = Dict{String, Any}() # THE FIX: Added 4th argument to receive the scene options
 )
-    # 2. FIX: Attach the Figure to the Screen immediately
-    
+    # Attach the Figure to the Screen immediately
     base_controls_fig = Figure(size = (450, 1000)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
@@ -43,15 +43,15 @@ function create_controls(
     method_button = Button(update_layout[1, 2], label="Select Methods...", 
                            width=190, buttoncolor=:lightgray)
     
-    # Identify all possible methods from the simulation dictionary [cite: 291]
+    # Identify all possible methods from the simulation dictionary
     all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
 
     on(method_button.clicks) do _
-        # Create the separate, auto-sizing figure [cite: 292]
+        # Create the separate, auto-sizing figure
         m_fig, _ = create_method_checkboxes_figure(
             all_method_names,
             manager.methods;
-            target_layout_ratio = 0.5 # Maintain your preferred 1:2 ratio
+            target_rows = 20 # THE FIX: Updated keyword argument!
         )
         
         # Display the new window
@@ -67,13 +67,13 @@ function create_controls(
     param_nav_layout = fig_layout[current_row, 1] = GridLayout()
     create_hierarchical_param_controls!(param_nav_layout, manager)
     current_row += 1
+    
     Label(fig_layout[current_row, 1], "Dimension Overwrites", fontsize=16, font=:bold, color=:darkred)
     current_row += 1
-    
     lock_layout = fig_layout[current_row, 1] = GridLayout()
-    # ADD plot_data_obs here!
     create_base_overwrite_controls!(lock_layout, manager, plot_data_obs) 
     current_row += 1
+    
     # 5. STATIC PLOT CONTROLS SLOT
     Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
@@ -81,15 +81,15 @@ function create_controls(
           fontsize=16, font=:bold, color=:darkgreen)
     current_row += 1
     
-# STATIC PLOT CONTROLS SLOT
+    # STATIC PLOT CONTROLS SLOT
     menu_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
     slider_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
 
-    # Updated to return active_axes_obs instead of plot_dim_idx_obs
+    # THE FIX: Pass `scene_options` down into the static plot controls builder!
     x_obs, y_obs, z_obs, u_obs, active_axes_obs, selectors, widgets = build_static_plot_controls!(
-        menu_area, slider_area, plot_data_obs, active_params, manager
+        menu_area, slider_area, plot_data_obs, active_params, manager, scene_options
     )
 
     # 4. ANIMATION PREVIEW
@@ -114,13 +114,16 @@ function create_controls(
 
     return base_controls_fig
 end
+
 function build_static_plot_controls!(
     menu_layout::GridLayout, 
     slider_layout::GridLayout, 
     plot_data_obs::Observable,
     active_params::Vector{String}, 
-    manager::PlotManager
+    manager::PlotManager,
+    scene_options::Dict = Dict{String, Any}()
 )
+    println(scene_options)
     # 1. Metadata & Initialization
     dim_names = active_params
     total_dims = length(dim_names)
@@ -131,40 +134,51 @@ function build_static_plot_controls!(
     y_key_obs = Observable{String}("-")
     z_key_obs = Observable{String}("-")
     u_key_obs = Observable{String}("-")
-    plot_dim_idx_obs = Observable{Int}(0)
-    plot_dim_obs = Observable{Int}(1) # NEW: Master dimension observable
+    plot_dim_obs = Observable{Int}(1)
     manager.controls["Plot_Dimension"] = plot_dim_obs
     
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-    # 2. Setup Menus Grid
-
-
+    # --- 2. Setup Menus Grid (Pre-baked with Scene Options) ---
+    init_x = string(get(scene_options, "X-Axis_Selection", "-"))
+    init_y = string(get(scene_options, "Y-Axis_Selection", "disabled"))
+    init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
+    init_u = string(get(scene_options, "U-Axis_Selection", "-"))
+    init_comp = string(get(scene_options, "c_Selection", "1"))
 
     # Row 2 & 3: Independent Axes
     Label(menu_layout[1,1], "X-Axis", font=:bold)
     Label(menu_layout[1,2], "Y-Axis", font=:bold)
     Label(menu_layout[1,3], "Z-Axis", font=:bold)
-    menu_x = Menu(menu_layout[2,1], options = ["-"], width = 120)
-    menu_y = Menu(menu_layout[2,2], options = ["disabled"], width = 120)
-    menu_z = Menu(menu_layout[2,3], options = ["disabled"], width = 120)
+    menu_x = Menu(menu_layout[2,1], options = [init_x], width = 120)
+    menu_x.i_selected = 1
+    menu_y = Menu(menu_layout[2,2], options = [init_y], width = 120)
+    menu_y.i_selected = 1
+    menu_z = Menu(menu_layout[2,3], options = [init_z], width = 120)
+    menu_z.i_selected = 1
 
-# Row 4 & 5: Dependent Axis, Component (REMOVED Plot-Along)
+    # Row 4 & 5: Dependent Axis, Component
     Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold)
     Label(menu_layout[3,2], "Component", font=:bold)
-    menu_u    = Menu(menu_layout[4,1], options = ["-"], width = 120)
-    menu_comp = Menu(menu_layout[4,2], options = ["1"], width = 120)
-    # Row 1: Plot Type Selection
+    menu_u    = Menu(menu_layout[4,1], options = [init_u], width = 120)
+    menu_u.i_selected = 1
+    menu_comp = Menu(menu_layout[4,2], options = [init_comp], width = 120)
+    menu_comp.i_selected = 1
+    
+    # Plot Type Selection
     Label(menu_layout[3,3], "Plot Type", font=:bold)
-    plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume","Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
+    plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume", "Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
+    init_type_str = string(get(scene_options, "Plot-Type_Selection", "Lines"))
     menu_type = Menu(menu_layout[4,3], options = plot_options, width = 120)
-    menu_type.i_selected[] = 1
+    
+    idx = findfirst(isequal(init_type_str), plot_options)
+    menu_type.i_selected[] = isnothing(idx) ? 1 : idx
+
     colsize!(menu_layout, 1, Fixed(120))
     colsize!(menu_layout, 2, Fixed(120))
     colsize!(menu_layout, 3, Fixed(120))    
 
-    # --- NEW: Master Active Axes Tracker ---
     active_axes_obs = Observable{Vector{Int}}(Int[])
     manager.controls["Active_Axes"] = active_axes_obs
 
@@ -173,18 +187,16 @@ function build_static_plot_controls!(
     manager.controls["Y-Axis_Selection"], manager.controls["Y-Axis_Options"], manager.controls["Y-Axis_Widget"] = menu_y.selection, menu_y.options, menu_y
     manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
     manager.controls["U-Axis_Selection"], manager.controls["U-Axis_Options"], manager.controls["U-Axis_Widget"] = menu_u.selection, menu_u.options, menu_u
+    
     plot_type_obs = Observable{Symbol}(:lines)
     manager.controls["Plot-Type_Selection"] = plot_type_obs
 
     on(menu_type.selection) do raw_str
-        # Convert "Scatter 2D" to :scatter2d
         ptype_sym = Symbol(lowercase(replace(raw_str, " " => "")))
-        
         plot_type_obs[] = ptype_sym
-        
-        # When applied, force the Y and Z menus to respect the new dimensionality
         notify(plot_data_obs) 
     end
+
     # Map the isolated Component Menu
     control_objects[comp_idx] = menu_comp
     selector_values[comp_idx] = Observable{Int}(1)
@@ -195,32 +207,24 @@ function build_static_plot_controls!(
     end
     manager.controls["$(dim_names[comp_idx])_Selection"], manager.controls["$(dim_names[comp_idx])_Options"], manager.controls["$(dim_names[comp_idx])_Widget"] = menu_comp.selection, menu_comp.options, menu_comp
 
-    # 3. Unified Widget Creation (Sliders Only now)
+
+    # --- 3. Unified Widget Creation (Strictly Sliders) ---
     current_row = 1
     for i in 1:total_dims
-        if i == comp_idx
-            continue # Skipped because it's now cleanly integrated into the top menu block
-        end
+        if i == comp_idx; continue; end # Handled by the dropdown above
         
         Label(slider_layout[current_row, 1], "$(dim_names[i]):", halign=:right)
         
-        is_basevar = i > n_params
-        ctrl_type = is_basevar ? VariableControls[i - n_params] : :slider
+        # Pre-Bake Slider Ranges using Scene Options
+        val_key = "$(dim_names[i])_Value"
+        init_val = Float64(get(scene_options, val_key, 0.0))
         
-        if ctrl_type == :menu
-            m = Menu(slider_layout[current_row, 2], options = ["1"], width = 200)
-            control_objects[i] = m
-            selector_values[i] = Observable{Int}(1)
-            on(m.selection) do s
-                if !isnothing(s) && s != "-"; selector_values[i][] = parse(Int, s); end
-            end
-            manager.controls["$(dim_names[i])_Selection"], manager.controls["$(dim_names[i])_Options"], manager.controls["$(dim_names[i])_Widget"] = m.selection, m.options, m
-        else
-            sl = Slider(slider_layout[current_row, 2], range = 0:0.1:1, width = 200)
-            control_objects[i] = sl
-            selector_values[i] = sl.value
-            manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
-        end
+        # Lock the value natively by initializing range to [init_val]
+        sl = Slider(slider_layout[current_row, 2], range = [init_val], startvalue = init_val, width = 200)
+        println(sl.value[])
+        control_objects[i] = sl
+        selector_values[i] = sl.value
+        manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
         
         Label(slider_layout[current_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
         current_row += 1
@@ -231,36 +235,21 @@ function build_static_plot_controls!(
         vt = manager.controls["base_types"][]
         for base_idx in 1:5
             abs_idx = n_params + base_idx
+            
+            # Skip component menu (handled independently)
+            abs_idx == comp_idx && continue
+            
             ctrl = control_objects[abs_idx]
             val = vt[base_idx]
             
             if val isa Number
-                if ctrl isa Slider
-                    ctrl.range[] = [val] 
-                elseif ctrl isa Menu
-                    ctrl.options[] = [string(val)]
-                    ctrl.selection[] = string(val)
-                end
+                ctrl.range[] = [Float64(val)] 
             end
         end
         notify(plot_data_obs)      
     end
 
-    # --- REACTIVE LOGIC: Axis Menus Cascade ---
-    
-    function get_varied_dims(key_val, plot_data_dict, active_methods)
-        v_dims = nothing
-        for (m, pd) in plot_data_dict
-            !(m in active_methods) && continue
-            if haskey(pd.data, key_val)
-                curr_dims = Set(findall(s -> s > 1, size(pd.data[key_val])))
-                v_dims = isnothing(v_dims) ? curr_dims : intersect(v_dims, curr_dims)
-            end
-        end
-        return isnothing(v_dims) ? Set{Int}() : v_dims
-    end
-
-# Helper to safely update Menus
+    # Helper to safely update Menus
     function _update_menu!(menu, new_options)
         curr = menu.selection[]
         menu.options[] = isempty(new_options) ? ["-"] : new_options
@@ -271,16 +260,14 @@ function build_static_plot_controls!(
         end
     end
 
-# --- 1. Populate Dropdowns (Strict Independent Menus) ---
+    # --- Populate Dropdowns (Strict Independent Menus) ---
     onany(plot_data_obs, plot_type_obs) do plot_data_dict, ptype
         isempty(plot_data_dict) && return
         
-        dim_names = manager.plot_vars
         valid_axes = String[]
         comp_max = 1
         
         pd_first = first(values(plot_data_dict))
-        n_params = length(pd_first.active_param_keys)
         
         for (key, tensor) in pd_first.data
             varying = findall(s -> s > 1, size(tensor))
@@ -289,14 +276,10 @@ function build_static_plot_controls!(
             if key in dim_names
                 push!(valid_axes, key)
             else
-                # Metric / Derived Quantity Check
                 param_varying = filter(d -> d <= n_params, varying)
                 phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
                 
-                # Pure Series: Varies ONLY in Time (n_params + 5)
                 is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
-                
-                # Pure Param Metric: Varies ONLY in exactly one Parameter
                 is_pure_param = isempty(phys_varying) && length(param_varying) == 1
                 
                 if is_pure_series || is_pure_param
@@ -311,11 +294,9 @@ function build_static_plot_controls!(
         
         sort!(valid_axes)
         
-        # Apply strict Independent Options
         _update_menu!(menu_x, valid_axes)
         _update_menu!(menu_comp, [string(i) for i in 1:comp_max])
         
-        # Handle Y/Z visibility based on Plot Type
         p_dim = PLOT_DIM_MAP[ptype]
         if p_dim >= 2
             _update_menu!(menu_y, valid_axes)
@@ -331,11 +312,9 @@ function build_static_plot_controls!(
         end
     end
 
-# --- Safe Key Observers & Anti-Collision Cascade ---
+    # --- Safe Key Observers & Anti-Collision Cascade ---
     on(menu_x.selection) do x_val
         x_key_obs[] = isnothing(x_val) ? "-" : x_val
-        
-        # Anti-Collision: Shift Y if it matches X
         opts_y = menu_y.options[]
         if opts_y != ["disabled"] && menu_y.selection[] == x_val && length(opts_y) > 1
             idx = findfirst(isequal(x_val), opts_y)
@@ -345,8 +324,6 @@ function build_static_plot_controls!(
 
     on(menu_y.selection) do y_val
         y_key_obs[] = isnothing(y_val) ? "-" : y_val
-        
-        # Anti-Collision: Shift Z if it matches Y or X
         opts_z = menu_z.options[]
         if opts_z != ["disabled"] && length(opts_z) > 2
             while menu_z.selection[] in (menu_x.selection[], menu_y.selection[])
@@ -364,15 +341,8 @@ function build_static_plot_controls!(
         u_key_obs[] = u_val
         notify(menu_z.selection) 
     end
-    
-    on(menu_u.selection) do u_val
-        (isnothing(u_val) || u_val == "-") && return
-        u_key_obs[] = u_val
-        notify(menu_z.selection) 
-    end
 
-    # --- 2. MULTIDIMENSIONAL SLIDER LOCKER ---
-# --- 2. MULTIDIMENSIONAL SLIDER LOCKER & DYNAMIC DEPENDENT FILTERING ---
+    # --- MULTIDIMENSIONAL SLIDER LOCKER & DYNAMIC DEPENDENT FILTERING ---
     onany(menu_x.selection, menu_y.selection, menu_z.selection, plot_type_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
         isempty(plot_data_dict) && return
         p_dim = PLOT_DIM_MAP[ptype]
@@ -380,10 +350,7 @@ function build_static_plot_controls!(
         active_indep_keys = String[]
         
         pd_first = first(values(plot_data_dict))
-        dim_names = manager.plot_vars
-        n_params = length(pd_first.active_param_keys)
         
-        # 1. Gather Selected Independent Axes
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
             if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
                 idx = get_base_dim_idx(pd_first, val, dim_names)
@@ -394,18 +361,15 @@ function build_static_plot_controls!(
         
         active_axes_obs[] = collect(axes)
         
-        # --- NEW: Dynamic U-Axis Filtering (Intersection Logic) ---
         req_space = false
         req_time = false
         req_params = Int[]
         
-        # A. Map selected independent variables to their fundamental dimensions
         for key in active_indep_keys
             tensor = get(pd_first.data, key, nothing)
             isnothing(tensor) && continue
             varying = findall(s -> s > 1, size(tensor))
             
-            # If the key is a base variable itself, force its native dimension
             idx = findfirst(isequal(key), dim_names)
             !isnothing(idx) && push!(varying, idx)
             
@@ -422,7 +386,6 @@ function build_static_plot_controls!(
             end
         end
         
-        # B. Filter available metrics based on requirements
         valid_fields = String[]
         for (key, tensor) in pd_first.data
             varying = findall(s -> s > 1, size(tensor))
@@ -434,7 +397,6 @@ function build_static_plot_controls!(
             
             is_valid = true
             
-            # The Intersection Test: Does the Dependent metric support the Independent axes?
             req_space && !has_space && (is_valid = false)
             req_time && !has_time && (is_valid = false)
             for p in req_params
@@ -450,16 +412,18 @@ function build_static_plot_controls!(
         _update_menu!(menu_u, valid_fields)
     end
 
-    # --- 3. SLIDER RANGE UPDATER ---
+    # --- SLIDER RANGE UPDATER ---
     onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
         isempty(plot_data_dict) && return
         vt = manager.controls["base_types"][]
 
         for i in 1:total_dims
+            if i == comp_idx; continue; end # Skip component menu
+
             is_basevar = i > n_params
             if is_basevar
                 base_idx = i - n_params
-                vt[base_idx] isa Number && continue
+                vt[base_idx] isa Number && continue # Locked by user
             end
             
             ctrl = control_objects[i]
@@ -475,7 +439,6 @@ function build_static_plot_controls!(
                 elseif i > n_params + 1 && i < total_dims 
                     dim_idx = i - (n_params + 1)
                     
-                    # Fetch coordinate mapping directly from split spatial tensors
                     tensor_key = dim_idx == 1 ? "x" : (dim_idx == 2 ? "y" : "z")
                     coord_tensor = get(pd.data, tensor_key, nothing)
                     
@@ -498,29 +461,20 @@ function build_static_plot_controls!(
             
             if isinf(g_min); g_min = 0.0; g_max = 1.0; end
             
+            # Since everything here is strictly a Slider, we cleanly assign ranges
             if is_axis
-                if ctrl isa Slider; ctrl.range[] = [0]; else; ctrl.options[] = ["-"]; end
+                ctrl.range[] = [0.0] 
             else
-                if ctrl isa Slider
-                    ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
-                end
+                ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
             end
         end
-    end
-
-    return x_key_obs, y_key_obs, z_key_obs, u_key_obs, active_axes_obs, selector_values, control_objects
-
-    on(menu_u.selection) do u_val
-        (isnothing(u_val) || u_val == "-") && return
-        u_key_obs[] = u_val
-        notify(menu_z.selection) # Re-evaluate common dims for Plot-Along axis!
     end
 
     on(manager.methods) do _
         notify(plot_data_obs)
     end
 
-    return x_key_obs, y_key_obs, z_key_obs, u_key_obs, plot_dim_idx_obs, selector_values, control_objects
+    return x_key_obs, y_key_obs, z_key_obs, u_key_obs, active_axes_obs, selector_values, control_objects
 end
 
 """
@@ -549,6 +503,12 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         data = getproperty(mgr, field_name)
         
         menu_scope.options[] = sort(collect(keys(data)))
+        
+        # THE FIX: Reset underlying menus to prevent scope ghosting
+        menu_scope.i_selected[] = 0
+        menu_key.i_selected[] = 0
+        tb.stored_string[] = ""
+        tb.displayed_string[] = ""
     end
 
     # 3. Scope -> Key
@@ -559,6 +519,11 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         data = getproperty(mgr, field_name)
         
         menu_key.options[] = sort(collect(keys(data[scope])))
+        
+        # THE FIX: Reset key selection to force a UI update
+        menu_key.i_selected[] = 0
+        tb.stored_string[] = ""
+        tb.displayed_string[] = ""
     end
 
     # 4. Textbox with Live Placeholder

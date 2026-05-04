@@ -8,7 +8,7 @@ include("CSVLauncher.jl")
 # In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
 # ==============================================================================
 
-function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict) where {F}
+function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
     vars = isempty(varied_dict) ? [] : collect(keys(varied_dict))
     append!(vars, BaseVariables)
@@ -36,46 +36,78 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict) w
         "General"    => Dict{String, Any}("simulation_func" => string(sim_config.simulation_func))
     )
 
-    # Add config_dict to the constructor
+    
     manager = PlotManager(sim_obs, ui_obs, config_dict, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
     
-    # 3. Populate the active UI immediately so `manager.ui["Axis-General"]` exists for Figure creation!
-    switch_ui_plot_type!(manager, :lines)
+    switch_ui_plot_type!(manager, init_type)
+    
+    # THE FIX: Apply UI Overwrites directly to the manager's active UI!
+    for (scope, keys_dict) in ui_overwrite
+        if haskey(manager.ui, scope)
+            for (k, v) in keys_dict
+                if haskey(manager.ui[scope], k)
+                    manager.ui[scope][k][] = v
+                end
+            end
+        end
+    end
     
     return manager
 end
 function show_unified_fig(
     sim_config::SimulationConfig;
     ui_style::UIType = :default,
-    ui_overwrite::Dict = Dict{String, Any}(), # Uses your MethodDict equivalent
+    ui_overwrite::Dict = Dict{String, Any}(),
     var_overwrite::Vector{Any} = Any[:menu, :slider, :slider, :slider, :slider],
     scene_options::Dict = Dict{String, Any}(),
     parallel = false,
 )
     ui_obs = create_master_ui_observables(ui_style)
     
-    # --- APPLY UI OVERWRITES BEFORE MANAGER CREATION ---
-    for (scope, keys_dict) in ui_overwrite
-        if haskey(ui_obs, scope)
-            for (k, v) in keys_dict
-                if haskey(ui_obs[scope], k)
-                    ui_obs[scope][k][] = v
-                end
-            end
+    # --- 1. Flatten and Merge Scene Options ---
+    final_scene = get_base_scene_options()
+    
+    # Map nested CSV Menu overrides to flat Selection keys
+    if haskey(scene_options, "Menu")
+        for (k, v) in scene_options["Menu"]
+            final_scene["$(k)_Selection"] = v
         end
     end
+    
+    # Map nested CSV Slider overrides to flat Value keys
+    if haskey(scene_options, "Slider")
+        for (k, v) in scene_options["Slider"]
+            final_scene["$(k)_Value"] = v
+        end
+    end
+    
+    # Merge any direct programmatic flat keys
+    for (k, v) in scene_options
+        if k != "Menu" && k != "Slider"
+            final_scene[k] = v
+        end
+    end
+    
+    raw_type = get(final_scene, "Plot-Type_Selection", "Lines")
+    init_type = raw_type isa String ? Symbol(lowercase(replace(raw_type, " " => ""))) : raw_type
 
-    # 1. Setup Manager & Figure
+    # --- 2. Setup Manager & Figure ---
     GLMakie.activate!()
-    manager = create_plot_manager(sim_config, ui_obs)
+    
+    # Pass the init_type down so the UI initializes with the correct properties
+    manager = create_plot_manager(sim_config, ui_obs, ui_overwrite, init_type)
+    
     plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
     plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
-
-    # 2. Build UI 
-    ctrl_fig = create_controls(plot_fig, manager, plot_data_obs)
     
-    # 3. Setup Data Generator Lift
+    # --- 3. INITIALIZATION SEQUENCE ---
+    manager.controls["base_types"][] = var_overwrite
+    
+    # Pass the FLATTENED scene down to the control builder!
+    ctrl_fig = create_controls(plot_fig, manager, plot_data_obs, final_scene)    
+    
+    # --- 4. Setup Data Generator Lift ---
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
 
@@ -86,8 +118,7 @@ function show_unified_fig(
         end
     end
 
-lift(sim_update, methods_obs) do _, active_methods
-        # THE FIX: Pass the 'manager' directly instead of a hardcoded fixed_params dict
+    onany(sim_update, methods_obs) do _, active_methods
         Base.invokelatest(update_plot_data_collection!,
             plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
             force_reload = (sim_update[] > 0), parallel = parallel, 
@@ -95,7 +126,7 @@ lift(sim_update, methods_obs) do _, active_methods
         notify(plot_data_obs)
     end
 
-    # --- 4. RENDER PIPELINE & DIMENSION SWITCHING ---
+    # --- 5. RENDER PIPELINE & DIMENSION SWITCHING ---
     render_observers = ObserverFunction[]
 
     # Note: Ensure this matches the key exposed in `build_static_plot_controls!`
@@ -121,26 +152,11 @@ lift(sim_update, methods_obs) do _, active_methods
         notify(plot_data_obs)
     end
 
-    # --- 5. INITIALIZATION SEQUENCE ---
-    final_scene = merge(get_base_scene_options(), scene_options)
-
-    # a) Apply Variable Overwrites directly to the controls
-    manager.controls["base_types"][] = var_overwrite
-
-    # b) Trigger the initial Plot Type 
-    # Try reading from Scene first, fallback to :lines
-    init_type = :lines
-    if haskey(final_scene, "Menu") && haskey(final_scene["Menu"], "Plot-Type_Selection")
-        raw_type = final_scene["Menu"]["Plot-Type_Selection"]
-        init_type = raw_type isa String ? Symbol(raw_type) : raw_type
-    end
-    manager.controls["Plot-Type_Selection"][] = init_type
-
-    # c) Trigger initial data load
+    # --- 6. TRIGGER FIRST FRAME ---
+    notify(manager.controls["Plot-Type_Selection"])
+    
     sim_update[] = 1 
     
-    # d) Apply visual defaults (like limits/menus from Scene options)
-    set_defaults!(manager, final_scene)
     display(plot_screen_ref[], plot_fig)
     return plot_fig, ctrl_fig, manager
 end

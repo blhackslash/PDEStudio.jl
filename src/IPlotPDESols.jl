@@ -71,7 +71,7 @@ module UI
     # Grab UI structs
     using ..IPlotPDESols: PlotManager, UnifiedPlotData, NestedObsDict, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs
-    using IRunPDESims, Dates
+    using IRunPDESims, Dates, CSV
     # Grab the DataBuilder
     using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV, smart_parse_and_update!
     

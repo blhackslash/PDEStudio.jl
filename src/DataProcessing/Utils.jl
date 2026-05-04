@@ -336,6 +336,11 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
         end
     end
     
-    # Return a lightweight ESimData that exists ONLY in RAM
-    return ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
+# Create the lightweight ESimData that exists ONLY in RAM
+    ram_data = ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
+    
+    # THE FIX: Calculate baseline stats instantly without touching the hard drive!
+    IRunPDESims._calculate_stats!(Val(:series), ram_data, ram_data.x, ram_data.u, ref_func)
+    
+    return ram_data
 end
