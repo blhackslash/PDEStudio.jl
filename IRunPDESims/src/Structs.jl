@@ -106,18 +106,20 @@ function nice_string(s::AbstractString)
     return titlecase(replace(s, "_" => " "))
 end
 
-# Update the constructor to auto-inject the method dictionary!
+# Update the signature to accept 'nothing' for the reference function name
 function SimulationConfig(
     sim_func_name::String, 
-    ref_func_name::String, 
+    ref_func_name::Union{String, Nothing}, # THE FIX: allow nothing here!
     shared::ParamDict, 
     methods::MethodDict, 
     defaults::Vector{String}; 
     varied_params::VariedDict = createVariedDict(),
     target_module::Module = Main
 )
-    ref_func_name = safe_string(ref_func_name)
+    # Safe string conversion (only if not nothing)
+    ref_name_safe = isnothing(ref_func_name) ? nothing : safe_string(ref_func_name)
     sim_func_name = safe_string(sim_func_name)
+
     # 1. Resolve Simulation Function
     sim_f = resolve_simulation_function(sim_func_name, nothing; target_module = target_module)
     if isnothing(sim_f)
@@ -125,17 +127,38 @@ function SimulationConfig(
     end
 
     # 2. Resolve Reference Factory Function
-    ref_factory = resolve_reference_function(ref_func_name; target_module = target_module)
+    ref_factory = resolve_reference_function(ref_name_safe; target_module = target_module)
     ref_f = isnothing(ref_factory) ? nothing : Base.invokelatest(ref_factory, shared)
 
     # 3. AUTO-INJECT: Add the reference method to the methods dictionary if it exists
-    if !isnothing(ref_func_name) && !haskey(methods, ref_func_name)
-        methods[nice_string(ref_func_name)] = ParamDict()
+    if !isnothing(ref_name_safe) && !haskey(methods, ref_name_safe)
+        methods[nice_string(ref_name_safe)] = ParamDict()
     end
 
     # 4. Pass the resolved string and functions to the base constructor
     return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
-        sim_f, ref_f, ref_func_name, shared, methods, defaults, varied_params
+        sim_f, ref_f, ref_name_safe, shared, methods, defaults, varied_params
+    )
+end
+
+# Fallback constructor for when no reference function is provided
+function SimulationConfig(
+    sim_func_name::String, 
+    shared::ParamDict, 
+    methods::MethodDict, 
+    defaults::Vector{String}; 
+    varied_params::VariedDict = createVariedDict(),
+    target_module::Module = Main
+)
+    # Reroute to the main constructor, explicitly passing 'nothing' for the reference name
+    return SimulationConfig(
+        sim_func_name, 
+        nothing, 
+        shared, 
+        methods, 
+        defaults; 
+        varied_params = varied_params, 
+        target_module = target_module
     )
 end
 
@@ -160,14 +183,15 @@ function resolve_dynamic_function(
     provided_func::Union{Function, Nothing} = nothing; 
     target_module::Module = Main
 )
+    println(func_name,dir_name)
     # 1. If the function is already explicitly provided (e.g., from a direct struct call), return it
     if !isnothing(provided_func)
         return provided_func
     end
-
+    
     # 2. If no name string is provided (e.g., no analytical function assigned), return nothing
     isnothing(func_name) && return nothing
-
+    
     try
         # Build the path using the injected directory string
         func_file = joinpath(_SIM_ROOT_PATH[], dir_name, func_name * ".jl")
@@ -179,11 +203,11 @@ function resolve_dynamic_function(
             @warn "File $func_file not found. Assuming function '$func_name' is already in $target_module scope."
         end
         
-        # Fetch the compiled function directly from the requested module
-        return getfield(target_module, Symbol(func_name))
+        # THE FIX: Wrap the global binding lookup in invokelatest for Julia 1.12+
+        return Base.invokelatest(getglobal, target_module, Symbol(func_name))
         
     catch e
-        @warn "Failed to dynamically resolve function '$func_name' from '$dir_name'." # exception=(e, catch_backtrace())
+        @warn "Failed to dynamically resolve function '$func_name' from '$dir_name'." exception=(e, catch_backtrace())
         return nothing
     end
 end

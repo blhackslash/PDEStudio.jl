@@ -4,9 +4,13 @@ include("ControlUtils.jl")
 include("Controls.jl")
 include("Render.jl")
 include("CSVLauncher.jl")
+
 # ==============================================================================
-# In MakiePlotting.jl - Replace show_unified_fig and setup_render_lift!
+# --- GLOBAL UI STATE REFERENCES ---
 # ==============================================================================
+const GLOBAL_UI_OVERWRITE = Ref{Dict{String, Any}}(Dict{String, Any}())
+const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slider, :slider])
+const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
@@ -57,57 +61,43 @@ end
 function show_unified_fig(
     sim_config::SimulationConfig;
     ui_style::UIType = :default,
-    ui_overwrite::Dict = Dict{String, Any}(),
-    var_overwrite::Vector{Any} = Any[:menu, :slider, :slider, :slider, :slider],
-    scene_options::Dict = Dict{String, Any}(),
     parallel = false,
 )
+    # --- 1. Load from Global Refs ---
+    ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
+    var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
+    scene_options = deepcopy(GLOBAL_SCENE_OPTIONS[])
+
     ui_obs = create_master_ui_observables(ui_style)
     
-    # --- 1. Flatten and Merge Scene Options ---
+    # --- 2. Flatten and Merge Scene Options ---
     final_scene = get_base_scene_options()
     
-    # Map nested CSV Menu overrides to flat Selection keys
     if haskey(scene_options, "Menu")
-        for (k, v) in scene_options["Menu"]
-            final_scene["$(k)_Selection"] = v
-        end
+        for (k, v) in scene_options["Menu"]; final_scene["$(k)_Selection"] = v; end
     end
-    
-    # Map nested CSV Slider overrides to flat Value keys
     if haskey(scene_options, "Slider")
-        for (k, v) in scene_options["Slider"]
-            final_scene["$(k)_Value"] = v
-        end
+        for (k, v) in scene_options["Slider"]; final_scene["$(k)_Value"] = v; end
     end
-    
-    # Merge any direct programmatic flat keys
     for (k, v) in scene_options
-        if k != "Menu" && k != "Slider"
-            final_scene[k] = v
-        end
+        if k != "Menu" && k != "Slider"; final_scene[k] = v; end
     end
     
     raw_type = get(final_scene, "Plot-Type_Selection", "Lines")
     init_type = raw_type isa String ? Symbol(lowercase(replace(raw_type, " " => ""))) : raw_type
 
-    # --- 2. Setup Manager & Figure ---
+    # --- 3. Setup Manager & Figure ---
     GLMakie.activate!()
     
-    # Pass the init_type down so the UI initializes with the correct properties
     manager = create_plot_manager(sim_config, ui_obs, ui_overwrite, init_type)
-    
     plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
     plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
     
-    # --- 3. INITIALIZATION SEQUENCE ---
+    # --- 4. INITIALIZATION SEQUENCE ---
     manager.controls["base_types"][] = var_overwrite
-    
-    # Pass the FLATTENED scene down to the control builder!
     ctrl_fig = create_controls(plot_fig, manager, plot_data_obs, final_scene)    
     
-    # --- 4. Setup Data Generator Lift ---
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
 
@@ -129,7 +119,6 @@ function show_unified_fig(
     # --- 5. RENDER PIPELINE & DIMENSION SWITCHING ---
     render_observers = ObserverFunction[]
 
-    # Note: Ensure this matches the key exposed in `build_static_plot_controls!`
     on(manager.controls["Plot-Type_Selection"]) do ptype_sym
         for obs in render_observers; off(obs); end
         empty!(render_observers)
@@ -152,9 +141,7 @@ function show_unified_fig(
         notify(plot_data_obs)
     end
 
-    # --- 6. TRIGGER FIRST FRAME ---
     notify(manager.controls["Plot-Type_Selection"])
-    
     sim_update[] = 1 
     
     display(plot_screen_ref[], plot_fig)
@@ -169,14 +156,24 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     y_sel = c["Y-Axis_Selection"]
     z_sel = c["Z-Axis_Selection"]
     u_sel = c["U-Axis_Selection"]
+    
     render_obs = onany(plot_data_obs, x_sel, y_sel, z_sel, u_sel, c["UI_Update"], selector_obs...) do data, x_key, y_key, z_key, u_key, _ui, sel_vals...
         (isnothing(x_key) || isnothing(u_key) || x_key == "-" || u_key == "-") && return
         isempty(data) && return
         
-        # 1. Dispatch Data Extraction (PLOT_DIM_MAP[:lines] == 1)
+        # 1. Dispatch Data Extraction
         data_tuples, valid_labels, title_str = extract_data(data, manager, sel_vals, x_key, y_key, z_key, u_key, Val(PLOT_DIM_MAP[T]))
         
-        # 2. Dispatch Plotting
+        # --- THE MAKIE LIFESAVER: TEMPORARY IDENTITY SCALES ---
+        # Set scales to identity BEFORE plotting the new data.
+        # This completely bypasses Makie's logscale validation crash if the new data contains negative numbers!
+        if !is_3d_axis
+            ax.xscale[] = identity
+            ax.yscale[] = identity
+        end
+
+        # 2. Dispatch Plotting safely! 
+        # (update_base_plot! will call set_axis_limits_manager! at the end, which will safely re-apply log10)
         update_base_plot!(plot_fig, ax, valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T))
     end
     return render_obs

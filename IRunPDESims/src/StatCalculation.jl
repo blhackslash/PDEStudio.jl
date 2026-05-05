@@ -247,7 +247,7 @@ function calculateAllStats!(
     stats_list = stats_to_calculate isa Symbol ? [stats_to_calculate] : stats_to_calculate
 
     for stat_type in stats_list
-        _calculate_stats!(Val(stat_type), sim_data, sim_data.x, sim_data.u, ref_func; kwargs...)
+        Base.invokelatest(_calculate_stats!, Val(stat_type), sim_data, sim_data.x, sim_data.u, ref_func; kwargs...)
     end
     
     target_key = get(kwargs, :data_key, "sim_data_raw")
@@ -275,7 +275,6 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_params::ParamDict; kw
     @info "Loading numerical reference solution for stats calculation..."
     ref_sim_data = try loadSimData(ref_params) catch e; @warn "Failed" exception=e; nothing end
     if isnothing(ref_sim_data); return; end
-    
     calculateAllStats!(sim_data, createReferenceFunction(ref_sim_data); kwargs...)
 end
 

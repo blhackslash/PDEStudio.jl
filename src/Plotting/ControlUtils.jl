@@ -194,7 +194,7 @@ function createExportOptions!(
     plot_fig::Figure,
     manager::PlotManager,
     anim_target_obs::Observable,
-    active_axes_obs::Observable{Vector{Int}}, # Update signature
+    active_axes_obs::Observable{Vector{Int}}, 
     selector_widgets::Vector{Any},
     active_params::Vector{String}
 )
@@ -234,6 +234,28 @@ function createExportOptions!(
 
     # --- Image Save Logic ---
     on(btn_img.clicks) do _
+        
+        # --- THE FIX: Hard-Lock the Interactive Zoom State ---
+        # Sync the user's interactive mouse zoom (finallimits) back to the hard limits 
+        # so CairoMakie doesn't reset the view when switching backends.
+        for block in plot_fig.content
+            if block isa Axis
+                lims = block.finallimits[]
+                limits!(block, 
+                    lims.origin[1], lims.origin[1] + lims.widths[1], 
+                    lims.origin[2], lims.origin[2] + lims.widths[2]
+                )
+            elseif block isa Axis3
+                lims = block.finallimits[]
+                limits!(block, 
+                    lims.origin[1], lims.origin[1] + lims.widths[1], 
+                    lims.origin[2], lims.origin[2] + lims.widths[2],
+                    lims.origin[3], lims.origin[3] + lims.widths[3]
+                )
+            end
+        end
+        # -----------------------------------------------------
+
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name)
             @info "No filename provided, using default 'plot_export'"
@@ -264,7 +286,8 @@ function createExportOptions!(
         saveParametersToCSV(base_name, save_dir, manager, metadata_general)
         @info "Image saved successfully as $(base_name)!"
         
-        saveBox.stored_string = "" # Reset
+        saveBox.stored_string.val = "" # Reset silently without triggering observers
+        Makie.reset!(saveBox)
     end
 
     # --- GIF Save Logic ---
@@ -303,7 +326,8 @@ function createExportOptions!(
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         end
         
-        saveBox.stored_string = "" # Reset
+        saveBox.stored_string.val = "" # Reset silently without triggering observers
+        Makie.reset!(saveBox)
     end
 end
 

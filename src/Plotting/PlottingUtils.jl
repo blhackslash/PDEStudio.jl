@@ -1,5 +1,30 @@
 
+"""
+    extract_scene_options(manager::PlotManager)
 
+Helper function that rips the current axis and slider states from the PlotManager.
+"""
+function extract_scene_options(manager::PlotManager)
+    opts = Dict{String, Any}()
+    
+    # 1. Grab Menus
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c"]
+        key = "$(k)_Selection"
+        if haskey(manager.controls, key)
+            opts[key] = to_value(manager.controls[key])
+        end
+    end
+    
+    # 2. Grab Sliders
+    for k in manager.plot_vars
+        key = "$(k)_Value"
+        if haskey(manager.controls, key)
+            opts[key] = to_value(manager.controls[key])
+        end
+    end
+    
+    return opts
+end
 """
     plot_reference_lines!(ax, exponents; kwargs...)
 
@@ -275,14 +300,19 @@ end
 # --- Utility Functions ---
 function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
     min_raw, max_raw = raw_limits
-    if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw); return (0.0, 1.0); end
+    if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw)
+        return is_log_scale ? (0.1, 1.0) : (0.0, 1.0)
+    end
 
-    use_log = is_log_scale && (min_raw > 0)
-    
-    if use_log
-        pad = padding_factor
-        return (min_raw / (1 + pad), max_raw * (1 + pad))
+    if is_log_scale && min_raw > 0
+        # THE FIX: Logarithmic padding (distance calculated in log space)
+        # This guarantees limits NEVER drop below 0!
+        log_min, log_max = log10(min_raw), log10(max_raw)
+        log_range = max(log_max - log_min, 0.1) # Prevent 0 range
+        pad = log_range * padding_factor / 2.0
+        return (10^(log_min - pad), 10^(log_max + pad))
     else
+        # Linear padding
         data_range = max_raw - min_raw
         pad = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
         return (min_raw - pad, max_raw + pad)
@@ -309,13 +339,31 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
 
-    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], ui_x["logscale"][])
-    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], ui_y["logscale"][])
+    use_log_x = ui_x["logscale"][]
+    use_log_y = ui_y["logscale"][]
 
+    # 1. Enforce safety: If data <= 0, we absolutely cannot use logscale
+    if raw_xlims[1] <= 0 && use_log_x
+        ui_x["logscale"][] = false
+        use_log_x = false
+        @warn "X-Axis data contains non-positive values. Logscale disabled."
+    end
+    if raw_ylims[1] <= 0 && use_log_y
+        ui_y["logscale"][] = false
+        use_log_y = false
+        @warn "Y-Axis data contains non-positive values. Logscale disabled."
+    end
+
+    # 2. Calculate limits using the new, strictly safe padding logic
+    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
+    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
+
+    # 3. Apply the limits first (This is safe because the axis scale is currently 'identity' from the pre-flight check)
     try limits!(ax, final_xlims..., final_ylims...) catch; end
-    
-    ax.xscale[] = final_xlims[1] > 0 && ui_x["logscale"][] ? log10 : identity
-    ax.yscale[] = final_ylims[1] > 0 && ui_y["logscale"][] ? log10 : identity
+
+    # 4. Safely re-apply log10 NOW that the limits are mathematically guaranteed to be strictly positive
+    if use_log_x; ax.xscale[] = log10; end
+    if use_log_y; ax.yscale[] = log10; end
 end
 
 function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)

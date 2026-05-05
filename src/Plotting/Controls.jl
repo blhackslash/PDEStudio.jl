@@ -8,9 +8,8 @@ function create_controls(
     plot_fig::Makie.Figure, 
     manager::PlotManager, 
     plot_data_obs::Observable, 
-    scene_options::Dict = Dict{String, Any}() # THE FIX: Added 4th argument to receive the scene options
+    scene_options::Dict = Dict{String, Any}() 
 )
-    # Attach the Figure to the Screen immediately
     base_controls_fig = Figure(size = (450, 1000)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
@@ -20,7 +19,6 @@ function create_controls(
     n_params = length(active_params)
     
     if !haskey(manager.controls, "base_types")
-        # Default symbols from VariableControls
         defaults = vcat(fill(:slider, n_params), :menu, fill(:slider, 4))
         manager.controls["base_types"] = Observable(defaults)
     end
@@ -31,33 +29,44 @@ function create_controls(
     current_row += 1
     
     update_layout = fig_layout[current_row, 1] = GridLayout()
-    update_button = Button(update_layout[1,1], label="Refresh / Run Simulation", 
-                           width=190, buttoncolor=:lightgreen)
+    
+    # THE FIX: 3-Button Layout
+    update_button = Button(update_layout[1,1], label="Refresh / Run", width=140, buttoncolor=:lightgreen)
+    method_button = Button(update_layout[1,2], label="Methods...", width=120, buttoncolor=:lightgray)
+    save_button   = Button(update_layout[1,3], label="Save Defs", width=120, buttoncolor=:lightblue)
     
     update_notifier = Observable(0)
     manager.controls["Simulation_Update"] = update_notifier
+    
     on(update_button.clicks) do _
         update_notifier[] += 1
     end
     
-    method_button = Button(update_layout[1, 2], label="Select Methods...", 
-                           width=190, buttoncolor=:lightgray)
-    
-    # Identify all possible methods from the simulation dictionary
-    all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
-
     on(method_button.clicks) do _
-        # Create the separate, auto-sizing figure
-        m_fig, _ = create_method_checkboxes_figure(
-            all_method_names,
-            manager.methods;
-            target_rows = 20 # THE FIX: Updated keyword argument!
-        )
+        all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
+        m_fig, _ = create_method_checkboxes_figure(all_method_names, manager.methods; target_rows = 20)
+        if !isnothing(m_fig); display(m_fig); end
+    end
+
+    # --- THE FIX: Save Defaults Observer ---
+    on(save_button.clicks) do _
+        # 1. Extract and Save Scene Options
+        GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
         
-        # Display the new window
-        if !isnothing(m_fig)
-            display(m_fig)
+        # 2. Extract and Save UI Overwrites
+        new_ui = Dict{String, Any}()
+        for (scope, subdict) in manager.ui
+            new_ui[scope] = Dict{String, Any}()
+            for (k, v) in subdict
+                new_ui[scope][k] = to_value(v)
+            end
         end
+        GLOBAL_UI_OVERWRITE[] = new_ui
+        
+        # 3. Extract and Save Base Var Types
+        GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["base_types"][])
+        
+        @info "Current UI and Scene options successfully saved to global defaults! They will be applied on your next plot."
     end
     current_row += 1
 
@@ -123,7 +132,6 @@ function build_static_plot_controls!(
     manager::PlotManager,
     scene_options::Dict = Dict{String, Any}()
 )
-    println(scene_options)
     # 1. Metadata & Initialization
     dim_names = active_params
     total_dims = length(dim_names)
@@ -221,7 +229,6 @@ function build_static_plot_controls!(
         
         # Lock the value natively by initializing range to [init_val]
         sl = Slider(slider_layout[current_row, 2], range = [init_val], startvalue = init_val, width = 200)
-        println(sl.value[])
         control_objects[i] = sl
         selector_values[i] = sl.value
         manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
@@ -476,15 +483,13 @@ function build_static_plot_controls!(
 
     return x_key_obs, y_key_obs, z_key_obs, u_key_obs, active_axes_obs, selector_values, control_objects
 end
-
 """
     create_hierarchical_param_controls!(layout, manager::PlotManager)
 
-Creates a 3-menu + 1-textbox interface to navigate and edit all parameters.
+Creates a 3-menu + 1-textbox/toggle interface to navigate and edit all parameters.
 """
 function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManager)
     # 1. Menus
-    # Categories are fixed strings matching the field names (capitalized for UI)
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
     sorted_cat = sort(collect(keys(cat_mapping)))
     menu_cat = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...",width = 120)
@@ -496,7 +501,20 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     
     active_target_obs = Observable{Any}(nothing)
     ui_update = Observable{Int}(0)
-    # 2. Category -> Scope (Accessing fields directly)
+    is_internal_toggle = Ref(false)
+
+    # THE FIX: Replace the text label with a Toggle
+    tg = Toggle(layout[2, 1], active=false)
+    
+    placeholder_text = lift(menu_key.selection) do k
+        isnothing(k) && return "Select key..."
+        val = get(mgr.last_run_params, k, "default")
+        return "Loaded: $val"
+    end
+
+    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true, width = 250)
+
+    # 2. Category -> Scope
     on(menu_cat.selection) do cat
         isnothing(cat) && return
         field_name = cat_mapping[cat]
@@ -504,11 +522,13 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         
         menu_scope.options[] = sort(collect(keys(data)))
         
-        # THE FIX: Reset underlying menus to prevent scope ghosting
+        active_target_obs[] = nothing 
         menu_scope.i_selected[] = 0
         menu_key.i_selected[] = 0
-        tb.stored_string[] = ""
-        tb.displayed_string[] = ""
+        
+        tb.stored_string.val = ""
+        Makie.reset!(tb)
+        is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
 
     # 3. Scope -> Key
@@ -520,25 +540,15 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         
         menu_key.options[] = sort(collect(keys(data[scope])))
         
-        # THE FIX: Reset key selection to force a UI update
+        active_target_obs[] = nothing 
         menu_key.i_selected[] = 0
-        tb.stored_string[] = ""
-        tb.displayed_string[] = ""
+        
+        tb.stored_string.val = ""
+        Makie.reset!(tb)
+        is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
 
-    # 4. Textbox with Live Placeholder
-    Label(layout[2, 1], "Edit Value:", halign=:right)
-    
-    # Show what is currently loaded in the plot
-    placeholder_text = lift(menu_key.selection) do k
-        isnothing(k) && return "Select key..."
-        val = get(mgr.last_run_params, k, "default")
-        return "Loaded: $val"
-    end
-
-    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true,width = 250)
-
-# When a key is selected, we update the Textbox
+    # 4. Key -> Populate Textbox & Toggle
     on(menu_key.selection) do key
         isnothing(key) && return
         cat, scope = menu_cat.selection[], menu_scope.selection[]
@@ -547,27 +557,48 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         obs = field_data[scope][key]
         
         active_target_obs[] = obs
-        # Show the actual value as a string for editing
-    # 1. Convert the value to a string
+
         val_str = string(to_value(obs))
+        tb.displayed_string[] = val_str
         
-        # 2. Update both the stored and the displayed observables
-        tb.stored_string[] = val_str
-        tb.displayed_string[] = val_str  # This forces the text to appear visually
-        
-        # 3. Programmatically focus the textbox
-        #tb.focused[] = true
+        # Sync the toggle visually if it's a boolean
+        is_internal_toggle[] = true
+        tg.active[] = (to_value(obs) isa Bool) ? to_value(obs) : false
+        is_internal_toggle[] = false
     end
 
-    # Handle Textbox Submission with the NEW Smart Parser
+    # 5a. Handle Textbox Submission 
     on(tb.stored_string) do s
         obs = active_target_obs[]
         isnothing(obs) && return
         
-        # This replaces the old 'parsed = parseValue(s)' logic
         smart_parse_and_update!(obs, s)
+        
+        # Sync toggle if the updated value is a boolean
+        if to_value(obs) isa Bool
+            is_internal_toggle[] = true
+            tg.active[] = to_value(obs)
+            is_internal_toggle[] = false
+        end
+        
         if menu_cat.selection[] == "UI"; ui_update[] += 1 end
     end
+    
+    # 5b. Handle Toggle Submission
+    on(tg.active) do is_active
+        is_internal_toggle[] && return
+        obs = active_target_obs[]
+        isnothing(obs) && return
+        
+        # Only allow the toggle to push updates if the target parameter is actually a boolean
+        if to_value(obs) isa Bool
+            obs[] = is_active
+            tb.stored_string.val = string(is_active)
+            Makie.reset!(tb)
+            if menu_cat.selection[] == "UI"; ui_update[] += 1 end
+        end
+    end
+    
     mgr.controls["UI_Update"] = ui_update
     return
 end
