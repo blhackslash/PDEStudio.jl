@@ -6,7 +6,7 @@ using GLMakie, CairoMakie, Observables, Reexport
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
-export show_unified_fig, launch_csv_interface
+export show_unified_fig, launch_csv_interface, set_plot_presets!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 const BaseVariables = ["c","x","y","z","t"]
@@ -78,7 +78,7 @@ module UI
     using Observables: ObserverFunction, onany
     using GLMakie, CairoMakie, Printf, Statistics
     
-    export show_unified_fig, launch_csv_interface
+    export show_unified_fig, launch_csv_interface, set_plot_presets!
     
     include("Plotting/MakiePlotting.jl") 
 end

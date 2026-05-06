@@ -44,7 +44,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     end
 
     # --- Feature: Sort Legend ---
-    if ui_app["sort_legend"][]
+    if manager.ui["Axis-General"]["sort_legend"][]
         sort_idx = sortperm(labels_for_legend)
         plotted_objects = plotted_objects[sort_idx]
         labels_for_legend = labels_for_legend[sort_idx]
@@ -53,7 +53,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     # Apply standard styling and limits
     set_axis_styles!(ax, manager, x_key, u_key, title_str)
     set_axis_limits_manager!(ax, xs_slices, us_slices, manager)
-    
+    plot_reference_lines!(ax,ui_app["reference"][])
     create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
 

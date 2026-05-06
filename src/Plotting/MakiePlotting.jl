@@ -19,9 +19,11 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
 
     base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])
     sim_obs = NestedObsDict()
-    sim_obs["shared"] = Dict(k => Observable(v) for (k, v) in sim_config.shared_params)
+    
+    make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
+    sim_obs["shared"] = Dict(k => make_obs(v) for (k, v) in sim_config.shared_params)
     for (m_name, m_params) in sim_config.methods_dict
-        sim_obs[m_name] = Dict(k => Observable(v) for (k, v) in m_params)
+        sim_obs[m_name] = Dict(k => make_obs(v) for (k, v) in m_params)
     end
 
     # 1. Start with an empty active UI dictionary
@@ -58,17 +60,14 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     
     return manager
 end
-function show_unified_fig(
-    sim_config::SimulationConfig;
-    ui_style::UIType = :default,
-    parallel = false,
-)
+function show_unified_fig(sim_config::SimulationConfig)
     # --- 1. Load from Global Refs ---
     ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
     var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
     scene_options = deepcopy(GLOBAL_SCENE_OPTIONS[])
+    println(ui_overwrite)
 
-    ui_obs = create_master_ui_observables(ui_style)
+    ui_obs = create_master_ui_observables()
     
     # --- 2. Flatten and Merge Scene Options ---
     final_scene = get_base_scene_options()
@@ -111,7 +110,7 @@ function show_unified_fig(
     onany(sim_update, methods_obs) do _, active_methods
         Base.invokelatest(update_plot_data_collection!,
             plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
-            force_reload = (sim_update[] > 0), parallel = parallel, 
+            force_reload = (sim_update[] > 0), 
         )
         notify(plot_data_obs)
     end
@@ -132,12 +131,17 @@ function show_unified_fig(
             append!(render_observers, new_obs)
         end
         
-        if GLMakie.isopen(plot_screen_ref[])
-            GLMakie.destroy!(plot_screen_ref[])
+        scr = plot_screen_ref[]
+        if GLMakie.isopen(scr)
+            try
+                GLMakie.close(scr) # Safe public API
+            catch e
+                @debug "Screen close suppressed: $e"
+            end
         end
+        
         plot_screen_ref[] = GLMakie.Screen(title = "Makie Plot")
         display(plot_screen_ref[], plot_fig)
-        
         notify(plot_data_obs)
     end
 
@@ -165,8 +169,6 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         data_tuples, valid_labels, title_str = extract_data(data, manager, sel_vals, x_key, y_key, z_key, u_key, Val(PLOT_DIM_MAP[T]))
         
         # --- THE MAKIE LIFESAVER: TEMPORARY IDENTITY SCALES ---
-        # Set scales to identity BEFORE plotting the new data.
-        # This completely bypasses Makie's logscale validation crash if the new data contains negative numbers!
         if !is_3d_axis
             ax.xscale[] = identity
             ax.yscale[] = identity
@@ -175,6 +177,7 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         # 2. Dispatch Plotting safely! 
         # (update_base_plot! will call set_axis_limits_manager! at the end, which will safely re-apply log10)
         update_base_plot!(plot_fig, ax, valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T))
+        if !is_3d_axis; plot_HUD!(ax, manager) end
     end
     return render_obs
 end

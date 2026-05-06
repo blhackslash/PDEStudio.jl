@@ -50,12 +50,17 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
         elseif T <: AbstractFloat
             obs[] = parse(Float64, input_str)
         elseif T <: Tuple || T <: Vector
-            # For complex types, we use the general parser but check the result type
             parsed = parseValue(input_str) 
-            if typeof(parsed) == T
-                obs[] = parsed
+            
+            # THE FIX: Only check if the base structure (Tuple or Vector) matches!
+            if (T <: Tuple && parsed isa Tuple) || (T <: Vector && parsed isa Vector)
+                try
+                    obs[] = parsed
+                catch e
+                    @warn "Failed to apply value. The parameter strictly expects $T, but you provided $(typeof(parsed)). If you want to change the length of this tuple dynamically, initialize it as Observable{Any}."
+                end
             else
-                @warn "Type mismatch for complex input. Expected $T, but got $(typeof(parsed))."
+                @warn "Type mismatch for complex input. Expected a $(T <: Tuple ? "Tuple" : "Vector"), but got $(typeof(parsed))."
             end
         else
             # Fallback for any other types

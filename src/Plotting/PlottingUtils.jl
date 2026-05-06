@@ -25,89 +25,55 @@ function extract_scene_options(manager::PlotManager)
     
     return opts
 end
-"""
-    plot_reference_lines!(ax, exponents; kwargs...)
-
-Plots reference power-law lines anchored to the corners of the current axis view.
-The sign of each exponent determines the anchor point:
-- Positive exponent `p`: Anchors at the top-right `(xmax, ymax)`.
-- Negative exponent `p`: Anchors at the bottom-right `(xmax, ymin)`.
-
-# Arguments
-- `ax::Axis`: The Makie axis to plot into.
-- `exponents::Union{Tuple, Nothing}`: A tuple of signed exponents.
-
-# Keyword Arguments
-- `label::String`: A single label for all reference lines to group them in the legend.
-- Other keywords are passed to `Makie.lines!`.
-"""
 function plot_reference_lines!(
     ax::Axis,
-    exponents::Union{Tuple, Nothing};
+    exponents::Vector;
     label::String = "Reference Lines",
     color = :black,
     linestyle = :dash,
     kwargs...
 )
-    # --- Input and Axis Validation ---
     if isnothing(exponents) || isempty(exponents)
         return []
     end
 
-    current_limits_nested = ax.limits[]
-    if isnothing(current_limits_nested) || isnothing(current_limits_nested[1]) || isnothing(current_limits_nested[2])
-        @warn "Cannot plot reference lines, axis view limits are not yet set."
+    # THE FIX: Dynamically calculate the bounding box of the data already plotted!
+    bbox = Makie.data_limits(ax.scene)
+    if !isfinite(bbox.origin[1]) || !isfinite(bbox.widths[1])
         return []
     end
     
-    xlims, ylims = current_limits_nested
+    xmin, ymin = bbox.origin[1], bbox.origin[2]
+    xmax = xmin + bbox.widths[1]
+    ymax = ymin + bbox.widths[2]
     
-    # On a log scale, limits must be positive.
-    if any(x -> x <= 0, (xlims..., ylims...))
-        @warn "Cannot plot reference lines on a log-log plot with non-positive axis limits."
-        return []
+    if any(x -> x <= 0, (xmin, xmax, ymin, ymax)) && (ax.xscale[] == log10 || ax.yscale[] == log10)
+        return [] # Abort gracefully if data hasn't been cleaned for logscale yet
     end
-    
-    xmin, xmax = xlims
-    ymin, ymax = ylims
 
-    # For a visually straight line on a log-log plot, we create log-spaced x-values.
     x_ref_values = 10 .^ range(log10(xmin), log10(xmax), length=100)
-    
-    # The anchor x-position is always the leftmost edge.
     ref_x = xmin
-
     plotted_lines = []
     
     for p_signed in exponents
         if p_signed == 0; continue; end
 
-        # --- Correctly determine the y-anchor point ---
         local y_anchor
         if p_signed > 0
-            # An O(x^2) line should start low on the left.
             y_anchor = ymin
-        else # p_signed < 0
-            # An O(x^-1) line should start high on the left.
+        else 
             y_anchor = ymax
         end
 
-        # --- Calculate the line using the power-law formula ---
-        
-        # Calculate scaling constant C so that y = C * x^p passes through (ref_x, y_anchor)
         C = y_anchor / (ref_x^p_signed)
-        
-        # Calculate the y-values for the reference line using the power law
         y_ref_line = C .* (x_ref_values .^ p_signed)
         
-        # Create a single line plot for this exponent
         line = lines!(ax, x_ref_values, y_ref_line;
-            label = label, # Use the same label for grouping in the legend
+            label = label, 
             color = (color, 0.65),
             linestyle = linestyle,
             kwargs...
         )
-        
         push!(plotted_lines, line)
     end
 
@@ -135,6 +101,40 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
+function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
+    ui_x = manager.ui["X-Axis"]
+    ui_y = manager.ui["Y-Axis"]
+    
+    raw_xlims = _safe_extrema(xs)
+    raw_ylims = _safe_extrema(us)
+
+    use_log_x = ui_x["logscale"][]
+    use_log_y = ui_y["logscale"][]
+
+    # 1. Enforce safety: If data <= 0, we absolutely cannot use logscale
+    if raw_xlims[1] <= 0 && use_log_x
+        ui_x["logscale"][] = false
+        use_log_x = false
+        @warn "X-Axis data contains non-positive values. Logscale disabled."
+    end
+    if raw_ylims[1] <= 0 && use_log_y
+        ui_y["logscale"][] = false
+        use_log_y = false
+        @warn "Y-Axis data contains non-positive values. Logscale disabled."
+    end
+
+    # 2. Calculate limits using the new, strictly safe padding logic
+    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
+    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
+
+    # 3. Apply the limits first (This is safe because the axis scale is currently 'identity' from the pre-flight check)
+    try limits!(ax, final_xlims..., final_ylims...) catch; end
+
+    # 4. Safely re-apply log10 NOW that the limits are mathematically guaranteed to be strictly positive
+    if use_log_x; ax.xscale[] = log10; end
+    if use_log_y; ax.yscale[] = log10; end
+end
+
 # --- Legend Helpers ---
 function _parse_legend_position(s_in::String)
     s = lowercase(s_in)
@@ -158,7 +158,7 @@ function create_or_update_legend!(
     end
 
     # 2. Extract properties hierarchically
-    ui_style = manager.ui["Plot-Style"]
+    ui_style = manager.ui["Axis-General"]
     
     # If the current Plot-Style doesn't support legends (like Heatmaps), skip entirely!
     if !haskey(ui_style, "legend_pos"); return; end 
@@ -193,74 +193,6 @@ function create_or_update_legend!(
             trim!(fig.layout)
         end
     catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
-end
-
-
-# --- Axis Styling Helpers ---
-"""
-    set_axis_styles!(ax::Axis, manager, def_x, def_y, def_title)
-
-Pulls from the hierarchical UI dictionary to style a 2D axis. 
-Automatically applies Labels, Limits, Grids, and Offsets.
-"""
-function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
-    ui_gen = manager.ui["Axis-General"]
-    ui_lbl = manager.ui["Labels"]
-    ui_x   = manager.ui["X-Axis"]
-    ui_y   = manager.ui["Y-Axis"]
-    ui_stl = manager.ui["Plot-Style"]
-
-    # 1. Labels
-    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
-    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
-    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
-
-    # 2. Font Sizes
-    ax.titlesize = ui_gen["title_size"][]
-    ax.xlabelsize = ui_gen["label_size"][]
-    ax.ylabelsize = ui_gen["label_size"][]
-    ax.xticklabelsize = ui_gen["ticklabel_size"][]
-    ax.yticklabelsize = ui_gen["ticklabel_size"][]
-
-    # 3. Offsets & Margins
-    if haskey(ui_stl, "xlabel_offset")
-        ax.xlabelpadding = ui_stl["xlabel_offset"][]
-        ax.ylabelpadding = ui_stl["ylabel_offset"][]
-    end
-    if haskey(ui_stl, "bottom_margin")
-        ax.alignmode = Mixed(bottom = ui_stl["bottom_margin"][], left=0, right=0, top=0)
-    end
-
-    # 4. Grids & Visibility
-    ax.xgridvisible = ui_x["gridvisible"][]
-    ax.ygridvisible = ui_y["gridvisible"][]
-    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]
-    ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]
-
-    # 5. Ticks & Formats
-    if ui_x["tick_count"][] > 0
-        ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(ui_x["tick_count"][])) : LinearTicks(ui_x["tick_count"][])
-    end
-    if ui_y["tick_count"][] > 0
-        ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ui_y["tick_count"][])) : LinearTicks(ui_y["tick_count"][])
-    end
-
-    x_offset = ui_x["scale_offset"][]
-    if x_offset != 0.0
-        ax.xtickformat = ticks -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", ticks)
-    else
-        ax.xtickformat = ui_x["tickformat"][] == "default" ? Makie.automatic : ui_x["tickformat"][]
-    end
-
-    y_offset = ui_y["scale_offset"][]
-    if y_offset != 0.0
-        ax.ytickformat = ticks -> map(ticks) do y
-            dev = y - y_offset
-            "$(round(y_offset, sigdigits=3)) $(dev < 0 ? "-" : "+") $(@sprintf("%.1e", abs(dev)))"
-        end
-    else
-        ax.ytickformat = ui_y["tickformat"][] == "default" ? Makie.automatic : ui_y["tickformat"][]
-    end
 end
 
 """
@@ -332,40 +264,6 @@ function _safe_extrema(data_slices)
     return (minimum(mins), maximum(maxs))
 end
 
-function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
-    ui_x = manager.ui["X-Axis"]
-    ui_y = manager.ui["Y-Axis"]
-    
-    raw_xlims = _safe_extrema(xs)
-    raw_ylims = _safe_extrema(us)
-
-    use_log_x = ui_x["logscale"][]
-    use_log_y = ui_y["logscale"][]
-
-    # 1. Enforce safety: If data <= 0, we absolutely cannot use logscale
-    if raw_xlims[1] <= 0 && use_log_x
-        ui_x["logscale"][] = false
-        use_log_x = false
-        @warn "X-Axis data contains non-positive values. Logscale disabled."
-    end
-    if raw_ylims[1] <= 0 && use_log_y
-        ui_y["logscale"][] = false
-        use_log_y = false
-        @warn "Y-Axis data contains non-positive values. Logscale disabled."
-    end
-
-    # 2. Calculate limits using the new, strictly safe padding logic
-    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
-    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
-
-    # 3. Apply the limits first (This is safe because the axis scale is currently 'identity' from the pre-flight check)
-    try limits!(ax, final_xlims..., final_ylims...) catch; end
-
-    # 4. Safely re-apply log10 NOW that the limits are mathematically guaranteed to be strictly positive
-    if use_log_x; ax.xscale[] = log10; end
-    if use_log_y; ax.yscale[] = log10; end
-end
-
 function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
     ui_var = manager.ui["Various"]
     ui_stl = manager.ui["Plot-Style"]
@@ -409,7 +307,59 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{
     linear_outlier_indices = _find_outlier_indices(flat_vector, threshold)
     return CartesianIndices(matrix)[linear_outlier_indices]
 end
+function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
+    ui_gen = manager.ui["Axis-General"]
+    ui_lbl = manager.ui["Labels"]
+    ui_x   = manager.ui["X-Axis"]
+    ui_y   = manager.ui["Y-Axis"]
+    ui_stl = manager.ui["Plot-Style"]
 
+    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
+    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
+    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+
+    ax.titlesize = ui_gen["title_size"][]
+    ax.xlabelsize = ui_gen["label_size"][]
+    ax.ylabelsize = ui_gen["label_size"][]
+    ax.xticklabelsize = ui_gen["ticklabel_size"][]
+    ax.yticklabelsize = ui_gen["ticklabel_size"][]
+
+    if haskey(ui_stl, "xlabel_offset")
+        ax.xlabelpadding = ui_stl["xlabel_offset"][]
+        ax.ylabelpadding = ui_stl["ylabel_offset"][]
+    end
+    
+    # THE FIX: Deleted the alignmode (bottom_margin) block here so the cell size is authentic.
+
+    ax.xgridvisible = ui_x["gridvisible"][]
+    ax.ygridvisible = ui_y["gridvisible"][]
+    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]
+    ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]
+
+    if ui_x["tick_count"][] > 0
+        ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(ui_x["tick_count"][])) : LinearTicks(ui_x["tick_count"][])
+    end
+    if ui_y["tick_count"][] > 0
+        ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ui_y["tick_count"][])) : LinearTicks(ui_y["tick_count"][])
+    end
+
+    x_offset = ui_x["scale_offset"][]
+    if x_offset != 0.0
+        ax.xtickformat = ticks -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", ticks)
+    else
+        ax.xtickformat = ui_x["tickformat"][] == "default" ? Makie.automatic : ui_x["tickformat"][]
+    end
+
+    y_offset = ui_y["scale_offset"][]
+    if y_offset != 0.0
+        ax.ytickformat = ticks -> map(ticks) do y
+            dev = y - y_offset
+            "$(round(y_offset, sigdigits=3)) $(dev < 0 ? "-" : "+") $(@sprintf("%.1e", abs(dev)))"
+        end
+    else
+        ax.ytickformat = ui_y["tickformat"][] == "default" ? Makie.automatic : ui_y["tickformat"][]
+    end
+end
 
 function create_or_update_colorbar!(
     fig::Figure,
@@ -424,8 +374,6 @@ function create_or_update_colorbar!(
     isnothing(plot_object) && return
 
     ui_stl = manager.ui["Plot-Style"]
-    
-    # If the plot style doesn't have a colormap (like Lines), it shouldn't have a colorbar!
     if !haskey(ui_stl, "colormap"); return; end 
 
     ui_lbl = manager.ui["Labels"]
@@ -434,15 +382,73 @@ function create_or_update_colorbar!(
     final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
 
     try
+        # THE FIX: No alignmode needed. It will naturally align to the clean Axis spine!
         cb = Colorbar(fig[1, 2];
             colormap = ui_stl["colormap"][],
             colorrange = color_range_obs,
             label = final_label,
             labelsize = ui_gen["label_size"][],
-            ticklabelsize = ui_gen["ticklabel_size"][],
+            ticklabelsize = ui_gen["ticklabel_size"][]
         )
         colsize!(fig.layout, 2, Auto())
     catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
 end
 
-# (Keep plot_reference_lines! and delete_plots_by_label! exactly as they were...)
+"""
+    plot_HUD!(ax, manager)
+
+Plots arbitrary relative shapes (0.0 to 1.0 space) directly onto the screen.
+Supports lines, scatter, scatterlines, and filled polygons.
+"""
+function plot_HUD!(ax::Axis, manager::PlotManager)
+    ui_hud = manager.ui["HUD"]
+    
+    # Exit immediately if the HUD is off or no points are defined
+    if !ui_hud["visible"][] || isempty(ui_hud["points"][])
+        return
+    end
+    
+    pts = ui_hud["points"][]
+    
+    try
+        x_pct = [Float64(p[1]) for p in pts]
+        y_pct = [Float64(p[2]) for p in pts]
+        
+        # Connect the end to the beginning for closed shapes
+        if ui_hud["close_loop"][] && length(x_pct) > 2
+            push!(x_pct, x_pct[1])
+            push!(y_pct, y_pct[1])
+        end
+
+        mode  = lowercase(strip(ui_hud["mode"][]))
+        color = ui_hud["color"][]
+        lw    = ui_hud["linewidth"][]
+        ls    = ui_hud["linestyle"][]
+        ms    = ui_hud["markersize"][]
+
+        # Dispatch based on the requested HUD mode
+        if mode == "scatter"
+            scatter!(ax, x_pct, y_pct; color=color, markersize=ms, space=:relative)
+            
+        elseif mode == "scatterlines"
+            scatterlines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, markersize=ms, space=:relative)
+            
+        elseif mode == "polygon"
+            # poly! requires a vector of Point2f objects
+            poly_pts = Point2f.(zip(x_pct, y_pct))
+            poly!(ax, poly_pts; color=(color, 0.3), strokecolor=color, strokewidth=lw, space=:relative)
+            
+        else # Default to lines
+            lines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, space=:relative)
+        end
+        
+    catch e
+        @warn "Failed to plot HUD. Ensure 'points' is a vector of tuples, e.g., [(0.1, 0.1), (0.9, 0.9)]."
+    end
+end
+
+plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
+
+# Fallback for 3D axes (Relative space is tricky in 3D projection)
+plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
+

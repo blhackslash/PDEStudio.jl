@@ -246,18 +246,6 @@ function runAllSimulations(
         if convert_eulerian || calculate_stats
             sim_data = loadSimData(params)
             
-            # if convert_eulerian && sim_data isa LSimData
-            #     N_grid = _LAGRANGE_N_GRID[]
-            #     try
-            #         if force_overwrite; error("Overwrite Forced!") end
-            #         sim_data = loadBestConversion(params, N_grid)
-            #     catch
-            #         conv_data = convert_to_eulerian(sim_data, N_grid)
-            #         saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
-            #         sim_data = conv_data 
-            #     end
-            # end
-            
             if calculate_stats && !isnothing(sim_data)
                 # Determine which key we are calculating stats for based on the data type
                 

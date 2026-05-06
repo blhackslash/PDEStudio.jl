@@ -484,28 +484,6 @@ on(apply_btn.clicks) do _
 end
 
 """
-    apply_scene_state!(manager::PlotManager, saved_state::Dict)
-
-Programmatically updates UI widgets to match a saved configuration.
-"""
-function apply_scene_state!(manager::PlotManager, saved_state::Dict)
-    for (key, val) in saved_state
-        if haskey(manager.controls, key)
-            obs = manager.controls[key]
-            
-            # If it's a Slider, use set_close_to! to update the physical handle
-            # We find the slider via the manager's widget references (if stored)
-            # or simply update the observable value directly.
-            if endswith(key, "_Value")
-                obs[] = val
-            elseif endswith(key, "_Selection")
-                obs[] = string(val)
-            end
-        end
-    end
-end
-
-"""
     get_base_scene_options() -> Dict{String, Any}
 
 Returns the fallback/default configuration for the UI menus and sliders.

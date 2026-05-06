@@ -232,7 +232,6 @@ function build_static_plot_controls!(
         control_objects[i] = sl
         selector_values[i] = sl.value
         manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
-        
         Label(slider_layout[current_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
         current_row += 1
     end
@@ -525,8 +524,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         active_target_obs[] = nothing 
         menu_scope.i_selected[] = 0
         menu_key.i_selected[] = 0
-        
-        tb.stored_string.val = ""
+
         Makie.reset!(tb)
         is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
@@ -543,7 +541,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         active_target_obs[] = nothing 
         menu_key.i_selected[] = 0
         
-        tb.stored_string.val = ""
         Makie.reset!(tb)
         is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
@@ -593,8 +590,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         # Only allow the toggle to push updates if the target parameter is actually a boolean
         if to_value(obs) isa Bool
             obs[] = is_active
-            tb.stored_string.val = string(is_active)
-            Makie.reset!(tb)
+            tb.displayed_string[] = string(is_active)
             if menu_cat.selection[] == "UI"; ui_update[] += 1 end
         end
     end

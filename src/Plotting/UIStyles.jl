@@ -18,9 +18,10 @@ const PLOT_DIM_MAP = Dict(
 
 Creates the definitive Master Dictionary containing EVERY possible UI option as Observables.
 """
-function create_master_ui_observables(style::Symbol=:default)
+function create_master_ui_observables()
     master = NestedObsDict()
-    obs_dict(d) = Dict{String, Observable}(k => Observable(v) for (k,v) in d)
+    make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
+    obs_dict(d) = Dict{String, Observable}(k => make_obs(v) for (k,v) in d)
     
     # 1. Universal Scopes
     master["Axis-General"] = obs_dict(Dict(
@@ -28,7 +29,9 @@ function create_master_ui_observables(style::Symbol=:default)
         "font_size"      => 24, 
         "title_size"     => 26, 
         "label_size"     => 24, 
-        "ticklabel_size" => 22
+        "ticklabel_size" => 22,
+        "legend_pos"   => "detached",
+        "sort_legend"  => true,
     ))
     
     master["Labels"] = obs_dict(Dict(
@@ -39,14 +42,22 @@ function create_master_ui_observables(style::Symbol=:default)
         "colorbar_label" => "default", 
         "legend"         => "Methods"
     ))
-    
+    master["HUD"] = obs_dict(Dict(
+        "visible"    => false,
+        "mode"       => "lines", # Options: "lines", "scatter", "scatterlines", "polygon"
+        "close_loop" => false,   # Automatically connects the last point to the first
+        "points"     => Any[],   # e.g., [(0.1, 0.1), (0.5, 0.9), (0.9, 0.1)]
+        "color"      => :red,
+        "linewidth"  => 3.0,
+        "linestyle"  => :dash,
+        "markersize" => 15.0
+    ))  
     master["Various"] = obs_dict(Dict(
         "save_formats"         => ["png"], 
         "create_savefolder"    => false,      # <-- ADDED (Prevents export crash)
         "comp_names"           => ("default",), # <-- ADDED
         "animation_duration_s" => 10.0, 
         "animation_fps"        => 30, 
-        "reference"            => (0.0,), 
         "remove_outliers"      => false, 
         "mark_outliers"        => false, 
         "outlier_threshold"    => 1.5, 
@@ -82,8 +93,7 @@ function create_master_ui_observables(style::Symbol=:default)
         "show_lines"   => true,  # <-- ADDED
         "show_scatter" => false, # <-- ADDED
         "dashed_lines" => false, # <-- ADDED
-        "legend_pos"   => "detached",
-        "sort_legend"  => true,
+        "reference"    => [],
     ))
     
     master["Style-Heatmap"] = obs_dict(Dict(
@@ -100,8 +110,6 @@ function create_master_ui_observables(style::Symbol=:default)
         "bottom_margin" => 60,
         "xlabel_offset" => 40.0,
         "ylabel_offset" => 40.0,
-        "legend_pos"    => "detached", # <-- ADDED (Needed for contours)
-        "sort_legend"   => true,       # <-- ADDED
     ))
     
     master["Style-Contourf"] = obs_dict(Dict(
@@ -110,8 +118,6 @@ function create_master_ui_observables(style::Symbol=:default)
         "bottom_margin" => 60,
         "xlabel_offset" => 40.0,
         "ylabel_offset" => 40.0,
-        "legend_pos"    => "detached", # <-- ADDED 
-        "sort_legend"   => true,       # <-- ADDED
     ))
 
     master["Style-Contour3D"] = obs_dict(Dict(
@@ -121,8 +127,6 @@ function create_master_ui_observables(style::Symbol=:default)
         "xlabel_offset" => 40.0,
         "ylabel_offset" => 40.0,
         "zlabel_offset" => 50.0,
-        "legend_pos"    => "detached", # <-- ADDED 
-        "sort_legend"   => true,       # <-- ADDED
     ))
 
     master["Style-Surface"] = obs_dict(Dict(
@@ -145,7 +149,6 @@ function create_master_ui_observables(style::Symbol=:default)
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
-        "legend_pos"    => "detached", 
         "bottom_margin" => 60, 
         "xlabel_offset" => 40.0, 
         "ylabel_offset" => 40.0
@@ -156,19 +159,10 @@ function create_master_ui_observables(style::Symbol=:default)
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
-        "legend_pos"    => "detached", 
         "xlabel_offset" => 40.0, 
         "ylabel_offset" => 40.0, 
         "zlabel_offset" => 50.0
     ))
-
-    if style == :publication
-        master["Axis-General"]["figsize"][] = (800, 600)
-        master["Style-Lines"]["lineStyles"][] = [(:dash, :dense), (:dot, :dense), :solid]
-        master["Style-Lines"]["linewidth"][] = 4.0
-        master["Style-Lines"]["dashed_lines"][] = true
-    end
-
     return master
 end
 
@@ -189,6 +183,7 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     ui["Axis-General"] = master["Axis-General"]
     ui["Labels"]       = master["Labels"]
     ui["Various"]      = master["Various"]
+    ui["HUD"]          = master["HUD"]
     
     # 2. Map the specific style block dynamically
     style_key = "Style-" * titlecase(string(plot_type)) 
@@ -211,4 +206,84 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     if haskey(manager.controls, "UI_Update")
         notify(manager.controls["UI_Update"])
     end
+end
+
+"""
+    set_plot_presets!(presets::Union{Symbol, Vector{Symbol}, Nothing})
+
+Configures the Global UI and Scene Options based on predefined templates.
+Pass `nothing` to clear all overrides. Pass an array of symbols to stack multiple presets 
+(e.g., `[:convergence, :publication]`). Presets applied later in the array overwrite earlier ones.
+"""
+function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
+    # 2. Convert single symbol to vector for unified processing
+    preset_list = presets isa Symbol ? [presets] : presets
+
+    # 3. Initialize fresh dictionaries
+    ui_over = Dict{String, Any}()
+    scene_opt = Dict{String, Any}()
+
+    # Helper to safely dig into nested UI overrides
+    function set_ui!(scope, key, val)
+        if !haskey(ui_over, scope); ui_over[scope] = Dict{String, Any}(); end
+        ui_over[scope][key] = val
+    end
+
+    # 4. Apply Presets in order
+    for preset in preset_list
+        if preset == :convergence
+            # Set the exact axes for a convergence plot
+            scene_opt["X-Axis_Selection"]    = "Ns__1"
+            scene_opt["U-Axis_Selection"]    = "relative_l2error"
+            scene_opt["Plot-Type_Selection"] = "Lines"
+            scene_opt["t_Value"]      = 10. ^10
+            
+            # Force log scales for 1D plotting[cite: 13]
+            set_ui!("X-Axis", "logscale", true)
+            set_ui!("Y-Axis", "logscale", true)
+            set_ui!("X-Axis", "padding", 0.)
+            
+            # Optional QoL: Set default labels
+            set_ui!("Labels", "xlabel", "Number of Cells (N)")
+            set_ui!("Labels", "ylabel", "Relative L2 Error")
+
+        elseif preset == :publication
+
+            set_ui!("Labels","title","")
+            set_ui!("Labels","legend","")
+
+            # Apply compact, high-visibility styling suitable for papers[cite: 13]
+            set_ui!("Axis-General", "figsize", (800, 600))
+            set_ui!("Axis-General", "font_size", 18)
+            set_ui!("Axis-General", "label_size", 18)
+            set_ui!("Axis-General", "ticklabel_size", 16)
+            set_ui!("Axis-General", "legend_pos","righttop")
+
+            set_ui!("Plot-Style", "linewidth", 3.0)
+            set_ui!("Plot-Style", "dashed_lines", true)
+            set_ui!("Plot-Style", "lineStyles", [(:dash, :dense), (:dot, :dense), :solid])
+            set_ui!("Various","save_formats",["pdf","svg"])
+            
+        elseif preset == :darkmode
+            # Example of how easily you can extend this!
+            set_ui!("Plot-Style", "colors", [:cyan, :magenta, :yellow, :white])
+            
+        else
+            @warn "Unknown plot preset ignored: $preset"
+        end
+    end
+
+    # 5. Push to Globals
+    GLOBAL_UI_OVERWRITE[] = ui_over
+    GLOBAL_SCENE_OPTIONS[] = scene_opt
+    GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider] # Default widget types
+    
+    @info "Successfully applied plot presets: $(join(preset_list, " + "))"
+end
+function set_plot_presets!()
+    GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
+    GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
+    GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
+    @info "Plot presets cleared. Reverted to default settings."
+    return
 end
