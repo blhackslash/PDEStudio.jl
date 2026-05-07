@@ -239,16 +239,13 @@ function runAllSimulations(
     ana_cache = Dict{Float64, Array{Float64}}()
     # --- Helper for eager Eulerian conversion & Stat Calculation ---
     function _process_task(params)
+        N_grid = _LAGRANGE_N_GRID[]
         # 1. Run the simulation
         run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
-        
+        sim_data = loadSimData(params)
         # 2. Handle eager post-processing
-        if convert_eulerian || calculate_stats
-            sim_data = loadSimData(params)
-            
-            if calculate_stats && !isnothing(sim_data)
-                # Determine which key we are calculating stats for based on the data type
-                
+        if !isnothing(sim_data)  
+            if calculate_stats
                 calculateAllStats!(
                     sim_data, 
                     sim_config.reference_func; 
@@ -257,6 +254,11 @@ function runAllSimulations(
                     force_overwrite=force_overwrite,
                     ana_cache=ana_cache
                 )
+            end
+            if convert_eulerian && (sim_data isa LSimData); 
+                conv_data = convert_to_eulerian(sim_data, N_grid)
+                saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
+                sim_data = conv_data 
             end
         end
     end

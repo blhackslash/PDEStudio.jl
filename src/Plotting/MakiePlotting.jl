@@ -65,7 +65,6 @@ function show_unified_fig(sim_config::SimulationConfig)
     ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
     var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
     scene_options = deepcopy(GLOBAL_SCENE_OPTIONS[])
-    println(ui_overwrite)
 
     ui_obs = create_master_ui_observables()
     

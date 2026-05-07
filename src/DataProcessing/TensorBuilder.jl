@@ -256,7 +256,7 @@ function create_method_plot_data(
             catch e
                 if !(e isa SimFileNotFoundError); e end
                 @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
-                first_data = convert_to_eulerian(first_data, N_grid)
+                first_data = convert_to_eulerian(first_data,N_grid)
                 # Save the new conversion using the data_key format
                 saveSimData(first_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
             end

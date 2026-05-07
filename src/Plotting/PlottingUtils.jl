@@ -447,8 +447,6 @@ function plot_HUD!(ax::Axis, manager::PlotManager)
     end
 end
 
-plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
-
 # Fallback for 3D axes (Relative space is tricky in 3D projection)
 plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
 

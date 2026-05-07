@@ -7,7 +7,7 @@ const FixedDict = ParamDict
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _SIM_ROOT_PATH = Ref{String}(pwd())
-const _LAGRANGE_N_GRID = Ref{Int}(50)
+const _LAGRANGE_N_GRID = Ref{Int}(100)
 const _REFERENCE_RESOLUTION = Ref{Int}(500)
 
 set_lagrange_resolution!(n::Int) = (_LAGRANGE_N_GRID[] = n)

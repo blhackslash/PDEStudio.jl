@@ -61,7 +61,8 @@ function createSimData(
 ) where {D, M}
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
-function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int=50) where {D, M}
+
+function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int) where {D, M}
     T_len = length(ldata.t)
 
     mins = fill(Inf, D); maxs = fill(-Inf, D)
