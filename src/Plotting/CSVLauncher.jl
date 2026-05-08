@@ -323,15 +323,10 @@ function launch_csv_interface(sim_func::Union{Function, Nothing} = nothing)
         # --- D. LAUNCH PLOTTER ---
         ui_overwrite = parsed_dict["UI"]
         scene_options = parsed_dict["Scene"]
-
-        show_unified_fig(
-            sim_config;
-            ui_style = :default, 
-            ui_overwrite = ui_overwrite,
-            var_overwrite = var_overwrite,
-            scene_options = scene_options,
-            parallel = run_parallel[]
-        )
+        GLOBAL_UI_OVERWRITE[] = ui_overwrite
+        GLOBAL_SCENE_OPTIONS[] = scene_options
+        runAllSimulations(sim_config; calculate_stats=true, convert_eulerian=true)
+        show_unified_fig(sim_config)
     end
 
     display(GLMakie.Screen(title="CSV Launcher"), fig)
