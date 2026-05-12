@@ -41,12 +41,11 @@ function parse_csv_to_dict(filepath::String)
     
     return parsed
 end
+
 """
     csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
 
 Converts a parsed nested CSV dictionary into a properly formatted `SimulationConfig`.
-Requires the simulation function to be passed manually since dynamic function 
-loading is deferred.
 """
 function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 1. Extract Shared Parameters
@@ -55,20 +54,12 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         shared_params = parsed_csv["Simulation"]["shared"]
     end
 
-    # 2. Extract Methods & Identify the Reference Solution
+    # 2. Extract Methods (No longer hijacks "analytical" methods!)
     methods_dict = Dict{String, Dict{String, Any}}()
-    ref_name = nothing
-    
     if haskey(parsed_csv, "Simulation")
         for (scope, params) in parsed_csv["Simulation"]
             if scope != "shared"
                 methods_dict[scope] = params
-                
-                # Dynamically identify the analytical/reference method 
-                lower_scope = lowercase(scope)
-                if contains(lower_scope, "analytic") || contains(lower_scope, "reference")
-                    ref_name = scope
-                end
             end
         end
     end
@@ -83,13 +74,22 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         @warn "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
     end
 
-    # 4. Default Methods (All methods found in the CSV are active by default)
+    # 4. Default Methods
     default_methods = collect(keys(methods_dict))
 
-    # 5. Resolve the Analytical Solution Factory
+    # 5. Extract Reference Name explicitly from Config
+    ref_name = nothing
+    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
+        csv_ref = get(parsed_csv["Config"]["General"], "reference_func", "none")
+        if csv_ref != "none" && !isempty(csv_ref)
+            ref_name = csv_ref
+        end
+    end
+
+    # 6. Resolve the Analytical Solution Factory
     ref_func = nothing
     if !isnothing(ref_name)
-        # Convert the UI string (e.g. "Analytical Solution") back to a safe function name (e.g. "analytical_solution")
+        # Convert the UI string back to a safe function name
         safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
         
         ref_factory = try
@@ -101,10 +101,12 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         # Instantiate the exact mathematical closure using the loaded shared parameters
         if !isnothing(ref_factory)
             ref_func = Base.invokelatest(ref_factory, shared_params)
+        else
+            @warn "Failed to resolve reference function: $safe_ref_name"
         end
     end
 
-    # 6. Construct and return the 7-argument SimulationConfig
+    # 7. Construct and return the SimulationConfig
     return SimulationConfig(
         sim_func,
         ref_func,
