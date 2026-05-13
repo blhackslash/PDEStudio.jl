@@ -63,14 +63,14 @@ function _calc_series_with_ref(::Val{D}, u_valid, ana_vals, axes) where {D}
     res["relative_l1error"] = ana_l1 > 1e-12 ? l1_err / ana_l1 : l1_err
     res["relative_l2error"] = ana_l2_sq > 1e-12 ? sqrt(l2_sq_err) / sqrt(ana_l2_sq) : sqrt(l2_sq_err)
 
-    # 3. Mass & Supnorm
+    # 3. Mass & superr
     mass_num = sum(u_clean) * dV
     res["mass"] = mass_num
     res["relative_mass"] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
 
-    res["supnorm"] = maximum(abs, err_vals)
+    res["superr"] = maximum(abs, err_vals)
     sup_ana = maximum(abs, ana_vals)
-    res["relative_supnorm"] = sup_ana > 1e-12 ? res["supnorm"] / sup_ana : res["supnorm"]
+    res["relative_superr"] = sup_ana > 1e-12 ? res["superr"] / sup_ana : res["superr"]
 
     return res
 end
@@ -89,7 +89,7 @@ function _calculate_stats!(::Val{:series}, sim_data::ESimData{D}, x_dense, u_den
     # Establish keys dynamically
     keys_list = isnothing(ref_func) ? 
         ["mass", "wave_height", "wave_position", "l1norm", "l2norm"] : 
-        ["l1error", "l2error", "supnorm", "relative_l1error", "relative_l2error", "relative_supnorm", "mass", "relative_mass"]
+        ["l1error", "l2error", "superr", "relative_l1error", "relative_l2error", "relative_superr", "mass", "relative_mass"]
     
     if D >= 2
         filter!(k -> k != "wave_position", keys_list)
@@ -140,7 +140,7 @@ function _calculate_stats!(::Val{:series}, sim_data::LSimData{D, M}, x_vecs, u_v
     
     keys_list = isnothing(ref_func) ? 
         ["mass", "l1norm", "l2norm"] : 
-        ["l1error", "l2error", "supnorm", "relative_l1error", "relative_l2error", "relative_supnorm", "mass", "relative_mass"]
+        ["l1error", "l2error", "superr", "relative_l1error", "relative_l2error", "relative_superr", "mass", "relative_mass"]
 
     filter!(k -> !haskey(sim_data.series, k) || force_overwrite, keys_list)
     
@@ -196,10 +196,10 @@ function _calculate_stats!(::Val{:series}, sim_data::LSimData{D, M}, x_vecs, u_v
 
                 sim_data.series["l1error"][c, m] = l1_err
                 sim_data.series["l2error"][c, m] = sqrt(l2_sq_err)
-                sim_data.series["supnorm"][c, m] = sup_err
+                sim_data.series["superr"][c, m] = sup_err
                 sim_data.series["relative_l1error"][c, m] = ana_l1 > 1e-12 ? l1_err / ana_l1 : l1_err
                 sim_data.series["relative_l2error"][c, m] = ana_l2_sq > 1e-12 ? sqrt(l2_sq_err) / sqrt(ana_l2_sq) : sqrt(l2_sq_err)
-                sim_data.series["relative_supnorm"][c, m] = sup_ana > 1e-12 ? sup_err / sup_ana : sup_err
+                sim_data.series["relative_superr"][c, m] = sup_ana > 1e-12 ? sup_err / sup_ana : sup_err
                 sim_data.series["mass"][c, m] = mass_num
                 sim_data.series["relative_mass"][c, m] = abs(mass_ana) > 1e-12 ? mass_num / abs(mass_ana) : NaN
 

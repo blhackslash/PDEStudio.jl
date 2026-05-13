@@ -131,7 +131,7 @@ function SimulationConfig(
     # 2. Resolve Reference Factory Function
     ref_factory = resolve_reference_function(ref_name_safe)
     ref_f = isnothing(ref_factory) ? nothing : Base.invokelatest(ref_factory, shared)
-
+    
     # 3. AUTO-INJECT: Add the reference method to the methods dictionary if it exists
     if !isnothing(ref_name_safe) && !haskey(methods, ref_name_safe)
         methods[nice_string(ref_name_safe)] = ParamDict()

@@ -41,7 +41,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         "Parameters" => copy(sim_config.varied_params),
         "General"    => Dict{String, Any}(
             "simulation_func" => string(sim_config.simulation_func),
-            "reference_func"  => isnothing(sim_config.reference_func) ? "none" : string(sim_config.reference_func)
+            "reference_func"  => isnothing(sim_config.reference_name) ? "none" : string(sim_config.reference_name)
         )
     )
 
