@@ -109,34 +109,33 @@ function show_unified_fig(sim_config::SimulationConfig)
         end
     end
 
-    onany(sim_update, methods_obs) do _, active_methods
-        Base.invokelatest(update_plot_data_collection!,
-            plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
-            force_reload = (sim_update[] > 0), 
-        )
-        notify(plot_data_obs)
-    end
-
     # --- 5. RENDER PIPELINE & DIMENSION SWITCHING ---
     render_observers = ObserverFunction[]
 
-    on(manager.controls["Plot-Type_Selection"]) do ptype_sym
+    # THE FIX: A unified rebuilder that safely orchestrates the teardown and setup!
+    function rebuild_plot_layout!()
+        ptype_sym = manager.controls["Plot-Type_Selection"][]
+        
+        # 1. KILL the old render loops FIRST so they don't accidentally fire
         for obs in render_observers; off(obs); end
         empty!(render_observers)
         empty!(plot_fig)
-
+        
+        # 2. NOW it is safe to swap the UI styles without the old plot crashing!
         switch_ui_plot_type!(manager, ptype_sym)
-
+        
+        # 3. Create the new render loop
         new_obs = setup_render_lift!(plot_fig, plot_data_obs, manager, Val(ptype_sym))
         
         if !isnothing(new_obs)
             append!(render_observers, new_obs)
         end
         
+        # 4. Safe public API to preserve 3D interactivity
         scr = plot_screen_ref[]
         if GLMakie.isopen(scr)
             try
-                GLMakie.close(scr) # Safe public API
+                GLMakie.close(scr) 
             catch e
                 @debug "Screen close suppressed: $e"
             end
@@ -147,21 +146,60 @@ function show_unified_fig(sim_config::SimulationConfig)
         notify(plot_data_obs)
     end
 
+    onany(sim_update, methods_obs) do _, active_methods
+        Base.invokelatest(update_plot_data_collection!,
+            plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
+            force_reload = (sim_update[] > 0), 
+        )
+        
+        if manager.controls["Compare_Mode"][]
+            rebuild_plot_layout!()
+        else
+            notify(plot_data_obs)
+        end
+    end
+
+    on(manager.controls["Plot-Type_Selection"]) do ptype_sym
+        rebuild_plot_layout!()
+    end
+
+    on(manager.controls["Compare_Mode"]) do _
+        rebuild_plot_layout!()
+    end
+
     notify(manager.controls["Plot-Type_Selection"])
     sim_update[] = 1 
     
-    display(plot_screen_ref[], plot_fig)
     return plot_fig, ctrl_fig, manager
 end
-
 function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface
-    ax = is_3d_axis ? Axis3(plot_fig[1, 1], perspectiveness=0.5) : Axis(plot_fig[1, 1])
     c = manager.controls; selector_obs = [haskey(c, "$(n)_Value") ? c["$(n)_Value"] : c["$(n)_Selection"] for n in manager.plot_vars]
     x_sel = c["X-Axis_Selection"]
     y_sel = c["Y-Axis_Selection"]
     z_sel = c["Z-Axis_Selection"]
     u_sel = c["U-Axis_Selection"]
+    
+    # --- THE FIX: Create Axes OUTSIDE the render loop, perfectly mimicking your original code! ---
+    compare_mode = get(c, "Compare_Mode", Observable(false))[]
+    active_methods = manager.methods[]
+    num_methods = length(active_methods)
+    
+    axes = []
+    if compare_mode && num_methods > 1
+        grid_layout = plot_fig[1, 1] = GridLayout()
+        for i in 1:num_methods
+            row = (i - 1) ÷ 2 + 1
+            col = (i - 1) % 2 + 1
+            ax = is_3d_axis ? Axis3(grid_layout[row, col], perspectiveness=0.5) : Axis(grid_layout[row, col])
+            push!(axes, ax)
+        end
+        if !is_3d_axis; linkaxes!(axes...); end
+    else
+        ax = is_3d_axis ? Axis3(plot_fig[1, 1], perspectiveness=0.5) : Axis(plot_fig[1, 1])
+        push!(axes, ax)
+    end
+    # -----------------------------------------------------------------------------------------
     
     render_obs = onany(plot_data_obs, x_sel, y_sel, z_sel, u_sel, c["UI_Update"], selector_obs...) do data, x_key, y_key, z_key, u_key, _ui, sel_vals...
         (isnothing(x_key) || isnothing(u_key) || x_key == "-" || u_key == "-") && return
@@ -170,16 +208,65 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         # 1. Dispatch Data Extraction
         data_tuples, valid_labels, title_str = extract_data(data, manager, sel_vals, x_key, y_key, z_key, u_key, Val(PLOT_DIM_MAP[T]))
         
+        ui_app = manager.ui["Plot-Style"]
+        
         # --- THE MAKIE LIFESAVER: TEMPORARY IDENTITY SCALES ---
-        if !is_3d_axis
-            ax.xscale[] = identity
-            ax.yscale[] = identity
+        for ax in axes
+            if !is_3d_axis
+                ax.xscale[] = identity
+                ax.yscale[] = identity
+            end
+        end
+        
+        # Global Colorrange
+        has_cr = haskey(ui_app, "colorrange")
+        orig_cr = has_cr ? ui_app["colorrange"].val : "default"
+        
+        if has_cr && orig_cr == "default"
+            u_all = Float64[]
+            for us in data_tuples[end]
+                append!(u_all, filter(isfinite, us))
+            end
+            l_u, h_u = isempty(u_all) ? (0.0, 1.0) : (minimum(u_all), maximum(u_all))
+            if l_u == h_u; h_u += 1e-6; end
+            ui_app["colorrange"].val = (l_u, h_u) 
         end
 
         # 2. Dispatch Plotting safely! 
-        # (update_base_plot! will call set_axis_limits_manager! at the end, which will safely re-apply log10)
-        update_base_plot!(plot_fig, ax, valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T))
-        if !is_3d_axis; plot_HUD!(ax, manager) end
+        if compare_mode && length(valid_labels) > 1
+            orig_leg_pos = manager.ui["Axis-General"]["legend_pos"].val
+            orig_title = manager.ui["Labels"]["title"].val
+            orig_title_size = manager.ui["Axis-General"]["title_size"].val
+            
+            manager.ui["Axis-General"]["legend_pos"].val = "none"
+            manager.ui["Axis-General"]["title_size"].val = manager.ui["Axis-General"]["label_size"].val 
+            
+            for (i, label) in enumerate(valid_labels)
+                if i > length(axes); break; end # Safety check
+                ax = axes[i]
+                single_tuples = Tuple([dt[i]] for dt in data_tuples)
+                manager.ui["Labels"]["title"].val = label
+                
+                update_base_plot!(plot_fig, ax, [label], single_tuples, manager, x_key, y_key, z_key, u_key, label, Val(T))
+                
+                if !is_3d_axis
+                    plot_HUD!(ax, manager)
+                end
+            end
+            
+            manager.ui["Labels"]["title"].val = orig_title
+            manager.ui["Axis-General"]["legend_pos"].val = orig_leg_pos
+            manager.ui["Axis-General"]["title_size"].val = orig_title_size
+        else
+            ax = axes[1]
+            update_base_plot!(plot_fig, ax, valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T))
+            
+            if !is_3d_axis
+                plot_HUD!(ax, manager)
+            end
+        end
+        
+        if has_cr; ui_app["colorrange"].val = orig_cr; end
     end
     return render_obs
 end

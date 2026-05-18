@@ -30,10 +30,29 @@ function create_controls(
     
     update_layout = fig_layout[current_row, 1] = GridLayout()
     
-    # THE FIX: 3-Button Layout
-    update_button = Button(update_layout[1,1], label="Refresh / Run", width=140, buttoncolor=:lightgreen)
-    method_button = Button(update_layout[1,2], label="Methods...", width=120, buttoncolor=:lightgray)
-    save_button   = Button(update_layout[1,3], label="Save Defs", width=120, buttoncolor=:lightblue)
+    # THE FIX: Beautiful 2x2 Button Layout
+    update_button  = Button(update_layout[1,1], label="Refresh / Run", width=140, buttoncolor=:lightgreen)
+    compare_button = Button(update_layout[1,2], label="Compare: OFF", width=140, buttoncolor=:lightgray)
+    method_button  = Button(update_layout[2,1], label="Methods...", width=140, buttoncolor=:lightgray)
+    save_button    = Button(update_layout[2,2], label="Save Defs", width=140, buttoncolor=:lightblue)
+    
+    manager.controls["Simulation_Update"] = Observable(0)
+    on(update_button.clicks) do _
+        manager.controls["Simulation_Update"][] += 1
+    end
+
+    manager.controls["Compare_Mode"] = Observable(false)
+    on(compare_button.clicks) do _
+        is_comp = !manager.controls["Compare_Mode"][]
+        manager.controls["Compare_Mode"][] = is_comp
+        compare_button.label[] = is_comp ? "Compare: ON" : "Compare: OFF"
+        compare_button.buttoncolor[] = is_comp ? :lightgoldenrod : :lightgray
+        
+        # THE FIX: Tell the render loop to evaluate the layout cache logic
+        if haskey(manager.controls, "UI_Update")
+            notify(manager.controls["UI_Update"])
+        end
+    end
     
     update_notifier = Observable(0)
     manager.controls["Simulation_Update"] = update_notifier
@@ -256,11 +275,24 @@ function build_static_plot_controls!(
     end
 
     # Helper to safely update Menus
-    function _update_menu!(menu, new_options)
+    # THE FIX: Smart Fallbacks for Axis Menus
+    function _update_menu!(menu, new_options; fallbacks=["x", "y", "z", "t"])
         curr = menu.selection[]
         menu.options[] = isempty(new_options) ? ["-"] : new_options
+        
         if curr == "-" || isnothing(curr) || curr ∉ new_options
-            menu.i_selected[] = isempty(new_options) ? 0 : 1
+            if isempty(new_options)
+                menu.i_selected[] = 0
+            else
+                # Try to find a preferred fallback (e.g., x, y, z, t) in the available options
+                idx = nothing
+                for f in fallbacks
+                    idx = findfirst(isequal(f), new_options)
+                    !isnothing(idx) && break
+                end
+                # If no preferred fallback is found, default to 1
+                menu.i_selected[] = isnothing(idx) ? 1 : idx
+            end
         else
             menu.i_selected[] = findfirst(isequal(curr), new_options)
         end
@@ -300,18 +332,19 @@ function build_static_plot_controls!(
         
         sort!(valid_axes)
         
-        _update_menu!(menu_x, valid_axes)
-        _update_menu!(menu_comp, [string(i) for i in 1:comp_max])
+        # Apply the specific physical fallbacks for each axis
+        _update_menu!(menu_x, valid_axes; fallbacks=["x", "t", "y", "z"])
+        _update_menu!(menu_comp, [string(i) for i in 1:comp_max]; fallbacks=["1"])
         
         p_dim = PLOT_DIM_MAP[ptype]
         if p_dim >= 2
-            _update_menu!(menu_y, valid_axes)
+             _update_menu!(menu_y, valid_axes; fallbacks=["y", "t", "z", "x"])
         else
             menu_y.options[] = ["disabled"]
             menu_y.i_selected[] = 1
         end
         if p_dim >= 3
-            _update_menu!(menu_z, valid_axes)
+            _update_menu!(menu_z, valid_axes; fallbacks=["z", "t", "x", "y"])
         else
             menu_z.options[] = ["disabled"]
             menu_z.i_selected[] = 1
@@ -514,19 +547,36 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true, width = 250)
 
     # 2. Category -> Scope
-    on(menu_cat.selection) do cat
+# 2. Category -> Scope (Now reacts to both category changes AND method toggles)
+    onany(menu_cat.selection, mgr.methods) do cat, active_methods
         isnothing(cat) && return
         field_name = cat_mapping[cat]
         data = getproperty(mgr, field_name)
         
-        menu_scope.options[] = sort(collect(keys(data)))
+        # --- THE FIX: Smart Scoping ---
+        # Only show active methods in the simulation scope, and always put 'shared' at the top!
+        new_scopes = String[]
+        if field_name == :simulation
+            haskey(data, "shared") && push!(new_scopes, "shared")
+            for m in sort(active_methods)
+                haskey(data, m) && push!(new_scopes, m)
+            end
+        else
+            new_scopes = sort(collect(keys(data)))
+        end
         
-        active_target_obs[] = nothing 
-        menu_scope.i_selected[] = 0
-        menu_key.i_selected[] = 0
+        # Only reset the UI if the options actually changed
+        if menu_scope.options[] != new_scopes
+            menu_scope.options[] = new_scopes
+            
+            active_target_obs[] = nothing 
+            menu_scope.i_selected[] = 0
+            menu_key.i_selected[] = 0
 
-        Makie.reset!(tb)
-        is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
+            tb.stored_string.val = ""
+            Makie.reset!(tb)
+            is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
+        end
     end
 
     # 3. Scope -> Key

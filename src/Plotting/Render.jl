@@ -65,9 +65,8 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
 
     x_data, y_data, u_data = xs[1], ys[1], us[1]
     valid_u = filter(isfinite, u_data)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+
+    cr_obs = get_colorrange(ui_app, valid_u)
 
     hm = heatmap!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs)
 
@@ -102,9 +101,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     U_flat = vec(u_data)
 
     valid_u = filter(isfinite, U_flat)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+    cr_obs = get_colorrange(ui_app, valid_u)
 
     sc = scatter!(ax, X_grid, Y_grid; 
         color=U_flat, 
@@ -129,37 +126,38 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
 
     create_or_update_colorbar!(plot_fig, sc, manager, cr_obs, active_methods[1])
 end
-
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour})
     xs_slices, ys_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
 
-    # Overlay all methods
+    plotted_objects, labels_for_legend = [], String[]
+
     for (plot_idx, label) in enumerate(active_methods)
         color = ui_app["colors"][][mod1(plot_idx, end)]
+        lw = ui_app["linewidth"][]
         
         contour!(ax, xs_slices[plot_idx], ys_slices[plot_idx], us_slices[plot_idx]; 
             levels=ui_app["levels"][], 
             color=color, 
-            linewidth=ui_app["linewidth"][], 
+            linewidth=lw, 
             labels=true
         )
+        
+        # THE FIX: Force the legend to use a perfect colored line proxy!
+        push!(plotted_objects, Makie.LineElement(color=color, linewidth=lw))
+        push!(labels_for_legend, label)
     end
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
     
     valid_x = filter(isfinite, xs_slices[1])
     valid_y = filter(isfinite, ys_slices[1])
+    if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
+    if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
     
-    # Only update limits if there is actually valid coordinate data
-    if !isempty(valid_x)
-        xlims!(ax, extrema(valid_x)...)
-    end
-    if !isempty(valid_y)
-        ylims!(ax, extrema(valid_y)...)
-    end
+    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
 
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf})
@@ -168,43 +166,55 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
 
-    # 1. Base Filled Contour (First Method)
-    x_data, y_data, u_data = xs_slices[1], ys_slices[1], us_slices[1]
+    raw_idx = get(ui_app, "base_method_idx", Ref(1))[]
+    base_idx = clamp(raw_idx, 1, length(active_methods))
+
+    x_data, y_data, u_data = xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx]
     
     valid_u = filter(isfinite, u_data)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+    cr_obs = get_colorrange(ui_app, valid_u)
+    l_u, h_u = cr_obs[]
+
+    plotted_objects, labels_for_legend = [], String[]
+
+    lvl_count = ui_app["levels"][]
+    lvl_range = range(l_u, h_u, length=lvl_count)
 
     cf = contourf!(ax, x_data, y_data, u_data; 
         colormap=ui_app["colormap"][], 
-        levels=ui_app["levels"][], 
-        colorscale=cr_obs
+        levels=lvl_range 
     )
+    
+    # THE FIX: Convert the Symbol to an array of colors before grabbing the last one, and wrap in [ ]
+    base_color = Makie.to_colormap(ui_app["colormap"][])[end]
+    push!(plotted_objects, [Makie.PolyElement(color=base_color)])
+    push!(labels_for_legend, "$(active_methods[base_idx]) (Base)")
 
-    # 2. Contours for subsequent methods (Comparison overlay)
-    for i in 2:length(active_methods)
+    for i in 1:length(active_methods)
+        if i == base_idx; continue; end
+        
+        color = ui_app["colors"][][mod1(i, end)]
+        lw = ui_app["linewidth"][]
+        
         contour!(ax, xs_slices[i], ys_slices[i], us_slices[i]; 
-            color=:red, 
-            linewidth=2.0, 
+            color=color, 
+            linewidth=lw, 
             labels=true
         )
+        # THE FIX: Wrap the LineElement in an array [ ]
+        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
+        push!(labels_for_legend, active_methods[i])
     end
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
     
     valid_x = filter(isfinite, x_data)
     valid_y = filter(isfinite, y_data)
+    if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
+    if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
     
-    # Only update limits if there is actually valid coordinate data
-    if !isempty(valid_x)
-        xlims!(ax, extrema(valid_x)...)
-    end
-    if !isempty(valid_y)
-        ylims!(ax, extrema(valid_y)...)
-    end
-    
-    create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[1])
+    create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[base_idx])
+    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
 
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d})
@@ -223,9 +233,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     U_flat = vec(u_data)
 
     valid_u = filter(isfinite, U_flat)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+    cr_obs = get_colorrange(ui_app, valid_u)
 
     sc = scatter!(ax, X_grid, Y_grid, Z_grid; 
         color=U_flat, 
@@ -249,9 +257,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     x_data, y_data, u_data = xs_slices[1], ys_slices[1], us_slices[1]
     
     valid_u = filter(isfinite, u_data)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+    cr_obs = get_colorrange(ui_app, valid_u)
 
     sf = surface!(ax, x_data, y_data, u_data; 
         colormap=ui_app["colormap"][], 
@@ -295,9 +301,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     x_data, y_data, z_data, u_data = xs_slices[1], ys_slices[1], zs_slices[1], us_slices[1]
     
     valid_u = filter(isfinite, u_data)
-    l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-    if l_u == h_u; h_u += 1e-6; end
-    cr_obs = Observable((l_u, h_u))
+    cr_obs = get_colorrange(ui_app, valid_u)
 
     # THE FIX: Just pass the 1D vectors directly!
     vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; 

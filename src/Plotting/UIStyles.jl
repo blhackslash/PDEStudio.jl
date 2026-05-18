@@ -62,7 +62,7 @@ function create_master_ui_observables()
         "mark_outliers"        => false, 
         "outlier_threshold"    => 1.5, 
         "track_max"            => false, 
-        "track_min"            => false
+        "track_min"            => false,
     ))
     
     # 2. Axes (Hierarchic Generator)
@@ -84,23 +84,27 @@ function create_master_ui_observables()
     master["Z-Axis-3D"] = obs_dict(axis_dict(0.05))
     
     # --- 3. PLOT-SPECIFIC STYLES ---
+# --- 3. PLOT-SPECIFIC STYLES ---
     master["Style-Lines"] = obs_dict(Dict(
         "colors"       => [:red, :blue, :green, :orange, :purple],
         "lineStyles"   => [:solid, (:dash, :dense), (:dot, :dense)],
-        "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross], # <-- ADDED
+        "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
         "linewidth"    => 5.0,
-        "markersize"   => 15.0,  # <-- ADDED
-        "show_lines"   => true,  # <-- ADDED
-        "show_scatter" => false, # <-- ADDED
-        "dashed_lines" => false, # <-- ADDED
+        "markersize"   => 15.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
+        "show_lines"   => true,
+        "show_scatter" => false,
+        "dashed_lines" => false,
         "reference"    => [],
     ))
     
     master["Style-Heatmap"] = obs_dict(Dict(
+        "colorrange"    => [],
         "colormap"      => :viridis,
         "bottom_margin" => 60,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
     ))
     
     master["Style-Contour"] = obs_dict(Dict(
@@ -108,60 +112,67 @@ function create_master_ui_observables()
         "levels"        => 15,
         "linewidth"     => 2.0,
         "bottom_margin" => 60,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
     ))
     
     master["Style-Contourf"] = obs_dict(Dict(
+        "colorrange"    => [],
+        "base_method_idx" => 1,
+        "colors"        => [:red, :blue, :green, :orange, :purple],
+        "linewidth"     => 2.0,
         "colormap"      => :viridis,
         "levels"        => 15,
         "bottom_margin" => 60,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
     ))
 
     master["Style-Contour3D"] = obs_dict(Dict(
         "colors"        => [:red, :blue, :green, :orange, :purple],
         "levels"        => 15,
         "linewidth"     => 2.0,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
-        "zlabel_offset" => 50.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
+        "zlabel_offset" => 20.0, # <-- SHRUNK
     ))
 
     master["Style-Surface"] = obs_dict(Dict(
+        "colorrange"    => [],
         "colormap"      => :viridis,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
-        "zlabel_offset" => 50.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
+        "zlabel_offset" => 20.0, # <-- SHRUNK
     ))
     
-    # --- ADDED TRUE 3D VOLUME ---
     master["Style-Volume"] = obs_dict(Dict(
+        "colorrange"    => [],
         "colormap"      => :viridis,
-        "xlabel_offset" => 40.0,
-        "ylabel_offset" => 40.0,
-        "zlabel_offset" => 50.0,
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
+        "zlabel_offset" => 20.0, # <-- SHRUNK
     ))
 
     master["Style-Scatter2D"] = obs_dict(Dict(
+        "colorrange"    => [],
         "colormap"      => :viridis,
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
         "bottom_margin" => 60, 
-        "xlabel_offset" => 40.0, 
-        "ylabel_offset" => 40.0
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0  # <-- SHRUNK
     ))
     
     master["Style-Scatter3D"] = obs_dict(Dict(
+        "colorrange"    => [],
         "colormap"      => :viridis,
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
-        "xlabel_offset" => 40.0, 
-        "ylabel_offset" => 40.0, 
-        "zlabel_offset" => 50.0
+        "xlabel_offset" => 15.0, # <-- SHRUNK
+        "ylabel_offset" => 15.0, # <-- SHRUNK
+        "zlabel_offset" => 20.0  # <-- SHRUNK
     ))
     return master
 end
@@ -248,22 +259,39 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Labels", "ylabel", "Relative L2 Error")
 
         elseif preset == :publication
+            set_ui!("Labels", "title", "")
+            set_ui!("Labels", "legend", "")
 
-            set_ui!("Labels","title","")
-            set_ui!("Labels","legend","")
-
-            # Apply compact, high-visibility styling suitable for papers[cite: 13]
+            # Apply compact, high-visibility styling suitable for papers
             set_ui!("Axis-General", "figsize", (800, 600))
             set_ui!("Axis-General", "font_size", 18)
             set_ui!("Axis-General", "label_size", 18)
             set_ui!("Axis-General", "ticklabel_size", 16)
-            set_ui!("Axis-General", "legend_pos","righttop")
-            set_ui!("X-Axis", "padding", 0.)
+            set_ui!("Axis-General", "legend_pos", "righttop")
+            set_ui!("X-Axis", "padding", 0.0)
 
             set_ui!("Plot-Style", "linewidth", 4.0)
             set_ui!("Plot-Style", "dashed_lines", true)
-            set_ui!("Plot-Style", "lineStyles", [(:dash, :dense), (:dot, :dense), :solid])
-            set_ui!("Various","save_formats",["pdf","svg"])
+            set_ui!("Plot-Style", "lineStyles", [:dash, :dot, (:dash, :dense), (:dot, :dense)])
+            set_ui!("Various", "save_formats", ["pdf", "svg"])
+            
+            # THE FIX: Universally suck in all axis margins for publication!
+            set_ui!("Plot-Style", "xlabel_offset", 15.0)
+            set_ui!("Plot-Style", "ylabel_offset", 15.0)
+            set_ui!("Plot-Style", "zlabel_offset", 20.0)
+            
+        elseif preset == :heatmap
+            scene_opt["Plot-Type_Selection"] = "Heatmap"
+            set_ui!("Plot-Style", "xlabel_offset", 10.0)
+            set_ui!("Plot-Style", "ylabel_offset", 10.0)
+            set_ui!("Plot-Style", "bottom_margin", 20)
+            set_ui!("Axis-General", "legend_pos", "detached")
+            
+        elseif preset == :compact3d
+            set_ui!("Plot-Style", "xlabel_offset", 5.0)
+            set_ui!("Plot-Style", "ylabel_offset", 5.0)
+            set_ui!("Plot-Style", "zlabel_offset", 15.0)
+            set_ui!("Axis-General", "legend_pos", "righttop")
             
         elseif preset == :darkmode
             # Example of how easily you can extend this!

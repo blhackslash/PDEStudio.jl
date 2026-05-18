@@ -164,6 +164,9 @@ function create_or_update_legend!(
     if !haskey(ui_style, "legend_pos"); return; end 
 
     position = ui_style["legend_pos"][]
+
+    if position == "none"; return; end
+
     title_str = manager.ui["Labels"]["legend"][]
     font_size = manager.ui["Axis-General"]["font_size"][]
 
@@ -449,4 +452,23 @@ end
 
 # Fallback for 3D axes (Relative space is tricky in 3D projection)
 plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
+
+"""
+    get_colorrange(ui_app::Dict, u_data::AbstractArray)
+
+Extracts the colorrange from the UI dict, or calculates it dynamically from the data 
+if set to "default". Always returns an Observable Tuple of Float64.
+"""
+function get_colorrange(ui_app::Dict, u_data::AbstractArray)
+    cr_val = ui_app["colorrange"][]
+    
+    if isempty(cr_val)
+        valid_u = filter(isfinite, vec(u_data))
+        l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
+        if l_u == h_u; h_u += 1e-6; end
+        return Observable((l_u, h_u))
+    else
+        return Observable(Tuple(Float64.(cr_val)))
+    end
+end
 
