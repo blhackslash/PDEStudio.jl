@@ -139,7 +139,6 @@ function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::
     
     pos_sym = position isa String ? Symbol(position) : position
     is_detached, halign, valign = _parse_legend_position(pos_sym)
-    trim!(fig.layout)
     try
         if is_detached
             if valign == :top
