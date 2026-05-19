@@ -30,7 +30,7 @@ function create_master_ui_observables()
         "title_size"     => 26, 
         "label_size"     => 24, 
         "ticklabel_size" => 22,
-        "legend_pos"   => "detached",
+        "legend_pos"   => :td,
         "sort_legend"  => true,
     ))
     
@@ -267,7 +267,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Axis-General", "font_size", 18)
             set_ui!("Axis-General", "label_size", 18)
             set_ui!("Axis-General", "ticklabel_size", 16)
-            set_ui!("Axis-General", "legend_pos", "righttop")
+            set_ui!("Axis-General", "legend_pos", :rt)
             set_ui!("X-Axis", "padding", 0.0)
 
             set_ui!("Plot-Style", "linewidth", 4.0)
@@ -285,13 +285,13 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Plot-Style", "xlabel_offset", 10.0)
             set_ui!("Plot-Style", "ylabel_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
-            set_ui!("Axis-General", "legend_pos", "detached")
+            set_ui!("Axis-General", "legend_pos", :td)
             
         elseif preset == :compact3d
             set_ui!("Plot-Style", "xlabel_offset", 5.0)
             set_ui!("Plot-Style", "ylabel_offset", 5.0)
             set_ui!("Plot-Style", "zlabel_offset", 15.0)
-            set_ui!("Axis-General", "legend_pos", "righttop")
+            set_ui!("Axis-General", "legend_pos", :rt)
             
         elseif preset == :darkmode
             # Example of how easily you can extend this!

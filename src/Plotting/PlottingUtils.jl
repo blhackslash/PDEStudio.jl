@@ -1,30 +1,4 @@
 
-"""
-    extract_scene_options(manager::PlotManager)
-
-Helper function that rips the current axis and slider states from the PlotManager.
-"""
-function extract_scene_options(manager::PlotManager)
-    opts = Dict{String, Any}()
-    
-    # 1. Grab Menus
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c"]
-        key = "$(k)_Selection"
-        if haskey(manager.controls, key)
-            opts[key] = to_value(manager.controls[key])
-        end
-    end
-    
-    # 2. Grab Sliders
-    for k in manager.plot_vars
-        key = "$(k)_Value"
-        if haskey(manager.controls, key)
-            opts[key] = to_value(manager.controls[key])
-        end
-    end
-    
-    return opts
-end
 function plot_reference_lines!(
     ax::Axis,
     exponents::Vector;
@@ -134,68 +108,105 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     if use_log_x; ax.xscale[] = log10; end
     if use_log_y; ax.yscale[] = log10; end
 end
-
 # --- Legend Helpers ---
-function _parse_legend_position(s_in::String)
-    s = lowercase(s_in)
-    if s == "center"; return (:center, :center); end
+function _parse_legend_position(pos::Union{Symbol, String})
+    s = lowercase(string(pos))
+    if s == "none"; return (false, :none, :none); end
+    
+    is_detached = occursin('d', s) || occursin("detached", s)
+    
+    valign = occursin('t', s) ? :top : (occursin('b', s) ? :bottom : :center)
+    halign = occursin('l', s) ? :left : (occursin('r', s) ? :right : :center)
 
-    valign = occursin("top", s) ? :top : (occursin("bottom", s) ? :bottom : :center)
-    halign = occursin("left", s) ? :left : (occursin("right", s) ? :right : :center)
-
-    return (halign, valign)
+    return (is_detached, halign, valign)
 end
 
-function create_or_update_legend!(
-    fig::Figure, 
-    plotted_objects::Vector, 
-    labels::Vector, 
-    manager::PlotManager
-)
-    # 1. Clean up old legends
-    for elem in copy(contents(fig.layout))
-        if elem isa Legend; delete!(elem); end
-    end
-
-    # 2. Extract properties hierarchically
-    ui_style = manager.ui["Axis-General"]
+function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::Vector, manager::PlotManager)
+    # The render loop handles all cleanup now! We just build.
     
-    # If the current Plot-Style doesn't support legends (like Heatmaps), skip entirely!
+    ui_style = manager.ui["Axis-General"]
     if !haskey(ui_style, "legend_pos"); return; end 
 
     position = ui_style["legend_pos"][]
-
-    if position == "none"; return; end
+    if position == :none || position == "none"; return; end 
 
     title_str = manager.ui["Labels"]["legend"][]
-    font_size = manager.ui["Axis-General"]["font_size"][]
+    font_size = ui_style["font_size"][]
 
-    if isempty(plotted_objects) || isempty(labels)
-        try trim!(fig.layout) catch; end
-        return
-    end
-
+    if isempty(plotted_objects) || isempty(labels); return; end
+    
     final_title = isempty(strip(title_str)) ? nothing : title_str
-
-    # 3. Create new Legend
+    
+    pos_sym = position isa String ? Symbol(position) : position
+    is_detached, halign, valign = _parse_legend_position(pos_sym)
+    trim!(fig.layout)
     try
-        if position == "detached"
-            trim!(fig.layout)
-            Legend(fig[1, end+1], plotted_objects, labels, final_title;
-                tellheight=false, merge=true, unique=true,
-                titlesize=font_size, labelsize=font_size
-            )
-            colsize!(fig.layout, 2, Auto())
+        if is_detached
+            if valign == :top
+                Legend(fig[0, :], plotted_objects, labels, final_title;
+                    orientation=:horizontal, tellheight=true, tellwidth=false, merge=true, unique=true,
+                    titlesize=font_size, labelsize=font_size)
+            elseif valign == :bottom
+                Legend(fig[end+1, :], plotted_objects, labels, final_title;
+                    orientation=:horizontal, tellheight=true, tellwidth=false, merge=true, unique=true,
+                    titlesize=font_size, labelsize=font_size)
+            elseif halign == :left
+                Legend(fig[:, 0], plotted_objects, labels, final_title;
+                    orientation=:vertical, tellwidth=true, tellheight=false, merge=true, unique=true,
+                    titlesize=font_size, labelsize=font_size)
+            else # right or default
+                Legend(fig[:, end+1], plotted_objects, labels, final_title;
+                    orientation=:vertical, tellwidth=true, tellheight=false, merge=true, unique=true,
+                    titlesize=font_size, labelsize=font_size)
+            end
         else
-            halign, valign = _parse_legend_position(position)
-            Legend(fig[1,1], plotted_objects, labels, final_title;
+            # Attached (Floating) - Targets the exact same cell as the main_content_layout
+            Legend(fig[end, end], plotted_objects, labels, final_title;
                 orientation=:vertical, tellheight=false, tellwidth=false,
                 halign=halign, valign=valign, merge=true, unique=true,
                 titlesize=font_size, labelsize=font_size, margin=(10, 10, 10, 10)
             )
-            trim!(fig.layout)
         end
-    catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
+        
+        # Lock in the new state so the next render frame can snip it properly!
+        LEGEND_REF[] = pos_sym
+        
+    catch e
+        @error "Failed to create legend" exception=(e, catch_backtrace())
+    end
+end
+
+function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String)
+    isnothing(plot_object) && return
+
+    # --- THE FIX: Find the inner GridLayout containing the axes ---
+    inner_layout = nothing
+    for elem in contents(fig.layout)
+        if elem isa GridLayout
+            inner_layout = elem
+            break
+        end
+    end
+    isnothing(inner_layout) && return
+
+    ui_stl = manager.ui["Plot-Style"]
+    if !haskey(ui_stl, "colormap"); return; end 
+
+    ui_lbl = manager.ui["Labels"]
+    ui_gen = manager.ui["Axis-General"]
+
+    final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
+
+    try
+        # Append exclusively to the right side of the inner subplot layout!
+        cb = Colorbar(inner_layout[:, end+1];
+            colormap = ui_stl["colormap"][],
+            colorrange = color_range_obs,
+            label = final_label,
+            labelsize = ui_gen["label_size"][],
+            ticklabelsize = ui_gen["ticklabel_size"][]
+        )
+    catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
 end
 
 """
@@ -364,38 +375,6 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     end
 end
 
-function create_or_update_colorbar!(
-    fig::Figure,
-    plot_object,
-    manager::PlotManager,
-    color_range_obs::Observable,
-    default_label::String,
-)
-    for elem in copy(contents(fig.layout))
-        if elem isa Colorbar; delete!(elem); end
-    end
-    isnothing(plot_object) && return
-
-    ui_stl = manager.ui["Plot-Style"]
-    if !haskey(ui_stl, "colormap"); return; end 
-
-    ui_lbl = manager.ui["Labels"]
-    ui_gen = manager.ui["Axis-General"]
-
-    final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
-
-    try
-        # THE FIX: No alignmode needed. It will naturally align to the clean Axis spine!
-        cb = Colorbar(fig[1, 2];
-            colormap = ui_stl["colormap"][],
-            colorrange = color_range_obs,
-            label = final_label,
-            labelsize = ui_gen["label_size"][],
-            ticklabelsize = ui_gen["ticklabel_size"][]
-        )
-        colsize!(fig.layout, 2, Auto())
-    catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
-end
 
 """
     plot_HUD!(ax, manager)

@@ -30,29 +30,10 @@ function create_controls(
     
     update_layout = fig_layout[current_row, 1] = GridLayout()
     
-    # THE FIX: Beautiful 2x2 Button Layout
+    # THE FIX: Clean 1x3 Top Button Layout
     update_button  = Button(update_layout[1,1], label="Refresh / Run", width=140, buttoncolor=:lightgreen)
-    compare_button = Button(update_layout[1,2], label="Compare: OFF", width=140, buttoncolor=:lightgray)
-    method_button  = Button(update_layout[2,1], label="Methods...", width=140, buttoncolor=:lightgray)
-    save_button    = Button(update_layout[2,2], label="Save Defs", width=140, buttoncolor=:lightblue)
-    
-    manager.controls["Simulation_Update"] = Observable(0)
-    on(update_button.clicks) do _
-        manager.controls["Simulation_Update"][] += 1
-    end
-
-    manager.controls["Compare_Mode"] = Observable(false)
-    on(compare_button.clicks) do _
-        is_comp = !manager.controls["Compare_Mode"][]
-        manager.controls["Compare_Mode"][] = is_comp
-        compare_button.label[] = is_comp ? "Compare: ON" : "Compare: OFF"
-        compare_button.buttoncolor[] = is_comp ? :lightgoldenrod : :lightgray
-        
-        # THE FIX: Tell the render loop to evaluate the layout cache logic
-        if haskey(manager.controls, "UI_Update")
-            notify(manager.controls["UI_Update"])
-        end
-    end
+    method_button  = Button(update_layout[1,2], label="Methods...", width=140, buttoncolor=:lightgray)
+    save_button    = Button(update_layout[1,3], label="Save Defs", width=140, buttoncolor=:lightblue)
     
     update_notifier = Observable(0)
     manager.controls["Simulation_Update"] = update_notifier
@@ -67,12 +48,8 @@ function create_controls(
         if !isnothing(m_fig); display(m_fig); end
     end
 
-    # --- THE FIX: Save Defaults Observer ---
     on(save_button.clicks) do _
-        # 1. Extract and Save Scene Options
         GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
-        
-        # 2. Extract and Save UI Overwrites
         new_ui = Dict{String, Any}()
         for (scope, subdict) in manager.ui
             new_ui[scope] = Dict{String, Any}()
@@ -81,11 +58,8 @@ function create_controls(
             end
         end
         GLOBAL_UI_OVERWRITE[] = new_ui
-        
-        # 3. Extract and Save Base Var Types
         GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["base_types"][])
-        
-        @info "Current UI and Scene options successfully saved to global defaults! They will be applied on your next plot."
+        @info "Current UI and Scene options successfully saved to global defaults!"
     end
     current_row += 1
 
@@ -109,13 +83,11 @@ function create_controls(
           fontsize=16, font=:bold, color=:darkgreen)
     current_row += 1
     
-    # STATIC PLOT CONTROLS SLOT
     menu_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
     slider_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
 
-    # THE FIX: Pass `scene_options` down into the static plot controls builder!
     x_obs, y_obs, z_obs, u_obs, active_axes_obs, selectors, widgets = build_static_plot_controls!(
         menu_area, slider_area, plot_data_obs, active_params, manager, scene_options
     )
@@ -151,11 +123,10 @@ function build_static_plot_controls!(
     manager::PlotManager,
     scene_options::Dict = Dict{String, Any}()
 )
-    # 1. Metadata & Initialization
     dim_names = active_params
     total_dims = length(dim_names)
     n_params = total_dims - 5
-    comp_idx = n_params + 1 # The exact index of the Component dimension
+    comp_idx = n_params + 1 
     
     x_key_obs = Observable{String}("-")
     y_key_obs = Observable{String}("-")
@@ -167,14 +138,12 @@ function build_static_plot_controls!(
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-    # --- 2. Setup Menus Grid (Pre-baked with Scene Options) ---
     init_x = string(get(scene_options, "X-Axis_Selection", "-"))
     init_y = string(get(scene_options, "Y-Axis_Selection", "disabled"))
     init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
     init_u = string(get(scene_options, "U-Axis_Selection", "-"))
     init_comp = string(get(scene_options, "c_Selection", "1"))
 
-    # Row 2 & 3: Independent Axes
     Label(menu_layout[1,1], "X-Axis", font=:bold)
     Label(menu_layout[1,2], "Y-Axis", font=:bold)
     Label(menu_layout[1,3], "Z-Axis", font=:bold)
@@ -185,22 +154,51 @@ function build_static_plot_controls!(
     menu_z = Menu(menu_layout[2,3], options = [init_z], width = 120)
     menu_z.i_selected = 1
 
-    # Row 4 & 5: Dependent Axis, Component
     Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold)
     Label(menu_layout[3,2], "Component", font=:bold)
+    Label(menu_layout[3,3], "Plot Type", font=:bold)
+    
     menu_u    = Menu(menu_layout[4,1], options = [init_u], width = 120)
     menu_u.i_selected = 1
     menu_comp = Menu(menu_layout[4,2], options = [init_comp], width = 120)
     menu_comp.i_selected = 1
     
-    # Plot Type Selection
-    Label(menu_layout[3,3], "Plot Type", font=:bold)
     plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume", "Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
     init_type_str = string(get(scene_options, "Plot-Type_Selection", "Lines"))
     menu_type = Menu(menu_layout[4,3], options = plot_options, width = 120)
     
     idx = findfirst(isequal(init_type_str), plot_options)
     menu_type.i_selected[] = isnothing(idx) ? 1 : idx
+
+    # --- THE FIX: NEW COMPARE MENUS ---
+    Label(menu_layout[5,1], "Compare Target", font=:bold, color=:darkorange)
+    Label(menu_layout[5,2], "Grid Columns", font=:bold, color=:darkorange)
+    Label(menu_layout[5,3], "Compare Link", font=:bold, color=:darkorange) # <-- ADDED
+
+    compare_targets = ["None", "Methods", "Component", "Time"]
+    append!(compare_targets, filter(p -> p ∉ ["c", "x", "y", "z", "t"], active_params))
+
+    init_tgt = string(get(scene_options, "Compare_Target_Selection", "None"))
+    init_cols = string(get(scene_options, "Compare_Columns_Selection", "2"))
+    init_link = string(get(scene_options, "Compare_Link_Selection", "Fully Coupled")) # <-- ADDED
+
+    menu_tgt = Menu(menu_layout[6,1], options = compare_targets, width = 120)
+    idx_tgt = findfirst(isequal(init_tgt), compare_targets)
+    menu_tgt.i_selected[] = isnothing(idx_tgt) ? 1 : idx_tgt
+
+    menu_cols = Menu(menu_layout[6,2], options = ["1", "2", "3", "4", "5"], width = 120)
+    idx_cols = findfirst(isequal(init_cols), ["1", "2", "3", "4", "5"])
+    menu_cols.i_selected[] = isnothing(idx_cols) ? 2 : idx_cols
+
+    # --- ADDED: Link Menu ---
+    menu_link = Menu(menu_layout[6,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"], width = 120)
+    idx_link = findfirst(isequal(init_link), ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
+    menu_link.i_selected[] = isnothing(idx_link) ? 1 : idx_link
+
+    manager.controls["Compare_Target_Selection"] = menu_tgt.selection
+    manager.controls["Compare_Columns_Selection"] = menu_cols.selection
+    manager.controls["Compare_Link_Selection"] = menu_link.selection
+    # -----------------------------------
 
     colsize!(menu_layout, 1, Fixed(120))
     colsize!(menu_layout, 2, Fixed(120))
@@ -209,7 +207,6 @@ function build_static_plot_controls!(
     active_axes_obs = Observable{Vector{Int}}(Int[])
     manager.controls["Active_Axes"] = active_axes_obs
 
-    # EXPOSE OPTIONS AND SELECTIONS
     manager.controls["X-Axis_Selection"], manager.controls["X-Axis_Options"], manager.controls["X-Axis_Widget"] = menu_x.selection, menu_x.options, menu_x
     manager.controls["Y-Axis_Selection"], manager.controls["Y-Axis_Options"], manager.controls["Y-Axis_Widget"] = menu_y.selection, menu_y.options, menu_y
     manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
@@ -224,7 +221,6 @@ function build_static_plot_controls!(
         notify(plot_data_obs) 
     end
 
-    # Map the isolated Component Menu
     control_objects[comp_idx] = menu_comp
     selector_values[comp_idx] = Observable{Int}(1)
     on(menu_comp.selection) do s
@@ -234,19 +230,14 @@ function build_static_plot_controls!(
     end
     manager.controls["$(dim_names[comp_idx])_Selection"], manager.controls["$(dim_names[comp_idx])_Options"], manager.controls["$(dim_names[comp_idx])_Widget"] = menu_comp.selection, menu_comp.options, menu_comp
 
-
-    # --- 3. Unified Widget Creation (Strictly Sliders) ---
     current_row = 1
     for i in 1:total_dims
-        if i == comp_idx; continue; end # Handled by the dropdown above
+        if i == comp_idx; continue; end 
         
         Label(slider_layout[current_row, 1], "$(dim_names[i]):", halign=:right)
-        
-        # Pre-Bake Slider Ranges using Scene Options
         val_key = "$(dim_names[i])_Value"
         init_val = Float64(get(scene_options, val_key, 0.0))
         
-        # Lock the value natively by initializing range to [init_val]
         sl = Slider(slider_layout[current_row, 2], range = [init_val], startvalue = init_val, width = 200)
         control_objects[i] = sl
         selector_values[i] = sl.value
@@ -255,13 +246,10 @@ function build_static_plot_controls!(
         current_row += 1
     end
 
-    # 4. Handle Overwrites/Locks via base_types
     on(manager.controls["Simulation_Update"]) do _
         vt = manager.controls["base_types"][]
         for base_idx in 1:5
             abs_idx = n_params + base_idx
-            
-            # Skip component menu (handled independently)
             abs_idx == comp_idx && continue
             
             ctrl = control_objects[abs_idx]
@@ -271,11 +259,9 @@ function build_static_plot_controls!(
                 ctrl.range[] = [Float64(val)] 
             end
         end
-        notify(plot_data_obs)      
+        notify(plot_data_obs)     
     end
 
-    # Helper to safely update Menus
-    # THE FIX: Smart Fallbacks for Axis Menus
     function _update_menu!(menu, new_options; fallbacks=["x", "y", "z", "t"])
         curr = menu.selection[]
         menu.options[] = isempty(new_options) ? ["-"] : new_options
@@ -284,13 +270,11 @@ function build_static_plot_controls!(
             if isempty(new_options)
                 menu.i_selected[] = 0
             else
-                # Try to find a preferred fallback (e.g., x, y, z, t) in the available options
                 idx = nothing
                 for f in fallbacks
                     idx = findfirst(isequal(f), new_options)
                     !isnothing(idx) && break
                 end
-                # If no preferred fallback is found, default to 1
                 menu.i_selected[] = isnothing(idx) ? 1 : idx
             end
         else
@@ -298,8 +282,8 @@ function build_static_plot_controls!(
         end
     end
 
-    # --- Populate Dropdowns (Strict Independent Menus) ---
-    onany(plot_data_obs, plot_type_obs) do plot_data_dict, ptype
+    # THE FIX: Watch the Compare Target so we can actively remove it from the Plot Axes!
+    onany(plot_data_obs, plot_type_obs, menu_tgt.selection) do plot_data_dict, ptype, comp_tgt
         isempty(plot_data_dict) && return
         
         valid_axes = String[]
@@ -330,9 +314,17 @@ function build_static_plot_controls!(
             end
         end
         
+        # Deactivate axis if it's the compare target!
+        if comp_tgt == "Time"
+            filter!(k -> k != "t", valid_axes)
+        elseif comp_tgt == "Component"
+            filter!(k -> k != "c", valid_axes)
+        elseif comp_tgt in active_params
+            filter!(k -> k != comp_tgt, valid_axes)
+        end
+        
         sort!(valid_axes)
         
-        # Apply the specific physical fallbacks for each axis
         _update_menu!(menu_x, valid_axes; fallbacks=["x", "t", "y", "z"])
         _update_menu!(menu_comp, [string(i) for i in 1:comp_max]; fallbacks=["1"])
         
@@ -351,7 +343,6 @@ function build_static_plot_controls!(
         end
     end
 
-    # --- Safe Key Observers & Anti-Collision Cascade ---
     on(menu_x.selection) do x_val
         x_key_obs[] = isnothing(x_val) ? "-" : x_val
         opts_y = menu_y.options[]
@@ -381,13 +372,11 @@ function build_static_plot_controls!(
         notify(menu_z.selection) 
     end
 
-    # --- MULTIDIMENSIONAL SLIDER LOCKER & DYNAMIC DEPENDENT FILTERING ---
     onany(menu_x.selection, menu_y.selection, menu_z.selection, plot_type_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
         isempty(plot_data_dict) && return
         p_dim = PLOT_DIM_MAP[ptype]
         axes = Set{Int}()
         active_indep_keys = String[]
-        
         pd_first = first(values(plot_data_dict))
         
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
@@ -451,18 +440,17 @@ function build_static_plot_controls!(
         _update_menu!(menu_u, valid_fields)
     end
 
-    # --- SLIDER RANGE UPDATER ---
     onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
         isempty(plot_data_dict) && return
         vt = manager.controls["base_types"][]
 
         for i in 1:total_dims
-            if i == comp_idx; continue; end # Skip component menu
+            if i == comp_idx; continue; end 
 
             is_basevar = i > n_params
             if is_basevar
                 base_idx = i - n_params
-                vt[base_idx] isa Number && continue # Locked by user
+                vt[base_idx] isa Number && continue 
             end
             
             ctrl = control_objects[i]
@@ -477,7 +465,6 @@ function build_static_plot_controls!(
                     vals = [1.0, Float64(size(pd.data["u"], length(pd.active_param_keys) + 1))]
                 elseif i > n_params + 1 && i < total_dims 
                     dim_idx = i - (n_params + 1)
-                    
                     tensor_key = dim_idx == 1 ? "x" : (dim_idx == 2 ? "y" : "z")
                     coord_tensor = get(pd.data, tensor_key, nothing)
                     
@@ -500,7 +487,6 @@ function build_static_plot_controls!(
             
             if isinf(g_min); g_min = 0.0; g_max = 1.0; end
             
-            # Since everything here is strictly a Slider, we cleanly assign ranges
             if is_axis
                 ctrl.range[] = [0.0] 
             else
@@ -515,13 +501,9 @@ function build_static_plot_controls!(
 
     return x_key_obs, y_key_obs, z_key_obs, u_key_obs, active_axes_obs, selector_values, control_objects
 end
-"""
-    create_hierarchical_param_controls!(layout, manager::PlotManager)
 
-Creates a 3-menu + 1-textbox/toggle interface to navigate and edit all parameters.
-"""
+# ... (Keep create_hierarchical_param_controls! exactly as it was) ...
 function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManager)
-    # 1. Menus
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
     sorted_cat = sort(collect(keys(cat_mapping)))
     menu_cat = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...",width = 120)
@@ -535,7 +517,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     ui_update = Observable{Int}(0)
     is_internal_toggle = Ref(false)
 
-    # THE FIX: Replace the text label with a Toggle
     tg = Toggle(layout[2, 1], active=false)
     
     placeholder_text = lift(menu_key.selection) do k
@@ -546,15 +527,11 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
 
     tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true, width = 250)
 
-    # 2. Category -> Scope
-# 2. Category -> Scope (Now reacts to both category changes AND method toggles)
     onany(menu_cat.selection, mgr.methods) do cat, active_methods
         isnothing(cat) && return
         field_name = cat_mapping[cat]
         data = getproperty(mgr, field_name)
         
-        # --- THE FIX: Smart Scoping ---
-        # Only show active methods in the simulation scope, and always put 'shared' at the top!
         new_scopes = String[]
         if field_name == :simulation
             haskey(data, "shared") && push!(new_scopes, "shared")
@@ -565,21 +542,17 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
             new_scopes = sort(collect(keys(data)))
         end
         
-        # Only reset the UI if the options actually changed
         if menu_scope.options[] != new_scopes
             menu_scope.options[] = new_scopes
-            
             active_target_obs[] = nothing 
             menu_scope.i_selected[] = 0
             menu_key.i_selected[] = 0
-
             tb.stored_string.val = ""
             Makie.reset!(tb)
             is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
         end
     end
 
-    # 3. Scope -> Key
     on(menu_scope.selection) do scope
         isnothing(scope) && return
         cat = menu_cat.selection[]
@@ -587,7 +560,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         data = getproperty(mgr, field_name)
         
         menu_key.options[] = sort(collect(keys(data[scope])))
-        
         active_target_obs[] = nothing 
         menu_key.i_selected[] = 0
         
@@ -595,7 +567,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
 
-    # 4. Key -> Populate Textbox & Toggle
     on(menu_key.selection) do key
         isnothing(key) && return
         cat, scope = menu_cat.selection[], menu_scope.selection[]
@@ -604,24 +575,20 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         obs = field_data[scope][key]
         
         active_target_obs[] = obs
-
         val_str = string(to_value(obs))
         tb.displayed_string[] = val_str
         
-        # Sync the toggle visually if it's a boolean
         is_internal_toggle[] = true
         tg.active[] = (to_value(obs) isa Bool) ? to_value(obs) : false
         is_internal_toggle[] = false
     end
 
-    # 5a. Handle Textbox Submission 
     on(tb.stored_string) do s
         obs = active_target_obs[]
         isnothing(obs) && return
         
         smart_parse_and_update!(obs, s)
         
-        # Sync toggle if the updated value is a boolean
         if to_value(obs) isa Bool
             is_internal_toggle[] = true
             tg.active[] = to_value(obs)
@@ -631,13 +598,11 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         if menu_cat.selection[] == "UI"; ui_update[] += 1 end
     end
     
-    # 5b. Handle Toggle Submission
     on(tg.active) do is_active
         is_internal_toggle[] && return
         obs = active_target_obs[]
         isnothing(obs) && return
         
-        # Only allow the toggle to push updates if the target parameter is actually a boolean
         if to_value(obs) isa Bool
             obs[] = is_active
             tb.displayed_string[] = string(is_active)
@@ -647,4 +612,98 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
     
     mgr.controls["UI_Update"] = ui_update
     return
+end
+
+# ... (Keep create_base_overwrite_controls! exactly as it was) ...
+function create_base_overwrite_controls!(
+    layout::GridLayout, 
+    manager::PlotManager, 
+    plot_data_obs::Observable
+)
+    menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
+    menu_var.i_selected[] = 0
+    tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
+    apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
+
+    on(plot_data_obs) do plot_data_dict
+        isempty(plot_data_dict) && return
+        
+        active_methods = manager.methods[]
+        n_params = length(manager.plot_vars) - 5 
+        
+        valid_base_names = String[]
+        
+        for (i, name) in enumerate(VariableNames)
+            tensor_dim = n_params + i
+            has_variation = false
+            for m in active_methods
+                if haskey(plot_data_dict, m)
+                    u_tensor = plot_data_dict[m].data["u"]
+                    if size(u_tensor, tensor_dim) > 1
+                        has_variation = true
+                        break
+                    end
+                end
+            end
+            
+            is_fixed_by_user = manager.controls["base_types"][][i] isa Number
+            
+            if has_variation || is_fixed_by_user
+                push!(valid_base_names, name)
+            end
+        end
+        
+        current_sel = menu_var.selection[]
+        menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
+        
+        if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
+            menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
+        else
+            menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
+        end
+    end
+
+    on(apply_btn.clicks) do _
+        var_name = menu_var.selection[]
+        input_str = tb_val.stored_string[]
+        
+        if isnothing(var_name) || var_name == "-" || isempty(input_str)
+            @warn "Overwrite Error: Please select a variable and provide an input."
+            return
+        end
+
+        idx = findfirst(isequal(var_name), VariableNames)
+        isnothing(idx) && return
+        
+        vt = copy(manager.controls["base_types"][])
+        n_params = length(manager.plot_vars) - 5
+        abs_idx = n_params + idx
+      
+        if abs_idx in manager.controls["Active_Axes"][]
+            @warn "Cannot fix the value of an active Plot Axis! Change the Plot Axes before fixing the value!"
+            return
+        end
+
+        if lowercase(strip(input_str)) == "default"
+            vt[idx] = VariableControls[idx]
+            @info "Restored default control for $var_name."
+        else
+            val = tryparse(Int, input_str)
+            if isnothing(val)
+                val = tryparse(Float64, input_str)
+            end
+            
+            if isnothing(val)
+                @warn "Invalid Input: '$input_str' is not a number or 'default'."
+                return
+            end
+            
+            vt[idx] = val
+            @info "Fixed $var_name to $(val isa Integer ? "index" : "coordinate"): $val."
+        end
+        
+        manager.controls["base_types"][] = vt
+        manager.controls["Simulation_Update"][] += 1
+        tb_val.stored_string[] = ""
+    end
 end

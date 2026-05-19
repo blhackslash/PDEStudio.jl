@@ -213,8 +213,8 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
     
-    create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[base_idx])
     create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
+    create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[base_idx])
 end
 
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d})

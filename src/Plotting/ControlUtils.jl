@@ -372,133 +372,117 @@ function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManag
     createMethodCheckboxes(layout, methods_obs, all_method_names)
 end
 
-"""
-    create_base_overwrite_controls!(layout, manager)
+# """
+#     create_base_overwrite_controls!(layout, manager)
 
-Creates a UI block with a Menu to select a base variable and a Textbox to 
-overwrite its type with a fixed numeric value. Inputting 'default' restores 
-the original widget type (slider/menu).
-"""
-function create_base_overwrite_controls!(
-    layout::GridLayout, 
-    manager::PlotManager, 
-    plot_data_obs::Observable
-)
-    # 1. Setup Labels and Widgets
-    menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
-    menu_var.i_selected[] = 0
-    tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
-    apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
+# Creates a UI block with a Menu to select a base variable and a Textbox to 
+# overwrite its type with a fixed numeric value. Inputting 'default' restores 
+# the original widget type (slider/menu).
+# """
+# function create_base_overwrite_controls!(
+#     layout::GridLayout, 
+#     manager::PlotManager, 
+#     plot_data_obs::Observable
+# )
+#     # 1. Setup Labels and Widgets
+#     menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
+#     menu_var.i_selected[] = 0
+#     tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
+#     apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
 
-    # 2. REACTIVE LOGIC: Update Options based on Data Shape
-    on(plot_data_obs) do plot_data_dict
-        isempty(plot_data_dict) && return
+#     # 2. REACTIVE LOGIC: Update Options based on Data Shape
+#     on(plot_data_obs) do plot_data_dict
+#         isempty(plot_data_dict) && return
         
-        active_methods = manager.methods[]
-        n_params = length(manager.plot_vars) - 5 # 5 Base Variables
+#         active_methods = manager.methods[]
+#         n_params = length(manager.plot_vars) - 5 # 5 Base Variables
         
-        valid_base_names = String[]
+#         valid_base_names = String[]
         
-        for (i, name) in enumerate(VariableNames)
-            tensor_dim = n_params + i
+#         for (i, name) in enumerate(VariableNames)
+#             tensor_dim = n_params + i
             
-            # Check if this dimension has size > 1 in any active method
-            has_variation = false
-            for m in active_methods
-                if haskey(plot_data_dict, m)
-                    u_tensor = plot_data_dict[m].data["u"]
-                    if size(u_tensor, tensor_dim) > 1
-                        has_variation = true
-                        break
-                    end
-                end
-            end
+#             # Check if this dimension has size > 1 in any active method
+#             has_variation = false
+#             for m in active_methods
+#                 if haskey(plot_data_dict, m)
+#                     u_tensor = plot_data_dict[m].data["u"]
+#                     if size(u_tensor, tensor_dim) > 1
+#                         has_variation = true
+#                         break
+#                     end
+#                 end
+#             end
             
-            # We MUST also include it if the user currently has it fixed (so they can un-fix it)
-            is_fixed_by_user = manager.controls["base_types"][][i] isa Number
+#             # We MUST also include it if the user currently has it fixed (so they can un-fix it)
+#             is_fixed_by_user = manager.controls["base_types"][][i] isa Number
             
-            if has_variation || is_fixed_by_user
-                push!(valid_base_names, name)
-            end
-        end
+#             if has_variation || is_fixed_by_user
+#                 push!(valid_base_names, name)
+#             end
+#         end
         
-        current_sel = menu_var.selection[]
-        menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
+#         current_sel = menu_var.selection[]
+#         menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
         
-        if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
-            menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
-        else
-            menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
-        end
-    end
+#         if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
+#             menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
+#         else
+#             menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
+#         end
+#     end
 
-    # 3. Apply Button Logic
-on(apply_btn.clicks) do _
-        var_name = menu_var.selection[]
-        input_str = tb_val.stored_string[]
+#     # 3. Apply Button Logic
+# on(apply_btn.clicks) do _
+#         var_name = menu_var.selection[]
+#         input_str = tb_val.stored_string[]
         
-        if isnothing(var_name) || var_name == "-" || isempty(input_str)
-            @warn "Overwrite Error: Please select a variable and provide an input."
-            return
-        end
+#         if isnothing(var_name) || var_name == "-" || isempty(input_str)
+#             @warn "Overwrite Error: Please select a variable and provide an input."
+#             return
+#         end
 
-        idx = findfirst(isequal(var_name), VariableNames)
-        isnothing(idx) && return
+#         idx = findfirst(isequal(var_name), VariableNames)
+#         isnothing(idx) && return
         
-        vt = copy(manager.controls["base_types"][])
+#         vt = copy(manager.controls["base_types"][])
         
-        # Check against Active Plot Axes [cite: 60]
-        n_params = length(manager.plot_vars) - 5
-        abs_idx = n_params + idx
-        if abs_idx in manager.controls["Active_Axes"][]
-            @warn "Cannot fix the value of an active Plot Axis! Change the Plot Axes before fixing the value!"
-            return
-        end
+#         # Check against Active Plot Axes [cite: 60]
+#         n_params = length(manager.plot_vars) - 5
+#         abs_idx = n_params + idx
+#         if abs_idx in manager.controls["Active_Axes"][]
+#             @warn "Cannot fix the value of an active Plot Axis! Change the Plot Axes before fixing the value!"
+#             return
+#         end
 
-        if lowercase(strip(input_str)) == "default"
-            vt[idx] = VariableControls[idx]
-            @info "Restored default control for $var_name."
-        else
-            # --- THE SMART PARSER ---
-            # 1. Try Integer first (represents a direct Index)
-            val = tryparse(Int, input_str)
+#         if lowercase(strip(input_str)) == "default"
+#             vt[idx] = VariableControls[idx]
+#             @info "Restored default control for $var_name."
+#         else
+#             # --- THE SMART PARSER ---
+#             # 1. Try Integer first (represents a direct Index)
+#             val = tryparse(Int, input_str)
             
-            # 2. Try Float if Int fails (represents a Physical Coordinate)
-            if isnothing(val)
-                val = tryparse(Float64, input_str)
-            end
+#             # 2. Try Float if Int fails (represents a Physical Coordinate)
+#             if isnothing(val)
+#                 val = tryparse(Float64, input_str)
+#             end
             
-            if isnothing(val)
-                @warn "Invalid Input: '$input_str' is not a number or 'default'."
-                return
-            end
+#             if isnothing(val)
+#                 @warn "Invalid Input: '$input_str' is not a number or 'default'."
+#                 return
+#             end
             
-            vt[idx] = val
-            @info "Fixed $var_name to $(val isa Integer ? "index" : "coordinate"): $val."
-        end
+#             vt[idx] = val
+#             @info "Fixed $var_name to $(val isa Integer ? "index" : "coordinate"): $val."
+#         end
         
-        manager.controls["base_types"][] = vt
-        manager.controls["Simulation_Update"][] += 1
-        tb_val.stored_string[] = ""
-    end
-end
+#         manager.controls["base_types"][] = vt
+#         manager.controls["Simulation_Update"][] += 1
+#         tb_val.stored_string[] = ""
+#     end
+# end
 
-"""
-    get_base_scene_options() -> Dict{String, Any}
-
-Returns the fallback/default configuration for the UI menus and sliders.
-These values are used as a base and can be overwritten by user input.
-"""
-function get_base_scene_options()
-    return Dict{String, Any}(
-        "X-Axis_Selection"      => "x",      
-        "U-Axis_Selection"      => "u",      
-        "Plot-Type_Selection"   => "Lines",  # THE FIX: Added to base options
-        "c_Selection"   => 1,        
-        "t_Value"       => 0.0,      # THE FIX: Changed to Float for coordinate snapping
-        "x_Value"       => 0.0,      
-    )
-end
 """
     set_defaults!(manager::PlotManager, scene_options::Dict)
 
@@ -585,4 +569,46 @@ function set_defaults!(manager::PlotManager, scene_options::Dict)
         end
     end
 end
+"""
+    get_base_scene_options() -> Dict{String, Any}
+"""
+function get_base_scene_options()
+    return Dict{String, Any}(
+        "X-Axis_Selection"          => "x",      
+        "U-Axis_Selection"          => "u",      
+        "Plot-Type_Selection"       => "Lines",  
+        "c_Selection"               => 1,        
+        "t_Value"                   => 0.0,      
+        "x_Value"                   => 0.0,
+        "Compare_Target_Selection"  => "None", 
+        "Compare_Columns_Selection" => "2",     
+        "Compare_Link_Selection"    => "Fully Coupled" # <-- ADDED
+    )
+end
 
+"""
+    extract_scene_options(manager::PlotManager)
+
+Helper function that rips the current axis and slider states from the PlotManager.
+"""
+function extract_scene_options(manager::PlotManager)
+    opts = Dict{String, Any}()
+    
+    # 1. Grab Menus (including Compare logic)
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", "Compare_Columns", "Compare_Link"]
+        key = "$(k)_Selection"
+        if haskey(manager.controls, key)
+            opts[key] = to_value(manager.controls[key])
+        end
+    end
+    
+    # 2. Grab Sliders
+    for k in manager.plot_vars
+        key = "$(k)_Value"
+        if haskey(manager.controls, key)
+            opts[key] = to_value(manager.controls[key])
+        end
+    end
+    
+    return opts
+end
