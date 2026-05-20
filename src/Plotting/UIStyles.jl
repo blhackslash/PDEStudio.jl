@@ -25,7 +25,7 @@ function create_master_ui_observables()
     
     # 1. Universal Scopes
     master["Axis-General"] = obs_dict(Dict(
-        "plot_size"      => (400, 300),
+        "plot_size"      => (500, 400),
         "font_size"      => 24, 
         "title_size"     => 26, 
         "label_size"     => 24, 
@@ -101,13 +101,15 @@ function create_master_ui_observables()
         "colorrange"    => [],
         "colormap"      => :viridis,
         "bottom_margin" => 60,
+        "rasterize"     => 2,
     ))
     
     master["Style-Contour"] = obs_dict(Dict(
-        "colors"        => [:red, :blue, :green, :orange, :purple],
+        "colors"        => [:black, :red, :green, :orange, :purple],
         "levels"        => 15,
         "linewidth"     => 2.0,
         "bottom_margin" => 60,
+        "labels"        => true,
     ))
     
     master["Style-Contourf"] = obs_dict(Dict(
@@ -118,6 +120,7 @@ function create_master_ui_observables()
         "colormap"      => :viridis,
         "levels"        => 15,
         "bottom_margin" => 60,
+        "rasterize"     => 2,
     ))
 
     master["Style-Contour3D"] = obs_dict(Dict(
@@ -129,11 +132,13 @@ function create_master_ui_observables()
     master["Style-Surface"] = obs_dict(Dict(
         "colorrange"    => [],
         "colormap"      => :viridis,
+        "rasterize"     => 2,
     ))
     
     master["Style-Volume"] = obs_dict(Dict(
         "colorrange"    => [],
         "colormap"      => :viridis,
+        "rasterize"     => 2.0,
     ))
 
     master["Style-Scatter2D"] = obs_dict(Dict(
@@ -143,6 +148,7 @@ function create_master_ui_observables()
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
         "bottom_margin" => 60, 
+        "rasterize"     => 2,
     ))
     
     master["Style-Scatter3D"] = obs_dict(Dict(
@@ -151,6 +157,7 @@ function create_master_ui_observables()
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
         "markersize"    => 15.0, 
+        "rasterize"     => 2,
     ))
     return master
 end
@@ -192,6 +199,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     preset_list = presets isa Symbol ? [presets] : presets
     ui_over = Dict{String, Any}()
     scene_opt = Dict{String, Any}()
+    master_tmp = create_master_ui_observables()
 
     function set_ui!(scope, key, val)
         if !haskey(ui_over, scope); ui_over[scope] = Dict{String, Any}(); end
@@ -216,7 +224,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Labels", "title", "")
             set_ui!("Labels", "legend", "")
 
-            set_ui!("Axis-General", "plot_size",(300, 300))
+            set_ui!("Axis-General", "plot_size",(400, 400))
             set_ui!("Axis-General", "font_size", 18)
             set_ui!("Axis-General", "label_size", 18)
             set_ui!("Axis-General", "ticklabel_size", 16)
@@ -245,7 +253,11 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Y-Axis", "label_offset", 5.0)
             set_ui!("Z-Axis", "label_offset", 15.0)
             set_ui!("Axis-General", "legend_pos", :rt)
-            
+
+        elseif preset == :nolabels
+            for key = keys(master_tmp["Labels"])
+                set_ui!("Labels",key,"")
+            end
         elseif preset == :darkmode
             set_ui!("Plot-Style", "colors", [:cyan, :magenta, :yellow, :white])
         else

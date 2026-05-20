@@ -112,6 +112,8 @@ end
 # --- MASTER GRID CALCULATOR ---
 # ==============================================================================
 function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::String, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
+    actual_detached = (num_plots > 1) ? is_detached : false
+
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
     
@@ -120,12 +122,11 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     layout_dict["Colorbars"] = Vector{Tuple{Any, Any}}()
     layout_dict["Legend"] = nothing
     
-    # 1. Padding for detached legends
-    row_offset = (has_legend && is_detached && valign == :top) ? 1 : 0
-    col_offset = (has_legend && is_detached && halign == :left) ? 1 : 0
+    row_offset = (has_legend && actual_detached && valign == :top) ? 1 : 0
+    col_offset = (has_legend && actual_detached && halign == :left) ? 1 : 0
     
-    # 2. Assign Core Plots and Colorbars
-    if link_mode == "Decoupled" && has_colorbar
+    # THE FIX: Both Decoupled and "Axes Only" need separated colorbar columns assigned natively!
+    if link_mode in ("Decoupled", "Axes Only") && has_colorbar
         for i in 1:num_plots
             r = (i - 1) ÷ cols + 1
             c = (i - 1) % cols + 1
@@ -159,24 +160,22 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
         end
     end
     
-    # 3. Assign Legend Space
     if has_legend
-        if is_detached
+        if actual_detached
             if valign == :top
                 layout_dict["Legend"] = (1, 1:max_core_col)
             elseif valign == :bottom
                 layout_dict["Legend"] = (max_core_row + 1, 1:max_core_col)
             elseif halign == :left
                 layout_dict["Legend"] = (1+row_offset : max_core_row, 1)
-            else # :right
+            else 
                 layout_dict["Legend"] = (1+row_offset : max_core_row, max_core_col + 1)
             end
         else
-            # Attached legends float inside the absolute cell of Plot 1
             layout_dict["Legend"] = layout_dict["Plots"][1]
         end
     end
-    println(layout_dict)
+    
     return layout_dict
 end
 

@@ -225,7 +225,9 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     
     # Auto-expand window viewports cleanly around the new absolute properties
     
-    if !is_3d_axis && link_mode == "Fully Coupled"; linkaxes!(axes...); end
+    if !is_3d_axis && link_mode in ("Fully Coupled", "Axes Only")
+        linkaxes!(axes...)
+    end
     
     # --- MODULAR RENDER HELPERS ---
     function _render_no_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)

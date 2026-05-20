@@ -42,22 +42,27 @@ end
 
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int=1)
     xs, ys, us = data_tuples
-    
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
 
     x_data, y_data, u_data = xs[1], ys[1], us[1]
     valid_u = filter(isfinite, u_data)
-
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    hm = heatmap!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs)
+    rast_val = ui_app["rasterize"][]
+    rast_val = rast_val == 0 ? false : rast_val
+
+    # Pass it right into heatmap!
+    hm = heatmap!(ax, x_data, y_data, u_data; 
+        colormap=ui_app["colormap"][], 
+        colorrange=cr_obs, 
+        rasterize=rast_val
+    )
 
     set_axis_styles!(ax, manager, x_key, y_key, title_str)
     
     valid_x = filter(isfinite, x_data)
     valid_y = filter(isfinite, y_data)
-    
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
 
@@ -107,7 +112,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
         lw = ui_app["linewidth"][]
         
         contour!(ax, xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx]; 
-            levels=ui_app["levels"][], color=color, linewidth=lw, labels=true
+            levels=ui_app["levels"][], color=color, linewidth=lw, labels=ui_app["labels"][]
         )
         push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
         push!(labels_for_legend, label)
@@ -122,28 +127,32 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     
     create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
 end
-
 function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int=1)
     xs_slices, ys_slices, us_slices = data_tuples
-    
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
 
     raw_idx = get(ui_app, "base_method_idx", Ref(1))[]
     base_idx = clamp(raw_idx, 1, length(active_methods))
-
     x_data, y_data, u_data = xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx]
     
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
     l_u, h_u = cr_obs[]
-
     plotted_objects, labels_for_legend = [], String[]
 
     lvl_count = ui_app["levels"][]
     lvl_range = range(l_u, h_u, length=lvl_count)
 
-    cf = contourf!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], levels=lvl_range)
+    rast_val = ui_app["rasterize"][]
+    rast_val = rast_val == 0 ? false : rast_val
+
+    # Pass it right into contourf!
+    cf = contourf!(ax, x_data, y_data, u_data; 
+        colormap=ui_app["colormap"][], 
+        levels=lvl_range, 
+        rasterize=rast_val
+    )
     
     base_color = Makie.to_colormap(ui_app["colormap"][])[end]
     push!(plotted_objects, [Makie.PolyElement(color=base_color)])
@@ -202,7 +211,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    sf = surface!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs)
+    rast_val = ui_app["rasterize"][]
+    rast_val = rast_val == 0 ? false : rast_val
+
+    sf = surface!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs, rasterize=rast_val)
 
     set_axis_styles!(ax, manager, x_key, y_key, u_key, title_str)
     create_or_update_colorbar!(plot_fig, sf, manager, cr_obs, active_methods[1], plot_idx)
@@ -232,7 +244,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; colormap=ui_app["colormap"][], colorrange=cr_obs)
+    rast_val = ui_app["rasterize"][]
+    rast_val = rast_val == 0 ? false : rast_val
+
+    vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; colormap=ui_app["colormap"][], colorrange=cr_obs,rasterize=rast_val)
 
     set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
     create_or_update_colorbar!(plot_fig, vol, manager, cr_obs, active_methods[1], plot_idx)
