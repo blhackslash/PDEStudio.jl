@@ -569,9 +569,6 @@ function set_defaults!(manager::PlotManager, scene_options::Dict)
         end
     end
 end
-"""
-    get_base_scene_options() -> Dict{String, Any}
-"""
 function get_base_scene_options()
     return Dict{String, Any}(
         "X-Axis_Selection"          => "x",      
@@ -582,27 +579,22 @@ function get_base_scene_options()
         "x_Value"                   => 0.0,
         "Compare_Target_Selection"  => "None", 
         "Compare_Columns_Selection" => "2",     
-        "Compare_Link_Selection"    => "Fully Coupled" # <-- ADDED
+        "Compare_Link_Selection"    => "Fully Coupled",
+        "Legend_Base_Selection"     => "right",
+        "Legend_Add_Selection"      => "detached"
     )
 end
 
-"""
-    extract_scene_options(manager::PlotManager)
-
-Helper function that rips the current axis and slider states from the PlotManager.
-"""
 function extract_scene_options(manager::PlotManager)
     opts = Dict{String, Any}()
     
-    # 1. Grab Menus (including Compare logic)
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", "Compare_Columns", "Compare_Link"]
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add"]
         key = "$(k)_Selection"
         if haskey(manager.controls, key)
             opts[key] = to_value(manager.controls[key])
         end
     end
     
-    # 2. Grab Sliders
     for k in manager.plot_vars
         key = "$(k)_Value"
         if haskey(manager.controls, key)

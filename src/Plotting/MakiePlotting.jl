@@ -59,7 +59,6 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     
     return manager
 end
-
 function show_unified_fig(sim_config::SimulationConfig)
     ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
     var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
@@ -68,28 +67,21 @@ function show_unified_fig(sim_config::SimulationConfig)
     ui_obs = create_master_ui_observables()
     final_scene = get_base_scene_options()
     
-    if haskey(scene_options, "Menu")
-        for (k, v) in scene_options["Menu"]; final_scene["$(k)_Selection"] = v; end
-    end
-    if haskey(scene_options, "Slider")
-        for (k, v) in scene_options["Slider"]; final_scene["$(k)_Value"] = v; end
-    end
-    for (k, v) in scene_options
-        if k != "Menu" && k != "Slider"; final_scene[k] = v; end
-    end
+    if haskey(scene_options, "Menu"); for (k, v) in scene_options["Menu"]; final_scene["$(k)_Selection"] = v; end; end
+    if haskey(scene_options, "Slider"); for (k, v) in scene_options["Slider"]; final_scene["$(k)_Value"] = v; end; end
+    for (k, v) in scene_options; if k != "Menu" && k != "Slider"; final_scene[k] = v; end; end
     
     raw_type = get(final_scene, "Plot-Type_Selection", "Lines")
     init_type = raw_type isa String ? Symbol(lowercase(replace(raw_type, " " => ""))) : raw_type
 
     GLMakie.activate!()
     manager = create_plot_manager(sim_config, ui_obs, ui_overwrite, init_type)
-    plot_fig = Figure(size = manager.ui["Axis-General"]["figsize"][])
+    plot_fig = Figure()
     plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
     manager.controls["base_types"][] = var_overwrite
     ctrl_fig = create_controls(plot_fig, manager, plot_data_obs, final_scene)    
-    
     sim_update = manager.controls["Simulation_Update"]
     methods_obs = manager.methods
 
@@ -104,90 +96,61 @@ function show_unified_fig(sim_config::SimulationConfig)
 
     function rebuild_plot_layout!()
         ptype_sym = manager.controls["Plot-Type_Selection"][]
-        # Clear existing observers
         for obs in render_observers; off(obs); end
         empty!(render_observers)
         
-        # Clear the entire figure layout properly
-        empty!(plot_fig)  # This should clear everything
-        for elem in contents(plot_fig.layout)
-            if is_target && elem isa Makie.Block
-                delete!(elem)
-            end
-        end
-        # Reset the layout structure
-        trim!(plot_fig.layout)  # Remove empty rows/columns
-        println(contents(plot_fig.layout))
-        # Switch to new plot type
+        # ONE SINGLE LAYOUT CHANGE: Destroy everything and reset the grid!
+        empty!(plot_fig)  
+        trim!(plot_fig.layout) # THE FIX: Shrinks the ghost layout matrix back to a pure 1x1 state!
+        
         switch_ui_plot_type!(manager, ptype_sym)
-        
-        # Setup new rendering
         new_obs = setup_render_lift!(plot_fig, plot_data_obs, manager, Val(ptype_sym))
-        if !isnothing(new_obs)
-            append!(render_observers, new_obs)
-        end
+        if !isnothing(new_obs); append!(render_observers, new_obs); end
         
-        # Properly handle screen refresh
         scr = plot_screen_ref[]
         if GLMakie.isopen(scr)
-            try
-                GLMakie.close(scr) 
-            catch e
-                @debug "Screen close suppressed: $e"
-            end
+            try GLMakie.close(scr) catch e; @debug "Screen close suppressed: $e" end
         end
         
-        # Create fresh screen reference
         plot_screen_ref[] = GLMakie.Screen(title = "Makie Plot")
-        
-        # Display the figure properly
         display(plot_screen_ref[], plot_fig)
         notify(plot_data_obs)
     end
 
-    onany(sim_update, methods_obs) do _, active_methods
-        Base.invokelatest(update_plot_data_collection!,
-            plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]);
-            force_reload = (sim_update[] > 0), 
-        )
+    # Watch core structural menus
+    onany(manager.controls["Plot-Type_Selection"], manager.controls["Compare_Target_Selection"], manager.controls["Compare_Columns_Selection"], manager.controls["Compare_Link_Selection"]) do _...
+        rebuild_plot_layout!()
+    end
+
+    # Clever Legend Observer: Only nuke the layout if transitioning detached states
+    prev_leg_struct = Ref((false, :none, :none))
+    onany(manager.controls["Legend_Base_Selection"], manager.controls["Legend_Add_Selection"]) do _...
+        is_comp = manager.controls["Compare_Target_Selection"][] != "None"
+        curr = _parse_legend_position(manager, is_comp)
+        p = prev_leg_struct[]
         
+        if (!curr[1] && !p[1]) 
+            notify(plot_data_obs) # Both are attached (floating), soft-render safely moves it!
+        else
+            prev_leg_struct[] = curr
+            rebuild_plot_layout!()
+        end
+    end
+
+    onany(sim_update, methods_obs) do _, active_methods
+        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]); force_reload = (sim_update[] > 0))
         target = manager.controls["Compare_Target_Selection"][]
-        if target != "None"
+        if target == "Methods"
             rebuild_plot_layout!()
         else
             notify(plot_data_obs)
         end
     end
 
-    on(manager.controls["Plot-Type_Selection"]) do ptype_sym
-        rebuild_plot_layout!()
-    end
-
-    on(manager.controls["Compare_Target_Selection"]) do _
-        rebuild_plot_layout!()
-    end
-
-    on(manager.controls["Compare_Columns_Selection"]) do _
-        rebuild_plot_layout!()
-    end
-    
-    on(manager.controls["Compare_Link_Selection"]) do _
-        rebuild_plot_layout!()
-    end
-    on(manager.ui["Axis-General"]["legend_pos"]) do _
-        rebuild_plot_layout!()
-    end
-    # --- THE FIX: Eliminate the Startup Cascade! ---
-    # 1. Load the data silently bypassing the reactive UI cascade
-    Base.invokelatest(update_plot_data_collection!,
-        plot_data_obs.val, sim_config, manager, methods_obs.val, to_value(manager.controls["base_types"]);
-        force_reload = true, 
-    )
-    
-    # 2. Assign the update toggle silently so future clicks work
+    # Boot initialization
+    Base.invokelatest(update_plot_data_collection!, plot_data_obs.val, sim_config, manager, methods_obs.val, to_value(manager.controls["base_types"]); force_reload = true)
+    prev_leg_struct[] = _parse_legend_position(manager, manager.controls["Compare_Target_Selection"][] != "None")
     sim_update.val = 1 
-    
-    # 3. Build the layout EXACTLY once. This will push the data and trigger the first render!
     rebuild_plot_layout!()
     
     return plot_fig, ctrl_fig, manager
@@ -201,11 +164,9 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     
     target = c["Compare_Target_Selection"][]
     cols = parse(Int, c["Compare_Columns_Selection"][])
-    link_mode = get(c, "Compare_Link_Selection", Observable("Fully Coupled"))[]
+    link_mode = c["Compare_Link_Selection"][]
     
-    num_plots = 1
-    compare_labels = String[]
-    compare_vals = Any[]
+    num_plots, compare_labels, compare_vals = 1, String[], Any[]
     
     plot_data_dict = plot_data_obs[]
     if !isempty(plot_data_dict)
@@ -236,24 +197,35 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         target = "None"
     end
     
-    # --- RESTORED: Main content safely lives at [1, 1] ---
-    main_content_layout = plot_fig[end, end] = GridLayout()
+    # 1. Pre-Calculate the MASTER GRID
+    is_compare = target != "None"
+    is_det, halign, valign = _parse_legend_position(manager, is_compare)
+    has_legend = T in (:lines, :contourf, :contour, :contour3d)
+    has_colorbar = T in (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume)
+    has_legend &= target != "Methods"
+
+    layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
+    manager.controls["Layout_Dict"] = Observable(layout_dict)
     
+    # 2. Map Axes exactly to Absolute Dictionary Slots
     axes = []
-    if target != "None" && num_plots > 1
-        for i in 1:num_plots
-            row = (i - 1) ÷ cols + 1
-            col = (i - 1) % cols + 1
-            ax = is_3d_axis ? Axis3(main_content_layout[row, col], perspectiveness=0.5) : Axis(main_content_layout[row, col])
-            push!(axes, ax)
-        end
-        if !is_3d_axis && link_mode == "Fully Coupled"
-            linkaxes!(axes...) 
-        end
-    else
-        ax = is_3d_axis ? Axis3(main_content_layout[1, 1], perspectiveness=0.5) : Axis(main_content_layout[1, 1])
+    for i in 1:num_plots
+        r, c_idx = layout_dict["Plots"][i]
+        ax = is_3d_axis ? Axis3(plot_fig[r, c_idx], perspectiveness=0.5) : Axis(plot_fig[r, c_idx])
         push!(axes, ax)
     end
+    # --- THE FIX: ENFORCE FLAT PROPORTIONAL PANEL SIZES ---
+    p_w, p_h = manager.ui["Axis-General"]["plot_size"][]
+    
+    for i in 1:num_plots
+        r, c_idx = layout_dict["Plots"][i]
+        rowsize!(plot_fig.layout, r, Fixed(p_h))
+        colsize!(plot_fig.layout, c_idx, Fixed(p_w))
+    end
+    
+    # Auto-expand window viewports cleanly around the new absolute properties
+    
+    if !is_3d_axis && link_mode == "Fully Coupled"; linkaxes!(axes...); end
     
     # --- MODULAR RENDER HELPERS ---
     function _render_no_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
@@ -263,18 +235,14 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         orig_cr = has_cr ? ui_app["colorrange"].val : "default"
         if has_cr && orig_cr == "default"
             u_all = Float64[]
-            for us in data_tuples[end]
-                append!(u_all, filter(isfinite, us))
-            end
+            for us in data_tuples[end]; append!(u_all, filter(isfinite, us)); end
             l_u, h_u = isempty(u_all) ? (0.0, 1.0) : (minimum(u_all), maximum(u_all))
             if l_u == h_u; h_u += 1e-6; end
             ui_app["colorrange"].val = (l_u, h_u) 
         end
 
-        ax = axes[1]
-        update_base_plot!(plot_fig, ax, valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T))
-        if !is_3d_axis; plot_HUD!(ax, manager) end
-        
+        update_base_plot!(plot_fig, axes[1], valid_labels, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, Val(T), 1)
+        if !is_3d_axis; plot_HUD!(axes[1], manager); end
         if has_cr; ui_app["colorrange"].val = orig_cr; end
     end
 
@@ -286,48 +254,33 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         
         if has_cr && orig_cr == "default" && link_mode != "Decoupled"
             u_all = Float64[]
-            for us in data_tuples[end]
-                append!(u_all, filter(isfinite, us))
-            end
+            for us in data_tuples[end]; append!(u_all, filter(isfinite, us)); end
             l_u, h_u = isempty(u_all) ? (0.0, 1.0) : (minimum(u_all), maximum(u_all))
             if l_u == h_u; h_u += 1e-6; end
             ui_app["colorrange"].val = (l_u, h_u) 
         end
         
-        orig_leg_pos = manager.ui["Axis-General"]["legend_pos"].val
         orig_title = manager.ui["Labels"]["title"].val
         orig_title_size = manager.ui["Axis-General"]["title_size"].val
-        
-        manager.ui["Axis-General"]["legend_pos"].val = :none
         manager.ui["Axis-General"]["title_size"].val = manager.ui["Axis-General"]["label_size"].val 
         
         for (i, label) in enumerate(valid_labels)
             if i > length(axes); break; end
-            ax = axes[i]
             single_tuples = Tuple([dt[i]] for dt in data_tuples)
             manager.ui["Labels"]["title"].val = label
-            
-            update_base_plot!(plot_fig, ax, [label], single_tuples, manager, x_key, y_key, z_key, u_key, label, Val(T))
-            
-            if !is_3d_axis; plot_HUD!(ax, manager) end
+            update_base_plot!(plot_fig, axes[i], [label], single_tuples, manager, x_key, y_key, z_key, u_key, label, Val(T), i)
+            if !is_3d_axis; plot_HUD!(axes[i], manager); end
         end
         
-        manager.ui["Axis-General"]["legend_pos"].val = orig_leg_pos
         manager.ui["Labels"]["title"].val = orig_title
         manager.ui["Axis-General"]["title_size"].val = orig_title_size
-        
         if has_cr; ui_app["colorrange"].val = orig_cr; end
     end
 
     function _render_variable_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
-        target_idx = -1
-        if target == "Component"
-            target_idx = findfirst(isequal("c"), manager.plot_vars)
-        elseif target == "Time"
-            target_idx = findfirst(isequal("t"), manager.plot_vars)
-        else
-            target_idx = findfirst(isequal(target), manager.plot_vars)
-        end
+        target_idx = target == "Component" ? findfirst(isequal("c"), manager.plot_vars) :
+                     target == "Time" ? findfirst(isequal("t"), manager.plot_vars) :
+                     findfirst(isequal(target), manager.plot_vars)
         
         u_all = Float64[]
         all_subplots_data = []
@@ -337,10 +290,7 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
             mutated_sel_vals[target_idx] = compare_vals[i]
             dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_key, y_key, z_key, u_key, Val(PLOT_DIM_MAP[T]))
             push!(all_subplots_data, (dt, vl, ts))
-            
-            for us in dt[end]
-                append!(u_all, filter(isfinite, us))
-            end
+            for us in dt[end]; append!(u_all, filter(isfinite, us)); end
         end
         
         has_cr = haskey(ui_app, "colorrange")
@@ -354,26 +304,19 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         
         orig_title = manager.ui["Labels"]["title"].val
         orig_title_size = manager.ui["Axis-General"]["title_size"].val
-        orig_leg_pos = manager.ui["Axis-General"]["legend_pos"].val
-        
         manager.ui["Axis-General"]["title_size"].val = manager.ui["Axis-General"]["label_size"].val 
         
         for i in 1:num_plots
             if i > length(axes); break; end
-            ax = axes[i]
             dt, vl, ts = all_subplots_data[i]
             label = compare_labels[i]
             manager.ui["Labels"]["title"].val = label
-            
-            update_base_plot!(plot_fig, ax, vl, dt, manager, x_key, y_key, z_key, u_key, label, Val(T))
-            
-            if !is_3d_axis; plot_HUD!(ax, manager) end
+            update_base_plot!(plot_fig, axes[i], vl, dt, manager, x_key, y_key, z_key, u_key, label, Val(T), i)
+            if !is_3d_axis; plot_HUD!(axes[i], manager); end
         end
         
         manager.ui["Labels"]["title"].val = orig_title
         manager.ui["Axis-General"]["title_size"].val = orig_title_size
-        manager.ui["Axis-General"]["legend_pos"].val = orig_leg_pos 
-        
         if has_cr; ui_app["colorrange"].val = orig_cr; end
     end
 
@@ -382,25 +325,13 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         (isnothing(x_key) || isnothing(u_key) || x_key == "-" || u_key == "-") && return
         isempty(data) && return
 
-        # 1. Nuclear Layout Cleanup (For Legend/Colorbar switching)
-        for elem in copy(contents(plot_fig.layout))
-            if elem isa Legend || elem isa Colorbar
-                delete!(elem)
-            end
-        end
-        
-
-        # 3. Reset axes scales for data injection
+        # Reset scales to prevent mathematical singularity errors
         for ax in axes
-            if !is_3d_axis
-                ax.xscale[] = identity
-                ax.yscale[] = identity
-            end
+            if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
         end
         
         ui_app = manager.ui["Plot-Style"]
         
-        # 4. Dispatch Rendering
         if target == "None" || num_plots <= 1
             _render_no_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
         elseif target == "Methods"
@@ -408,5 +339,7 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         else
             _render_variable_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
         end
+        resize_to_layout!(plot_fig)
     end
+    return render_obs
 end

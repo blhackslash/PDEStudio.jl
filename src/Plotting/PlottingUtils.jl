@@ -108,139 +108,178 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     if use_log_x; ax.xscale[] = log10; end
     if use_log_y; ax.yscale[] = log10; end
 end
-# --- Legend Helpers ---
-function _parse_legend_position(pos::Union{Symbol, String})
-    s = lowercase(string(pos))
-    if s == "none"; return (false, :none, :none); end
+# ==============================================================================
+# --- MASTER GRID CALCULATOR ---
+# ==============================================================================
+function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::String, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
+    cols = min(num_plots, cols_req)
+    rows = ceil(Int, num_plots / cols)
     
-    is_detached = occursin('d', s) || occursin("detached", s)
+    layout_dict = Dict{String, Any}()
+    layout_dict["Plots"] = Vector{Tuple{Any, Any}}(undef, num_plots)
+    layout_dict["Colorbars"] = Vector{Tuple{Any, Any}}()
+    layout_dict["Legend"] = nothing
     
-    valign = occursin('t', s) ? :top : (occursin('b', s) ? :bottom : :center)
-    halign = occursin('l', s) ? :left : (occursin('r', s) ? :right : :center)
+    # 1. Padding for detached legends
+    row_offset = (has_legend && is_detached && valign == :top) ? 1 : 0
+    col_offset = (has_legend && is_detached && halign == :left) ? 1 : 0
+    
+    # 2. Assign Core Plots and Colorbars
+    if link_mode == "Decoupled" && has_colorbar
+        for i in 1:num_plots
+            r = (i - 1) ÷ cols + 1
+            c = (i - 1) % cols + 1
+            
+            p_row = r + row_offset
+            p_col = (2 * c - 1) + col_offset
+            cb_col = (2 * c) + col_offset
+            
+            layout_dict["Plots"][i] = (p_row, p_col)
+            push!(layout_dict["Colorbars"], (p_row, cb_col))
+        end
+        max_core_col = 2 * cols + col_offset
+        max_core_row = rows + row_offset
+    else
+        for i in 1:num_plots
+            r = (i - 1) ÷ cols + 1
+            c = (i - 1) % cols + 1
+            
+            p_row = r + row_offset
+            p_col = c + col_offset
+            
+            layout_dict["Plots"][i] = (p_row, p_col)
+        end
+        max_core_col = cols + col_offset
+        max_core_row = rows + row_offset
+        
+        if has_colorbar
+            cb_col = max_core_col + 1
+            max_core_col += 1
+            push!(layout_dict["Colorbars"], (1 + row_offset : rows + row_offset, cb_col))
+        end
+    end
+    
+    # 3. Assign Legend Space
+    if has_legend
+        if is_detached
+            if valign == :top
+                layout_dict["Legend"] = (1, 1:max_core_col)
+            elseif valign == :bottom
+                layout_dict["Legend"] = (max_core_row + 1, 1:max_core_col)
+            elseif halign == :left
+                layout_dict["Legend"] = (1+row_offset : max_core_row, 1)
+            else # :right
+                layout_dict["Legend"] = (1+row_offset : max_core_row, max_core_col + 1)
+            end
+        else
+            # Attached legends float inside the absolute cell of Plot 1
+            layout_dict["Legend"] = layout_dict["Plots"][1]
+        end
+    end
+    println(layout_dict)
+    return layout_dict
+end
+
+# ==============================================================================
+# --- LEGEND & COLORBAR BUILDERS ---
+# ==============================================================================
+function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
+    base_align = manager.controls["Legend_Base_Selection"][]
+    add_align  = manager.controls["Legend_Add_Selection"][]
+    
+    s = lowercase(string(base_align) * "_" * string(add_align))
+    if occursin("none", s); return (false, :none, :none); end
+    
+    is_detached = occursin("detached", s)
+    
+    # Smart Default: Snaps to Top-Detached when in compare mode if attached is requested
+    if is_compare && !is_detached
+        return (true, :center, :top)
+    end
+    
+    valign = occursin("top", s) ? :top : (occursin("bottom", s) ? :bottom : :center)
+    halign = occursin("left", s) ? :left : (occursin("right", s) ? :right : :center)
 
     return (is_detached, halign, valign)
 end
 
 function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::Vector, manager::PlotManager)
-    # The render loop handles all cleanup now! We just build.
+    # 1. Anti-Double-Drawing: Purge existing legends to ensure only the final subplot's legend remains!
+    for block in copy(fig.content)
+        if block isa Legend; delete!(block); end
+    end
     
-    ui_style = manager.ui["Axis-General"]
-    if !haskey(ui_style, "legend_pos"); return; end 
-
-    position = ui_style["legend_pos"][]
-    if position == :none || position == "none"; return; end 
-
-    title_str = manager.ui["Labels"]["legend"][]
-    font_size = ui_style["font_size"][]
-
     if isempty(plotted_objects) || isempty(labels); return; end
     
-    final_title = isempty(strip(title_str)) ? nothing : title_str
+    layout_dict = manager.controls["Layout_Dict"][]
+    if !haskey(layout_dict, "Legend") || isnothing(layout_dict["Legend"]); return; end
     
-    pos_sym = position isa String ? Symbol(position) : position
-    is_detached, halign, valign = _parse_legend_position(pos_sym)
+    ui_style = manager.ui["Axis-General"]
+    title_str = manager.ui["Labels"]["legend"][]
+    final_title = isempty(strip(title_str)) ? nothing : title_str
+    font_size = ui_style["font_size"][]
+    
+    is_compare = manager.controls["Compare_Target_Selection"][] != "None"
+    is_detached, halign, valign = _parse_legend_position(manager, is_compare)
+
+    leg_pos = layout_dict["Legend"]
+
     try
         if is_detached
-            if valign == :top
-                Legend(fig[0, :], plotted_objects, labels, final_title;
-                    orientation=:horizontal, tellheight=true, tellwidth=false, merge=true, unique=true,
-                    titlesize=font_size, labelsize=font_size)
-            elseif valign == :bottom
-                Legend(fig[end+1, :], plotted_objects, labels, final_title;
-                    orientation=:horizontal, tellheight=true, tellwidth=false, merge=true, unique=true,
-                    titlesize=font_size, labelsize=font_size)
-            elseif halign == :left
-                Legend(fig[:, 0], plotted_objects, labels, final_title;
-                    orientation=:vertical, tellwidth=true, tellheight=false, merge=true, unique=true,
-                    titlesize=font_size, labelsize=font_size)
-            else # right or default
-                Legend(fig[:, end+1], plotted_objects, labels, final_title;
-                    orientation=:vertical, tellwidth=true, tellheight=false, merge=true, unique=true,
-                    titlesize=font_size, labelsize=font_size)
-            end
+            orientation = (valign == :top || valign == :bottom) ? :horizontal : :vertical
+            tw = orientation == :vertical
+            th = !tw 
+            Legend(fig[leg_pos...], plotted_objects, labels, final_title;
+                orientation=orientation, tellheight=th, tellwidth=tw, merge=true, unique=true,
+                titlesize=font_size, labelsize=font_size)
         else
-            # Attached (Floating) - Targets the exact same cell as the main_content_layout
-            Legend(fig[end, end], plotted_objects, labels, final_title;
+            Legend(fig[leg_pos...], plotted_objects, labels, final_title;
                 orientation=:vertical, tellheight=false, tellwidth=false,
                 halign=halign, valign=valign, merge=true, unique=true,
                 titlesize=font_size, labelsize=font_size, margin=(10, 10, 10, 10)
             )
         end
-        
-        # Lock in the new state so the next render frame can snip it properly!
-        LEGEND_REF[] = pos_sym
-        
-    catch e
-        @error "Failed to create legend" exception=(e, catch_backtrace())
-    end
+    catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
 end
 
-function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String)
+function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
     isnothing(plot_object) && return
-
-    # --- THE FIX: Find the inner GridLayout containing the axes ---
-    inner_layout = nothing
-    for elem in contents(fig.layout)
-        if elem isa GridLayout
-            inner_layout = elem
-            break
-        end
-    end
-    isnothing(inner_layout) && return
-
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "colormap"); return; end 
-
+    
+    layout_dict = manager.controls["Layout_Dict"][]
+    cb_list = layout_dict["Colorbars"]
+    isempty(cb_list) && return
+    
+    is_global = length(cb_list) == 1
+    
+    # 1. Prevent stacking global colorbars from multiple subplots
+    if is_global && plot_idx > 1
+        return 
+    end
+    
+    # 2. Purge existing colorbars ONLY on the first plot pass
+    if plot_idx == 1
+        for block in copy(fig.content)
+            if block isa Colorbar; delete!(block); end
+        end
+    end
+    
+    cb_pos = is_global ? cb_list[1] : cb_list[plot_idx]
+    
     ui_lbl = manager.ui["Labels"]
     ui_gen = manager.ui["Axis-General"]
-
     final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
-
+    
     try
-        # Append exclusively to the right side of the inner subplot layout!
-        cb = Colorbar(inner_layout[:, end+1];
-            colormap = ui_stl["colormap"][],
-            colorrange = color_range_obs,
-            label = final_label,
+        # THE FIX: Removed `colormap` and `colorrange` kwargs to fix the Makie plot_object sync crash!
+        Colorbar(fig[cb_pos...], plot_object;
+            #label = final_label, 
             labelsize = ui_gen["label_size"][],
             ticklabelsize = ui_gen["ticklabel_size"][]
         )
     catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
 end
-
-"""
-    set_axis_styles!(ax::Axis3, manager, def_x, def_y, def_z, def_title)
-
-Pulls from the hierarchical UI dictionary to style a 3D perspective axis.
-"""
-function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y::String, def_z::String, def_title::String)
-    ui_gen = manager.ui["Axis-General"]
-    ui_lbl = manager.ui["Labels"]
-    ui_x, ui_y, ui_z = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
-    ui_stl = manager.ui["Plot-Style"]
-
-    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
-    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
-    ax.zlabel = ui_lbl["zlabel"][] == "default" ? def_z : ui_lbl["zlabel"][]
-    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
-
-    ax.titlesize = ui_gen["title_size"][]
-    ax.xlabelsize = ui_gen["label_size"][]; ax.ylabelsize = ui_gen["label_size"][]; ax.zlabelsize = ui_gen["label_size"][]
-    ax.xticklabelsize = ui_gen["ticklabel_size"][]; ax.yticklabelsize = ui_gen["ticklabel_size"][]; ax.zticklabelsize = ui_gen["ticklabel_size"][]
-
-    ax.xgridvisible = ui_x["gridvisible"][]; ax.ygridvisible = ui_y["gridvisible"][]; ax.zgridvisible = ui_z["gridvisible"][]
-    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]; ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]; ax.zticklabelsvisible = ui_z["ticklabelsvisible"][]
-
-    if haskey(ui_stl, "xlabel_offset")
-        ax.xlabeloffset = ui_stl["xlabel_offset"][]
-        ax.ylabeloffset = ui_stl["ylabel_offset"][]
-        ax.zlabeloffset = ui_stl["zlabel_offset"][]
-    end
-
-    ax.perspectiveness = 0.5
-    ax.aspect = (1, 1, 0.6)
-end
-
 
 # --- Utility Functions ---
 function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
@@ -325,7 +364,6 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     ui_lbl = manager.ui["Labels"]
     ui_x   = manager.ui["X-Axis"]
     ui_y   = manager.ui["Y-Axis"]
-    ui_stl = manager.ui["Plot-Style"]
 
     ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
     ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
@@ -337,13 +375,14 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     ax.xticklabelsize = ui_gen["ticklabel_size"][]
     ax.yticklabelsize = ui_gen["ticklabel_size"][]
 
-    if haskey(ui_stl, "xlabel_offset")
-        ax.xlabelpadding = ui_stl["xlabel_offset"][]
-        ax.ylabelpadding = ui_stl["ylabel_offset"][]
+    # THE FIX: Pull label offsets directly from the independent Axis dictionaries!
+    if haskey(ui_x, "label_offset")
+        ax.xlabelpadding = ui_x["label_offset"][]
+    end
+    if haskey(ui_y, "label_offset")
+        ax.ylabelpadding = ui_y["label_offset"][]
     end
     
-    # THE FIX: Deleted the alignmode (bottom_margin) block here so the cell size is authentic.
-
     ax.xgridvisible = ui_x["gridvisible"][]
     ax.ygridvisible = ui_y["gridvisible"][]
     ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]
@@ -372,6 +411,38 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     else
         ax.ytickformat = ui_y["tickformat"][] == "default" ? Makie.automatic : ui_y["tickformat"][]
     end
+end
+
+function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y::String, def_z::String, def_title::String)
+    ui_gen = manager.ui["Axis-General"]
+    ui_lbl = manager.ui["Labels"]
+    ui_x, ui_y, ui_z = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
+
+    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
+    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
+    ax.zlabel = ui_lbl["zlabel"][] == "default" ? def_z : ui_lbl["zlabel"][]
+    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+
+    ax.titlesize = ui_gen["title_size"][]
+    ax.xlabelsize = ui_gen["label_size"][]; ax.ylabelsize = ui_gen["label_size"][]; ax.zlabelsize = ui_gen["label_size"][]
+    ax.xticklabelsize = ui_gen["ticklabel_size"][]; ax.yticklabelsize = ui_gen["ticklabel_size"][]; ax.zticklabelsize = ui_gen["ticklabel_size"][]
+
+    ax.xgridvisible = ui_x["gridvisible"][]; ax.ygridvisible = ui_y["gridvisible"][]; ax.zgridvisible = ui_z["gridvisible"][]
+    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]; ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]; ax.zticklabelsvisible = ui_z["ticklabelsvisible"][]
+
+    # THE FIX: Pull 3D offsets directly from their independent Axis dictionaries!
+    if haskey(ui_x, "label_offset")
+        ax.xlabeloffset = ui_x["label_offset"][]
+    end
+    if haskey(ui_y, "label_offset")
+        ax.ylabeloffset = ui_y["label_offset"][]
+    end
+    if haskey(ui_z, "label_offset")
+        ax.zlabeloffset = ui_z["label_offset"][]
+    end
+
+    ax.perspectiveness = 0.5
+    ax.aspect = (1, 1, 0.6)
 end
 
 

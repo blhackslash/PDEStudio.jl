@@ -10,7 +10,7 @@ function create_controls(
     plot_data_obs::Observable, 
     scene_options::Dict = Dict{String, Any}() 
 )
-    base_controls_fig = Figure(size = (450, 1000)) 
+    base_controls_fig = Figure(size = (450, 1060)) 
     fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
     rowgap!(fig_layout, 15) 
     current_row = 1
@@ -114,95 +114,82 @@ function create_controls(
 
     return base_controls_fig
 end
-
 function build_static_plot_controls!(
-    menu_layout::GridLayout, 
-    slider_layout::GridLayout, 
-    plot_data_obs::Observable,
-    active_params::Vector{String}, 
-    manager::PlotManager,
-    scene_options::Dict = Dict{String, Any}()
+    menu_layout::GridLayout, slider_layout::GridLayout, plot_data_obs::Observable, active_params::Vector{String}, manager::PlotManager, scene_options::Dict = Dict{String, Any}()
 )
     dim_names = active_params
     total_dims = length(dim_names)
     n_params = total_dims - 5
     comp_idx = n_params + 1 
     
-    x_key_obs = Observable{String}("-")
-    y_key_obs = Observable{String}("-")
-    z_key_obs = Observable{String}("-")
-    u_key_obs = Observable{String}("-")
+    x_key_obs = Observable{String}("-"); y_key_obs = Observable{String}("-"); z_key_obs = Observable{String}("-"); u_key_obs = Observable{String}("-")
     plot_dim_obs = Observable{Int}(1)
     manager.controls["Plot_Dimension"] = plot_dim_obs
     
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-    init_x = string(get(scene_options, "X-Axis_Selection", "-"))
-    init_y = string(get(scene_options, "Y-Axis_Selection", "disabled"))
-    init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
-    init_u = string(get(scene_options, "U-Axis_Selection", "-"))
-    init_comp = string(get(scene_options, "c_Selection", "1"))
+    init_x = string(get(scene_options, "X-Axis_Selection", "-")); init_y = string(get(scene_options, "Y-Axis_Selection", "disabled")); init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
+    init_u = string(get(scene_options, "U-Axis_Selection", "-")); init_comp = string(get(scene_options, "c_Selection", "1"))
 
-    Label(menu_layout[1,1], "X-Axis", font=:bold)
-    Label(menu_layout[1,2], "Y-Axis", font=:bold)
-    Label(menu_layout[1,3], "Z-Axis", font=:bold)
-    menu_x = Menu(menu_layout[2,1], options = [init_x], width = 120)
-    menu_x.i_selected = 1
-    menu_y = Menu(menu_layout[2,2], options = [init_y], width = 120)
-    menu_y.i_selected = 1
-    menu_z = Menu(menu_layout[2,3], options = [init_z], width = 120)
-    menu_z.i_selected = 1
+    Label(menu_layout[1,1], "X-Axis", font=:bold); Label(menu_layout[1,2], "Y-Axis", font=:bold); Label(menu_layout[1,3], "Z-Axis", font=:bold)
+    menu_x = Menu(menu_layout[2,1], options = [init_x], width = 120); menu_x.i_selected = 1
+    menu_y = Menu(menu_layout[2,2], options = [init_y], width = 120); menu_y.i_selected = 1
+    menu_z = Menu(menu_layout[2,3], options = [init_z], width = 120); menu_z.i_selected = 1
 
-    Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold)
-    Label(menu_layout[3,2], "Component", font=:bold)
-    Label(menu_layout[3,3], "Plot Type", font=:bold)
-    
-    menu_u    = Menu(menu_layout[4,1], options = [init_u], width = 120)
-    menu_u.i_selected = 1
-    menu_comp = Menu(menu_layout[4,2], options = [init_comp], width = 120)
-    menu_comp.i_selected = 1
+    Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold); Label(menu_layout[3,2], "Component", font=:bold); Label(menu_layout[3,3], "Plot Type", font=:bold)
+    menu_u = Menu(menu_layout[4,1], options = [init_u], width = 120); menu_u.i_selected = 1
+    menu_comp = Menu(menu_layout[4,2], options = [init_comp], width = 120); menu_comp.i_selected = 1
     
     plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume", "Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
     init_type_str = string(get(scene_options, "Plot-Type_Selection", "Lines"))
     menu_type = Menu(menu_layout[4,3], options = plot_options, width = 120)
-    
-    idx = findfirst(isequal(init_type_str), plot_options)
-    menu_type.i_selected[] = isnothing(idx) ? 1 : idx
+    idx = findfirst(isequal(init_type_str), plot_options); menu_type.i_selected[] = isnothing(idx) ? 1 : idx
 
-    # --- THE FIX: NEW COMPARE MENUS ---
+    # --- COMPARE MENUS ---
     Label(menu_layout[5,1], "Compare Target", font=:bold, color=:darkorange)
     Label(menu_layout[5,2], "Grid Columns", font=:bold, color=:darkorange)
-    Label(menu_layout[5,3], "Compare Link", font=:bold, color=:darkorange) # <-- ADDED
+    Label(menu_layout[5,3], "Compare Link", font=:bold, color=:darkorange)
 
     compare_targets = ["None", "Methods", "Component", "Time"]
     append!(compare_targets, filter(p -> p ∉ ["c", "x", "y", "z", "t"], active_params))
 
     init_tgt = string(get(scene_options, "Compare_Target_Selection", "None"))
     init_cols = string(get(scene_options, "Compare_Columns_Selection", "2"))
-    init_link = string(get(scene_options, "Compare_Link_Selection", "Fully Coupled")) # <-- ADDED
+    init_link = string(get(scene_options, "Compare_Link_Selection", "Fully Coupled"))
 
     menu_tgt = Menu(menu_layout[6,1], options = compare_targets, width = 120)
-    idx_tgt = findfirst(isequal(init_tgt), compare_targets)
-    menu_tgt.i_selected[] = isnothing(idx_tgt) ? 1 : idx_tgt
+    idx_tgt = findfirst(isequal(init_tgt), compare_targets); menu_tgt.i_selected[] = isnothing(idx_tgt) ? 1 : idx_tgt
 
     menu_cols = Menu(menu_layout[6,2], options = ["1", "2", "3", "4", "5"], width = 120)
-    idx_cols = findfirst(isequal(init_cols), ["1", "2", "3", "4", "5"])
-    menu_cols.i_selected[] = isnothing(idx_cols) ? 2 : idx_cols
+    idx_cols = findfirst(isequal(init_cols), ["1", "2", "3", "4", "5"]); menu_cols.i_selected[] = isnothing(idx_cols) ? 2 : idx_cols
 
-    # --- ADDED: Link Menu ---
     menu_link = Menu(menu_layout[6,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"], width = 120)
-    idx_link = findfirst(isequal(init_link), ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
-    menu_link.i_selected[] = isnothing(idx_link) ? 1 : idx_link
+    idx_link = findfirst(isequal(init_link), ["Fully Coupled", "Coupled Colorbar", "Decoupled"]); menu_link.i_selected[] = isnothing(idx_link) ? 1 : idx_link
+
+    # --- LEGEND MENUS ---
+    Label(menu_layout[7,1], "Legend Base", font=:bold, color=:darkorchid)
+    Label(menu_layout[7,2], "Legend Modifier", font=:bold, color=:darkorchid)
+    
+    leg_base_opts = ["none", "center", "left", "right", "top", "bottom"]
+    leg_add_opts  = ["none", "detached", "left", "right", "top", "bottom"]
+    
+    init_lbase = string(get(scene_options, "Legend_Base_Selection", "right"))
+    init_ladd  = string(get(scene_options, "Legend_Add_Selection", "detached"))
+    
+    menu_lbase = Menu(menu_layout[8,1], options = leg_base_opts, width = 120)
+    idx_lbase = findfirst(isequal(init_lbase), leg_base_opts); menu_lbase.i_selected[] = isnothing(idx_lbase) ? 4 : idx_lbase
+
+    menu_ladd = Menu(menu_layout[8,2], options = leg_add_opts, width = 120)
+    idx_ladd = findfirst(isequal(init_ladd), leg_add_opts); menu_ladd.i_selected[] = isnothing(idx_ladd) ? 2 : idx_ladd
 
     manager.controls["Compare_Target_Selection"] = menu_tgt.selection
     manager.controls["Compare_Columns_Selection"] = menu_cols.selection
     manager.controls["Compare_Link_Selection"] = menu_link.selection
-    # -----------------------------------
+    manager.controls["Legend_Base_Selection"] = menu_lbase.selection
+    manager.controls["Legend_Add_Selection"] = menu_ladd.selection
 
-    colsize!(menu_layout, 1, Fixed(120))
-    colsize!(menu_layout, 2, Fixed(120))
-    colsize!(menu_layout, 3, Fixed(120))    
+    colsize!(menu_layout, 1, Fixed(120)); colsize!(menu_layout, 2, Fixed(120)); colsize!(menu_layout, 3, Fixed(120))    
 
     active_axes_obs = Observable{Vector{Int}}(Int[])
     manager.controls["Active_Axes"] = active_axes_obs
@@ -218,7 +205,6 @@ function build_static_plot_controls!(
     on(menu_type.selection) do raw_str
         ptype_sym = Symbol(lowercase(replace(raw_str, " " => "")))
         plot_type_obs[] = ptype_sym
-        notify(plot_data_obs) 
     end
 
     control_objects[comp_idx] = menu_comp
@@ -265,7 +251,6 @@ function build_static_plot_controls!(
     function _update_menu!(menu, new_options; fallbacks=["x", "y", "z", "t"])
         curr = menu.selection[]
         menu.options[] = isempty(new_options) ? ["-"] : new_options
-        
         if curr == "-" || isnothing(curr) || curr ∉ new_options
             if isempty(new_options)
                 menu.i_selected[] = 0
@@ -282,7 +267,6 @@ function build_static_plot_controls!(
         end
     end
 
-    # THE FIX: Watch the Compare Target so we can actively remove it from the Plot Axes!
     onany(plot_data_obs, plot_type_obs, menu_tgt.selection) do plot_data_dict, ptype, comp_tgt
         isempty(plot_data_dict) && return
         
@@ -308,23 +292,15 @@ function build_static_plot_controls!(
                     push!(valid_axes, key)
                 end
             end
-            
-            if key == "u"
-                comp_max = max(comp_max, size(tensor, n_params + 1))
-            end
+            if key == "u"; comp_max = max(comp_max, size(tensor, n_params + 1)); end
         end
         
-        # Deactivate axis if it's the compare target!
-        if comp_tgt == "Time"
-            filter!(k -> k != "t", valid_axes)
-        elseif comp_tgt == "Component"
-            filter!(k -> k != "c", valid_axes)
-        elseif comp_tgt in active_params
-            filter!(k -> k != comp_tgt, valid_axes)
+        if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
+        elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
+        elseif comp_tgt in active_params; filter!(k -> k != comp_tgt, valid_axes)
         end
         
         sort!(valid_axes)
-        
         _update_menu!(menu_x, valid_axes; fallbacks=["x", "t", "y", "z"])
         _update_menu!(menu_comp, [string(i) for i in 1:comp_max]; fallbacks=["1"])
         
@@ -332,14 +308,12 @@ function build_static_plot_controls!(
         if p_dim >= 2
              _update_menu!(menu_y, valid_axes; fallbacks=["y", "t", "z", "x"])
         else
-            menu_y.options[] = ["disabled"]
-            menu_y.i_selected[] = 1
+            menu_y.options[] = ["disabled"]; menu_y.i_selected[] = 1
         end
         if p_dim >= 3
             _update_menu!(menu_z, valid_axes; fallbacks=["z", "t", "x", "y"])
         else
-            menu_z.options[] = ["disabled"]
-            menu_z.i_selected[] = 1
+            menu_z.options[] = ["disabled"]; menu_z.i_selected[] = 1
         end
     end
 
@@ -389,9 +363,7 @@ function build_static_plot_controls!(
         
         active_axes_obs[] = collect(axes)
         
-        req_space = false
-        req_time = false
-        req_params = Int[]
+        req_space = false; req_time = false; req_params = Int[]
         
         for key in active_indep_keys
             tensor = get(pd_first.data, key, nothing)
@@ -401,16 +373,10 @@ function build_static_plot_controls!(
             idx = findfirst(isequal(key), dim_names)
             !isnothing(idx) && push!(varying, idx)
             
-            if any(d -> d in (n_params+2, n_params+3, n_params+4), varying)
-                req_space = true
-            end
-            if any(d -> d == n_params+5, varying)
-                req_time = true
-            end
+            if any(d -> d in (n_params+2, n_params+3, n_params+4), varying); req_space = true; end
+            if any(d -> d == n_params+5, varying); req_time = true; end
             for d in varying
-                if d <= n_params && !(d in req_params)
-                    push!(req_params, d)
-                end
+                if d <= n_params && !(d in req_params); push!(req_params, d); end
             end
         end
         
@@ -424,16 +390,10 @@ function build_static_plot_controls!(
             has_params = filter(d -> d <= n_params, varying)
             
             is_valid = true
-            
             req_space && !has_space && (is_valid = false)
             req_time && !has_time && (is_valid = false)
-            for p in req_params
-                !(p in has_params) && (is_valid = false)
-            end
-            
-            if is_valid
-                push!(valid_fields, key)
-            end
+            for p in req_params; !(p in has_params) && (is_valid = false); end
+            if is_valid; push!(valid_fields, key); end
         end
         
         sort!(valid_fields)
