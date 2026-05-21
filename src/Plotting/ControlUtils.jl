@@ -97,94 +97,6 @@ function create_method_checkboxes_figure(
 end
 
 """
-    createAnimationPreview!(layout, manager, plot_dim_obs, selector_widgets, active_params)
-
-Populates a layout with a menu to select a target dimension and a Play/Stop button.
-Returns the observable tracking the selected animation target index.
-"""
-function createAnimationPreview!(
-    layout::GridLayout,
-    manager::PlotManager,
-    active_axes_obs::Observable{Vector{Int}}, # Update signature
-    selector_widgets::Vector{Any},
-    active_params::Vector{String}
-)
-    is_animating = Observable(false)
-    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
-    
-    n_params = length(active_params)
-    dim_names = Dict{Int, String}()
-    for (i, p) in enumerate(active_params); dim_names[i] = p; end
-    dim_names[n_params+1] = "Component"
-    dim_names[n_params+2] = "Space"
-    dim_names[n_params+3] = "Time"
-
-    # Dropdown to select the target
-    all_opts = [(dim_names[i], i) for i in 1:length(selector_widgets)]
-    anim_target_menu = Menu(layout[1, 1], options = all_opts, width=120)
-    anim_target_menu.i_selected[] = length(selector_widgets) # Default to Time
-
-    # Play/Stop Button
-    play_btn = Button(layout[1, 2], label="Play Preview", width=100, buttoncolor=:lightyellow)
-    
-    on(is_animating) do animating
-        play_btn.label[] = animating ? "Stop Preview" : "Play Preview"
-    end
-
-    function check_selection_validity(idx)
-        if idx == 0 || isnothing(idx)
-            @warn "Animation Error: No target selected."
-            return false
-        end
-        if idx in active_axes_obs[]
-            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is an active plotting axis."
-            return false
-        end
-        widget = selector_widgets[idx]
-        if !(widget isa Slider)
-            @warn "Animation Error: '$(dim_names[idx])' is a discrete Menu. Only Sliders can be animated."
-            return false
-        end
-        if length(widget.range[]) < 2
-            @warn "Animation Error: Slider for '$(dim_names[idx])' has no range to animate."
-            return false
-        end
-        return true
-    end
-
-    on(play_btn.clicks) do _
-        if is_animating[]
-            is_animating[] = false
-            !isnothing(animation_timer[]) && close(animation_timer[])
-            animation_timer[] = nothing
-        else
-            target_idx = anim_target_menu.selection[]
-            !check_selection_validity(target_idx) && return
-            
-            target_widget = selector_widgets[target_idx]
-            is_animating[] = true
-            
-            duration = manager.ui["Various"]["animation_duration_s"][]
-            fps = manager.ui["Various"]["animation_fps"][]
-            rng = target_widget.range[]
-            start_time = time()
-            
-            animation_timer[] = Timer(0.0, interval = 1/fps) do t
-                if !is_animating[]
-                    close(t); return
-                end
-                elapsed = mod(time() - start_time, duration)
-                progress = elapsed / duration
-                val = rng[1] + progress * (rng[end] - rng[1])
-                set_close_to!(target_widget, val)
-            end
-        end
-    end
-
-    return anim_target_menu.selection
-end
-
-"""
     createExportOptions!(...)
 
 Populates a layout with a filename textbox and save buttons for Images and GIFs.
@@ -205,10 +117,17 @@ function createExportOptions!(
     dim_names[n_params+2] = "Space"
     dim_names[n_params+3] = "Time"
 
-    # UI Layout: [ Filename Box ] [ Save Image ] [ Save GIF ]
-    saveBox = Textbox(layout[1, 1], placeholder = "Filename...", width=150)
-    btn_img = Button(layout[1, 2], label="Save Image", buttoncolor=:lightblue, width=100)
-    btn_gif = Button(layout[1, 3], label="Save GIF", buttoncolor=:lightgreen, width=100)
+    saveBox = Textbox(layout[2, 1:4], placeholder = "Filename...", width=nothing)
+    
+    btn_save_def = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral)
+    btn_play     = Button(layout[1, 2], label="Play Anim", buttoncolor=:lightyellow)
+    btn_img      = Button(layout[1, 3], label="Save Image", buttoncolor=:lightblue)
+    btn_gif      = Button(layout[1, 4], label="Save GIF", buttoncolor=:lightgreen)
+
+    # THE FIX: Alle 4 Buttons auf exakt gleiche Breite zwingen
+    for i in 1:4
+        colsize!(layout, i, Relative(0.25))
+    end
 
     # Helper: Validation for GIF export
     function check_selection_validity(idx)
@@ -329,38 +248,55 @@ function createExportOptions!(
         saveBox.stored_string.val = "" # Reset silently without triggering observers
         Makie.reset!(saveBox)
     end
-end
+    on(btn_save_def.clicks) do _
+        GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
+        new_ui = Dict{String, Any}()
+        for (scope, subdict) in manager.ui
+            new_ui[scope] = Dict{String, Any}()
+            for (k, v) in subdict; new_ui[scope][k] = to_value(v); end
+        end
+        GLOBAL_UI_OVERWRITE[] = new_ui
+        GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["base_types"][])
+        @info "Current UI and Scene options successfully saved to global defaults!"
+    end
+    # Anim Play Logic (Die aus createAnimationPreview! übernommen wurde)
+    is_animating = Observable(false)
+    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
+    
+    on(is_animating) do animating
+        btn_play.label[] = animating ? "Stop Anim" : "Play Anim"
+    end
 
-"""
-    attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
-
-Clears the designated slot and populates it with dynamic plot controls.
-Handles the deletion of both UI Blocks and nested GridLayouts.
-"""
-function attach_plot_controls!(target_layout::GridLayout, plot_data_dict)
-# 1. Clean the slot robustly with a recursive helper
-    function delete_blocks!(layout)
-        # Using copy() is crucial because deleting modifies the underlying collection
-        for c in copy(contents(layout))
-            if c isa Makie.Block
-                delete!(c)
-            elseif c isa GridLayout
-                delete_blocks!(c) # Dive into nested layouts
+    on(btn_play.clicks) do _
+        if is_animating[]
+            is_animating[] = false
+            !isnothing(animation_timer[]) && close(animation_timer[])
+            animation_timer[] = nothing
+        else
+            target_idx = anim_target_obs[]
+            !check_selection_validity(target_idx) && return
+            
+            target_widget = selector_widgets[target_idx]
+            is_animating[] = true
+            
+            duration = manager.ui["Various"]["animation_duration_s"][]
+            fps = manager.ui["Various"]["animation_fps"][]
+            rng = target_widget.range[]
+            start_time = time()
+            
+            animation_timer[] = Timer(0.0, interval = 1/fps) do t
+                if !is_animating[]
+                    close(t); return
+                end
+                elapsed = mod(time() - start_time, duration)
+                progress = elapsed / duration
+                val = rng[1] + progress * (rng[end] - rng[1])
+                set_close_to!(target_widget, val)
             end
         end
     end
-    
-    # 2. Reset the row/col sizes of the parent layout 
-    # (otherwise old row definitions persist)
-    trim!(target_layout)
-
-    # 3. Re-populate
-    menu_area = target_layout[1, 1] = GridLayout()
-    slider_area = target_layout[2, 1] = GridLayout()
-    
-    # Return the observables from your existing function
-    return create_plot_controls!(menu_area, slider_area, plot_data_dict)
 end
+
 
 function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManager)
     # Get all scopes in simulation except 'shared'
@@ -371,117 +307,6 @@ function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManag
     # (assuming createMethodCheckboxes is the function from your PlottingUtils.jl)
     createMethodCheckboxes(layout, methods_obs, all_method_names)
 end
-
-# """
-#     create_base_overwrite_controls!(layout, manager)
-
-# Creates a UI block with a Menu to select a base variable and a Textbox to 
-# overwrite its type with a fixed numeric value. Inputting 'default' restores 
-# the original widget type (slider/menu).
-# """
-# function create_base_overwrite_controls!(
-#     layout::GridLayout, 
-#     manager::PlotManager, 
-#     plot_data_obs::Observable
-# )
-#     # 1. Setup Labels and Widgets
-#     menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
-#     menu_var.i_selected[] = 0
-#     tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
-#     apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
-
-#     # 2. REACTIVE LOGIC: Update Options based on Data Shape
-#     on(plot_data_obs) do plot_data_dict
-#         isempty(plot_data_dict) && return
-        
-#         active_methods = manager.methods[]
-#         n_params = length(manager.plot_vars) - 5 # 5 Base Variables
-        
-#         valid_base_names = String[]
-        
-#         for (i, name) in enumerate(VariableNames)
-#             tensor_dim = n_params + i
-            
-#             # Check if this dimension has size > 1 in any active method
-#             has_variation = false
-#             for m in active_methods
-#                 if haskey(plot_data_dict, m)
-#                     u_tensor = plot_data_dict[m].data["u"]
-#                     if size(u_tensor, tensor_dim) > 1
-#                         has_variation = true
-#                         break
-#                     end
-#                 end
-#             end
-            
-#             # We MUST also include it if the user currently has it fixed (so they can un-fix it)
-#             is_fixed_by_user = manager.controls["base_types"][][i] isa Number
-            
-#             if has_variation || is_fixed_by_user
-#                 push!(valid_base_names, name)
-#             end
-#         end
-        
-#         current_sel = menu_var.selection[]
-#         menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
-        
-#         if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
-#             menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
-#         else
-#             menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
-#         end
-#     end
-
-#     # 3. Apply Button Logic
-# on(apply_btn.clicks) do _
-#         var_name = menu_var.selection[]
-#         input_str = tb_val.stored_string[]
-        
-#         if isnothing(var_name) || var_name == "-" || isempty(input_str)
-#             @warn "Overwrite Error: Please select a variable and provide an input."
-#             return
-#         end
-
-#         idx = findfirst(isequal(var_name), VariableNames)
-#         isnothing(idx) && return
-        
-#         vt = copy(manager.controls["base_types"][])
-        
-#         # Check against Active Plot Axes [cite: 60]
-#         n_params = length(manager.plot_vars) - 5
-#         abs_idx = n_params + idx
-#         if abs_idx in manager.controls["Active_Axes"][]
-#             @warn "Cannot fix the value of an active Plot Axis! Change the Plot Axes before fixing the value!"
-#             return
-#         end
-
-#         if lowercase(strip(input_str)) == "default"
-#             vt[idx] = VariableControls[idx]
-#             @info "Restored default control for $var_name."
-#         else
-#             # --- THE SMART PARSER ---
-#             # 1. Try Integer first (represents a direct Index)
-#             val = tryparse(Int, input_str)
-            
-#             # 2. Try Float if Int fails (represents a Physical Coordinate)
-#             if isnothing(val)
-#                 val = tryparse(Float64, input_str)
-#             end
-            
-#             if isnothing(val)
-#                 @warn "Invalid Input: '$input_str' is not a number or 'default'."
-#                 return
-#             end
-            
-#             vt[idx] = val
-#             @info "Fixed $var_name to $(val isa Integer ? "index" : "coordinate"): $val."
-#         end
-        
-#         manager.controls["base_types"][] = vt
-#         manager.controls["Simulation_Update"][] += 1
-#         tb_val.stored_string[] = ""
-#     end
-# end
 
 """
     set_defaults!(manager::PlotManager, scene_options::Dict)
@@ -581,14 +406,18 @@ function get_base_scene_options()
         "Compare_Columns_Selection" => "2",     
         "Compare_Link_Selection"    => "Fully Coupled",
         "Legend_Base_Selection"     => "right",
-        "Legend_Add_Selection"      => "detached"
+        "Legend_Add_Selection"      => "detached",
+        "Plot-Width_Selection"      => 600,
+        "Plot-Height_Selection"     => 400,
+        #"Anim-Target_Selection"     => 1,
     )
 end
 
 function extract_scene_options(manager::PlotManager)
     opts = Dict{String, Any}()
     
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add"]
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", 
+              "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot-Height", "Plot-Height", "Anim-Target"]
         key = "$(k)_Selection"
         if haskey(manager.controls, key)
             opts[key] = to_value(manager.controls[key])

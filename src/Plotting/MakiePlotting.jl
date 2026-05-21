@@ -118,7 +118,11 @@ function show_unified_fig(sim_config::SimulationConfig)
     end
 
     # Watch core structural menus
-    onany(manager.controls["Plot-Type_Selection"], manager.controls["Compare_Target_Selection"], manager.controls["Compare_Columns_Selection"], manager.controls["Compare_Link_Selection"]) do _...
+    onany(
+        manager.controls["Plot-Type_Selection"], manager.controls["Compare_Target_Selection"], 
+        manager.controls["Compare_Columns_Selection"], manager.controls["Compare_Link_Selection"],
+        manager.controls["Plot-Width_Selection"], manager.controls["Plot-Height_Selection"]
+    ) do _...
         rebuild_plot_layout!()
     end
 
@@ -215,7 +219,15 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
         push!(axes, ax)
     end
     # --- THE FIX: ENFORCE FLAT PROPORTIONAL PANEL SIZES ---
-    p_w, p_h = manager.ui["Axis-General"]["plot_size"][]
+    p_w = parse(Int, manager.controls["Plot-Width_Selection"][])
+    p_h = parse(Int, manager.controls["Plot-Height_Selection"][])
+    
+    for i in 1:plot_fig.layout.size[1]
+        rowsize!(plot_fig.layout, i, Auto())
+    end
+    for i in 1:plot_fig.layout.size[2]
+        colsize!(plot_fig.layout, i, Auto())
+    end
     
     for i in 1:num_plots
         r, c_idx = layout_dict["Plots"][i]

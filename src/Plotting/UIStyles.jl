@@ -25,12 +25,10 @@ function create_master_ui_observables()
     
     # 1. Universal Scopes
     master["Axis-General"] = obs_dict(Dict(
-        "plot_size"      => (500, 400),
         "font_size"      => 24, 
         "title_size"     => 26, 
         "label_size"     => 24, 
         "ticklabel_size" => 22,
-        "legend_pos"     => :dr,
         "sort_legend"    => true,
     ))
     
@@ -224,35 +222,37 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Labels", "title", "")
             set_ui!("Labels", "legend", "")
 
-            set_ui!("Axis-General", "plot_size",(400, 400))
             set_ui!("Axis-General", "font_size", 18)
             set_ui!("Axis-General", "label_size", 18)
             set_ui!("Axis-General", "ticklabel_size", 16)
-            set_ui!("Axis-General", "legend_pos", :rt)
             set_ui!("X-Axis", "padding", 0.0)
 
             set_ui!("Plot-Style", "linewidth", 4.0)
             set_ui!("Plot-Style", "dashed_lines", true)
-            set_ui!("Plot-Style", "lineStyles", [:dash, :dot, (:dash, :dense), (:dot, :dense)])
+            set_ui!("Plot-Style", "lineStyles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])
             
             # THE FIX: Presets now cleanly route the offsets directly into the Axis scopes!
             set_ui!("X-Axis", "label_offset", 5.)
             set_ui!("Y-Axis", "label_offset", 5.)
             set_ui!("Z-Axis", "label_offset", 5.)
+
+            scene_opt["Legend_Base_Selection"] = "top"
+            scene_opt["Legend_Add_Selection"]  = "detached"
+            scene_opt["Plot-Width_Selection"]  = 300
+            scene_opt["Plot-Height_Selection"]  = 300
             
         elseif preset == :heatmap
             scene_opt["Plot-Type_Selection"] = "Heatmap"
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
-            set_ui!("Axis-General", "legend_pos", :td)
             
         elseif preset == :compact3d
             set_ui!("X-Axis", "label_offset", 5.0)
             set_ui!("Y-Axis", "label_offset", 5.0)
             set_ui!("Z-Axis", "label_offset", 15.0)
-            set_ui!("Axis-General", "legend_pos", :rt)
+            set_ui!("Axis-General", "legend_pos", :td)
 
         elseif preset == :nolabels
             for key = keys(master_tmp["Labels"])

@@ -10,10 +10,15 @@ function create_controls(
     plot_data_obs::Observable, 
     scene_options::Dict = Dict{String, Any}() 
 )
-    base_controls_fig = Figure(size = (450, 1060)) 
-    fig_layout = base_controls_fig.layout[1,1] = GridLayout(tellheight=false)
+    base_controls_fig = Figure(size=(500,1000)) 
+    fig_layout = base_controls_fig.layout[1,1] = GridLayout()
     rowgap!(fig_layout, 15) 
     current_row = 1
+
+    window_rect = events(base_controls_fig).window_area
+
+    # 2. Wir "liften" die Breite (die Breite ist das erste Element der widths)
+    window_width = lift(rect -> floor(Int,rect.widths[1]*.95), window_rect)
 
     active_params = manager.plot_vars
     n_params = length(active_params)
@@ -28,12 +33,15 @@ function create_controls(
     Label(header_layout[1,1], "Simulation Controls", fontsize=20, font=:bold, halign=:center)
     current_row += 1
     
-    update_layout = fig_layout[current_row, 1] = GridLayout()
+    update_layout = fig_layout[current_row, 1] = GridLayout(width=window_width)
     
-    # THE FIX: Clean 1x3 Top Button Layout
-    update_button  = Button(update_layout[1,1], label="Refresh / Run", width=140, buttoncolor=:lightgreen)
-    method_button  = Button(update_layout[1,2], label="Methods...", width=140, buttoncolor=:lightgray)
-    save_button    = Button(update_layout[1,3], label="Save Defs", width=140, buttoncolor=:lightblue)
+    # THE FIX: width=nothing für volle Flexibilität
+    update_button  = Button(update_layout[1,1], label="Refresh / Run", width=nothing, buttoncolor=:lightgreen)
+    method_button  = Button(update_layout[1,2], label="Methods...", width=nothing, buttoncolor=:lightgray)
+    
+    # THE FIX: Exakt 50% Breite für beide
+    colsize!(update_layout, 1, Relative(0.5))
+    colsize!(update_layout, 2, Relative(0.5))
     
     update_notifier = Observable(0)
     manager.controls["Simulation_Update"] = update_notifier
@@ -48,19 +56,6 @@ function create_controls(
         if !isnothing(m_fig); display(m_fig); end
     end
 
-    on(save_button.clicks) do _
-        GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
-        new_ui = Dict{String, Any}()
-        for (scope, subdict) in manager.ui
-            new_ui[scope] = Dict{String, Any}()
-            for (k, v) in subdict
-                new_ui[scope][k] = to_value(v)
-            end
-        end
-        GLOBAL_UI_OVERWRITE[] = new_ui
-        GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["base_types"][])
-        @info "Current UI and Scene options successfully saved to global defaults!"
-    end
     current_row += 1
 
     # 3. HIERARCHICAL PARAMETER NAVIGATOR
@@ -79,9 +74,6 @@ function create_controls(
     # 5. STATIC PLOT CONTROLS SLOT
     Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
-    Label(fig_layout[current_row, 1], "Data Exploration (Axes & Sliders)", 
-          fontsize=16, font=:bold, color=:darkgreen)
-    current_row += 1
     
     menu_area = fig_layout[current_row, 1] = GridLayout()
     current_row += 1
@@ -92,21 +84,12 @@ function create_controls(
         menu_area, slider_area, plot_data_obs, active_params, manager, scene_options
     )
 
-    # 4. ANIMATION PREVIEW
-    Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
-    current_row += 1
-    Label(fig_layout[current_row, 1], "Animation Preview:", fontsize=16, font=:bold, color=:darkorange)
-    current_row += 1
-    
-    anim_layout = fig_layout[current_row, 1] = GridLayout()
-    anim_target_obs = createAnimationPreview!(anim_layout, manager, active_axes_obs, widgets, active_params)
-    current_row += 1
-
-    # 5. EXPORT OPTIONS
-    Label(fig_layout[current_row, 1], "Export Options:", fontsize=16, font=:bold, color=:purple)
+    Label(fig_layout[current_row, 1], "Export & Save Options:", fontsize=16, font=:bold, color=:purple)
     current_row += 1
     
     export_layout = fig_layout[current_row, 1] = GridLayout()
+    # anim_target_obs kommt jetzt aus dem static plot controls dict!
+    anim_target_obs = manager.controls["Anim-Target_Selection"]
     createExportOptions!(export_layout, plot_fig, manager, anim_target_obs, active_axes_obs, widgets, active_params)
     current_row += 1
 
@@ -129,67 +112,103 @@ function build_static_plot_controls!(
     control_objects = Vector{Any}(undef, total_dims)
     selector_values = Vector{Observable}(undef, total_dims)
 
-    init_x = string(get(scene_options, "X-Axis_Selection", "-")); init_y = string(get(scene_options, "Y-Axis_Selection", "disabled")); init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
-    init_u = string(get(scene_options, "U-Axis_Selection", "-")); init_comp = string(get(scene_options, "c_Selection", "1"))
-
-    Label(menu_layout[1,1], "X-Axis", font=:bold); Label(menu_layout[1,2], "Y-Axis", font=:bold); Label(menu_layout[1,3], "Z-Axis", font=:bold)
-    menu_x = Menu(menu_layout[2,1], options = [init_x], width = 120); menu_x.i_selected = 1
-    menu_y = Menu(menu_layout[2,2], options = [init_y], width = 120); menu_y.i_selected = 1
-    menu_z = Menu(menu_layout[2,3], options = [init_z], width = 120); menu_z.i_selected = 1
-
-    Label(menu_layout[3,1], "U-Axis (Dep)", font=:bold); Label(menu_layout[3,2], "Component", font=:bold); Label(menu_layout[3,3], "Plot Type", font=:bold)
-    menu_u = Menu(menu_layout[4,1], options = [init_u], width = 120); menu_u.i_selected = 1
-    menu_comp = Menu(menu_layout[4,2], options = [init_comp], width = 120); menu_comp.i_selected = 1
+    init_x = string(get(scene_options, "X-Axis_Selection", "-"))
+    init_y = string(get(scene_options, "Y-Axis_Selection", "disabled"))
+    init_z = string(get(scene_options, "Z-Axis_Selection", "disabled"))
+    init_u = string(get(scene_options, "U-Axis_Selection", "-"))
+    init_comp = string(get(scene_options, "c_Selection", "1"))
     
-    plot_options = ["Lines", "Heatmap", "Contour", "Contourf", "Volume", "Contour 3D", "Surface", "Scatter 2D", "Scatter 3D"]
-    init_type_str = string(get(scene_options, "Plot-Type_Selection", "Lines"))
-    menu_type = Menu(menu_layout[4,3], options = plot_options, width = 120)
-    idx = findfirst(isequal(init_type_str), plot_options); menu_type.i_selected[] = isnothing(idx) ? 1 : idx
+    # 1. REIHE: Die Achsen
+    Label(menu_layout[1,1], "X-Axis", font=:bold); Label(menu_layout[1,2], "Y-Axis", font=:bold)
+    Label(menu_layout[1,3], "Z-Axis", font=:bold); Label(menu_layout[1,4], "U-Axis (Dep)", font=:bold)
+    
+    menu_x = Menu(menu_layout[2,1], options = [init_x])
+    menu_y = Menu(menu_layout[2,2], options = [init_y])
+    menu_z = Menu(menu_layout[2,3], options = [init_z])
+    menu_u = Menu(menu_layout[2,4], options = [init_u])
+    menu_x.i_selected = 1; menu_y.i_selected = 1; menu_z.i_selected = 1; menu_u.i_selected = 1
 
-    # --- COMPARE MENUS ---
-    Label(menu_layout[5,1], "Compare Target", font=:bold, color=:darkorange)
-    Label(menu_layout[5,2], "Grid Columns", font=:bold, color=:darkorange)
-    Label(menu_layout[5,3], "Compare Link", font=:bold, color=:darkorange)
+    # 2. REIHE: Compare & Animation
+    Label(menu_layout[3,1], "Compare Target", font=:bold, color=:darkorange)
+    Label(menu_layout[3,2], "Grid Columns", font=:bold, color=:darkorange)
+    Label(menu_layout[3,3], "Compare Link", font=:bold, color=:darkorange)
+    Label(menu_layout[3,4], "Anim Target", font=:bold, color=:darkorange)
 
     compare_targets = ["None", "Methods", "Component", "Time"]
     append!(compare_targets, filter(p -> p ∉ ["c", "x", "y", "z", "t"], active_params))
 
-    init_tgt = string(get(scene_options, "Compare_Target_Selection", "None"))
-    init_cols = string(get(scene_options, "Compare_Columns_Selection", "2"))
-    init_link = string(get(scene_options, "Compare_Link_Selection", "Fully Coupled"))
-
-    menu_tgt = Menu(menu_layout[6,1], options = compare_targets, width = 120)
-    idx_tgt = findfirst(isequal(init_tgt), compare_targets); menu_tgt.i_selected[] = isnothing(idx_tgt) ? 1 : idx_tgt
-
-    menu_cols = Menu(menu_layout[6,2], options = ["1", "2", "3", "4", "5"], width = 120)
-    idx_cols = findfirst(isequal(init_cols), ["1", "2", "3", "4", "5"]); menu_cols.i_selected[] = isnothing(idx_cols) ? 2 : idx_cols
-
-    menu_link = Menu(menu_layout[6,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"], width = 120)
-    idx_link = findfirst(isequal(init_link), ["Fully Coupled", "Coupled Colorbar", "Decoupled"]); menu_link.i_selected[] = isnothing(idx_link) ? 1 : idx_link
-
-    # --- LEGEND MENUS ---
-    Label(menu_layout[7,1], "Legend Base", font=:bold, color=:darkorchid)
-    Label(menu_layout[7,2], "Legend Modifier", font=:bold, color=:darkorchid)
+    menu_tgt  = Menu(menu_layout[4,1], options = compare_targets)
+    menu_cols = Menu(menu_layout[4,2], options = ["1", "2", "3", "4", "5"])
+    menu_link = Menu(menu_layout[4,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
     
+    # --- THE FIX: Animation Menu direkt mit Tuples initialisieren ---
+    dim_names_anim = Dict{Int, String}()
+    for (i, p) in enumerate(active_params); dim_names_anim[i] = p; end
+    dim_names_anim[n_params+1] = "Component"
+    dim_names_anim[n_params+2] = "Space"
+    dim_names_anim[n_params+3] = "Time"
+    
+    all_opts = [(dim_names_anim[i], i) for i in 1:total_dims]
+    
+    menu_anim = Menu(menu_layout[4,4], options = all_opts)
+    init_anim = get(scene_options, "Anim-Target_Selection", total_dims)
+    menu_anim.i_selected[] = init_anim
+
+    # 3. REIHE: Legende, Plot Typ & Component
+    Label(menu_layout[5,1], "Legend Base", font=:bold, color=:darkorchid)
+    Label(menu_layout[5,2], "Legend Modifier", font=:bold, color=:darkorchid)
+    Label(menu_layout[5,3], "Plot Type", font=:bold)
+    Label(menu_layout[5,4], "Component", font=:bold)
+
     leg_base_opts = ["none", "center", "left", "right", "top", "bottom"]
     leg_add_opts  = ["none", "detached", "left", "right", "top", "bottom"]
+    plot_options = [
+        ("Lines", :lines), ("Heatmap", :heatmap), ("Contour", :contour), 
+        ("Contourf", :contourf), ("Volume", :volume), ("Contour 3D", :contour3d), 
+        ("Surface", :surface), ("Scatter 2D", :scatter2d), ("Scatter 3D", :scatter3d)
+    ]
     
+    menu_lbase = Menu(menu_layout[6,1], options = leg_base_opts)
+    menu_ladd  = Menu(menu_layout[6,2], options = leg_add_opts)
+    menu_type  = Menu(menu_layout[6,3], options = plot_options)
+    menu_comp  = Menu(menu_layout[6,4], options = [init_comp]); menu_comp.i_selected = 1
+
     init_lbase = string(get(scene_options, "Legend_Base_Selection", "right"))
     init_ladd  = string(get(scene_options, "Legend_Add_Selection", "detached"))
-    
-    menu_lbase = Menu(menu_layout[8,1], options = leg_base_opts, width = 120)
+    raw_type   = get(scene_options, "Plot-Type_Selection", :lines)
+    init_type_sym = raw_type isa String ? Symbol(lowercase(replace(raw_type, " " => ""))) : raw_type
+
     idx_lbase = findfirst(isequal(init_lbase), leg_base_opts); menu_lbase.i_selected[] = isnothing(idx_lbase) ? 4 : idx_lbase
+    idx_ladd  = findfirst(isequal(init_ladd), leg_add_opts); menu_ladd.i_selected[] = isnothing(idx_ladd) ? 2 : idx_ladd
+    idx_type  = findfirst(x -> x[2] == init_type_sym, plot_options); menu_type.i_selected[] = isnothing(idx_type) ? 1 : idx_type
 
-    menu_ladd = Menu(menu_layout[8,2], options = leg_add_opts, width = 120)
-    idx_ladd = findfirst(isequal(init_ladd), leg_add_opts); menu_ladd.i_selected[] = isnothing(idx_ladd) ? 2 : idx_ladd
+    # 4. REIHE: Plot Sizes
+    Label(menu_layout[7,1], "Plot Width", font=:bold, color=:teal)
+    Label(menu_layout[7,2], "Plot Height", font=:bold, color=:teal)
+    
+    size_opts = [string(i) for i in 100:100:1000]
+    menu_w = Menu(menu_layout[8,1], options = size_opts)
+    menu_h = Menu(menu_layout[8,2], options = size_opts)
 
+    init_w = string(get(scene_options, "Plot-Width_Selection", "500"))
+    init_h = string(get(scene_options, "Plot-Height_Selection", "400"))
+    idx_w = findfirst(isequal(init_w), size_opts); menu_w.i_selected[] = isnothing(idx_w) ? 5 : idx_w
+    idx_h = findfirst(isequal(init_h), size_opts); menu_h.i_selected[] = isnothing(idx_h) ? 4 : idx_h
+
+    # Manager Updates
     manager.controls["Compare_Target_Selection"] = menu_tgt.selection
     manager.controls["Compare_Columns_Selection"] = menu_cols.selection
     manager.controls["Compare_Link_Selection"] = menu_link.selection
     manager.controls["Legend_Base_Selection"] = menu_lbase.selection
     manager.controls["Legend_Add_Selection"] = menu_ladd.selection
+    manager.controls["Plot-Width_Selection"] = menu_w.selection
+    manager.controls["Plot-Height_Selection"] = menu_h.selection
+    manager.controls["Anim-Target_Selection"] = menu_anim.selection
 
-    colsize!(menu_layout, 1, Fixed(120)); colsize!(menu_layout, 2, Fixed(120)); colsize!(menu_layout, 3, Fixed(120))    
+    # Spaltengrößen automatisch anpassen statt fest auf 120px
+    for i in 1:4
+        colsize!(menu_layout, i, Relative(0.25)) 
+    end
 
     active_axes_obs = Observable{Vector{Int}}(Int[])
     manager.controls["Active_Axes"] = active_axes_obs
@@ -199,11 +218,11 @@ function build_static_plot_controls!(
     manager.controls["Z-Axis_Selection"], manager.controls["Z-Axis_Options"], manager.controls["Z-Axis_Widget"] = menu_z.selection, menu_z.options, menu_z
     manager.controls["U-Axis_Selection"], manager.controls["U-Axis_Options"], manager.controls["U-Axis_Widget"] = menu_u.selection, menu_u.options, menu_u
     
-    plot_type_obs = Observable{Symbol}(:lines)
+    plot_type_obs = Observable{Symbol}(init_type_sym)
     manager.controls["Plot-Type_Selection"] = plot_type_obs
 
-    on(menu_type.selection) do raw_str
-        ptype_sym = Symbol(lowercase(replace(raw_str, " " => "")))
+    on(menu_type.selection) do ptype_sym
+        # Makie liefert uns direkt das Symbol, kein String-Parsing mehr nötig!
         plot_type_obs[] = ptype_sym
     end
 
@@ -224,13 +243,20 @@ function build_static_plot_controls!(
         val_key = "$(dim_names[i])_Value"
         init_val = Float64(get(scene_options, val_key, 0.0))
         
-        sl = Slider(slider_layout[current_row, 2], range = [init_val], startvalue = init_val, width = 200)
+        # THE FIX: width=nothing statt 200 erlaubt dem Slider, die Spalte voll zu nutzen
+        sl = Slider(slider_layout[current_row, 2], range = [init_val], startvalue = init_val, width=nothing)
         control_objects[i] = sl
         selector_values[i] = sl.value
+      
         manager.controls["$(dim_names[i])_Value"], manager.controls["$(dim_names[i])_Range"], manager.controls["$(dim_names[i])_Widget"] = sl.value, sl.range, sl
-        Label(slider_layout[current_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), width=50)
+        Label(slider_layout[current_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), selector_values[i]), halign=:left)
         current_row += 1
     end
+
+    # THE FIX: Platz optimal aufteilen: Label fixiert, Slider expandiert flexibel
+    colsize!(slider_layout, 1, Fixed(40))    
+    colsize!(slider_layout, 2, Relative(0.7)) 
+    colsize!(slider_layout, 3, Fixed(60))
 
     on(manager.controls["Simulation_Update"]) do _
         vt = manager.controls["base_types"][]
@@ -466,18 +492,29 @@ end
 function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManager)
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
     sorted_cat = sort(collect(keys(cat_mapping)))
-    menu_cat = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...",width = 120)
-    menu_cat.i_selected[] = 0
-    menu_scope = Menu(layout[1, 2], options = ["-"], default = "-", prompt = "Scope...",width = 120)
-    menu_scope.i_selected[] = 0
-    menu_key = Menu(layout[1, 3], options = ["-"], default = "-", prompt = "Key...",width = 120)
-    menu_key.i_selected[] = 0
+
+    # 1. ZEILE: 3 Dropdowns gleichmäßig (3-Spalten-Layout)
+    menu_cat   = Menu(layout[1, 1], options = sorted_cat, prompt = "Category...", width=nothing)
+    menu_scope = Menu(layout[1, 2], options = ["-"], default = "-", prompt = "Scope...", width=nothing)
+    menu_key   = Menu(layout[1, 3], options = ["-"], default = "-", prompt = "Key...", width=nothing)
+    
+    # THE FIX: Exakt ein Drittel pro Spalte
+    colsize!(layout, 1, Relative(1/3))
+    colsize!(layout, 2, Relative(1/3))
+    colsize!(layout, 3, Relative(1/3))
+    
+    menu_cat.i_selected[] = 0; menu_scope.i_selected[] = 0; menu_key.i_selected[] = 0
     
     active_target_obs = Observable{Any}(nothing)
     ui_update = Observable{Int}(0)
-    is_internal_toggle = Ref(false)
 
-    tg = Toggle(layout[2, 1], active=false)
+    # 2. ZEILE: Buttons in einem eigenen Sub-Grid für perfekte 50/50 Aufteilung
+    btn_layout = layout[2, 1:3] = GridLayout()
+    btn_bool   = Button(btn_layout[1, 1], label="Toggle (Bool)", buttoncolor=:lightgray, width=nothing)
+    btn_reset  = Button(btn_layout[1, 2], label="Reset", buttoncolor=:lightcoral, width=nothing)
+    
+    colsize!(btn_layout, 1, Relative(0.5))
+    colsize!(btn_layout, 2, Relative(0.5))
     
     placeholder_text = lift(menu_key.selection) do k
         isnothing(k) && return "Select key..."
@@ -485,8 +522,8 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         return "Loaded: $val"
     end
 
-    tb = Textbox(layout[2, 2:3], placeholder = placeholder_text, reset_on_defocus = true, width = 250)
-
+    # 3. ZEILE: Textbox über alle 3 Spalten
+    tb = Textbox(layout[3, 1:3], placeholder = placeholder_text, reset_on_defocus = false, width = nothing)
     onany(menu_cat.selection, mgr.methods) do cat, active_methods
         isnothing(cat) && return
         field_name = cat_mapping[cat]
@@ -509,7 +546,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
             menu_key.i_selected[] = 0
             tb.stored_string.val = ""
             Makie.reset!(tb)
-            is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
         end
     end
 
@@ -524,7 +560,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         menu_key.i_selected[] = 0
         
         Makie.reset!(tb)
-        is_internal_toggle[] = true; tg.active[] = false; is_internal_toggle[] = false
     end
 
     on(menu_key.selection) do key
@@ -538,9 +573,6 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         val_str = string(to_value(obs))
         tb.displayed_string[] = val_str
         
-        is_internal_toggle[] = true
-        tg.active[] = (to_value(obs) isa Bool) ? to_value(obs) : false
-        is_internal_toggle[] = false
     end
 
     on(tb.stored_string) do s
@@ -549,25 +581,23 @@ function create_hierarchical_param_controls!(layout::GridLayout, mgr::PlotManage
         
         smart_parse_and_update!(obs, s)
         
-        if to_value(obs) isa Bool
-            is_internal_toggle[] = true
-            tg.active[] = to_value(obs)
-            is_internal_toggle[] = false
-        end
-        
         if menu_cat.selection[] == "UI"; ui_update[] += 1 end
     end
     
-    on(tg.active) do is_active
-        is_internal_toggle[] && return
+    on(btn_bool.clicks) do _
         obs = active_target_obs[]
         isnothing(obs) && return
-        
         if to_value(obs) isa Bool
-            obs[] = is_active
-            tb.displayed_string[] = string(is_active)
+            obs[] = !to_value(obs) # Flip it!
+            tb.displayed_string[] = string(to_value(obs))
             if menu_cat.selection[] == "UI"; ui_update[] += 1 end
         end
+    end
+
+    on(btn_reset.clicks) do _
+        obs = active_target_obs[]
+        isnothing(obs) && return
+        tb.stored_string[] = "default" # Dies löst den tb.stored_string observer aus und stellt den Standard wieder her!
     end
     
     mgr.controls["UI_Update"] = ui_update
@@ -580,10 +610,16 @@ function create_base_overwrite_controls!(
     manager::PlotManager, 
     plot_data_obs::Observable
 )
-    menu_var = Menu(layout[1, 1], options = ["-"], width = 120, prompt = "Select...")
+    menu_var = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
     menu_var.i_selected[] = 0
-    tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = 120)
+    # THE FIX: width=nothing
+    tb_val = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = nothing) 
     apply_btn = Button(layout[1, 3], label = "Apply", buttoncolor = :lightgray)
+
+    # THE FIX: Spaltenaufteilung
+    colsize!(layout, 1, Relative(1/3))
+    colsize!(layout, 2, Relative(1/3))
+    colsize!(layout, 3, Relative(1/3))
 
     on(plot_data_obs) do plot_data_dict
         isempty(plot_data_dict) && return

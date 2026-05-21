@@ -112,7 +112,6 @@ end
 # --- MASTER GRID CALCULATOR ---
 # ==============================================================================
 function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::String, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
-    actual_detached = (num_plots > 1) ? is_detached : false
 
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
@@ -122,9 +121,8 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     layout_dict["Colorbars"] = Vector{Tuple{Any, Any}}()
     layout_dict["Legend"] = nothing
     
-    row_offset = (has_legend && actual_detached && valign == :top) ? 1 : 0
-    col_offset = (has_legend && actual_detached && halign == :left) ? 1 : 0
-    
+    row_offset = (has_legend && is_detached && valign == :top) ? 1 : 0
+    col_offset = (has_legend && is_detached && halign == :left) ? 1 : 0
     # THE FIX: Both Decoupled and "Axes Only" need separated colorbar columns assigned natively!
     if link_mode in ("Decoupled", "Axes Only") && has_colorbar
         for i in 1:num_plots
@@ -161,7 +159,7 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     end
     
     if has_legend
-        if actual_detached
+        if is_detached
             if valign == :top
                 layout_dict["Legend"] = (1, 1:max_core_col)
             elseif valign == :bottom
@@ -175,7 +173,6 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
             layout_dict["Legend"] = layout_dict["Plots"][1]
         end
     end
-    
     return layout_dict
 end
 
@@ -221,6 +218,7 @@ function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::
     is_compare = manager.controls["Compare_Target_Selection"][] != "None"
     is_detached, halign, valign = _parse_legend_position(manager, is_compare)
 
+    if halign==:none && valign==:none; return end
     leg_pos = layout_dict["Legend"]
 
     try
