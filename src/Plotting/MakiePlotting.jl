@@ -2,6 +2,7 @@ include("UIStyles.jl")
 include("PlottingUtils.jl")
 include("ControlUtils.jl")
 include("Controls.jl")
+include("InteractionController.jl") # <-- The new Logic Controller
 include("Render.jl")
 include("CSVLauncher.jl")
 
@@ -12,16 +13,28 @@ const GLOBAL_UI_OVERWRITE = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slider, :slider])
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 
-const LEGEND_REF = Ref{Symbol}(:none)
+# Singleton Global Observables & State
+const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
+const ACTIVE_PLOT_MANAGER = Ref{PlotManager}()
+const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :ctrl_fig => nothing, :plot_fig => nothing))
 
+function set_sim_config!(config::SimulationConfig)
+    ACTIVE_SIM_CONFIG[] = config
+    return
+end
+
+const LEGEND_REF = Ref{Symbol}(:none)
+function dummy_simulation_function(args...); return nothing; end
+
+# ==============================================================================
+# --- 1. MANAGER FACTORY (MVC Configured) ---
+# ==============================================================================
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
     vars = isempty(varied_dict) ? [] : collect(keys(varied_dict))
     append!(vars, BaseVariables)
 
-    base_types = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])
     sim_obs = NestedObsDict()
-    
     make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
     sim_obs["shared"] = Dict(k => make_obs(v) for (k, v) in sim_config.shared_params)
     for (m_name, m_params) in sim_config.methods_dict
@@ -31,10 +44,20 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     ui_obs = NestedObsDict()
     methods_obs = Observable(copy(sim_config.default_methods))
 
-    controls_obs = Dict{String, Observable}(
-        "base_types" => base_types, 
-        "Master_UI_Ref" => Observable(master_ui)
-    )
+    # --- THE FIX: MVC Strict Nested Dictionaries ---
+    controls_obs = Dict{String, Any}()
+    for k in ["Widget", "Options", "Selection", "Value", "Range", "String", "Button", "State"]
+        controls_obs[k] = Dict{String, Observable}()
+    end
+    controls_obs["Misc"] = Dict{String, Any}() # For non-observables
+    
+    controls_obs["State"]["base_types"] = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])
+    
+    # THE FIX: Initialize it directly into the state store!
+    controls_obs["State"]["UI_Update"] = Observable(0) 
+    controls_obs["State"]["Config_Just_Loaded"] = Observable(false)
+
+    controls_obs["Misc"]["Master_UI_Ref"] = Observable(master_ui)
 
     config_dict = ParamDict(
         "Parameters" => copy(sim_config.varied_params),
@@ -50,60 +73,151 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     for (scope, keys_dict) in ui_overwrite
         if haskey(manager.ui, scope)
             for (k, v) in keys_dict
-                if haskey(manager.ui[scope], k)
-                    manager.ui[scope][k][] = v
-                end
+                if haskey(manager.ui[scope], k); manager.ui[scope][k][] = v; end
             end
         end
     end
-    
     return manager
 end
-function show_unified_fig(sim_config::SimulationConfig)
-    ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
-    var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
-    scene_options = deepcopy(GLOBAL_SCENE_OPTIONS[])
+"""
+    launch_plotter()
 
-    ui_obs = create_master_ui_observables()
-    final_scene = get_base_scene_options()
-    
-    if haskey(scene_options, "Menu"); for (k, v) in scene_options["Menu"]; final_scene["$(k)_Selection"] = v; end; end
-    if haskey(scene_options, "Slider"); for (k, v) in scene_options["Slider"]; final_scene["$(k)_Value"] = v; end; end
-    for (k, v) in scene_options; if k != "Menu" && k != "Slider"; final_scene[k] = v; end; end
-    
-    raw_type = get(final_scene, "Plot-Type_Selection", "Lines")
-    init_type = raw_type isa String ? Symbol(lowercase(replace(raw_type, " " => ""))) : raw_type
-
+Smart Singleton entry point. Fully reactive to ACTIVE_SIM_CONFIG updates.
+"""
+function launch_plotter()
     GLMakie.activate!()
-    manager = create_plot_manager(sim_config, ui_obs, ui_overwrite, init_type)
-    plot_fig = Figure()
-    plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
-    plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
 
-    manager.controls["base_types"][] = var_overwrite
-    ctrl_fig = create_controls(plot_fig, manager, plot_data_obs, final_scene)    
-    sim_update = manager.controls["Simulation_Update"]
-    methods_obs = manager.methods
+    if isnothing(ACTIVE_SIM_CONFIG[])
+        ACTIVE_SIM_CONFIG.val = SimulationConfig(
+            dummy_simulation_function, nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
+        )
+    end
 
-    on(sim_update) do _
-        if !GLMakie.isopen(plot_screen_ref[])
-            plot_screen_ref[] = GLMakie.Screen(title = "Makie Plot")
-            display(plot_screen_ref[], plot_fig)
+    # Singleton Check
+    if PLOTTER_UI_STATE[][:is_open]
+        old_manager = ACTIVE_PLOT_MANAGER[]
+        new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); BaseVariables]
+        
+        if old_manager.plot_vars == new_vars
+            @info "Plotter is already open with matching dimensions! Updating data natively..."
+            old_manager.controls["State"]["Simulation_Update"][] += 1
+            return PLOTTER_UI_STATE[][:ctrl_fig], PLOTTER_UI_STATE[][:plot_fig], old_manager
+        else
+            @info "Dimensionality changed. Safely closing old windows to rebuild UI..."
+            try GLMakie.close(GLMakie.events(PLOTTER_UI_STATE[][:ctrl_fig].scene).window_open[]) catch; end
+            PLOTTER_UI_STATE[][:is_open] = false
         end
     end
 
+    ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
+    var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
+    ui_obs = create_master_ui_observables()
+    
+    manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, :lines)
+    manager.controls["State"]["base_types"][] = var_overwrite
+    manager.controls["State"]["Simulation_Update"] = Observable(0)
+    manager.controls["State"]["plot_window_initialized"] = Observable(false)
+    
+    ACTIVE_PLOT_MANAGER[] = manager
+
+    # Create Figures (Strictly View construction)
+    plot_fig = Figure()
+    plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
+    ctrl_fig = create_controls(plot_fig, manager)
+
+    # ==========================================================================
+    # THE FIX: Display the Control Figure BEFORE wiring interactions
+    # ==========================================================================
+    ctrl_screen = GLMakie.Screen(title="Makie Controls")
+    on(events(ctrl_fig.scene).window_open) do is_open
+        if !is_open; PLOTTER_UI_STATE[][:is_open] = false; end
+    end
+
+    display(ctrl_screen, ctrl_fig) # <--- Allocates GL Buffers safely!
+
+    PLOTTER_UI_STATE[][:is_open] = true
+    PLOTTER_UI_STATE[][:ctrl_fig] = ctrl_fig
+    PLOTTER_UI_STATE[][:plot_fig] = plot_fig
+
+    # ==========================================================================
+    # NOW wire up the Logic Controller and Data Sync
+    # ==========================================================================
+    setup_ui_interactions!(ctrl_fig, plot_fig, manager, plot_data_obs)
+
+    on(ACTIVE_SIM_CONFIG) do new_config
+        (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
+        
+        new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
+        if manager.plot_vars != new_vars
+            @warn "Dimensionality changed. Safely closing old windows to rebuild UI..."
+            try GLMakie.close(GLMakie.events(PLOTTER_UI_STATE[][:ctrl_fig].scene).window_open[]) catch; end
+            PLOTTER_UI_STATE[][:is_open] = false
+            Base.invokelatest(launch_plotter) # Auto-reboot with new layout!
+            return
+        end
+
+        # Automatically re-inject memory mappings when config changes
+        make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
+        empty!(manager.simulation)
+        manager.simulation["shared"] = Dict(k => make_obs(v) for (k, v) in new_config.shared_params)
+        for (m, p) in new_config.methods_dict
+            manager.simulation[m] = Dict(k => make_obs(v) for (k, v) in p)
+        end
+
+        # --- THE FIX: Respect the User's Default Methods! ---
+        if isempty(new_config.default_methods)
+            manager.methods[] = filter(k -> k != "shared", collect(keys(new_config.methods_dict)))
+        else
+            manager.methods[] = filter(k -> k != "shared", copy(new_config.default_methods))
+        end
+        manager.controls["State"]["Config_Just_Loaded"][] = true
+        manager.controls["State"]["Simulation_Update"][] += 1
+    end
+
+    # --- Targeted Execution Pipeline ---
+    on(manager.controls["State"]["Simulation_Update"]) do _
+        curr_config = ACTIVE_SIM_CONFIG[]
+        if curr_config.simulation_func === dummy_simulation_function; return; end
+
+        @info "Updating Plot Data (Active Methods Only)..."
+        println(curr_config.default_methods)
+        Base.invokelatest(
+            update_plot_data_collection!, plot_data_obs[], curr_config, manager, 
+            manager.methods[], to_value(manager.controls["State"]["base_types"]); force_reload = true
+        )
+        notify(plot_data_obs)
+    end
+
+    setup_plot_window!(plot_fig, manager, plot_data_obs)
+
+    if ACTIVE_SIM_CONFIG[].simulation_func !== dummy_simulation_function
+        manager.controls["State"]["Simulation_Update"][] += 1
+    end
+
+    return ctrl_fig, plot_fig, manager
+end
+
+# ==============================================================================
+# --- 3. LAYOUT & RENDER HANDLERS ---
+# ==============================================================================
+function setup_plot_window!(plot_fig::Figure, manager::PlotManager, plot_data_obs::Observable)
+    if manager.controls["State"]["plot_window_initialized"][]
+        return
+    end
+    manager.controls["State"]["plot_window_initialized"][] = true
+
+    plot_screen_ref = Ref(GLMakie.Screen(title = "Makie Plot"))
     render_observers = ObserverFunction[]
 
     function rebuild_plot_layout!()
-        ptype_sym = manager.controls["Plot-Type_Selection"][]
+        ptype_sym = manager.controls["Selection"]["Plot_Type"][]
         for obs in render_observers; off(obs); end
         empty!(render_observers)
         
-        # ONE SINGLE LAYOUT CHANGE: Destroy everything and reset the grid!
         empty!(plot_fig)  
-        trim!(plot_fig.layout) # THE FIX: Shrinks the ghost layout matrix back to a pure 1x1 state!
-        
+        trim!(plot_fig.layout) 
         switch_ui_plot_type!(manager, ptype_sym)
+        
         new_obs = setup_render_lift!(plot_fig, plot_data_obs, manager, Val(ptype_sym))
         if !isnothing(new_obs); append!(render_observers, new_obs); end
         
@@ -119,56 +233,51 @@ function show_unified_fig(sim_config::SimulationConfig)
 
     # Watch core structural menus
     onany(
-        manager.controls["Plot-Type_Selection"], manager.controls["Compare_Target_Selection"], 
-        manager.controls["Compare_Columns_Selection"], manager.controls["Compare_Link_Selection"],
-        manager.controls["Plot-Width_Selection"], manager.controls["Plot-Height_Selection"]
+        manager.controls["Selection"]["Plot_Type"], manager.controls["Selection"]["Compare_Target"], 
+        manager.controls["Selection"]["Compare_Columns"], manager.controls["Selection"]["Compare_Link"],
+        manager.controls["Selection"]["Plot_Width"], manager.controls["Selection"]["Plot_Height"]
     ) do _...
+
+        curr_config = ACTIVE_SIM_CONFIG[]
+        if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
+            Base.invokelatest(
+                update_plot_data_collection!, 
+                plot_data_obs[], curr_config, manager, manager.methods[], 
+                to_value(manager.controls["State"]["base_types"]); force_reload = false
+            )
+        end
         rebuild_plot_layout!()
     end
 
-    # Clever Legend Observer: Only nuke the layout if transitioning detached states
     prev_leg_struct = Ref((false, :none, :none))
-    onany(manager.controls["Legend_Base_Selection"], manager.controls["Legend_Add_Selection"]) do _...
-        is_comp = manager.controls["Compare_Target_Selection"][] != "None"
+    onany(manager.controls["Selection"]["Legend_Base"], manager.controls["Selection"]["Legend_Add"]) do _...
+        is_comp = manager.controls["Selection"]["Compare_Target"][] != "None"
         curr = _parse_legend_position(manager, is_comp)
         p = prev_leg_struct[]
         
         if (!curr[1] && !p[1]) 
-            notify(plot_data_obs) # Both are attached (floating), soft-render safely moves it!
+            notify(plot_data_obs) 
         else
             prev_leg_struct[] = curr
             rebuild_plot_layout!()
         end
     end
 
-    onany(sim_update, methods_obs) do _, active_methods
-        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], sim_config, manager, active_methods, to_value(manager.controls["base_types"]); force_reload = (sim_update[] > 0))
-        target = manager.controls["Compare_Target_Selection"][]
-        if target == "Methods"
-            rebuild_plot_layout!()
-        else
-            notify(plot_data_obs)
-        end
-    end
-
-    # Boot initialization
-    Base.invokelatest(update_plot_data_collection!, plot_data_obs.val, sim_config, manager, methods_obs.val, to_value(manager.controls["base_types"]); force_reload = true)
-    prev_leg_struct[] = _parse_legend_position(manager, manager.controls["Compare_Target_Selection"][] != "None")
-    sim_update.val = 1 
     rebuild_plot_layout!()
-    
-    return plot_fig, ctrl_fig, manager
 end
 
 function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface
     c = manager.controls 
-    selector_obs = [haskey(c, "$(n)_Value") ? c["$(n)_Value"] : c["$(n)_Selection"] for n in manager.plot_vars]
-    x_sel, y_sel, z_sel, u_sel = c["X-Axis_Selection"], c["Y-Axis_Selection"], c["Z-Axis_Selection"], c["U-Axis_Selection"]
     
-    target = c["Compare_Target_Selection"][]
-    cols = parse(Int, c["Compare_Columns_Selection"][])
-    link_mode = c["Compare_Link_Selection"][]
+    # MVC Map the selectors safely
+    selector_obs = [haskey(c["Value"], n) ? c["Value"][n] : c["Selection"][n] for n in manager.plot_vars]
+    x_sel, y_sel = c["Selection"]["X-Axis"], c["Selection"]["Y-Axis"]
+    z_sel, u_sel = c["Selection"]["Z-Axis"], c["Selection"]["U-Axis"]
+    
+    target = c["Selection"]["Compare_Target"][]
+    cols = parse(Int, c["Selection"]["Compare_Columns"][])
+    link_mode = c["Selection"]["Compare_Link"][]
     
     num_plots, compare_labels, compare_vals = 1, String[], Any[]
     
@@ -197,11 +306,9 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     end
     
     if target == "None" || num_plots == 0
-        num_plots = 1
-        target = "None"
+        num_plots = 1; target = "None"
     end
     
-    # 1. Pre-Calculate the MASTER GRID
     is_compare = target != "None"
     is_det, halign, valign = _parse_legend_position(manager, is_compare)
     has_legend = T in (:lines, :contourf, :contour, :contour3d)
@@ -209,33 +316,27 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     has_legend &= target != "Methods"
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
-    manager.controls["Layout_Dict"] = Observable(layout_dict)
+    manager.controls["Misc"]["Layout_Dict"] = Observable(layout_dict)
     
-    # 2. Map Axes exactly to Absolute Dictionary Slots
     axes = []
     for i in 1:num_plots
         r, c_idx = layout_dict["Plots"][i]
         ax = is_3d_axis ? Axis3(plot_fig[r, c_idx], perspectiveness=0.5) : Axis(plot_fig[r, c_idx])
         push!(axes, ax)
     end
-    # --- THE FIX: ENFORCE FLAT PROPORTIONAL PANEL SIZES ---
-    p_w = parse(Int, manager.controls["Plot-Width_Selection"][])
-    p_h = parse(Int, manager.controls["Plot-Height_Selection"][])
     
-    for i in 1:plot_fig.layout.size[1]
-        rowsize!(plot_fig.layout, i, Auto())
-    end
-    for i in 1:plot_fig.layout.size[2]
-        colsize!(plot_fig.layout, i, Auto())
-    end
+    # ENFORCE FLAT PROPORTIONAL PANEL SIZES
+    p_w = parse(Int, manager.controls["Selection"]["Plot_Width"][])
+    p_h = parse(Int, manager.controls["Selection"]["Plot_Height"][])
+    
+    for i in 1:plot_fig.layout.size[1]; rowsize!(plot_fig.layout, i, Auto()); end
+    for i in 1:plot_fig.layout.size[2]; colsize!(plot_fig.layout, i, Auto()); end
     
     for i in 1:num_plots
         r, c_idx = layout_dict["Plots"][i]
         rowsize!(plot_fig.layout, r, Fixed(p_h))
         colsize!(plot_fig.layout, c_idx, Fixed(p_w))
     end
-    
-    # Auto-expand window viewports cleanly around the new absolute properties
     
     if !is_3d_axis && link_mode in ("Fully Coupled", "Axes Only")
         linkaxes!(axes...)
@@ -335,11 +436,10 @@ function setup_render_lift!(plot_fig::Figure, plot_data_obs::Observable, manager
     end
 
     # --- THE RENDER LOOP ---
-    render_obs = onany(plot_data_obs, x_sel, y_sel, z_sel, u_sel, c["UI_Update"], selector_obs...) do data, x_key, y_key, z_key, u_key, _ui, sel_vals...
+    render_obs = onany(plot_data_obs, x_sel, y_sel, z_sel, u_sel, c["State"]["UI_Update"], selector_obs...) do data, x_key, y_key, z_key, u_key, _ui, sel_vals...
         (isnothing(x_key) || isnothing(u_key) || x_key == "-" || u_key == "-") && return
         isempty(data) && return
 
-        # Reset scales to prevent mathematical singularity errors
         for ax in axes
             if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
         end

@@ -1,102 +1,4 @@
 """
-    create_method_checkboxes_figure(possible_methods, active_methods; target_rows=20, cell_size=(250, 30), fig_padding=20) -> (fig, fig_layout)
-
-Creates a separate Figure containing checkboxes for all `possible_methods`. 
-Fills downwards up to `target_rows`, then automatically spills into new columns.
-"""
-function create_method_checkboxes_figure(
-    possible_methods::Vector{String},
-    active_methods::Observable{Vector{String}};
-    target_rows::Int = 20, 
-    cell_size::Tuple{Int, Int} = (250, 30), # Increased width to fit explicit labels
-    fig_padding::Int = 20
-)
-    # --- 1. Calculate Optimal Layout & Figure Size ---
-    total_methods = length(possible_methods)
-    
-    if total_methods == 0 || isempty(possible_methods)
-        @warn "No possible methods provided. Unable to create figure."
-        return nothing, nothing
-    end
-    
-    # THE FIX: Column-major layout based on a fixed maximum row count
-    rows = min(total_methods, target_rows)
-    cols = ceil(Int, total_methods / rows)
-    
-    total_rows_with_title = rows + 1
-    
-    # Calculate physical figure size
-    fig_width = cols * cell_size[1] + fig_padding
-    fig_height = 1050#2*total_rows_with_title * cell_size[2] + fig_padding + 10
-
-    # --- 2. Create Figure & GridLayout ---
-    fig = Figure(size = (fig_width, fig_height))
-    fig_layout = fig[1, 1] = GridLayout()
-    rowsize!(fig_layout, 1, Fixed(40)) 
-
-    # --- 3. Add Figure Title ---
-    Label(fig_layout[1, 1:cols], "Toggle Active Comparison Methods", fontsize=18, font=:bold, halign=:center)
-
-    # --- 4. Create Grid of Checkboxes & Labels ---
-    checkbox_layout = fig_layout[2:total_rows_with_title, 1:cols] = GridLayout()
-
-    checkbox_widgets = Dict{String, Checkbox}()
-    is_internal_bulk_update = Observable(false) 
-
-    for (i, method_name) in enumerate(possible_methods)
-        # THE FIX: Column-major coordinate mapping
-        c = ((i - 1) ÷ rows) + 1
-        r = ((i - 1) % rows) + 1
-        
-        cell_layout = checkbox_layout[r, c] = GridLayout(tellwidth=false, tellheight=false)
-
-        cb = Checkbox(cell_layout[1, 1]; checked = (method_name in active_methods[]))
-        
-        # Changed to :left alignment for a much cleaner grid appearance
-        Label(cell_layout[1, 2], method_name, halign=:left) 
-        
-        checkbox_widgets[method_name] = cb
-        
-        # THE FIX: Explicitly fix both the checkbox and the label width
-        colsize!(cell_layout, 1, Fixed(30)) 
-        colsize!(cell_layout, 2, Fixed(cell_size[1] - 40)) 
-        
-        on(cb.checked) do is_checked
-            if !is_internal_bulk_update[]
-                curr_list = active_methods[]
-                if is_checked
-                    method_name ∉ curr_list && (active_methods[] = [curr_list; method_name])
-                else
-                    active_methods[] = filter(s -> s != method_name, curr_list)
-                end
-            end
-        end
-    end
-    
-    # Force strict alignment across the entire parent grid
-    for r in 1:rows
-        rowsize!(checkbox_layout, r, Fixed(cell_size[2]))
-    end
-    for c in 1:cols
-        colsize!(checkbox_layout, c, Fixed(cell_size[1]))
-    end
-
-    # --- 5. Bulk Observer (UI <-> Observable sync) ---
-    on(active_methods) do new_list
-        is_internal_bulk_update[] = true
-        for (m_name, cb) in checkbox_widgets
-            new_checked_state = (m_name in new_list)
-            if cb.checked[] != new_checked_state
-                cb.checked[] = new_checked_state
-            end
-        end
-        is_internal_bulk_update[] = false
-    end
-
-    return fig, fig_layout
-end
-
-"""
     createExportOptions!(...)
 
 Populates a layout with a filename textbox and save buttons for Images and GIFs.
@@ -296,109 +198,60 @@ function createExportOptions!(
         end
     end
 end
-
-
-function createMethodCheckboxes!(layout, methods_obs::Observable, mgr::PlotManager)
-    # Get all scopes in simulation except 'shared'
-    all_method_names = filter(k -> k != "shared", collect(keys(mgr.simulation)))
-    sort!(all_method_names)
-    
-    # Call your existing checkbox creation logic
-    # (assuming createMethodCheckboxes is the function from your PlottingUtils.jl)
-    createMethodCheckboxes(layout, methods_obs, all_method_names)
-end
-
 """
-    set_defaults!(manager::PlotManager, scene_options::Dict)
+    apply_scene_options!(manager::PlotManager, scene_options::Dict)
 
-Safely initializes UI widgets. Programmatically sets Menus by finding the target index 
-and modifying `i_selected[]`, and moves Sliders using `set_close_to!`.
+Safely snaps UI widgets to the requested states natively through the MVC Dictionary structure.
 """
-function set_defaults!(manager::PlotManager, scene_options::Dict)
+function apply_scene_options!(manager::PlotManager, scene_options::Dict)
     isempty(scene_options) && return
 
-    # --- 1. STRICT RESOLUTION ORDER FOR MENUS ---
-    priority_keys = ["X-Axis", "Y-Axis", "Plot-Along"]
-
-    for key in priority_keys
-        sel_key = "$(key)_Selection"
-        widget_key = "$(key)_Widget"
-
-        (!haskey(scene_options, sel_key) || !haskey(manager.controls, widget_key)) && continue
-
-        desired_value = scene_options[sel_key]
-        widget = manager.controls[widget_key][]
-        opts = widget.options[]
-        isempty(opts) && continue
-
-        # If options are normal Strings (like X-Axis): ["x", "u", "t"]
-        idx = findfirst(v -> string(v) == string(desired_value), opts)
-
-        # If not found, check if the user passed an integer index directly as a fallback
-        if isnothing(idx) && desired_value isa Integer && 1 <= desired_value <= length(valid_values)
-            idx = desired_value
+    # 1. Apply Structural & Axis Menus
+    menu_keys = ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target", "c", "X-Axis", "Y-Axis", "Z-Axis", "U-Axis"]
+    
+    for k in menu_keys
+        sel_key = "$(k)_Selection"
+        if haskey(scene_options, sel_key) && haskey(manager.controls["Widget"], k)
+            val = scene_options[sel_key]
+            widget = manager.controls["Widget"][k][]
+            opts = manager.controls["Options"][k][]
+            isempty(opts) && continue
+            
+            valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
+            idx = findfirst(v -> string(v) == string(val), valid_vals)
+            if !isnothing(idx)
+                widget.i_selected[] = idx
+            end
         end
-        
-        # Ultimate fallback to 1 if nothing matches
-        if isnothing(idx)
-            @warn "Plot Along Fallback was set!"
-            idx = 1 
-        else
-            idx = idx
-        end
-        
-        # Trigger Makie natively by setting the internal index pointer!
-        widget.i_selected[] = idx
     end
 
-    # --- 2. RESOLVE SLIDERS & COMPONENT MENUS ---
-# --- 2. RESOLVE SLIDERS & COMPONENT MENUS ---
-    for (key, desired_value) in scene_options
-        if endswith(key, "_Value") || endswith(key, "_Selection")
-            base_name = replace(key, r"(_Value|_Selection)" => "")
-            widget_key = "$(base_name)_Widget"
-
-            if haskey(manager.controls, widget_key)
-                
-                # THE FIX 1: Unwrap the Observable to get the physical widget!
-                widget = manager.controls[widget_key][] 
-
-                if widget isa Slider
-                    rng_key = "$(base_name)_Range"
-                    rng = manager.controls[rng_key][]
+    # 2. Apply Sliders (Safely clamped to the newly calculated ranges!)
+    for (key, desired_val) in scene_options
+        if endswith(key, "_Value")
+            base_name = replace(key, "_Value" => "")
+            if haskey(manager.controls["Widget"], base_name)
+                widget = manager.controls["Widget"][base_name][]
+                if widget isa Makie.Slider
+                    rng = manager.controls["Range"][base_name][]
                     isempty(rng) && continue
-
+                    
                     val = Float64(rng[1])
-                    if (desired_value isa Real) && (rng[1] <= desired_value <= rng[end])
-                        val = Float64(desired_value)
-                    elseif desired_value isa Integer && 1 <= desired_value <= length(rng)
-                        val = Float64(rng[desired_value])
+                    if desired_val isa Real
+                        val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
                     end
-                    
-                    # THE FIX 2: Pass the widget itself to set_close_to!, not widget.value
                     set_close_to!(widget, val)
-
-                elseif widget isa Menu
-                    opts = manager.controls["$(base_name)_Options"][]
-                    isempty(opts) && continue
-                    
-                    is_tuple_opts = !isempty(opts) && opts[1] isa Tuple
-                    valid_values = is_tuple_opts ? [o[2] for o in opts] : opts
-
-                    idx = findfirst(v -> string(v) == string(desired_value), valid_values)
-                    idx = isnothing(idx) ? 1 : idx
-                    
-                    widget.i_selected[] = idx
                 end
             end
         end
     end
+    @info "Dynamic Scene Options Successfully Applied."
 end
+
 function get_base_scene_options()
     return Dict{String, Any}(
         "X-Axis_Selection"          => "x",      
         "U-Axis_Selection"          => "u",      
-        "Plot-Type_Selection"       => "Lines",  
+        "Plot_Type_Selection"       => "Lines",  
         "c_Selection"               => 1,        
         "t_Value"                   => 0.0,      
         "x_Value"                   => 0.0,
@@ -407,29 +260,145 @@ function get_base_scene_options()
         "Compare_Link_Selection"    => "Fully Coupled",
         "Legend_Base_Selection"     => "right",
         "Legend_Add_Selection"      => "detached",
-        "Plot-Width_Selection"      => 600,
-        "Plot-Height_Selection"     => 400,
-        #"Anim-Target_Selection"     => 1,
+        "Plot_Width_Selection"      => "600",
+        "Plot_Height_Selection"     => "400",
     )
 end
 
 function extract_scene_options(manager::PlotManager)
     opts = Dict{String, Any}()
     
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot-Type", "c", "Compare_Target", 
-              "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot-Height", "Plot-Height", "Anim-Target"]
-        key = "$(k)_Selection"
-        if haskey(manager.controls, key)
-            opts[key] = to_value(manager.controls[key])
+    # Matches the exact MVC keys defined in Controls.jl
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot_Type", "c", "Compare_Target", 
+              "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+        if haskey(manager.controls["Selection"], k)
+            opts["$(k)_Selection"] = to_value(manager.controls["Selection"][k])
         end
     end
     
     for k in manager.plot_vars
-        key = "$(k)_Value"
-        if haskey(manager.controls, key)
-            opts[key] = to_value(manager.controls[key])
+        if haskey(manager.controls["Value"], k)
+            opts["$(k)_Value"] = to_value(manager.controls["Value"][k])
         end
     end
     
     return opts
+end
+"""
+    csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
+
+Converts a parsed nested CSV dictionary into a properly formatted `SimulationConfig`.
+"""
+function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
+    # 1. Extract Shared Parameters
+    shared_params = Dict{String, Any}()
+    if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "shared")
+        shared_params = parsed_csv["Simulation"]["shared"]
+    end
+
+    # 2. Extract Methods (No longer hijacks "analytical" methods!)
+    methods_dict = Dict{String, Dict{String, Any}}()
+    if haskey(parsed_csv, "Simulation")
+        for (scope, params) in parsed_csv["Simulation"]
+            if scope != "shared"
+                methods_dict[scope] = params
+            end
+        end
+    end
+
+    # 3. Extract Varied Parameters from the Config Category
+    varied_params = Dict{String, Vector}()
+    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "Parameters")
+        for (k, v) in parsed_csv["Config"]["Parameters"]
+            varied_params[k] = v
+        end
+    else
+        @warn "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
+    end
+
+    # 4. Default Methods
+    default_methods = collect(keys(methods_dict))
+
+    # 5. Extract Reference Name explicitly from Config
+    ref_name = nothing
+    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
+        csv_ref = get(parsed_csv["Config"]["General"], "reference_func", "none")
+        if csv_ref != "none" && !isempty(csv_ref)
+            ref_name = csv_ref
+        end
+    end
+
+    # 6. Resolve the Analytical Solution Factory
+    ref_func = nothing
+    if !isnothing(ref_name)
+        # Convert the UI string back to a safe function name
+        safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
+        
+        ref_factory = try
+            resolve_reference_function(safe_ref_name)
+        catch
+            nothing
+        end
+        
+        # Instantiate the exact mathematical closure using the loaded shared parameters
+        if !isnothing(ref_factory)
+            ref_func = Base.invokelatest(ref_factory, shared_params)
+        else
+            @warn "Failed to resolve reference function: $safe_ref_name"
+        end
+    end
+
+    # 7. Construct and return the SimulationConfig
+    return SimulationConfig(
+        sim_func,
+        ref_func,
+        ref_name,
+        shared_params,
+        methods_dict,
+        default_methods,
+        varied_params
+    )
+end
+function smart_parse_csv_value(val_str::String)
+    val_str = strip(val_str)
+    
+    # 1. Handle Keywords
+    if val_str == "true"; return true; end
+    if val_str == "false"; return false; end
+    if val_str == "<empty>"; return ""; end
+    
+    # 2. Handle Numbers
+    v_int = tryparse(Int, val_str)
+    if !isnothing(v_int); return v_int; end
+    v_float = tryparse(Float64, val_str)
+    if !isnothing(v_float); return v_float; end
+    
+    # 3. Handle Julia Expressions (Symbols, Arrays, Tuples)
+    # Since we stripped prefixes, everything starts with ':', '[', or '('
+    if startswith(val_str, ":") || startswith(val_str, "[") || startswith(val_str, "(")
+        try
+            return eval(Meta.parse(val_str))
+        catch e
+            @warn "Failed to parse expression: $val_str"
+        end
+    end
+    
+    # 4. Fallback to clean string
+    return replace(val_str, r"^\"|\"$" => "")
+end
+
+function parse_csv_to_dict(filepath::String)
+    parsed = Dict{String, Dict{String, Dict{String, Any}}}()
+    
+    for row in CSV.Rows(filepath)
+        cat, scope, param, val_str = String(row.Category), String(row.Scope), String(row.Parameter), String(row.Value)
+        val = smart_parse_csv_value(val_str)
+        
+        if !haskey(parsed, cat); parsed[cat] = Dict{String, Dict{String, Any}}(); end
+        if !haskey(parsed[cat], scope); parsed[cat][scope] = Dict{String, Any}(); end
+        
+        parsed[cat][scope][param] = val
+    end
+    
+    return parsed
 end

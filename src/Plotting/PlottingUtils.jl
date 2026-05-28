@@ -180,8 +180,9 @@ end
 # --- LEGEND & COLORBAR BUILDERS ---
 # ==============================================================================
 function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
-    base_align = manager.controls["Legend_Base_Selection"][]
-    add_align  = manager.controls["Legend_Add_Selection"][]
+    # THE FIX: Switch to Nested MVC Keys
+    base_align = manager.controls["Selection"]["Legend_Base"][]
+    add_align  = manager.controls["Selection"]["Legend_Add"][]
     
     s = lowercase(string(base_align) * "_" * string(add_align))
     if occursin("none", s); return (false, :none, :none); end
@@ -198,16 +199,16 @@ function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
 
     return (is_detached, halign, valign)
 end
-
 function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::Vector, manager::PlotManager)
-    # 1. Anti-Double-Drawing: Purge existing legends to ensure only the final subplot's legend remains!
+    # 1. Anti-Double-Drawing: Purge existing legends
     for block in copy(fig.content)
         if block isa Legend; delete!(block); end
     end
     
     if isempty(plotted_objects) || isempty(labels); return; end
     
-    layout_dict = manager.controls["Layout_Dict"][]
+    # THE FIX: Read Layout_Dict from the Misc Category
+    layout_dict = manager.controls["Misc"]["Layout_Dict"][]
     if !haskey(layout_dict, "Legend") || isnothing(layout_dict["Legend"]); return; end
     
     ui_style = manager.ui["Axis-General"]
@@ -215,7 +216,8 @@ function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::
     final_title = isempty(strip(title_str)) ? nothing : title_str
     font_size = ui_style["font_size"][]
     
-    is_compare = manager.controls["Compare_Target_Selection"][] != "None"
+    # THE FIX: Read Compare_Target from Selection Category
+    is_compare = manager.controls["Selection"]["Compare_Target"][] != "None"
     is_detached, halign, valign = _parse_legend_position(manager, is_compare)
 
     if halign==:none && valign==:none; return end
@@ -244,7 +246,8 @@ function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManag
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "colormap"); return; end 
     
-    layout_dict = manager.controls["Layout_Dict"][]
+    # THE FIX: Read Layout_Dict from the Misc Category
+    layout_dict = manager.controls["Misc"]["Layout_Dict"][]
     cb_list = layout_dict["Colorbars"]
     isempty(cb_list) && return
     
@@ -269,7 +272,6 @@ function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManag
     final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
     
     try
-        # THE FIX: Removed `colormap` and `colorrange` kwargs to fix the Makie plot_object sync crash!
         Colorbar(fig[cb_pos...], plot_object;
             #label = final_label, 
             labelsize = ui_gen["label_size"][],

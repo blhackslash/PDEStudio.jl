@@ -6,7 +6,7 @@ using GLMakie, CairoMakie, Observables, Reexport
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
-export show_unified_fig, launch_csv_interface, set_plot_presets!
+export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 const BaseVariables = ["c","x","y","z","t"]
@@ -18,7 +18,7 @@ mutable struct PlotManager
     simulation::NestedObsDict
     ui::NestedObsDict
     config::ParamDict
-    controls::Dict{String, Observable} 
+    controls::NestedObsDict # <-- Change this line
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
     last_run_params::ParamDict
@@ -78,7 +78,7 @@ module UI
     using Observables: ObserverFunction, onany
     using GLMakie, CairoMakie, Printf, Statistics
     
-    export show_unified_fig, launch_csv_interface, set_plot_presets!
+    export launch_plotter, set_sim_config!, launch_csv_interface, set_plot_presets!
     
     include("Plotting/MakiePlotting.jl") 
 end

@@ -161,7 +161,8 @@ function create_master_ui_observables()
 end
 
 function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
-    master = manager.controls["Master_UI_Ref"][]
+    # THE FIX: Route the lookup through the "Misc" MVC folder
+    master = manager.controls["Misc"]["Master_UI_Ref"][]
     ui = manager.ui
     empty!(ui)
     
@@ -188,8 +189,9 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
         ui["Z-Axis"] = master["Z-Axis-3D"]
     end
     
-    if haskey(manager.controls, "UI_Update")
-        notify(manager.controls["UI_Update"])
+    # Safely check if the UI is built before notifying
+    if haskey(manager.controls, "State") && haskey(manager.controls["State"], "UI_Update")
+        notify(manager.controls["State"]["UI_Update"])
     end
 end
 
