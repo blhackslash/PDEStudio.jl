@@ -3,25 +3,22 @@
 # ==============================================================================
 # This file contains ONLY the reactive logic connecting the UI to the Data.
 
-function setup_ui_interactions!(ctrl_fig::Figure, plot_fig::Figure, manager::PlotManager, plot_data_obs::Observable)
-    _setup_run_and_drop_interactions!(ctrl_fig, manager)
+function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
+    _setup_run_and_drop_interactions!(master_fig, manager)
     _setup_overwrite_interactions!(manager, plot_data_obs)
     _setup_hierarchy_interactions!(manager)
-    _setup_export_interactions!(plot_fig, manager)
-    
-    # THE FIX: Add the Data Synchronization brain!
+    _setup_export_interactions!(master_fig, plot_layout, manager)
     _setup_data_sync_interactions!(manager, plot_data_obs)
-    
     notify(manager.methods)
 end
 
-function _setup_run_and_drop_interactions!(ctrl_fig::Figure, manager::PlotManager)
+function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotManager)
     drop_label = manager.controls["Widget"]["Drop_Label"][]
     drop_box   = manager.controls["Widget"]["Drop_Box"][]
     run_btn    = manager.controls["Widget"]["Run_Button"][]
 
     # --- CSV DROP PIPELINE ---
-    on(events(ctrl_fig.scene).dropped_files) do files
+    on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
             drop_label.text[] = "Loaded:\n" * basename(path)
@@ -159,7 +156,10 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
     
     onany(manager.methods, is_activate_mode) do active_list, activate_mode
-        opts = activate_mode ? filter(m -> m ∉ active_list, all_method_names) : copy(active_list)
+        # Move this INSIDE the observer so it dynamically checks the simulation dictionary every time!
+        all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
+        
+        opts = activate_mode ? filter(m -> !(m in active_list), all_method_names) : copy(active_list)
         new_opts = isempty(opts) ? ["-"] : sort(opts)
         
         if menu_mth.options[] != new_opts
@@ -178,12 +178,20 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         (isnothing(m) || m == "-") && return
         curr_list = manager.methods[]
         
+        changed = false
         if is_activate_mode[]
-            if m ∉ curr_list; manager.methods[] = [curr_list; m]; end
+            if !(m in curr_list); manager.methods[] = [curr_list; m]; changed = true; end
         else
-            if m ∈ curr_list; manager.methods[] = filter(s -> s != m, curr_list); end
+            if (m in curr_list); manager.methods[] = filter(s -> s != m, curr_list); changed = true; end
         end
+        
+        # Reset the selection box visually to the prompt
         menu_mth.i_selected[] = 0
+        
+        # THE FIX: Instantly trigger the plot recalculation!
+        if changed
+            manager.controls["State"]["Simulation_Update"][] += 1
+        end
     end
 end
 
@@ -263,7 +271,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
     end
 end
 
-function _setup_export_interactions!(plot_fig::Figure, manager::PlotManager)
+function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager)
     saveBox = manager.controls["Widget"]["Export_Text"][]
     btn_play = manager.controls["Widget"]["Play_Anim_Button"][]
     
@@ -287,20 +295,19 @@ function _setup_export_interactions!(plot_fig::Figure, manager::PlotManager)
         if !haskey(manager.controls["Widget"], widget_key); return false; end
         
         widget = manager.controls["Widget"][widget_key][]
-        if !(widget isa Slider); @warn "Only Sliders can be animated."; return false; end
+        if !(widget isa Makie.Slider); @warn "Only Sliders can be animated."; return false; end
         if length(widget.range[]) < 2; @warn "Slider has no range to animate."; return false; end
         return true
     end
 
-    # --- Image Export ---
+    # --- Image Export (WITH CAIRO MAKIE VECTOR SUPPORT) ---
     on(manager.controls["Button"]["Save_Image_Clicks"]) do _
-        for block in plot_fig.content
-            if block isa Axis
+        # Target axes strictly inside the plot_layout to freeze limits
+        for c in plot_layout.content
+            if c.content isa Axis || c.content isa Axis3
+                block = c.content
                 lims = block.finallimits[]
                 limits!(block, lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2])
-            elseif block isa Axis3
-                lims = block.finallimits[]
-                limits!(block, lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2], lims.origin[3], lims.origin[3] + lims.widths[3])
             end
         end
 
@@ -315,18 +322,18 @@ function _setup_export_interactions!(plot_fig::Figure, manager::PlotManager)
             ext = lowercase(strip(fmt))
             full_path = joinpath(save_dir, base_name * ".$ext")
             
-            if ext in ["pdf", "svg"]
-                CairoMakie.activate!()
-                save(full_path, plot_fig)
-                GLMakie.activate!() 
+            # --- THE FIX: Backend-Aware Rendering ---
+            if ext in ["svg", "pdf", "eps"]
+                save(full_path, master_fig; backend=CairoMakie)
+                @info "Vector Image ($ext) saved via CairoMakie!"
             else
-                save(full_path, plot_fig)
+                save(full_path, master_fig)
+                @info "Raster Image ($ext) saved via GLMakie!"
             end
         end
 
         metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
         saveParametersToCSV(base_name, save_dir, manager, metadata)
-        @info "Image saved successfully as $(base_name)!"
         
         saveBox.stored_string.val = "" 
         Makie.reset!(saveBox)
@@ -352,21 +359,21 @@ function _setup_export_interactions!(plot_fig::Figure, manager::PlotManager)
         
         @info "Recording '$(dim_names[target_idx])' animation to $fname..."
         try
-            record(plot_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
+            # THE FIX: Record the master_fig (dashboard) instead of the deprecated plot_fig
+            record(master_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
                 set_close_to!(target_widget, val)
                 yield() 
             end
             metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
             saveParametersToCSV(base_name, save_path, manager, metadata) 
             @info "GIF Saved Successfully."
-            if !isnothing(plot_fig); display(plot_fig); end
         catch e
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         end
         saveBox.stored_string.val = ""; Makie.reset!(saveBox)
     end
 
-    # --- Save Defaults ---
+    # --- Save / Clear Defaults ---
     on(manager.controls["Button"]["Save_Defs_Clicks"]) do _
         GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
         new_ui = Dict{String, Any}()
@@ -378,12 +385,12 @@ function _setup_export_interactions!(plot_fig::Figure, manager::PlotManager)
         GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["State"]["base_types"][])
         @info "Current UI and Scene options successfully saved to global defaults!"
     end
+    
     on(manager.controls["Button"]["Clear_Defs_Clicks"]) do _
         GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
         GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
         GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
         
-        # Instantly snap the layout back to factory basics!
         apply_scene_options!(manager, get_base_scene_options())
         @info "Global defaults cleared! Basic scene options restored."
     end
@@ -604,8 +611,15 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             if isinf(g_min); g_min = 0.0; g_max = 1.0; end
             
             dim_name = dim_names[i]
-            if haskey(c["Widget"], dim_name)
-                ctrl = c["Widget"][dim_name][]
+            
+            # THE FIX: Route the physical name to the static UI widget!
+            widget_key = dim_name
+            if i <= n_params
+                widget_key = c["State"]["Reverse_Map"][][dim_name]
+            end
+            
+            if haskey(c["Widget"], widget_key)
+                ctrl = c["Widget"][widget_key][]
                 if is_axis
                     ctrl.range[] = [0.0] 
                 else

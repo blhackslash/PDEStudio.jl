@@ -199,10 +199,10 @@ function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
 
     return (is_detached, halign, valign)
 end
-function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::Vector, manager::PlotManager)
-    # 1. Anti-Double-Drawing: Purge existing legends
-    for block in copy(fig.content)
-        if block isa Legend; delete!(block); end
+function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector, manager::PlotManager)
+    # THE FIX: Safely delete legends from the specific sub-layout
+    for c in copy(plot_layout.content)
+        if c.content isa Legend; delete!(c.content); end
     end
     
     if isempty(plotted_objects) || isempty(labels); return; end
@@ -228,11 +228,11 @@ function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::
             orientation = (valign == :top || valign == :bottom) ? :horizontal : :vertical
             tw = orientation == :vertical
             th = !tw 
-            Legend(fig[leg_pos...], plotted_objects, labels, final_title;
+            Legend(plot_layout[leg_pos...], plotted_objects, labels, final_title;
                 orientation=orientation, tellheight=th, tellwidth=tw, merge=true, unique=true,
                 titlesize=font_size, labelsize=font_size)
         else
-            Legend(fig[leg_pos...], plotted_objects, labels, final_title;
+            Legend(plot_layout[leg_pos...], plotted_objects, labels, final_title;
                 orientation=:vertical, tellheight=false, tellwidth=false,
                 halign=halign, valign=valign, merge=true, unique=true,
                 titlesize=font_size, labelsize=font_size, margin=(10, 10, 10, 10)
@@ -241,7 +241,7 @@ function create_or_update_legend!(fig::Figure, plotted_objects::Vector, labels::
     catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
 end
 
-function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
+function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
     isnothing(plot_object) && return
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "colormap"); return; end 
@@ -260,8 +260,8 @@ function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManag
     
     # 2. Purge existing colorbars ONLY on the first plot pass
     if plot_idx == 1
-        for block in copy(fig.content)
-            if block isa Colorbar; delete!(block); end
+        for c in copy(plot_layout.content)
+            if c.content isa Colorbar; delete!(c.content); end
         end
     end
     
@@ -272,7 +272,7 @@ function create_or_update_colorbar!(fig::Figure, plot_object, manager::PlotManag
     final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
     
     try
-        Colorbar(fig[cb_pos...], plot_object;
+        Colorbar(plot_layout[cb_pos...], plot_object;
             #label = final_label, 
             labelsize = ui_gen["label_size"][],
             ticklabelsize = ui_gen["ticklabel_size"][]

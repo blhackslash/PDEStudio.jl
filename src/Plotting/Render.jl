@@ -1,4 +1,4 @@
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int=1)
     xs_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -37,10 +37,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     set_axis_styles!(ax, manager, x_key, u_key, title_str)
     set_axis_limits_manager!(ax, xs_slices, us_slices, manager)
     plot_reference_lines!(ax, ui_app["reference"][])
-    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
+    create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int=1)
     xs, ys, us = data_tuples
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
@@ -66,10 +66,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
 
-    create_or_update_colorbar!(plot_fig, hm, manager, cr_obs, active_methods[1], plot_idx)
+    create_or_update_colorbar!(plot_layout, hm, manager, cr_obs, active_methods[1], plot_idx)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int=1)
     xs_slices, ys_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -96,10 +96,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
 
-    create_or_update_colorbar!(plot_fig, sc, manager, cr_obs, active_methods[1], plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, active_methods[1], plot_idx)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int=1)
     xs_slices, ys_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -125,9 +125,9 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
     
-    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
+    create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
 end
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int=1)
     xs_slices, ys_slices, us_slices = data_tuples
     empty!(ax); isempty(active_methods) && return
     ui_app = manager.ui["Plot-Style"]
@@ -174,11 +174,11 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     if !isempty(valid_x); xlims!(ax, extrema(valid_x)...); end
     if !isempty(valid_y); ylims!(ax, extrema(valid_y)...); end
     
-    create_or_update_legend!(plot_fig, plotted_objects, labels_for_legend, manager)
-    create_or_update_colorbar!(plot_fig, cf, manager, cr_obs, active_methods[base_idx], plot_idx)
+    create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
+    create_or_update_colorbar!(plot_layout, cf, manager, cr_obs, active_methods[base_idx], plot_idx)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int=1)
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -197,10 +197,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     sc = scatter!(ax, X_grid, Y_grid, Z_grid; color=U_flat, colormap=ui_app["colormap"][], colorrange=cr_obs, markersize=ui_app["markersize"][], marker=ui_app["markers"][][1])
 
     set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
-    create_or_update_colorbar!(plot_fig, sc, manager, cr_obs, active_methods[1], plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, active_methods[1], plot_idx)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int=1)
     xs_slices, ys_slices, us_slices = data_tuples 
     
     empty!(ax); isempty(active_methods) && return
@@ -217,10 +217,10 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     sf = surface!(ax, x_data, y_data, u_data; colormap=ui_app["colormap"][], colorrange=cr_obs, rasterize=rast_val)
 
     set_axis_styles!(ax, manager, x_key, y_key, u_key, title_str)
-    create_or_update_colorbar!(plot_fig, sf, manager, cr_obs, active_methods[1], plot_idx)
+    create_or_update_colorbar!(plot_layout, sf, manager, cr_obs, active_methods[1], plot_idx)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int=1)
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -233,7 +233,7 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
 end
 
-function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int=1)
+function update_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int=1)
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     
     empty!(ax); isempty(active_methods) && return
@@ -250,5 +250,5 @@ function update_base_plot!(plot_fig, ax, active_methods, data_tuples, manager, x
     vol = volume!(ax, extrema(x_data), extrema(y_data), extrema(z_data), u_data; colormap=ui_app["colormap"][], colorrange=cr_obs,rasterize=rast_val)
 
     set_axis_styles!(ax, manager, x_key, y_key, z_key, title_str)
-    create_or_update_colorbar!(plot_fig, vol, manager, cr_obs, active_methods[1], plot_idx)
+    create_or_update_colorbar!(plot_layout, vol, manager, cr_obs, active_methods[1], plot_idx)
 end

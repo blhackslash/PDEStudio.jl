@@ -95,9 +95,7 @@ function createExportOptions!(
             full_path = joinpath(save_dir, base_name * ".$ext")
             
             if ext in ["pdf", "svg"]
-                CairoMakie.activate!()
                 save(full_path, plot_fig)
-                GLMakie.activate!() 
             else
                 save(full_path, plot_fig)
             end

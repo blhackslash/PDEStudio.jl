@@ -2,7 +2,7 @@ module IPlotPDESols
 
 # --- 1. Global Dependencies ---
 
-using GLMakie, CairoMakie, Observables, Reexport
+using Makie, CairoMakie, Observables, Reexport
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
@@ -57,7 +57,7 @@ module DataProcessing
     # Grab Backend structs/functions directly
     using IRunPDESims, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf, StaticArrays
     
-    using GLMakie: Observable, to_value
+    using Makie: Observable, to_value
     
     export update_plot_data_collection!, get_source_slices, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV, smart_parse_and_update!
     
@@ -76,7 +76,7 @@ module UI
     using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV, smart_parse_and_update!
     
     using Observables: ObserverFunction, onany
-    using GLMakie, CairoMakie, Printf, Statistics
+    using Makie, CairoMakie, Printf, Statistics
     
     export launch_plotter, set_sim_config!, launch_csv_interface, set_plot_presets!
     

@@ -15,69 +15,54 @@ end
 # --- 1. MASTER CONTROL BUILDER ---
 # ==============================================================================
 """
-    create_controls(plot_fig::Makie.Figure, manager::PlotManager)
+    create_controls(layout::GridLayout, manager::PlotManager)
 
-Purely builds the UI layouts and registers the widgets into manager.controls.
-Contains NO reactive logic (no `on` blocks).
+Purely builds the UI widgets inside the provided sub-layout.
 """
-function create_controls(plot_fig::Makie.Figure, manager::PlotManager)
+function create_controls(layout::GridLayout, manager::PlotManager)
     ensure_control_dicts!(manager)
     
-    base_controls_fig = Figure(size=(500,1000)) 
-    fig_layout = base_controls_fig.layout[1,1] = GridLayout()
-    rowgap!(fig_layout, 15) 
+    rowgap!(layout, 15) 
     current_row = 1
 
-    window_rect = events(base_controls_fig).window_area
-    window_width = lift(rect -> floor(Int, rect.widths[1]*.95), window_rect)
-
     # --- 1. HEADER & DRAG/DROP ZONE ---
-    header_layout = fig_layout[current_row, 1] = GridLayout()
+    header_layout = layout[current_row, 1] = GridLayout()
     Label(header_layout[1,1], "Simulation Controls", fontsize=20, font=:bold, halign=:center)
     current_row += 1
 
-    # THE FIX: Assign window_width to the drop layout to set the master column width!
-    drop_layout = fig_layout[current_row, 1] = GridLayout(width=window_width)
-    drop_box = Box(drop_layout[1, 1], color=:lightgray, width=window_width, strokecolor=:gray, strokewidth=2, cornerradius=10, height=80)
+    drop_layout = layout[current_row, 1] = GridLayout() # Native width filling!
+    drop_box = Box(drop_layout[1, 1], color=:lightgray, width=450, strokecolor=:gray, strokewidth=2, cornerradius=10, height=80)
     drop_label = Label(drop_layout[1, 1], "Drag & Drop CSV Here", halign=:center, valign=:center, color=RGBAf(0.3, 0.3, 0.3, 1.0))
     
     manager.controls["Widget"]["Drop_Box"] = Observable{Any}(drop_box)
     manager.controls["Widget"]["Drop_Label"] = Observable{Any}(drop_label)
-    manager.controls["State"]["Simulation_Update"] = Observable(0) 
     current_row += 1
-
-    # (The standalone Run Button row is now completely removed!)
 
     # --- 2. HIERARCHICAL EDITOR ---
-    Label(fig_layout[current_row, 1], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
+    Label(layout[current_row, 1], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     current_row += 1
-    param_nav_layout = fig_layout[current_row, 1] = GridLayout()
+    param_nav_layout = layout[current_row, 1] = GridLayout()
     create_hierarchical_param_controls!(param_nav_layout, manager)
     current_row += 1
     
-    # --- 4. OVERWRITES & METHODS ---
-    Label(fig_layout[current_row, 1], "Dimension Overwrites & Methods", fontsize=16, font=:bold, color=:darkred)
+    # --- 3. OVERWRITES & METHODS ---
+    Label(layout[current_row, 1], "Dimension Overwrites & Methods", fontsize=16, font=:bold, color=:darkred)
     current_row += 1
-    lock_layout = fig_layout[current_row, 1] = GridLayout()
+    lock_layout = layout[current_row, 1] = GridLayout()
     create_base_overwrite_controls!(lock_layout, manager) 
     current_row += 1
     
-    # --- 5. STATIC PLOT CONTROLS ---
-    Label(fig_layout[current_row, 1], "______________________________________", color=:gray)
+    # --- 4. STATIC PLOT CONTROLS ---
+    Label(layout[current_row, 1], "______________________________________", color=:gray)
     current_row += 1
-    menu_area = fig_layout[current_row, 1] = GridLayout()
+    menu_area = layout[current_row, 1] = GridLayout()
     current_row += 1
-    slider_area = fig_layout[current_row, 1] = GridLayout()
+    slider_area = layout[current_row, 1] = GridLayout()
     current_row += 1
-    export_layout = fig_layout[current_row, 1] = GridLayout()
+    export_layout = layout[current_row, 1] = GridLayout()
 
-    # Build the main plot controls
     build_static_plot_controls!(menu_area, slider_area, manager)
-    
-    # --- THE FIX: Explicitly call the Export builder to register the widgets! ---
     createExportOptions!(export_layout, manager)
-
-    return base_controls_fig
 end
 
 
@@ -169,27 +154,37 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     rowgap!(menu_layout, 6, 15) 
     rowgap!(menu_layout, 7, 2)  # Plot Size Labels & Menus
 
-    # --- SLIDERS ---
-    dim_names = manager.plot_vars
-    slider_row = 1 # THE FIX: Use an independent row counter
+    # --- SLIDERS (Static Pre-allocation Architecture) ---
+    slider_row = 1
     
-    for i in 1:length(dim_names)
-        if dim_names[i] == "c"; continue; end 
+    # 1. Abstract Parameter Sliders (Pool of 3)
+    for i in 1:3 
+        p_key = "param_$i"
+        lbl_text = Observable("Param $i:")
+        manager.controls["String"]["$(p_key)_Label"] = Observable{Any}(lbl_text)
         
-        Label(slider_layout[slider_row, 1], "$(dim_names[i]):", halign=:right)
-        sl = Slider(slider_layout[slider_row, 2], range = [0.0], startvalue = 0.0, width=nothing)
-        _reg_slider(dim_names[i], sl)
+        Label(slider_layout[slider_row, 1], lbl_text, halign=:right)
+        sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
+        _reg_slider(p_key, sl)
         
         val_lbl = Label(slider_layout[slider_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), sl.value), halign=:left)
-        manager.controls["Widget"]["$(dim_names[i])_Label"] = Observable{Any}(val_lbl)
-        
-        slider_row += 1 # Increment only when a slider is actually placed!
+        slider_row += 1
     end
 
-    colsize!(slider_layout, 1, Fixed(40))    
+    # 2. Base Spatial/Time Sliders
+    for p in ["x", "y", "z", "t"]
+        Label(slider_layout[slider_row, 1], "$p:", halign=:right)
+        sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
+        _reg_slider(p, sl)
+        
+        val_lbl = Label(slider_layout[slider_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), sl.value), halign=:left)
+        slider_row += 1
+    end
+    
+    colsize!(slider_layout, 1, Fixed(80))    
     colsize!(slider_layout, 2, Relative(0.7)) 
     colsize!(slider_layout, 3, Fixed(60))
-    rowgap!(slider_layout, 5) # THE FIX: Tighten the gaps between sliders
+    for r in 1:6; rowgap!(slider_layout, r, 5); end
     
     manager.controls["State"]["Active_Axes"] = Observable{Vector{Int}}(Int[])
 end
@@ -316,5 +311,5 @@ function createExportOptions!(layout::GridLayout, manager::PlotManager)
 
     # Register Animation States
     manager.controls["State"]["Is_Animating"] = Observable(false)
-    manager.controls["Misc"]["Animation_Timer"] = Observable(Ref{Union{Timer, Nothing}}(nothing))
+    manager.controls["Misc"]["Animation_Timer"] = Observable{Any}(nothing)
 end
