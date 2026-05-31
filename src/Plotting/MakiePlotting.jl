@@ -27,6 +27,50 @@ const LEGEND_REF = Ref{Symbol}(:none)
 function dummy_simulation_function(args...); return nothing; end
 
 """
+    set_sim_config!(csv_name::String, manager)
+
+Searches for a CSV by name in the figures, animations, and Experiments folders.
+If found, it parses it, reconstructs the `SimulationConfig`, runs the simulations,
+and dynamically updates the active Plotter UI.
+"""
+function set_sim_config!(csv_name::String)
+    manager = ACTIVE_PLOT_MANAGER[]
+    filename = endswith(lowercase(csv_name), ".csv") ? csv_name : csv_name * ".csv"
+    
+    save_root = get_save_path()
+    sim_root = _SIM_ROOT_PATH[]
+    search_dirs = [
+        joinpath(save_root, "figures"),
+        joinpath(save_root, "animations"),
+        joinpath(sim_root, "Experiments")
+    ]
+    
+    filepath = ""
+    for dir in search_dirs
+        if isdir(dir)
+            test_path = joinpath(dir, filename)
+            if isfile(test_path); filepath = test_path; break; end
+            
+            for subdir in readdir(dir; join=true)
+                if isdir(subdir)
+                    test_path = joinpath(subdir, filename)
+                    if isfile(test_path); filepath = test_path; break; end
+                end
+            end
+        end
+        if !isempty(filepath); break; end
+    end
+    
+    if isempty(filepath)
+        @warn "CSV file '$filename' not found."
+        return
+    end
+    
+    # Call the new helper!
+    load_and_apply_csv!(manager, filepath)
+end
+
+"""
     reset_plotter!()
 
 Completely wipes the UI state, purges observables, and destroys the active window. 
@@ -85,8 +129,8 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     config_dict = ParamDict(
         "Parameters" => copy(sim_config.varied_params),
         "General"    => Dict{String, Any}(
-            "simulation_func" => string(sim_config.simulation_func),
-            "reference_func"  => isnothing(sim_config.reference_name) ? "none" : string(sim_config.reference_name)
+            "simulation_func" => sim_config.simulation_name, # THE FIX
+            "reference_func"  => isnothing(sim_config.reference_name) ? "none" : sim_config.reference_name
         )
     )
     
@@ -111,7 +155,7 @@ Returns the Figure natively so the active backend (GLMakie, WGLMakie) can displa
 function launch_plotter()
     if isnothing(ACTIVE_SIM_CONFIG[])
         ACTIVE_SIM_CONFIG.val = SimulationConfig(
-            dummy_simulation_function, nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
+            dummy_simulation_function,"none", nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
         )
     end
 

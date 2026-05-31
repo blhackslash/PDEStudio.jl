@@ -89,8 +89,9 @@ end
 
 mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     simulation_func::F
+    simulation_name::String # <-- ADDED THIS FIELD
     reference_func::A 
-    reference_name::Union{String, Nothing} # NEW: Store the name for dynamic matching
+    reference_name::Union{String, Nothing} 
     shared_params::ParamDict
     methods_dict::MethodDict
     default_methods::Vector{String}
@@ -111,10 +112,10 @@ end
 # Update the signature to accept 'nothing' for the reference function name
 function SimulationConfig(
     sim_func_name::String, 
-    ref_func_name::Union{String, Nothing}, # THE FIX: allow nothing here!
+    ref_func_name::Union{String, Nothing}, 
     shared::ParamDict, 
     methods::MethodDict, 
-    defaults::Vector{String}; 
+    defaults::Vector{String};
     varied_params::VariedDict = createVariedDict(),
 )
     target_module = _TARGET_MODULE[]
@@ -139,7 +140,7 @@ function SimulationConfig(
 
     # 4. Pass the resolved string and functions to the base constructor
     return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
-        sim_f, ref_f, ref_name_safe, shared, methods, defaults, varied_params
+        sim_f, sim_func_name, ref_f, ref_name_safe, shared, methods, defaults, varied_params
     )
 end
 

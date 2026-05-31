@@ -199,41 +199,34 @@ function saveParametersToCSV(
         cats, scopes, params, vals = String[], String[], String[], String[]
 
         function add_row(cat, scope, p, v)
-            push!(cats, string(cat)); push!(scopes, string(scope))
-            push!(params, string(p)); push!(vals, _value_to_string_for_csv(to_value(v)))
+            push!(cats, string(cat))
+            push!(scopes, string(scope))
+            push!(params, string(p))
+            push!(vals, _value_to_string_for_csv(to_value(v)))
         end
 
         # --- 1. CATEGORY: Metadata ---
-        # Scope: General (Timestamp, Save Type)
         for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
         
-        # Scope: Git
-        git_info = get_git_info(pwd()) # Uses your existing util
+        git_info = get_git_info(pwd())
         if !isnothing(git_info)
             for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
         end
 
-        # Scope: Julia (Versions)
         julia_info = get_julia_info()
         for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
 
-        # --- NEW CATEGORY: Scene ---
-        # Dynamically pulls all active UI widget states directly from controls
-        for (key, obs) in manager.controls
-            if endswith(key, "_Value")
-                base_name = replace(key, "_Value" => "")
-                add_row("Scene", "Slider", base_name, obs)
-            elseif endswith(key, "_Selection")
-                base_name = replace(key, "_Selection" => "")
-                add_row("Scene", "Menu", base_name, obs)
-            end
+        # --- 2. CATEGORY: Scene (THE FIX) ---
+        # Safely uses your existing extraction function instead of digging through nested controls
+        scene_opts = extract_scene_options(manager)
+        for (k, v) in scene_opts
+            add_row("Scene", "General", k, v)
         end
-        # --- 2. CATEGORY: Simulation ---
-        # Shared params
+
+        # --- 3. CATEGORY: Simulation ---
         for (k, v) in manager.simulation["shared"]
             add_row("Simulation", "shared", k, v)
         end
-        # Active method params
         for m_name in manager.methods[]
             if haskey(manager.simulation, m_name)
                 for (k, v) in manager.simulation[m_name]
@@ -242,11 +235,12 @@ function saveParametersToCSV(
             end
         end
 
-        # --- 3. CATEGORY: UI ---
+        # --- 4. CATEGORY: UI ---
         for (scope, dict) in manager.ui
             for (k, v) in dict; add_row("UI", scope, k, v); end
         end
-        # --- 4. CATEGORY: Config ---
+
+        # --- 5. CATEGORY: Config ---
         for (scope, dict) in manager.config
             for (k, v) in dict; add_row("Config", scope, k, v); end
         end

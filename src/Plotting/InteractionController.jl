@@ -20,7 +20,7 @@ function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotMana
     drop_box   = manager.controls["Widget"]["Drop_Box"][]
     run_btn    = manager.controls["Widget"]["Run_Button"][]
 
-    # --- CSV DROP PIPELINE ---
+# --- CSV DROP PIPELINE ---
     on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
@@ -29,43 +29,8 @@ function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotMana
             drop_box.color[] = RGBAf(0.8, 1.0, 0.8, 1.0)
             run_btn.buttoncolor[] = :lightgreen
             
-            parsed = parse_csv_to_dict(path)
-            resolved_func = resolve_simulation_function(parsed["Config"]["General"]["simulation_func"], nothing)
-            new_config = csv_to_simulation_config(parsed, resolved_func)
-            
-            # Check Structural Compatibility
-            new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
-            if manager.plot_vars != new_vars
-                @warn "CSV contains different spatial/varied parameters. Please restart plotter to rebuild UI."
-                return
-            end
-
-            @info "CSV Loaded: Running all defined simulations for exact recreation..."
-            runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
-            
-            # --- THE FIX: Let the central Brain handle the structural updates natively! ---
-            ACTIVE_SIM_CONFIG[] = new_config
-            
-            # Restore UI & Scene Options from CSV
-            if haskey(parsed, "UI")
-                for (scope, keys_dict) in parsed["UI"]
-                    if haskey(manager.ui, scope)
-                        for (k, v) in keys_dict
-                            if haskey(manager.ui[scope], k); manager.ui[scope][k][] = v; end
-                        end
-                    end
-                end
-            end
-            
-            if haskey(parsed, "Scene")
-                scene_opts = get_base_scene_options()
-                for (k, v) in parsed["Scene"]
-                    if k != "Menu" && k != "Slider"; scene_opts[k] = v; end
-                end
-                # THE FIX: Push to Global, the Brain will pull it automatically!
-                GLOBAL_SCENE_OPTIONS[] = scene_opts
-            end
-            manager.controls["State"]["Simulation_Update"][] += 1
+            # Call the new helper!
+            load_and_apply_csv!(manager, path)
         end
     end
 

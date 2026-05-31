@@ -347,8 +347,11 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     end
 
     # 7. Construct and return the SimulationConfig
+    sim_name_str = parsed_csv["Config"]["General"]["simulation_func"]
+    
     return SimulationConfig(
         sim_func,
+        sim_name_str, # THE FIX
         ref_func,
         ref_name,
         shared_params,
@@ -399,4 +402,63 @@ function parse_csv_to_dict(filepath::String)
     end
     
     return parsed
+end
+"""
+    load_and_apply_csv!(manager::PlotManager, filepath::String)
+
+Unified pipeline for loading a CSV config, executing the simulations, 
+and syncing the results back to the PlotManager UI and Scene options.
+"""
+function load_and_apply_csv!(manager::PlotManager, filepath::String)
+    @info "Loading configuration from CSV: $filepath"
+    
+    parsed = parse_csv_to_dict(filepath)
+    sim_func_str = parsed["Config"]["General"]["simulation_func"]
+    
+    resolved_func = resolve_simulation_function(sim_func_str, nothing)
+    if isnothing(resolved_func)
+        @error "Aborting: Could not resolve simulation function '$sim_func_str'"
+        return
+    end
+    
+    new_config = csv_to_simulation_config(parsed, resolved_func)
+    
+    # 1. Check Structural Compatibility
+    new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
+    if manager.plot_vars != new_vars
+        @warn "CSV contains different spatial/varied parameters. Please restart plotter to rebuild UI."
+        return
+    end
+
+    # 2. Execute Simulations
+    @info "CSV Loaded: Running all defined simulations for exact recreation..."
+    runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
+    
+    # 3. Load Options FIRST so they are ready in Global State
+    if haskey(parsed, "UI")
+        for (scope, keys_dict) in parsed["UI"]
+            if haskey(manager.ui, scope)
+                for (k, v) in keys_dict
+                    if haskey(manager.ui[scope], k)
+                        manager.ui[scope][k][] = v
+                    end
+                end
+            end
+        end
+    end
+    
+    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
+        scene_opts = get_base_scene_options()
+        for (k, v) in parsed["Scene"]["General"]
+            scene_opts[k] = v
+        end
+        GLOBAL_SCENE_OPTIONS[] = scene_opts
+    end
+
+    # 4. Update Global Brain LAST (Triggers the render cascade)
+    ACTIVE_SIM_CONFIG[] = new_config
+    
+    # 5. Trigger UI Update
+    manager.controls["State"]["Simulation_Update"][] += 1
+    @info "Successfully applied CSV config to UI!"
 end
