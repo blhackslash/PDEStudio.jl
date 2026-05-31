@@ -7,7 +7,10 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, man
     _setup_run_and_drop_interactions!(master_fig, manager)
     _setup_overwrite_interactions!(manager, plot_data_obs)
     _setup_hierarchy_interactions!(manager)
-    _setup_export_interactions!(master_fig, plot_layout, manager)
+    
+    # THE FIX: Pass plot_data_obs into the exporter!
+    _setup_export_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    
     _setup_data_sync_interactions!(manager, plot_data_obs)
     notify(manager.methods)
 end
@@ -271,7 +274,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
     end
 end
 
-function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager)
+function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
     saveBox = manager.controls["Widget"]["Export_Text"][]
     btn_play = manager.controls["Widget"]["Play_Anim_Button"][]
     
@@ -279,7 +282,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     is_animating = manager.controls["State"]["Is_Animating"]
     animation_timer = manager.controls["Misc"]["Animation_Timer"]
     
-    # Helper for building dimensions map
     n_params = length(manager.plot_vars)
     dim_names = Dict{Int, String}()
     for (i, p) in enumerate(manager.plot_vars); dim_names[i] = p; end
@@ -300,17 +302,42 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return true
     end
 
-    # --- Image Export (WITH CAIRO MAKIE VECTOR SUPPORT) ---
-    on(manager.controls["Button"]["Save_Image_Clicks"]) do _
-        # Target axes strictly inside the plot_layout to freeze limits
-        for c in plot_layout.content
-            if c.content isa Axis || c.content isa Axis3
-                block = c.content
-                lims = block.finallimits[]
-                limits!(block, lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2])
+    # --- THE FIX 1: Isolated Headless Clone Builder ---
+    function build_pristine_export_figure()
+        export_fig = Figure(size = (1200, 1000))
+        export_layout = export_fig[1, 1] = GridLayout()
+        
+        ptype_sym = manager.controls["Selection"]["Plot_Type"][]
+        
+        # We create a local, disconnected observable. 
+        # This prevents notify() from accidentally clearing the main window's active axes!
+        local_data_obs = Observable(plot_data_obs[])
+        
+        export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
+        
+        # Safely trigger ONLY the clone figure to draw its plots
+        notify(local_data_obs)
+        
+        # Sync limits and camera angles seamlessly from live dashboard to the clone
+        current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
+        export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
+        
+        for (c_ax, e_ax) in zip(current_axes, export_axes)
+            if c_ax isa Axis3
+                e_ax.azimuth[] = c_ax.azimuth[]
+                e_ax.elevation[] = c_ax.elevation[]
+                e_ax.perspectiveness[] = c_ax.perspectiveness[]
+                e_ax.lookat[] = c_ax.lookat[]
+            elseif c_ax isa Axis
+                e_ax.finallimits[] = c_ax.finallimits[]
             end
         end
+        
+        return export_fig, export_obs
+    end
 
+    # --- Image Export ---
+    on(manager.controls["Button"]["Save_Image_Clicks"]) do _
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "plot_export"; end
 
@@ -318,29 +345,26 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         if manager.ui["Various"]["create_savefolder"][]; save_dir = joinpath(save_dir, base_name); end
         mkpath(save_dir)
 
+        export_fig, export_obs = build_pristine_export_figure()
+
+        # THE FIX: Force CairoMakie for ALL static saves to protect the GL context
         for fmt in manager.ui["Various"]["save_formats"][]
             ext = lowercase(strip(fmt))
             full_path = joinpath(save_dir, base_name * ".$ext")
             
-            # --- THE FIX: Backend-Aware Rendering ---
-            if ext in ["svg", "pdf", "eps"]
-                save(full_path, master_fig; backend=CairoMakie)
-                @info "Vector Image ($ext) saved via CairoMakie!"
-            else
-                save(full_path, master_fig)
-                @info "Raster Image ($ext) saved via GLMakie!"
-            end
+            save(full_path, export_fig; backend=CairoMakie)
+            @info "Pristine Image ($ext) saved safely via CairoMakie!"
         end
+
+        if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
 
         metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
         saveParametersToCSV(base_name, save_dir, manager, metadata)
-        
-        saveBox.stored_string.val = "" 
-        Makie.reset!(saveBox)
     end
 
     # --- GIF Export ---
     on(manager.controls["Button"]["Save_GIF_Clicks"]) do _
+        notify(manager.controls["Button"]["Save_Defs_Clicks"])
         target_idx = anim_target_obs[]
         !check_selection_validity(target_idx) && return
         target_widget = manager.controls["Widget"]["$(dim_names[target_idx])"][]
@@ -357,20 +381,23 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         rng = target_widget.range[]
         n_frames = Int(duration * fps)
         
-        @info "Recording '$(dim_names[target_idx])' animation to $fname..."
+        @info "Recording pristine '$(dim_names[target_idx])' animation to $fname..."
         try
-            # THE FIX: Record the master_fig (dashboard) instead of the deprecated plot_fig
-            record(master_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
+            export_fig, export_obs = build_pristine_export_figure()
+            
+            record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
                 set_close_to!(target_widget, val)
                 yield() 
             end
+            
+            if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
+
             metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
             saveParametersToCSV(base_name, save_path, manager, metadata) 
-            @info "GIF Saved Successfully."
+            @info "Pristine GIF Saved Successfully."
         catch e
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         end
-        saveBox.stored_string.val = ""; Makie.reset!(saveBox)
     end
 
     # --- Save / Clear Defaults ---
@@ -427,6 +454,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 end
+
 function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Observable)
     c = manager.controls
     x_sel = c["Selection"]["X-Axis"]

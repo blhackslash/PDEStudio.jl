@@ -25,10 +25,7 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     rowgap!(layout, 15) 
     current_row = 1
 
-    # --- 1. HEADER & DRAG/DROP ZONE ---
-    header_layout = layout[current_row, 1] = GridLayout()
-    Label(header_layout[1,1], "Simulation Controls", fontsize=20, font=:bold, halign=:center)
-    current_row += 1
+    # --- 1. DRAG/DROP ZONE ---
 
     drop_layout = layout[current_row, 1] = GridLayout() # Native width filling!
     drop_box = Box(drop_layout[1, 1], color=:lightgray, width=450, strokecolor=:gray, strokewidth=2, cornerradius=10, height=80)

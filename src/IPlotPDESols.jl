@@ -6,7 +6,7 @@ using Makie, CairoMakie, Observables, Reexport
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
-export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!
+export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!, reset_plotter!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 const BaseVariables = ["c","x","y","z","t"]
@@ -78,7 +78,7 @@ module UI
     using Observables: ObserverFunction, onany
     using Makie, CairoMakie, Printf, Statistics
     
-    export launch_plotter, set_sim_config!, launch_csv_interface, set_plot_presets!
+    export launch_plotter, set_sim_config!, launch_csv_interface, set_plot_presets!, reset_plotter!
     
     include("Plotting/MakiePlotting.jl") 
 end

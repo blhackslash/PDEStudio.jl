@@ -26,6 +26,29 @@ end
 const LEGEND_REF = Ref{Symbol}(:none)
 function dummy_simulation_function(args...); return nothing; end
 
+"""
+    reset_plotter!()
+
+Completely wipes the UI state, purges observables, and destroys the active window. 
+Guarantees a 100% clean slate for the next @plot call.
+"""
+function reset_plotter!()
+    fig = PLOTTER_UI_STATE[][:master_fig]
+    if !isnothing(fig)
+        try
+            screen = Makie.getscreen(fig.scene)
+            if !isnothing(screen); close(screen); end
+        catch
+        end
+        empty!(fig)
+    end
+    PLOTTER_UI_STATE[][:is_open] = false
+    PLOTTER_UI_STATE[][:master_fig] = nothing
+    empty!(ACTIVE_SIM_CONFIG.listeners)
+    ACTIVE_SIM_CONFIG.val = nothing
+    @info "Plotter state completely cleared. Ready for a fresh @plot."
+end
+
 # ==============================================================================
 # --- 1. MANAGER FACTORY (MVC Configured) ---
 # ==============================================================================
