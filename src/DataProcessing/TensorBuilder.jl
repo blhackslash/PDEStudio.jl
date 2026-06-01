@@ -212,6 +212,11 @@ function create_method_plot_data(
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
+    # --- THE FIX: Recombine double-underscore tuple parameters natively ---
+    for task in tasks
+        _recombine_tuples!(task)
+    end
+
     local first_data
 
 # --- THE VIRTUAL METHOD INTERCEPTOR ---
@@ -293,7 +298,11 @@ function create_method_plot_data(
         vals = Float64.(active_values[i])
         for (v_idx, val) in enumerate(vals)
             idx = ntuple(d -> d == i ? v_idx : (:), n_params)
-            param_tensor[idx..., 1, 1, 1, 1, 1] = val
+            if Colon() in idx
+                param_tensor[idx..., 1, 1, 1, 1, 1] .= val
+            else
+                param_tensor[idx..., 1, 1, 1, 1, 1] = val
+            end
         end
         data_store[key] = param_tensor
     end

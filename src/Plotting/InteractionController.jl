@@ -456,7 +456,11 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     # 1. Sync Dropdown Options (Valid Axes & Components)
     onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
         isempty(plot_data_dict) && return
-        
+
+        dim_names = manager.plot_vars
+        total_dims = length(dim_names)
+        n_params = total_dims - 5
+
         valid_axes = String[]
         comp_max = 1
         pd_first = first(values(plot_data_dict))
@@ -504,6 +508,11 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     # 2. Sync Active Axes State
     onany(x_sel, y_sel, z_sel, ptype_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
         isempty(plot_data_dict) && return
+
+        dim_names = manager.plot_vars
+        total_dims = length(dim_names)
+        n_params = total_dims - 5
+
         p_dim = PLOT_DIM_MAP[ptype]
         axes_set = Set{Int}()
         active_indep_keys = String[]
@@ -558,6 +567,12 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     # 3. Sync Slider Ranges (The core data injection to the UI!)
     onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
         isempty(plot_data_dict) && return
+
+        dim_names = manager.plot_vars
+        total_dims = length(dim_names)
+        n_params = total_dims - 5
+        comp_idx = n_params + 1
+
         vt = c["State"]["base_types"][]
 
         for i in 1:total_dims
@@ -615,8 +630,22 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 ctrl = c["Widget"][widget_key][]
                 if is_axis
                     ctrl.range[] = [0.0] 
+                elseif i <= n_params
+                    # THE FIX: Feed the EXACT discrete vector to the slider for varied parameters
+                    all_vals = Float64[]
+                    for pd in values(plot_data_dict)
+                        append!(all_vals, pd.active_param_values[i])
+                    end
+                    ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
+                    
+                    # NEW FIX: Snap the current value to the new discrete range to prevent Makie from freezing!
+                    set_close_to!(ctrl, ctrl.value[])
                 else
+                    # Keep continuous ranges for standard Space/Time dimensions
                     ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                    
+                    # Snap these as well, just to be mathematically safe
+                    set_close_to!(ctrl, ctrl.value[])
                 end
             end
         end

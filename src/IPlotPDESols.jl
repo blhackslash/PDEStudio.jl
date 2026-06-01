@@ -55,7 +55,7 @@ module DataProcessing
     # Grab UI structs
     using ..IPlotPDESols: UnifiedPlotData, PlotManager, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs/functions directly
-    using IRunPDESims, CSV, DataFrames, Dates, Pkg, DataFrames, LibGit2, Printf, StaticArrays
+    using IRunPDESims, DataFrames, StaticArrays, Printf
     
     using Makie: Observable, to_value
     
@@ -71,9 +71,9 @@ module UI
     # Grab UI structs
     using ..IPlotPDESols: PlotManager, UnifiedPlotData, NestedObsDict, BaseVariables, VariableNames, VariableControls
     # Grab Backend structs
-    using IRunPDESims, Dates, CSV
+    using IRunPDESims, Dates, CSV, DataFrames, Pkg, LibGit2
     # Grab the DataBuilder
-    using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV, smart_parse_and_update!
+    using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, smart_parse_and_update!
     
     using Observables: ObserverFunction, onany
     using Makie, CairoMakie, Printf, Statistics

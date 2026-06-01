@@ -223,14 +223,17 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
         end
     end
 
-    # 2. Apply Sliders (Safely clamped to the newly calculated ranges!)
+    rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
+    
     for (key, desired_val) in scene_options
         if endswith(key, "_Value")
             base_name = replace(key, "_Value" => "")
-            if haskey(manager.controls["Widget"], base_name)
-                widget = manager.controls["Widget"][base_name][]
+            w_key = haskey(rev_map, base_name) ? rev_map[base_name] : base_name
+            
+            if haskey(manager.controls["Widget"], w_key)
+                widget = manager.controls["Widget"][w_key][]
                 if widget isa Makie.Slider
-                    rng = manager.controls["Range"][base_name][]
+                    rng = manager.controls["Range"][w_key][]
                     isempty(rng) && continue
                     
                     val = Float64(rng[1])
@@ -274,9 +277,12 @@ function extract_scene_options(manager::PlotManager)
         end
     end
     
+    # --- THE FIX: Map physical names back to widget aliases for extraction ---
+    rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
     for k in manager.plot_vars
-        if haskey(manager.controls["Value"], k)
-            opts["$(k)_Value"] = to_value(manager.controls["Value"][k])
+        w_key = haskey(rev_map, k) ? rev_map[k] : k
+        if haskey(manager.controls["Value"], w_key)
+            opts["$(k)_Value"] = to_value(manager.controls["Value"][w_key])
         end
     end
     
@@ -461,4 +467,186 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     # 5. Trigger UI Update
     manager.controls["State"]["Simulation_Update"][] += 1
     @info "Successfully applied CSV config to UI!"
+end
+
+"""
+    get_julia_info()
+Returns a dictionary containing the Julia version and the versions of 
+loaded/project packages.
+"""
+function get_julia_info()
+    info = Dict{String, Any}("Julia" => string(VERSION))
+    
+    # Get versions of all dependencies in the current project
+    for (uuid, pkg) in Pkg.dependencies()
+        if pkg.is_direct_dep
+            info[pkg.name] = string(pkg.version)
+        end
+    end
+    return info
+end
+
+"""
+    _value_to_string_for_csv(v)
+
+A robust helper to convert a Julia object to a string for CSV saving.
+Explicitly strips type prefixes (like 'Any' or 'Vector{Float64}') from 
+containers to ensure they are saved as clean, parsable Julia expressions.
+"""
+function _value_to_string_for_csv(v)
+    # 1. Handle Symbols (Prepend colon so they parse back as Symbols)
+    if isa(v, Symbol)
+        return ":" * string(v)
+    end
+
+    # 2. Handle empty strings
+    if v == ""
+        return "<empty>"
+    end
+
+    # 3. Handle Arrays/Vectors (Strip type prefix: Any[...] -> [...])
+    if isa(v, AbstractArray)
+        s = string(v)
+        # Replaces any alphanumeric + curly brace prefix before the first '['
+        return replace(s, r"^[a-zA-Z0-9_{}, ]*\[" => "[")
+    end
+    
+    # 4. Handle Tuples (Strip type prefix: NamedTuple(...) -> (...))
+    if isa(v, Tuple)
+        s = string(v)
+        return replace(s, r"^[a-zA-Z0-9_{}, ]*\(" => "(")
+    end
+
+    # 5. Fallback for Numbers and basic Strings
+    return string(v)
+end
+
+# This function can be added to your plotting_helpers.jl or a similar utility file.
+
+
+"""
+    get_git_info(start_path=".") -> Union{Dict{String, Any}, Nothing}
+
+Inspects the Git repository containing the given path and returns key information
+about the current state (HEAD commit). It robustly finds the repository root by
+searching upwards from the `start_path`.
+"""
+function get_git_info(start_path::String = ".")
+    try
+        # --- Robust Repo Discovery Logic ---
+        current_path = abspath(start_path)
+        repo_root_path = nothing
+
+        while true
+            if isdir(joinpath(current_path, ".git"))
+                repo_root_path = current_path
+                break
+            end
+            parent_path = dirname(current_path)
+            if parent_path == current_path; break; end
+            current_path = parent_path
+        end
+
+        if isnothing(repo_root_path)
+            @warn "Could not find a .git repository in or above the path: $(abspath(start_path))"
+            return nothing
+        end
+        
+        repo = LibGit2.GitRepo(repo_root_path)
+        
+        # --- Extract Information ---
+        head_ref = LibGit2.head(repo)
+        commit = LibGit2.peel(LibGit2.GitCommit, head_ref)
+        
+        # --- THIS IS THE FINAL FIX ---
+        # The most robust, idiomatic way to get the hash is to construct a
+        # `GitHash` object from the commit, then convert it to a string.
+        commit_hash = string(LibGit2.GitHash(commit))
+        # --- END OF FIX ---
+
+        commit_summary = LibGit2.summary(commit)
+        
+        commit_count = try
+            parse(Int, readchomp(`git -C $repo_root_path rev-list --count HEAD`))
+        catch
+            -1 # Indicate count could not be determined
+        end
+
+        return Dict{String, Any}(
+            "git_commit_hash" => commit_hash,
+            "git_commit_count" => commit_count,
+            "git_commit_summary" => commit_summary,
+            "julia_version" => string(VERSION)
+        )
+        
+    catch e
+        @warn "Could not retrieve Git information." exception=(e, catch_backtrace())
+        return nothing
+    end
+end
+function saveParametersToCSV(
+    base_filename::String,
+    save_dir::String,
+    manager::PlotManager,
+    metadata_general::Dict
+)::Bool
+    csv_filename = joinpath(save_dir, base_filename * ".csv")
+    
+    try
+        cats, scopes, params, vals = String[], String[], String[], String[]
+
+        function add_row(cat, scope, p, v)
+            push!(cats, string(cat))
+            push!(scopes, string(scope))
+            push!(params, string(p))
+            push!(vals, _value_to_string_for_csv(to_value(v)))
+        end
+
+        # --- 1. CATEGORY: Metadata ---
+        for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
+        
+        git_info = get_git_info(pwd())
+        if !isnothing(git_info)
+            for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
+        end
+
+        julia_info = get_julia_info()
+        for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
+
+        # --- 2. CATEGORY: Scene (THE FIX) ---
+        # Safely uses your existing extraction function instead of digging through nested controls
+        scene_opts = extract_scene_options(manager)
+        for (k, v) in scene_opts
+            add_row("Scene", "General", k, v)
+        end
+
+        # --- 3. CATEGORY: Simulation ---
+        for (k, v) in manager.simulation["shared"]
+            add_row("Simulation", "shared", k, v)
+        end
+        for m_name in manager.methods[]
+            if haskey(manager.simulation, m_name)
+                for (k, v) in manager.simulation[m_name]
+                    add_row("Simulation", m_name, k, v)
+                end
+            end
+        end
+
+        # --- 4. CATEGORY: UI ---
+        for (scope, dict) in manager.ui
+            for (k, v) in dict; add_row("UI", scope, k, v); end
+        end
+
+        # --- 5. CATEGORY: Config ---
+        for (scope, dict) in manager.config
+            for (k, v) in dict; add_row("Config", scope, k, v); end
+        end
+
+        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        @info "Metadata and Parameters saved to $csv_filename"
+        return true
+    catch e
+        @error "CSV Save Failed" exception=(e, catch_backtrace())
+        return false
+    end
 end

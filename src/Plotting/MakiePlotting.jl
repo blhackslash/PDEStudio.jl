@@ -98,7 +98,7 @@ end
 # ==============================================================================
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
-    vars = isempty(varied_dict) ? [] : collect(keys(varied_dict))
+    vars = isempty(varied_dict) ? String[] : sort(collect(keys(varied_dict)))
     append!(vars, BaseVariables)
 
     sim_obs = NestedObsDict()
@@ -214,7 +214,7 @@ function launch_plotter()
         (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
         
         # --- THE FIX: Map real physics names to the static abstract UI sliders ---
-        real_params = collect(keys(new_config.varied_params))
+        real_params = sort(collect(keys(new_config.varied_params)))
         param_map = Dict{String, String}()
         reverse_map = Dict{String, String}()
         
@@ -237,7 +237,7 @@ function launch_plotter()
         manager.controls["State"]["Param_Map"] = Observable(param_map)
         manager.controls["State"]["Reverse_Map"] = Observable(reverse_map)
         manager.plot_vars = [real_params; ["c", "x", "y", "z", "t"]]
-
+        manager.config["Parameters"] = copy(new_config.varied_params)
         # --- The rest proceeds normally without rebooting! ---
         make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
         empty!(manager.simulation)
@@ -331,8 +331,13 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface
     c = manager.controls 
     
-    # MVC Map the selectors safely
-    selector_obs = [haskey(c["Value"], n) ? c["Value"][n] : c["Selection"][n] for n in manager.plot_vars]
+    rev_map = haskey(c["State"], "Reverse_Map") ? c["State"]["Reverse_Map"][] : Dict{String, String}()
+    
+    selector_obs = map(manager.plot_vars) do n
+        w_key = haskey(rev_map, n) ? rev_map[n] : n
+        haskey(c["Value"], w_key) ? c["Value"][w_key] : c["Selection"][w_key]
+    end
+
     x_sel, y_sel = c["Selection"]["X-Axis"], c["Selection"]["Y-Axis"]
     z_sel, u_sel = c["Selection"]["Z-Axis"], c["Selection"]["U-Axis"]
     
