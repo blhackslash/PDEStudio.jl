@@ -2,7 +2,9 @@ module IPlotPDESols
 
 # --- 1. Global Dependencies ---
 
-using Makie, CairoMakie, Observables, Reexport
+using Makie, CairoMakie, Reexport
+using Observables: ObserverFunction, onany
+using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
@@ -51,42 +53,16 @@ end
 # ==============================================================================
 # 4. DATA PROCESSING MODULE (Frontend Ingestion)
 # ==============================================================================
-module DataProcessing
-    # Grab UI structs
-    using ..IPlotPDESols: UnifiedPlotData, PlotManager, BaseVariables, VariableNames, VariableControls
-    # Grab Backend structs/functions directly
-    using IRunPDESims, DataFrames, StaticArrays, Printf
-    
-    using Makie: Observable, to_value
-    
-    export update_plot_data_collection!, get_source_slices, find_closest_index_for_dim, extract_data, get_base_dim_idx, saveParametersToCSV, smart_parse_and_update!
-    
-    include("DataProcessing/TensorBuilder.jl")
-end
+include("Utils.jl")         
+include("DataExtraction.jl")
+include("TensorBuilder.jl")
 
-# ==============================================================================
-# 5. USER INTERFACE MODULE (Frontend)
-# ==============================================================================
-module UI
-    # Grab UI structs
-    using ..IPlotPDESols: PlotManager, UnifiedPlotData, NestedObsDict, BaseVariables, VariableNames, VariableControls
-    # Grab Backend structs
-    using IRunPDESims, Dates, CSV, DataFrames, Pkg, LibGit2
-    # Grab the DataBuilder
-    using ..DataProcessing: update_plot_data_collection!, find_closest_index_for_dim, extract_data, get_base_dim_idx, smart_parse_and_update!
-    
-    using Observables: ObserverFunction, onany
-    using Makie, CairoMakie, Printf, Statistics
-    
-    export launch_plotter, set_sim_config!, launch_csv_interface, set_plot_presets!, reset_plotter!
-    
-    include("Plotting/MakiePlotting.jl") 
-end
+include("MakiePlotting.jl")
+include("UIStyles.jl")
+include("PlottingUtils.jl")
+include("Controls.jl")
+include("InteractionController.jl")
+include("Render.jl")
 
-# ==============================================================================
-# 6. RE-EXPORTS & REGISTRY
-# ==============================================================================
-using .DataProcessing
-using .UI
 
 end

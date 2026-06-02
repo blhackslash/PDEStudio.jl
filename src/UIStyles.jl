@@ -38,7 +38,8 @@ function create_master_ui_observables()
         "ylabel"         => "default", 
         "zlabel"         => "default", 
         "colorbar_label" => "default", 
-        "legend"         => "Methods"
+        "legend"         => "Methods",
+        "comp_names"     => ("default",)
     ))
     master["HUD"] = obs_dict(Dict(
         "visible"    => false,
@@ -52,8 +53,7 @@ function create_master_ui_observables()
     ))  
     master["Various"] = obs_dict(Dict(
         "save_formats"         => ["png"], 
-        "create_savefolder"    => false,      
-        "comp_names"           => ("default",), 
+        "create_savefolder"    => false,
         "animation_duration_s" => 10.0, 
         "animation_fps"        => 30, 
         "remove_outliers"      => false, 
@@ -72,7 +72,8 @@ function create_master_ui_observables()
         "scale_offset"      => 0.0, 
         "logscale"          => false, 
         "padding"           => pad,
-        "label_offset"      => default_offset
+        "label_offset"      => default_offset,
+        "lims"              => Any[]
     )
 
     master["X-Axis-1D"] = obs_dict(axis_dict(0.05, 15.0))
@@ -198,7 +199,7 @@ end
 function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     preset_list = presets isa Symbol ? [presets] : presets
     ui_over = Dict{String, Any}()
-    scene_opt = Dict{String, Any}()
+    scene_opt = get_base_scene_options()
     master_tmp = create_master_ui_observables()
 
     function set_ui!(scope, key, val)
@@ -210,7 +211,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
         if preset == :convergence
             scene_opt["X-Axis_Selection"]    = "Ns__1"
             scene_opt["U-Axis_Selection"]    = "relative_l2error"
-            scene_opt["Plot-Type_Selection"] = "Lines"
+            scene_opt["Plot_Type_Selection"] = "Lines"
             scene_opt["t_Value"]             = 10.0^10
             
             set_ui!("X-Axis", "logscale", true)
@@ -241,11 +242,11 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
             scene_opt["Legend_Base_Selection"] = "top"
             scene_opt["Legend_Add_Selection"]  = "detached"
-            scene_opt["Plot-Width_Selection"]  = 300
-            scene_opt["Plot-Height_Selection"]  = 300
+            scene_opt["Plot_Width_Selection"]  = 300
+            scene_opt["Plot_Height_Selection"]  = 300
             
         elseif preset == :heatmap
-            scene_opt["Plot-Type_Selection"] = "Heatmap"
+            scene_opt["Plot_Type_Selection"] = "Heatmap"
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)

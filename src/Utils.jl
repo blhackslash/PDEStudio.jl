@@ -1,200 +1,203 @@
+function allMethodNames(config::SimulationConfig)
+    return collect(keys(config.methods_dict))
+end
+
+function createObsDict(dict::Dict{String,Any})
+    dict_obs = Dict{String,Observable}()
+    for (key,val) = dict
+        dict_obs[key] = Observable(val)
+    end
+    return dict_obs
+end
+
+function parseValue(s::String)
+    try
+        # Meta.parse turns a string into a Julia expression.
+        # `eval` executes that expression.
+        return eval(Meta.parse(s))
+    catch e
+        # If parsing fails, it's probably just a plain string.
+        # We also strip quotes that CSV readers sometimes add.
+        return s == "<empty>" ? "" : string(strip(s, '\"'))
+    end
+end
+
 """
-    createExportOptions!(...)
+    smart_parse_and_update!(obs::Observable, input_str::String)
 
-Populates a layout with a filename textbox and save buttons for Images and GIFs.
+Attempts to parse `input_str` into the same type as the current value of `obs`.
+If parsing fails or types are incompatible, it prints a warning and leaves the 
+observable unchanged.
 """
-function createExportOptions!(
-    layout::GridLayout,
-    plot_fig::Figure,
-    manager::PlotManager,
-    anim_target_obs::Observable,
-    active_axes_obs::Observable{Vector{Int}}, 
-    selector_widgets::Vector{Any},
-    active_params::Vector{String}
-)
-    n_params = length(active_params)
-    dim_names = Dict{Int, String}()
-    for (i, p) in enumerate(active_params); dim_names[i] = p; end
-    dim_names[n_params+1] = "Component"
-    dim_names[n_params+2] = "Space"
-    dim_names[n_params+3] = "Time"
-
-    saveBox = Textbox(layout[2, 1:4], placeholder = "Filename...", width=nothing)
+function smart_parse_and_update!(obs::Observable, input_str::String)
+    # Ignore empty inputs (usually handled by the placeholder logic)
+    isempty(input_str) && return
     
-    btn_save_def = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral)
-    btn_play     = Button(layout[1, 2], label="Play Anim", buttoncolor=:lightyellow)
-    btn_img      = Button(layout[1, 3], label="Save Image", buttoncolor=:lightblue)
-    btn_gif      = Button(layout[1, 4], label="Save GIF", buttoncolor=:lightgreen)
+    current_val = to_value(obs)
+    T = typeof(current_val)
 
-    # THE FIX: Alle 4 Buttons auf exakt gleiche Breite zwingen
-    for i in 1:4
-        colsize!(layout, i, Relative(0.25))
-    end
-
-    # Helper: Validation for GIF export
-    function check_selection_validity(idx)
-        if idx == 0 || isnothing(idx)
-            @warn "Export Error: No target selected in Animation Preview."
-            return false
-        end
-        if idx in active_axes_obs[]
-            @warn "Animation Error: Cannot animate '$(dim_names[idx])' because it is an active plotting axis."
-            return false
-        end
-        widget = selector_widgets[idx]
-        if !(widget isa Slider)
-            @warn "Export Error: '$(dim_names[idx])' is a discrete Menu. Only Sliders can be animated."
-            return false
-        end
-        if length(widget.range[]) < 2
-            @warn "Export Error: Slider for '$(dim_names[idx])' has no range to animate."
-            return false
-        end
-        return true
-    end
-
-    # --- Image Save Logic ---
-    on(btn_img.clicks) do _
-        
-        # --- THE FIX: Hard-Lock the Interactive Zoom State ---
-        # Sync the user's interactive mouse zoom (finallimits) back to the hard limits 
-        # so CairoMakie doesn't reset the view when switching backends.
-        for block in plot_fig.content
-            if block isa Axis
-                lims = block.finallimits[]
-                limits!(block, 
-                    lims.origin[1], lims.origin[1] + lims.widths[1], 
-                    lims.origin[2], lims.origin[2] + lims.widths[2]
-                )
-            elseif block isa Axis3
-                lims = block.finallimits[]
-                limits!(block, 
-                    lims.origin[1], lims.origin[1] + lims.widths[1], 
-                    lims.origin[2], lims.origin[2] + lims.widths[2],
-                    lims.origin[3], lims.origin[3] + lims.widths[3]
-                )
-            end
-        end
-        # -----------------------------------------------------
-
-        base_name = string(strip(saveBox.stored_string[]))
-        if isempty(base_name)
-            @info "No filename provided, using default 'plot_export'"
-            base_name = "plot_export"
-        end
-
-        save_dir = joinpath(get_save_path(), "figures")
-        if manager.ui["Various"]["create_savefolder"][]
-            save_dir = joinpath(save_dir, base_name)
-        end
-        mkpath(save_dir)
-
-        formats = manager.ui["Various"]["save_formats"][]
-        for fmt in formats
-            ext = lowercase(strip(fmt))
-            full_path = joinpath(save_dir, base_name * ".$ext")
+    try
+        if T == String
+            obs[] = input_str
+        elseif T == Symbol
+            obs[] = Symbol(input_str)
+        elseif T == Bool
+            # Handle true/false, 1/0, yes/no
+            s = lowercase(strip(input_str))
+            obs[] = (s == "true" || s == "1" || s == "yes")
+        elseif T <: Int
+            obs[] = parse(Int, input_str)
+        elseif T <: AbstractFloat
+            obs[] = parse(Float64, input_str)
+        elseif T <: Tuple || T <: Vector
+            parsed = parseValue(input_str) 
             
-            if ext in ["pdf", "svg"]
-                save(full_path, plot_fig)
-            else
-                save(full_path, plot_fig)
-            end
-        end
-
-        metadata_general = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-        saveParametersToCSV(base_name, save_dir, manager, metadata_general)
-        @info "Image saved successfully as $(base_name)!"
-        
-        saveBox.stored_string.val = "" # Reset silently without triggering observers
-        Makie.reset!(saveBox)
-    end
-
-    # --- GIF Save Logic ---
-    on(btn_gif.clicks) do _
-        target_idx = anim_target_obs[]
-        !check_selection_validity(target_idx) && return
-        
-        target_widget = selector_widgets[target_idx]
-        
-        base_name = string(strip(saveBox.stored_string[]))
-        if isempty(base_name)
-            @info "No filename provided, using default 'anim_export'"
-            base_name = "anim_export"
-        end
-        
-        save_path = joinpath(get_save_path(), "animations")
-        mkpath(save_path)
-        fname = joinpath(save_path, base_name * ".gif")
-        
-        duration = manager.ui["Various"]["animation_duration_s"][]
-        fps = manager.ui["Various"]["animation_fps"][]
-        rng = target_widget.range[]
-        n_frames = Int(duration * fps)
-        
-        @info "Recording '$(dim_names[target_idx])' animation to $fname..."
-        try
-            record(plot_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
-                set_close_to!(target_widget, val)
-                yield() 
-            end
-            metadata_general = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-            saveParametersToCSV(base_name, save_path, manager, metadata_general) 
-            @info "GIF Saved Successfully."
-            if !isnothing(plot_fig); display(plot_fig) end
-        catch e
-            @error "GIF Recording Failed" exception=(e, catch_backtrace())
-        end
-        
-        saveBox.stored_string.val = "" # Reset silently without triggering observers
-        Makie.reset!(saveBox)
-    end
-    on(btn_save_def.clicks) do _
-        GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
-        new_ui = Dict{String, Any}()
-        for (scope, subdict) in manager.ui
-            new_ui[scope] = Dict{String, Any}()
-            for (k, v) in subdict; new_ui[scope][k] = to_value(v); end
-        end
-        GLOBAL_UI_OVERWRITE[] = new_ui
-        GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["base_types"][])
-        @info "Current UI and Scene options successfully saved to global defaults!"
-    end
-    # Anim Play Logic (Die aus createAnimationPreview! übernommen wurde)
-    is_animating = Observable(false)
-    animation_timer = Ref{Union{Timer, Nothing}}(nothing)
-    
-    on(is_animating) do animating
-        btn_play.label[] = animating ? "Stop Anim" : "Play Anim"
-    end
-
-    on(btn_play.clicks) do _
-        if is_animating[]
-            is_animating[] = false
-            !isnothing(animation_timer[]) && close(animation_timer[])
-            animation_timer[] = nothing
-        else
-            target_idx = anim_target_obs[]
-            !check_selection_validity(target_idx) && return
-            
-            target_widget = selector_widgets[target_idx]
-            is_animating[] = true
-            
-            duration = manager.ui["Various"]["animation_duration_s"][]
-            fps = manager.ui["Various"]["animation_fps"][]
-            rng = target_widget.range[]
-            start_time = time()
-            
-            animation_timer[] = Timer(0.0, interval = 1/fps) do t
-                if !is_animating[]
-                    close(t); return
+            # THE FIX: Only check if the base structure (Tuple or Vector) matches!
+            if (T <: Tuple && parsed isa Tuple) || (T <: Vector && parsed isa Vector)
+                try
+                    obs[] = parsed
+                catch e
+                    @warn "Failed to apply value. The parameter strictly expects $T, but you provided $(typeof(parsed)). If you want to change the length of this tuple dynamically, initialize it as Observable{Any}."
                 end
-                elapsed = mod(time() - start_time, duration)
-                progress = elapsed / duration
-                val = rng[1] + progress * (rng[end] - rng[1])
-                set_close_to!(target_widget, val)
+            else
+                @warn "Type mismatch for complex input. Expected a $(T <: Tuple ? "Tuple" : "Vector"), but got $(typeof(parsed))."
+            end
+        else
+            # Fallback for any other types
+            obs[] = parse(T, input_str)
+        end
+    catch e
+        @warn "Invalid input: Could not parse '$input_str' as $T. The value remains: $current_val"
+    end
+end
+
+
+
+
+"""
+    generate_dynamic_title(x_key, y_key, dim_idx, manager, dim_names, sel_vals)
+
+Constructs the plot title dynamically. It lists all fixed parameters and base variables,
+marks the actively plotted dimension, and allows for a user-defined override via `manager.ui`.
+"""
+function generate_dynamic_title(
+    dim_idx::Int, 
+    dim_names::Vector{String}, 
+    sel_vals
+)
+    # 2. Build the Default Dynamic Title
+    title_parts = String[]
+    
+    for i in 1:length(dim_names)
+        name = dim_names[i]
+        
+        if i == dim_idx
+            # This is the axis we are currently plotting along (the colon ':' in the tensor slice)
+            push!(title_parts, "$name = [Axis]")
+        else
+            val = sel_vals[i]
+            # Format floats neatly to 3 decimal places to prevent title bloat
+            val_str = val isa AbstractFloat ? @sprintf("%.3f", val) : string(val)
+            push!(title_parts, "$name = $val_str")
+        end
+    end
+    
+    # Join all the parts together with a separator
+    return join(title_parts, " | ")
+end
+function generate_reference_simdata(ref_func::Function, params::ParamDict)
+    N = _REFERENCE_RESOLUTION[]
+    
+    # 1. Extract physical bounds directly from parameters (Strict requires)
+    xmin = params["mins"]
+    xmax = params["maxs"]
+    tmax = params["tmax"]
+    snapshots = params["snapshots"]
+    
+    # Optional parameters
+    tmin = get(params, "tmin", 0.0)
+    
+    # Determine dimensionality based on the type of xmin
+    D = length(xmin)
+    
+    # 2. Build the high-res spatial axes
+    axes_list = ntuple(D) do d
+        min_val = Float64(xmin[d])
+        max_val = Float64(xmax[d])
+        collect(range(min_val, max_val, length=N))
+    end
+    
+    # 3. Build the time vector (snapshots + 1 ensures we include t=0)
+    t_vec = tmax > tmin ? collect(range(tmin, tmax, length=snapshots+1)) : [Float64(tmin)]
+    T = length(t_vec)
+    
+    # Evaluate one point to find the number of components (C)
+    # --- THE FIX: Create an SVector cleanly using ntuple ---
+    sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
+    sample_val = ref_func(sample_pos, t_vec[1])
+    C = length(sample_val)
+    
+    # 4. Allocate the dense tensor
+    grid_shape = ntuple(d -> N, D)
+    u_exact = zeros(Float64, C, grid_shape..., T)
+    
+    # 5. Evaluate the exact function on the fly
+    Threads.@threads for t_idx in 1:T
+        t = t_vec[t_idx]
+        for idx in CartesianIndices(grid_shape)
+            # --- THE FIX: Native, allocation-free SVector creation ---
+            pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
+            exact_val = ref_func(pos, t)
+            
+            for c in 1:C
+                u_exact[c, Tuple(idx)..., t_idx] = exact_val[c]
             end
         end
     end
+    
+# Create the lightweight ESimData that exists ONLY in RAM
+    ram_data = ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
+    
+    # THE FIX: Calculate baseline stats instantly without touching the hard drive!
+    IRunPDESims._calculate_stats!(Val(:series), ram_data, ram_data.x, ram_data.u, ref_func)
+    
+    return ram_data
+end
+
+# ==============================================================================
+# 1. TASK & CONFIGURATION ANALYSIS
+# ==============================================================================
+
+function _recombine_tuples!(params::Dict)
+    tuple_groups = Dict{String, Vector{Pair{Int, Any}}}()
+    keys_to_remove = String[]
+    
+    for (k, v) in params
+        if occursin("__", k)
+            parts = split(k, "__")
+            if length(parts) == 2
+                base_name, idx_str = parts[1], parts[2]
+                idx = tryparse(Int, idx_str)
+                if !isnothing(idx)
+                    if !haskey(tuple_groups, base_name)
+                        tuple_groups[base_name] = Pair{Int, Any}[]
+                    end
+                    push!(tuple_groups[base_name], idx => v)
+                    push!(keys_to_remove, k)
+                end
+            end
+        end
+    end
+    
+    for k in keys_to_remove
+        delete!(params, k)
+    end
+    
+    for (base_name, pairs) in tuple_groups
+        sort!(pairs, by = x -> x[1])
+        params[base_name] = Tuple(x[2] for x in pairs)
+    end
+    return params
 end
 """
     apply_scene_options!(manager::PlotManager, scene_options::Dict)
@@ -347,6 +350,18 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         # Instantiate the exact mathematical closure using the loaded shared parameters
         if !isnothing(ref_factory)
             ref_func = Base.invokelatest(ref_factory, shared_params)
+            
+            # --- THE FIX: Auto-Inject the Reference Method! ---
+            # Because reference methods often have empty parameter dicts, they don't 
+            # get saved as rows in the CSV. We must explicitly rebuild their presence here.
+            ns = nice_string(safe_ref_name)
+            if !haskey(methods_dict, ns)
+                methods_dict[ns] = ParamDict()
+            end
+            if !(ns in default_methods)
+                push!(default_methods, ns)
+            end
+            
         else
             @warn "Failed to resolve reference function: $safe_ref_name"
         end
@@ -470,23 +485,6 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
 end
 
 """
-    get_julia_info()
-Returns a dictionary containing the Julia version and the versions of 
-loaded/project packages.
-"""
-function get_julia_info()
-    info = Dict{String, Any}("Julia" => string(VERSION))
-    
-    # Get versions of all dependencies in the current project
-    for (uuid, pkg) in Pkg.dependencies()
-        if pkg.is_direct_dep
-            info[pkg.name] = string(pkg.version)
-        end
-    end
-    return info
-end
-
-"""
     _value_to_string_for_csv(v)
 
 A robust helper to convert a Julia object to a string for CSV saving.
@@ -521,69 +519,66 @@ function _value_to_string_for_csv(v)
     return string(v)
 end
 
-# This function can be added to your plotting_helpers.jl or a similar utility file.
-
-
-"""
-    get_git_info(start_path=".") -> Union{Dict{String, Any}, Nothing}
-
-Inspects the Git repository containing the given path and returns key information
-about the current state (HEAD commit). It robustly finds the repository root by
-searching upwards from the `start_path`.
-"""
-function get_git_info(start_path::String = ".")
-    try
-        # --- Robust Repo Discovery Logic ---
-        current_path = abspath(start_path)
-        repo_root_path = nothing
-
-        while true
-            if isdir(joinpath(current_path, ".git"))
-                repo_root_path = current_path
-                break
+function get_all_git_infos(start_path::String = ".")
+    git_infos = Dict{String, Dict{String, Any}}()
+    
+    for (root, dirs, files) in walkdir(abspath(start_path))
+        if ".git" in dirs
+            try
+                repo = LibGit2.GitRepo(root)
+                commit = LibGit2.peel(LibGit2.GitCommit, LibGit2.head(repo))
+                
+                repo_name = basename(root)
+                git_infos[repo_name] = Dict{String, Any}(
+                    "git_commit_hash" => string(LibGit2.GitHash(commit)),
+                    "git_commit_summary" => LibGit2.summary(commit),
+                    "git_commit_count" => try parse(Int, readchomp(`git -C $root rev-list --count HEAD`)) catch; -1 end
+                )
+            catch e
+                # Ignore invalid or empty repositories silently
             end
-            parent_path = dirname(current_path)
-            if parent_path == current_path; break; end
-            current_path = parent_path
-        end
-
-        if isnothing(repo_root_path)
-            @warn "Could not find a .git repository in or above the path: $(abspath(start_path))"
-            return nothing
         end
         
-        repo = LibGit2.GitRepo(repo_root_path)
-        
-        # --- Extract Information ---
-        head_ref = LibGit2.head(repo)
-        commit = LibGit2.peel(LibGit2.GitCommit, head_ref)
-        
-        # --- THIS IS THE FINAL FIX ---
-        # The most robust, idiomatic way to get the hash is to construct a
-        # `GitHash` object from the commit, then convert it to a string.
-        commit_hash = string(LibGit2.GitHash(commit))
-        # --- END OF FIX ---
-
-        commit_summary = LibGit2.summary(commit)
-        
-        commit_count = try
-            parse(Int, readchomp(`git -C $repo_root_path rev-list --count HEAD`))
-        catch
-            -1 # Indicate count could not be determined
-        end
-
-        return Dict{String, Any}(
-            "git_commit_hash" => commit_hash,
-            "git_commit_count" => commit_count,
-            "git_commit_summary" => commit_summary,
-            "julia_version" => string(VERSION)
-        )
-        
-    catch e
-        @warn "Could not retrieve Git information." exception=(e, catch_backtrace())
-        return nothing
+        # Prune the walk algorithm to prevent freezing!
+        filter!(d -> !(d in [".git", "build", "node_modules", ".vscode", "docs"]), dirs)
     end
+    
+    return git_infos
 end
+
+function get_julia_info(git_repo_names::Vector{String})
+    info = Dict{String, Dict{String, Any}}()
+    info["System"] = Dict{String, Any}("Julia_Version" => string(VERSION))
+    
+    deps = Pkg.dependencies()
+    
+    # 1. Main Project Direct Dependencies
+    top_deps = Dict{String, Any}()
+    for (uuid, pkg) in deps
+        if pkg.is_direct_dep
+            top_deps[pkg.name] = string(pkg.version)
+        end
+    end
+    info["Main_Project"] = top_deps
+    
+    # 2. Local Sub-Packages (Match git repo names)
+    for (uuid, pkg) in deps
+        if pkg.name in git_repo_names
+            sub_deps = Dict{String, Any}()
+            for (dep_name, dep_uuid) in pkg.dependencies
+                if haskey(deps, dep_uuid)
+                    sub_deps[dep_name] = string(deps[dep_uuid].version)
+                end
+            end
+            if !isempty(sub_deps)
+                info[pkg.name] = sub_deps
+            end
+        end
+    end
+    return info
+end
+
+
 function saveParametersToCSV(
     base_filename::String,
     save_dir::String,
@@ -605,13 +600,18 @@ function saveParametersToCSV(
         # --- 1. CATEGORY: Metadata ---
         for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
         
-        git_info = get_git_info(pwd())
-        if !isnothing(git_info)
-            for (k, v) in git_info; add_row("Metadata", "Git", k, v); end
+        # --- NEW CATEGORY: Git (Scope = Repo Name) ---
+        git_infos = get_all_git_infos(pwd())
+        for (repo_name, info) in git_infos
+            for (k, v) in info; add_row("Git", repo_name, k, v); end
         end
 
-        julia_info = get_julia_info()
-        for (k, v) in julia_info; add_row("Metadata", "Julia", k, v); end
+        # --- NEW CATEGORY: Julia (Scope = Main Project or Local Sub-Package) ---
+        repo_names = collect(keys(git_infos))
+        julia_infos = get_julia_info(repo_names)
+        for (scope, info) in julia_infos
+            for (k, v) in info; add_row("Julia", scope, k, v); end
+        end
 
         # --- 2. CATEGORY: Scene (THE FIX) ---
         # Safely uses your existing extraction function instead of digging through nested controls

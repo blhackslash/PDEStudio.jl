@@ -105,7 +105,8 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
 
         if lowercase(strip(input_str)) == "default"
-            vt[idx] = VariableControls[idx]
+            # Component (idx=1) defaults to a :menu, space/time default to :slider
+            vt[idx] = (idx == 1 ? :menu : :slider)
             @info "Restored default control for $var_name."
         else
             val = tryparse(Int, input_str)
@@ -212,7 +213,8 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         obs = getproperty(manager, cat_mapping[cat])[scope][key]
         
         active_target_obs[] = obs
-        manager.controls["String"]["Editor_Display"][] = string(to_value(obs))
+        disp_string = string(to_value(obs))
+        manager.controls["String"]["Editor_Display"][] = isempty(disp_string) ? "none" : disp_string
     end
 
     on(manager.controls["String"]["Editor_Text"]) do s
@@ -294,7 +296,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 e_ax.perspectiveness[] = c_ax.perspectiveness[]
                 e_ax.lookat[] = c_ax.lookat[]
             elseif c_ax isa Axis
-                e_ax.finallimits[] = c_ax.finallimits[]
+                # THE FIX: Explicitly apply the numeric limits! 
+                # Assigning the observable fails to trigger the layout pipeline.
+                lims = c_ax.finallimits[]
+                limits!(e_ax, lims.origin[1], lims.origin[1] + lims.widths[1], 
+                              lims.origin[2], lims.origin[2] + lims.widths[2])
             end
         end
         
@@ -437,19 +443,23 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     function _update_menu!(menu_widget, new_options; fallbacks=["x", "y", "z", "t"])
         curr = menu_widget.selection[]
         menu_widget.options[] = isempty(new_options) ? ["-"] : new_options
-        if curr == "-" || isnothing(curr) || curr ∉ new_options
+        
+        # THE FIX: Safely extract values if the options are (Display, Value) Tuples
+        opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
+
+        if curr == "-" || isnothing(curr) || curr ∉ opt_values
             if isempty(new_options)
                 menu_widget.i_selected[] = 0
             else
                 idx = nothing
                 for f in fallbacks
-                    idx = findfirst(isequal(f), new_options)
+                    idx = findfirst(isequal(f), opt_values)
                     !isnothing(idx) && break
                 end
                 menu_widget.i_selected[] = isnothing(idx) ? 1 : idx
             end
         else
-            menu_widget.i_selected[] = findfirst(isequal(curr), new_options)
+            menu_widget.i_selected[] = findfirst(isequal(curr), opt_values)
         end
     end
 
@@ -487,8 +497,19 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
         
         sort!(valid_axes)
+        # THE FIX: Apply custom component names using Makie's (Display, Value) syntax
+        comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+        c_options = Any[]
+        for i in 1:comp_max
+            name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && 
+                    comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? 
+                    string(comp_names_tuple[i]) : string(i)
+            
+            push!(c_options, (name, string(i))) # (Display String, Actual Value)
+        end
+        
         _update_menu!(c["Widget"]["X-Axis"][], valid_axes; fallbacks=["x", "t", "y", "z"])
-        _update_menu!(c["Widget"]["c"][], [string(i) for i in 1:comp_max]; fallbacks=["1"])
+        _update_menu!(c["Widget"]["c"][], c_options; fallbacks=["1"])
         
         p_dim = PLOT_DIM_MAP[ptype]
         if p_dim >= 2

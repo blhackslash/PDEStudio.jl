@@ -1,10 +1,3 @@
-include("UIStyles.jl")
-include("PlottingUtils.jl")
-include("ControlUtils.jl")
-include("Controls.jl")
-include("InteractionController.jl") # <-- The new Logic Controller
-include("Render.jl")
-
 # ==============================================================================
 # --- GLOBAL UI STATE REFERENCES ---
 # ==============================================================================
@@ -237,7 +230,13 @@ function launch_plotter()
         manager.controls["State"]["Param_Map"] = Observable(param_map)
         manager.controls["State"]["Reverse_Map"] = Observable(reverse_map)
         manager.plot_vars = [real_params; ["c", "x", "y", "z", "t"]]
+        
         manager.config["Parameters"] = copy(new_config.varied_params)
+        # THE FIX: Sync the General config so the CSV saves the active functions!
+        if !haskey(manager.config, "General"); manager.config["General"] = Dict{String, Any}(); end
+        manager.config["General"]["simulation_func"] = new_config.simulation_name
+        manager.config["General"]["reference_func"]  = isnothing(new_config.reference_name) ? "none" : new_config.reference_name
+        
         # --- The rest proceeds normally without rebooting! ---
         make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
         empty!(manager.simulation)
@@ -356,7 +355,20 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         elseif target == "Component"
             comp_idx = findfirst(isequal("c"), manager.plot_vars)
             num_plots = size(pd_first.data["u"], comp_idx - (length(manager.plot_vars) - 5))
-            compare_labels = ["Component $i" for i in 1:num_plots]
+            
+            # THE FIX: Use custom component names for Compare Mode labels!
+            comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+            compare_labels = String[]
+            
+            for i in 1:num_plots
+                if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && 
+                   comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
+                    push!(compare_labels, string(comp_names_tuple[i]))
+                else
+                    push!(compare_labels, "Component $i")
+                end
+            end
+            
             compare_vals = collect(1:num_plots)
         elseif target == "Time"
             num_plots = length(pd_first.t_vals)
@@ -517,6 +529,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             _render_method_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
         else
             _render_variable_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
+        end
+        for ax in axes
+            apply_axis_limits_overrides!(ax, manager)
         end
         resize_to_layout!()
     end
