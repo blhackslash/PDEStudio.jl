@@ -15,6 +15,28 @@ const BaseVariables = ["c","x","y","z","t"]
 const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
 const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 
+# --- 3. Makie Rendering Cache ---
+"""
+    PlotCache
+Holds the reactive observables and primitive objects for a single plot layer.
+"""
+mutable struct PlotCache
+    obs_x::Observable{Any}
+    obs_y::Observable{Any}
+    obs_z::Observable{Any}
+    obs_u::Observable{Any}
+    primitives::Dict{String, Any}
+end
+
+# Helper to initialize empty caches
+PlotCache() = PlotCache(
+    Observable{Any}(Float64[]), 
+    Observable{Any}(Float64[]), 
+    Observable{Any}(Float64[]), 
+    Observable{Any}(Float64[]), 
+    Dict{String, Any}()
+)
+
 # In Controls.jl / Structs.jl
 mutable struct PlotManager 
     simulation::NestedObsDict
@@ -24,6 +46,7 @@ mutable struct PlotManager
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
     last_run_params::ParamDict
+    caches::Dict{Int, Dict{String, PlotCache}}
 end
 
 

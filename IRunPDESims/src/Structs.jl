@@ -137,11 +137,6 @@ function SimulationConfig(
     if !isnothing(ref_name_safe) && !haskey(methods, ref_name_safe)
         ns = nice_string(ref_name_safe)
         methods[ns] = ParamDict()
-        
-        # THE FIX: Inject it into the default methods so it boots up natively on CSV load!
-        if !(ns in defaults)
-            push!(defaults, ns)
-        end
     end
 
     # 4. Pass the resolved string and functions to the base constructor

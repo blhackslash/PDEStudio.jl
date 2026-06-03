@@ -582,7 +582,8 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
         
         sort!(valid_fields)
-        _update_menu!(c["Widget"]["U-Axis"][], valid_fields)
+        # THE FIX: Add standard physical fallbacks so it doesn't default to index 1 ("x")
+        _update_menu!(c["Widget"]["U-Axis"][], valid_fields; fallbacks=["u", "v", "rho", "p"])
     end
 
     # 3. Sync Slider Ranges (The core data injection to the UI!)
@@ -671,11 +672,29 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
         end
         if c["State"]["Config_Just_Loaded"][]
-            # Force the flag to false BEFORE applying options to completely prevent re-entrancy loops!
-            c["State"]["Config_Just_Loaded"].val = false
-            
+            # Apply Scene Options NOW that the dropdowns and sliders have valid options!
             opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
+            
+            if !isempty(GLOBAL_UI_OVERWRITE[])
+                for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
+                    if haskey(manager.ui, scope)
+                        for (k, v) in keys_dict
+                            if haskey(manager.ui[scope], k)
+                                manager.ui[scope][k][] = v
+                            end
+                        end
+                    end
+                end
+                GLOBAL_UI_OVERWRITE[] = Dict{String, Any}() # Flush the queue
+            end
+            
+            # NOW safely unlock the pipeline!
+            c["State"]["Config_Just_Loaded"].val = false
+            
+            # Force the first Render & Style passes natively
+            manager.controls["State"]["Primitive_Rebuild"][] += 1
+            manager.controls["State"]["UI_Update"][] += 1
         end
     end
 end

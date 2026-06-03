@@ -21,8 +21,8 @@ function plot_reference_lines!(
     xmax = xmin + bbox.widths[1]
     ymax = ymin + bbox.widths[2]
     
-    if any(x -> x <= 0, (xmin, xmax, ymin, ymax)) && (ax.xscale[] == log10 || ax.yscale[] == log10)
-        return [] # Abort gracefully if data hasn't been cleaned for logscale yet
+    if (xmin <= 0 || xmax <= 0) && (ax.xscale[] == log10 || ax.yscale[] == log10)
+        return [] # Mathematically impossible to generate log-spaced reference lines crossing zero
     end
 
     x_ref_values = 10 .^ range(log10(xmin), log10(xmax), length=100)

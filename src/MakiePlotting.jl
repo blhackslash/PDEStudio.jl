@@ -4,6 +4,7 @@
 const GLOBAL_UI_OVERWRITE = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slider, :slider])
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
+const GLOBAL_LAYOUT_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 
 # Singleton Global Observables & State
 const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
@@ -113,11 +114,18 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     
     controls_obs["State"]["base_types"] = Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]])
     
-    # THE FIX: Initialize it directly into the state store!
-    controls_obs["State"]["UI_Update"] = Observable(0) 
+    # --- TIERED ARCHITECTURE TRIGGERS ---
+    controls_obs["State"]["Layout_Update"]    = Observable(0) # Tier 1 (Structure)
+    controls_obs["State"]["Scene_Update"]     = Observable(0) # Tier 1.5 (Presets/Axes)
+    controls_obs["State"]["Primitive_Rebuild"]= Observable(0) # Tier 2 (Blueprint)
+    controls_obs["State"]["Data_Sync"]        = Observable(0) # Tier 3 (Render)
+    controls_obs["State"]["UI_Update"]        = Observable(0) # Tier 4 (Style)
     controls_obs["State"]["Config_Just_Loaded"] = Observable(false)
 
     controls_obs["Misc"]["Master_UI_Ref"] = Observable(master_ui)
+    
+    # Initialize the master cache store: Dict{Plot_Idx, Dict{Method_Name, PlotCache}}
+    controls_obs["Misc"]["Plot_Caches"] = Dict{Int, Dict{String, PlotCache}}()
 
     config_dict = ParamDict(
         "Parameters" => copy(sim_config.varied_params),
@@ -127,7 +135,16 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         )
     )
     
-    manager = PlotManager(sim_obs, ui_obs, config_dict, controls_obs, methods_obs, vars, copy(sim_config.shared_params))
+    manager = PlotManager(
+        sim_obs, 
+        ui_obs, 
+        config_dict, 
+        controls_obs, 
+        methods_obs, 
+        vars, 
+        copy(sim_config.shared_params),
+        Dict{Int, Dict{String, PlotCache}}() # <-- Initialize the empty caches natively
+    )
     switch_ui_plot_type!(manager, init_type)
     
     for (scope, keys_dict) in ui_overwrite
@@ -251,15 +268,39 @@ function launch_plotter()
             manager.methods[] = filter(k -> k != "shared", copy(new_config.default_methods))
         end
         
+        # 1. LOCK THE PIPELINE
         manager.controls["State"]["Config_Just_Loaded"][] = true
-        manager.controls["State"]["Simulation_Update"][] += 1
+        
+        layout_opts = isempty(GLOBAL_LAYOUT_OPTIONS[]) ? get_base_layout_options() : GLOBAL_LAYOUT_OPTIONS[]
+        
+        apply_layout_options!(manager, layout_opts)
+        
+        if !isempty(GLOBAL_UI_OVERWRITE[])
+            for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
+                if haskey(manager.ui, scope)
+                    for (k, v) in keys_dict
+                        if haskey(manager.ui[scope], k)
+                            manager.ui[scope][k].val = v 
+                        end
+                    end
+                end
+            end
+            GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
+            manager.controls["State"]["UI_Update"][] += 1
+        end
+
+        # 2. UNLOCK THE PIPELINE AND FIRE ONCE
+        manager.controls["State"]["Config_Just_Loaded"][] = false
+        manager.controls["State"]["Layout_Update"][] += 1
     end
 
     on(manager.controls["State"]["Simulation_Update"]) do _
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
         Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.controls["State"]["base_types"]); force_reload = true)
+        
         notify(plot_data_obs)
+        manager.controls["State"]["Primitive_Rebuild"][] += 1
     end
 
     setup_plot_window!(master_fig, plot_layout, manager, plot_data_obs)
@@ -284,9 +325,9 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         for obs in render_observers; off(obs); end
         empty!(render_observers)
         
-        # ==========================================================================
-        # THE FIX: Safely Purge ONLY the Plot Layout (Leaves controls untouched!)
-        # ==========================================================================
+        empty!(manager.caches)
+        
+        # Safely Purge ONLY the Plot Layout
         for c in copy(plot_layout.content)
             if c.content isa Makie.Block
                 delete!(c.content)
@@ -299,14 +340,13 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         new_obs = setup_render_lift!(master_fig, plot_layout, plot_data_obs, manager, Val(ptype_sym))
         if !isnothing(new_obs); append!(render_observers, new_obs); end
         
+        # The dropdowns populate, sync safely aborts, then rebuild runs!
         notify(plot_data_obs)
+        manager.controls["State"]["Primitive_Rebuild"][] += 1
     end
 
-    onany(
-        manager.controls["Selection"]["Plot_Type"], manager.controls["Selection"]["Compare_Target"], 
-        manager.controls["Selection"]["Compare_Columns"], manager.controls["Selection"]["Compare_Link"],
-        manager.controls["Selection"]["Plot_Width"], manager.controls["Selection"]["Plot_Height"]
-    ) do _...
+    # --- TIER 1: Layout Rebuild ---
+    on(manager.controls["State"]["Layout_Update"]) do _
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
             Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.controls["State"]["base_types"]); force_reload = false)
@@ -314,13 +354,52 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         rebuild_plot_layout!()
     end
 
+    # --- TIER 1.5: Scene Options Update ---
+    on(manager.controls["State"]["Scene_Update"]) do _
+        curr_config = ACTIVE_SIM_CONFIG[]
+        if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
+            Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.controls["State"]["base_types"]); force_reload = false)
+        end
+        # Changing X/Y axes requires us to rebind the observables, so trigger a rebuild
+        manager.controls["State"]["Primitive_Rebuild"][] += 1
+    end
+
+    onany(
+        manager.controls["Selection"]["X-Axis"],
+        manager.controls["Selection"]["Y-Axis"],
+        manager.controls["Selection"]["Z-Axis"],
+        manager.controls["Selection"]["U-Axis"],
+        manager.controls["Selection"]["c"]
+    ) do _...
+        if manager.controls["State"]["Config_Just_Loaded"][]; return; end
+        manager.controls["State"]["Primitive_Rebuild"][] += 1
+    end
+    # 2. Wire the Structural Menus to ping the Layout trigger
+    onany(
+        manager.controls["Selection"]["Plot_Type"], manager.controls["Selection"]["Compare_Target"], 
+        manager.controls["Selection"]["Compare_Columns"], manager.controls["Selection"]["Compare_Link"],
+        manager.controls["Selection"]["Plot_Width"], manager.controls["Selection"]["Plot_Height"]
+    ) do _...
+        if manager.controls["State"]["Config_Just_Loaded"][]; return; end
+        manager.controls["State"]["Layout_Update"][] += 1
+    end
+
+    # 3. Smart Legend Routing
     prev_leg_struct = Ref((false, :none, :none))
     onany(manager.controls["Selection"]["Legend_Base"], manager.controls["Selection"]["Legend_Add"]) do _...
+        if manager.controls["State"]["Config_Just_Loaded"][]; return; end
         is_comp = manager.controls["Selection"]["Compare_Target"][] != "None"
         curr = _parse_legend_position(manager, is_comp)
         p = prev_leg_struct[]
-        if (!curr[1] && !p[1]); notify(plot_data_obs) 
-        else; prev_leg_struct[] = curr; rebuild_plot_layout!(); end
+        
+        if (!curr[1] && !p[1])
+            # If it's just moving around inside the axis, we only need to update the UI/Render
+            manager.controls["State"]["UI_Update"][] += 1
+        else
+            # If it changes from attached to detached, we need a structural layout rebuild
+            prev_leg_struct[] = curr
+            manager.controls["State"]["Layout_Update"][] += 1
+        end
     end
 
     rebuild_plot_layout!()
@@ -353,22 +432,19 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             compare_labels = manager.methods[]
             num_plots = length(compare_labels)
         elseif target == "Component"
-            comp_idx = findfirst(isequal("c"), manager.plot_vars)
-            num_plots = size(pd_first.data["u"], comp_idx - (length(manager.plot_vars) - 5))
+            n_params = length(manager.plot_vars) - 5
+            target_tensor = haskey(pd_first.data, u_sel[]) ? pd_first.data[u_sel[]] : pd_first.data["u"]
+            num_plots = size(target_tensor, n_params + 1) # THE FIX: Component is n_params + 1
             
-            # THE FIX: Use custom component names for Compare Mode labels!
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
             compare_labels = String[]
-            
             for i in 1:num_plots
-                if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && 
-                   comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
+                if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
                     push!(compare_labels, string(comp_names_tuple[i]))
                 else
                     push!(compare_labels, "Component $i")
                 end
             end
-            
             compare_vals = collect(1:num_plots)
         elseif target == "Time"
             num_plots = length(pd_first.t_vals)
@@ -473,7 +549,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         target_idx = target == "Component" ? findfirst(isequal("c"), manager.plot_vars) :
                      target == "Time" ? findfirst(isequal("t"), manager.plot_vars) :
                      findfirst(isequal(target), manager.plot_vars)
-        
+
         u_all = Float64[]
         all_subplots_data = []
         
@@ -511,29 +587,218 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         manager.ui["Axis-General"]["title_size"].val = orig_title_size
         if has_cr; ui_app["colorrange"].val = orig_cr; end
     end
+    # --- THE FIX: The missing comparison mutator ---
+    target_idx = target == "Component" ? findfirst(isequal("c"), manager.plot_vars) :
+                 target == "Time"      ? findfirst(isequal("t"), manager.plot_vars) :
+                 findfirst(isequal(target), manager.plot_vars)
 
+    function _mutate_compare_vals(current_sels, idx)
+        mutated = collect(current_sels)
+        if !isnothing(target_idx) && !isempty(compare_vals) && idx <= length(compare_vals)
+            mutated[target_idx] = compare_vals[idx]
+        end
+        return mutated
+    end
     # --- THE RENDER LOOP ---
-    render_obs = onany(plot_data_obs, x_sel, y_sel, z_sel, u_sel, c["State"]["UI_Update"], selector_obs...) do data, x_key, y_key, z_key, u_key, _ui, sel_vals...
-        (isnothing(x_key) || isnothing(u_key) || x_key == "-" || u_key == "-") && return
+    # =========================================================================
+    # TIER 2: PRIMITIVE REBUILD
+    # =========================================================================
+    prim_obs = on(manager.controls["State"]["Primitive_Rebuild"]) do _
+        # 1. Base Pre-Flight Check
+        (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
+        
+        # 2. Dimensional Pre-Flight Check (THE FIX)
+        if PLOT_DIM_MAP[T] >= 2
+            (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return
+        end
+        if PLOT_DIM_MAP[T] >= 3
+            (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return
+        end
+        
+        data = plot_data_obs[]
         isempty(data) && return
-
+        
+        # 1. Clear old caches natively
+        empty!(manager.caches)
+        
         for ax in axes
+            empty!(ax)
             if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
         end
         
         ui_app = manager.ui["Plot-Style"]
+        sel_vals = [to_value(obs) for obs in selector_obs]
+
+        for i in 1:num_plots
+            manager.caches[i] = Dict{String, PlotCache}()
+            
+            mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+            dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+            
+            local_methods = manager.methods[]
+            if target == "Methods" && i <= length(vl)
+                vl = [vl[i]]
+                dt = Tuple([slice[i]] for slice in dt)
+                local_methods = [manager.methods[][i]]
+            end
+            
+            initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
+            
+            if !is_3d_axis; 
+                plot_HUD!(axes[i], manager)
+                set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+            end
+        end
         
-        if target == "None" || num_plots <= 1
-            _render_no_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
-        elseif target == "Methods"
-            _render_method_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
-        else
-            _render_variable_comparison!(data, sel_vals, x_key, y_key, z_key, u_key, ui_app)
-        end
-        for ax in axes
-            apply_axis_limits_overrides!(ax, manager)
-        end
-        resize_to_layout!()
+        manager.controls["State"]["UI_Update"][] += 1
     end
-    return render_obs
+
+    # =========================================================================
+    # TIER 3: DATA SYNC
+    # =========================================================================
+    # =========================================================================
+    # TIER 3: DATA SYNC
+    # =========================================================================
+    data_sync_obs = onany(plot_data_obs, selector_obs...) do data, sel_vals...
+        # 1. Base Pre-Flight Check
+        (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
+        
+        # 2. Dimensional Pre-Flight Check (THE FIX)
+        if PLOT_DIM_MAP[T] >= 2
+            (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return
+        end
+        if PLOT_DIM_MAP[T] >= 3
+            (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return
+        end
+        # 1. Native access!
+        caches = manager.caches
+        (isempty(data) || isempty(caches)) && return
+        
+        for i in 1:num_plots
+            mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+            dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+            
+            local_methods = manager.methods[]
+            if target == "Methods" && i <= length(vl)
+                vl = [vl[i]]
+                dt = Tuple([slice[i]] for slice in dt)
+                local_methods = [manager.methods[][i]]
+            end
+            
+            sync_data_to_cache!(caches[i], vl, dt, Val(PLOT_DIM_MAP[T]))
+            
+            # THE FIX: Force overwrite the title for comparisons
+            default_title = is_compare ? compare_labels[i] : ts
+            axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+            
+            if !is_3d_axis
+                set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+            end
+        end
+        
+        for ax in axes; apply_axis_limits_overrides!(ax, manager); end
+    end
+    # =========================================================================
+    # TIER 4: UI & STYLE MUTATION 
+    # =========================================================================
+    ui_obs = on(manager.controls["State"]["UI_Update"]) do _
+        ui_gen = manager.ui["Axis-General"]
+        ui_app = manager.ui["Plot-Style"]
+        
+        x_str = manager.controls["Selection"]["X-Axis"][]
+        y_str = manager.controls["Selection"]["Y-Axis"][]
+        z_str = manager.controls["Selection"]["Z-Axis"][]
+        u_str = manager.controls["Selection"]["U-Axis"][]
+        
+        for (i, ax) in enumerate(axes)
+            # 1. Update Labels natively
+            if is_3d_axis
+                set_axis_styles!(ax, manager, string(x_str), string(y_str), string(z_str), ax.title[])
+            elseif PLOT_DIM_MAP[T] == 1
+                set_axis_styles!(ax, manager, string(x_str), string(u_str), ax.title[])
+            else
+                set_axis_styles!(ax, manager, string(x_str), string(y_str), ax.title[])
+            end
+            apply_axis_limits_overrides!(ax, manager)
+            
+            # 2. Mutate Primitive Styles natively
+            if haskey(manager.caches, i)
+                for (m_idx, method_name) in enumerate(manager.methods[])
+                    if haskey(manager.caches[i], method_name)
+                        prims = manager.caches[i][method_name].primitives
+                        color = ui_app["colors"][][mod1(m_idx, end)]
+                        
+                        if haskey(prims, "line")
+                            prims["line"].color[] = color
+                            prims["line"].linewidth[] = ui_app["linewidth"][]
+                            prims["line"].linestyle[] = ui_app["dashed_lines"][] ? ui_app["lineStyles"][][mod1(m_idx, end)] : :solid
+                            prims["line"].visible[] = ui_app["show_lines"][]
+                        end
+                        if haskey(prims, "scatter")
+                            prims["scatter"].color[] = color
+                            prims["scatter"].markersize[] = ui_app["markersize"][]
+                            prims["scatter"].marker[] = ui_app["markers"][][mod1(m_idx, end)]
+                            prims["scatter"].visible[] = ui_app["show_scatter"][]
+                        end
+                        if haskey(prims, "contour")
+                            prims["contour"].color[] = color
+                            prims["contour"].linewidth[] = ui_app["linewidth"][]
+                        end
+                        if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["colormap"][]; end
+                        if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["colormap"][]; end
+                        if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["colormap"][]; end
+                        if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["colormap"][]; end
+                        
+                        if haskey(prims, "scatter2d")
+                            prims["scatter2d"].colormap[] = ui_app["colormap"][]
+                            prims["scatter2d"].markersize[] = ui_app["markersize"][]
+                        end
+                        if haskey(prims, "scatter3d")
+                            prims["scatter3d"].colormap[] = ui_app["colormap"][]
+                            prims["scatter3d"].markersize[] = ui_app["markersize"][]
+                        end
+                    end
+                end
+            end
+        end
+        
+        # 3. Dynamic Legend Builder!
+        # Physically removes elements from the legend if they are toggled off in the UI
+        if !is_3d_axis && T in (:lines, :contour, :contourf) && haskey(manager.caches, 1)
+            plotted_objects = []
+            labels_for_legend = String[]
+            
+            for (m_idx, method_name) in enumerate(manager.methods[])
+                if haskey(manager.caches[1], method_name)
+                    prims = manager.caches[1][method_name].primitives
+                    color = ui_app["colors"][][mod1(m_idx, end)]
+                    
+                    if haskey(prims, "contourf")
+                        push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["colormap"][])[end])])
+                        push!(labels_for_legend, "$(method_name) (Base)")
+                    end
+                    
+                    group = []
+                    if haskey(prims, "line") && ui_app["show_lines"][]
+                        ls = ui_app["dashed_lines"][] ? ui_app["lineStyles"][][mod1(m_idx, end)] : :solid
+                        push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][], linestyle=ls))
+                    end
+                    if haskey(prims, "scatter") && ui_app["show_scatter"][]
+                        mrk = ui_app["markers"][][mod1(m_idx, end)]
+                        push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["markersize"][]))
+                    end
+                    if haskey(prims, "contour")
+                        push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][]))
+                    end
+                    
+                    if !isempty(group)
+                        push!(plotted_objects, group)
+                        if !haskey(prims, "contourf"); push!(labels_for_legend, method_name); end
+                    end
+                end
+            end
+            create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
+        end
+    end
+    return ObserverFunction[prim_obs; data_sync_obs; ui_obs]
 end

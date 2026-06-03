@@ -204,30 +204,61 @@ end
 
 Safely snaps UI widgets to the requested states natively through the MVC Dictionary structure.
 """
-function apply_scene_options!(manager::PlotManager, scene_options::Dict)
-    isempty(scene_options) && return
+function apply_layout_options!(manager::PlotManager, layout_options::Dict)
+    isempty(layout_options) && return
 
-    # 1. Apply Structural & Axis Menus
-    menu_keys = ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target", "c", "X-Axis", "Y-Axis", "Z-Axis", "U-Axis"]
-    
-    for k in menu_keys
+    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
         sel_key = "$(k)_Selection"
-        if haskey(scene_options, sel_key) && haskey(manager.controls["Widget"], k)
-            val = scene_options[sel_key]
+        if haskey(layout_options, sel_key) && haskey(manager.controls["Widget"], k)
+            val = layout_options[sel_key]
             widget = manager.controls["Widget"][k][]
             opts = manager.controls["Options"][k][]
             isempty(opts) && continue
             
             valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
             idx = findfirst(v -> string(v) == string(val), valid_vals)
+            
             if !isnothing(idx)
+                # THE FIX: Use native Makie triggers to update the UI text visually!
+                widget.i_selected[] = idx 
+                if haskey(manager.controls["Selection"], k)
+                    manager.controls["Selection"][k].val = valid_vals[idx]
+                end
+            end
+        end
+    end
+    # THE FIX: Only trigger rebuilds if called manually outside of a preset load
+    if !manager.controls["State"]["Config_Just_Loaded"][]
+        manager.controls["State"]["Layout_Update"][] += 1
+    end
+end
+
+function apply_scene_options!(manager::PlotManager, scene_options::Dict)
+    isempty(scene_options) && return
+
+    # 1. Apply Axis Dropdowns
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
+        sel_key = "$(k)_Selection"
+        if haskey(scene_options, sel_key) && haskey(manager.controls["Widget"], k)
+            # ... identical silent index matching logic as above ...
+            val = scene_options[sel_key]
+            widget = manager.controls["Widget"][k][]
+            opts = manager.controls["Options"][k][]
+            isempty(opts) && continue
+            valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
+            idx = findfirst(v -> string(v) == string(val), valid_vals)
+            if !isnothing(idx)
+                # THE FIX: Use native Makie triggers to update the UI text visually!
                 widget.i_selected[] = idx
+                if haskey(manager.controls["Selection"], k)
+                    manager.controls["Selection"][k].val = valid_vals[idx]
+                end
             end
         end
     end
 
+    # 2. Apply Slider Values
     rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
-    
     for (key, desired_val) in scene_options
         if endswith(key, "_Value")
             base_name = replace(key, "_Value" => "")
@@ -243,22 +274,21 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
                     if desired_val isa Real
                         val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
                     end
-                    set_close_to!(widget, val)
+                    # set_close_to! triggers the slider observable automatically, 
+                    # but doesn't cause a layout rebuild, which is perfect.
+                    set_close_to!(widget, val) 
                 end
             end
         end
     end
-    @info "Dynamic Scene Options Successfully Applied."
+    if !manager.controls["State"]["Config_Just_Loaded"][]
+        manager.controls["State"]["Primitive_Rebuild"][] += 1
+    end
 end
-
-function get_base_scene_options()
+# --- TIER 1: LAYOUT OPTIONS ---
+function get_base_layout_options()
     return Dict{String, Any}(
-        "X-Axis_Selection"          => "x",      
-        "U-Axis_Selection"          => "u",      
         "Plot_Type_Selection"       => "Lines",  
-        "c_Selection"               => 1,        
-        "t_Value"                   => 0.0,      
-        "x_Value"                   => 0.0,
         "Compare_Target_Selection"  => "None", 
         "Compare_Columns_Selection" => "2",     
         "Compare_Link_Selection"    => "Fully Coupled",
@@ -266,21 +296,41 @@ function get_base_scene_options()
         "Legend_Add_Selection"      => "detached",
         "Plot_Width_Selection"      => "600",
         "Plot_Height_Selection"     => "400",
+        "Anim_Target_Selection"     => "None"
+    )
+end
+
+function extract_layout_options(manager::PlotManager)
+    opts = Dict{String, Any}()
+    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+        if haskey(manager.controls["Selection"], k)
+            opts["$(k)_Selection"] = to_value(manager.controls["Selection"][k])
+        end
+    end
+    return opts
+end
+
+# --- TIER 2: SCENE OPTIONS ---
+function get_base_scene_options()
+    return Dict{String, Any}(
+        "X-Axis_Selection" => "x",      
+        "Y-Axis_Selection" => "disabled",
+        "Z-Axis_Selection" => "disabled",
+        "U-Axis_Selection" => "u",      
+        "c_Selection"      => 1,        
+        "t_Value"          => 0.0,      
+        "x_Value"          => 0.0,
     )
 end
 
 function extract_scene_options(manager::PlotManager)
     opts = Dict{String, Any}()
-    
-    # Matches the exact MVC keys defined in Controls.jl
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "Plot_Type", "c", "Compare_Target", 
-              "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
         if haskey(manager.controls["Selection"], k)
             opts["$(k)_Selection"] = to_value(manager.controls["Selection"][k])
         end
     end
     
-    # --- THE FIX: Map physical names back to widget aliases for extraction ---
     rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
     for k in manager.plot_vars
         w_key = haskey(rev_map, k) ? rev_map[k] : k
@@ -288,7 +338,6 @@ function extract_scene_options(manager::PlotManager)
             opts["$(k)_Value"] = to_value(manager.controls["Value"][w_key])
         end
     end
-    
     return opts
 end
 """
@@ -457,15 +506,7 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     
     # 3. Load Options FIRST so they are ready in Global State
     if haskey(parsed, "UI")
-        for (scope, keys_dict) in parsed["UI"]
-            if haskey(manager.ui, scope)
-                for (k, v) in keys_dict
-                    if haskey(manager.ui[scope], k)
-                        manager.ui[scope][k][] = v
-                    end
-                end
-            end
-        end
+        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
