@@ -53,6 +53,52 @@ function plot_reference_lines!(
 end
 
 """
+    get_colorrange(ui_app::Dict, u_data::AbstractArray)
+
+Extracts the colorrange from the UI dict, or calculates it dynamically from the data 
+if set to "default". Always returns an Observable Tuple of Float64.
+"""
+function get_colorrange(ui_app::Dict, u_data::AbstractArray)
+    cr_val = ui_app["colorrange"][]
+    
+    if isempty(cr_val)
+        valid_u = filter(isfinite, vec(u_data))
+        l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
+        if l_u == h_u; h_u += 1e-6; end
+        return Observable((l_u, h_u))
+    else
+        return Observable(Tuple(Float64.(cr_val)))
+    end
+end
+
+function apply_axis_limits_overrides!(ax, manager::PlotManager)
+    ui_x = manager.ui["X-Axis"]
+    ui_y = manager.ui["Y-Axis"]
+    
+    try
+        if haskey(ui_x, "lims") && length(ui_x["lims"][]) == 2
+            lx = Float64.(ui_x["lims"][])
+            if lx[1] < lx[2]; xlims!(ax, lx[1], lx[2]); end
+        end
+        
+        if haskey(ui_y, "lims") && length(ui_y["lims"][]) == 2
+            ly = Float64.(ui_y["lims"][])
+            if ly[1] < ly[2]; ylims!(ax, ly[1], ly[2]); end
+        end
+        
+        if ax isa Axis3 && haskey(manager.ui, "Z-Axis")
+            ui_z = manager.ui["Z-Axis"]
+            if haskey(ui_z, "lims") && length(ui_z["lims"][]) == 2
+                lz = Float64.(ui_z["lims"][])
+                if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
+            end
+        end
+    catch
+        @warn "Failed to apply manual axis limits. Please ensure the input is a 2-element vector like [-5.0, 5.0]."
+    end
+end
+
+"""
     delete_plots_by_label!(ax::Axis, label_to_delete::String)
 
 Finds all plot objects in a given axis that have a specific label and deletes them.

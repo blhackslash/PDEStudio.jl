@@ -9,6 +9,11 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, man
     _setup_hierarchy_interactions!(manager)
     _setup_export_interactions!(master_fig, plot_layout, manager, plot_data_obs)
     _setup_data_sync_interactions!(manager, plot_data_obs)
+    
+    # Kick off the cascade and FORCE Makie to listen
+    manager.widgets["Editor_Cat"].i_selected[] = 1
+    notify(manager.widgets["Editor_Cat"].selection)
+    
     notify(manager.methods)
 end
 
@@ -117,13 +122,15 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     end
 
     onany(manager.methods, is_activate_mode) do active_list, activate_mode
-        all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
-        opts = activate_mode ? filter(m -> !(m in active_list), all_method_names) : copy(active_list)
-        new_opts = isempty(opts) ? ["-"] : sort(opts)
-        
-        if menu_mth.options[] != new_opts
-            menu_mth.options[] = new_opts
-            menu_mth.i_selected[] = 1
+        @with_lock manager "Menu_Sync" begin
+            all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
+            opts = activate_mode ? filter(m -> !(m in active_list), all_method_names) : copy(active_list)
+            new_opts = isempty(opts) ? ["-"] : sort(opts)
+            
+            if menu_mth.options[] != new_opts
+                menu_mth.options[] = new_opts
+                menu_mth.i_selected[] = 1
+            end
         end
     end
 
@@ -134,20 +141,38 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     end
 
     on(menu_mth.selection) do m
-        (isnothing(m) || m == "-") && return
-        curr_list = manager.methods[]
-        
-        changed = false
-        if is_activate_mode[]
-            if !(m in curr_list); manager.methods[] = [curr_list; m]; changed = true; end
-        else
-            if (m in curr_list); manager.methods[] = filter(s -> s != m, curr_list); changed = true; end
+        @with_lock manager "Menu_Sync" begin
+            (isnothing(m) || m == "-") && return
+            curr_list = manager.methods[]
+            
+            changed = false
+            if is_activate_mode[]
+                if !(m in curr_list); manager.methods[] = [curr_list; m]; changed = true; end
+            else
+                if (m in curr_list); manager.methods[] = filter(s -> s != m, curr_list); changed = true; end
+            end
+            
+            if changed
+                menu_mth.i_selected[] = 1
+                manager.triggers["Simulation_Update"][] += 1
+            end
         end
-        
-        menu_mth.i_selected[] = 1
-        if changed; manager.triggers["Simulation_Update"][] += 1; end
     end
 end
+function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
+    _setup_run_and_drop_interactions!(master_fig, manager)
+    _setup_overwrite_interactions!(manager, plot_data_obs)
+    _setup_hierarchy_interactions!(manager)
+    _setup_export_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    _setup_data_sync_interactions!(manager, plot_data_obs)
+    
+    # THE FIX: Programmatically trigger the first selection on boot!
+    # This automatically kicks off your data cascade, populating all 3 menus.
+    manager.widgets["Editor_Cat"].i_selected[] = 1
+    
+    notify(manager.methods)
+end
+
 function _setup_hierarchy_interactions!(manager::PlotManager)
     menu_cat   = manager.widgets["Editor_Cat"]
     menu_scope = manager.widgets["Editor_Scope"]
@@ -157,6 +182,32 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
     active_target_obs = manager.state["Active_Target_Obs"]
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
 
+    function sync_textbox_to_active_key()
+        key = menu_key.selection[]
+        if isnothing(key) || key == "-"
+            active_target_obs[] = nothing
+            tb.stored_string.val = ""
+            if tb.displayed_string[] != ""
+                Makie.reset!(tb)
+            end
+            return
+        end
+        
+        cat = menu_cat.selection[]
+        scope = menu_scope.selection[]
+        (isnothing(cat) || isnothing(scope) || scope == "-") && return
+        
+        data = getproperty(manager, cat_mapping[cat])
+        if haskey(data, scope) && haskey(data[scope], key)
+            obs = data[scope][key]
+            active_target_obs[] = obs
+            tb.displayed_string[] = string(to_value(obs))
+        end
+    end
+
+    # =========================================================================
+    # TIER 1: Cat Selection -> Updates Scope Options Vector
+    # =========================================================================
     onany(menu_cat.selection, manager.methods) do cat, active_methods
         isnothing(cat) && return
         field_name = cat_mapping[cat]
@@ -172,49 +223,56 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
             new_scopes = sort(collect(keys(data)))
         end
         
-        # THE FIX: Protect the scope menu from being empty
         new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
         
         if menu_scope.options[] != new_scopes
             menu_scope.options[] = new_scopes
-            active_target_obs[] = nothing 
-            menu_scope.i_selected[] = 1
-            
-            # THE FIX: Safely reset the child menu so it doesn't trigger an empty state crash
-            menu_key.options[] = ["-"]
-            menu_key.i_selected[] = 1
-            
-            tb.stored_string.val = ""; Makie.reset!(tb)
+            menu_scope.i_selected[] = 1 
+            # THE FIX: Force the cascade downward even if string is unchanged!
+            notify(menu_scope.selection)
         end
     end
 
+    # =========================================================================
+    # TIER 2: Scope Selection -> Rebuilds Key Options Vector
+    # =========================================================================
     on(menu_scope.selection) do scope
-        # THE FIX: Safely abort if the dummy string is selected
-        (isnothing(scope) || scope == "-") && return
+        if isnothing(scope) || scope == "-"
+            if menu_key.options[] != ["-"]
+                menu_key.options[] = ["-"]
+                menu_key.i_selected[] = 1
+                notify(menu_key.selection)
+            end
+            sync_textbox_to_active_key()
+            return
+        end
         
         cat = menu_cat.selection[]
         data = getproperty(manager, cat_mapping[cat])
         
         new_keys = sort(collect(keys(data[scope])))
+        new_keys = isempty(new_keys) ? ["-"] : new_keys
         
-        # THE FIX: Protect the key menu from being empty
-        menu_key.options[] = isempty(new_keys) ? ["-"] : new_keys
-        active_target_obs[] = nothing 
-        menu_key.i_selected[] = 1
-        Makie.reset!(tb)
+        if menu_key.options[] != new_keys
+            menu_key.options[] = new_keys
+            menu_key.i_selected[] = 1
+            # THE FIX: Force the cascade downward!
+            notify(menu_key.selection)
+        end
+        
+        sync_textbox_to_active_key()
     end
 
-    on(menu_key.selection) do key
-        # THE FIX: Safely abort if the dummy string is selected
-        (isnothing(key) || key == "-") && return
-        
-        cat, scope = menu_cat.selection[], menu_scope.selection[]
-        obs = getproperty(manager, cat_mapping[cat])[scope][key]
-        
-        active_target_obs[] = obs
-        disp_string = string(to_value(obs))
+    # =========================================================================
+    # TIER 3: Key Selection -> Refreshes Textbox Content
+    # =========================================================================
+    on(menu_key.selection) do _
+        sync_textbox_to_active_key()
     end
 
+    # =========================================================================
+    # TIER 4: Textbox Submissions & Mutation
+    # =========================================================================
     on(tb.stored_string) do s
         obs = active_target_obs[]
         isnothing(obs) && return
@@ -227,6 +285,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         isnothing(obs) && return
         if to_value(obs) isa Bool
             obs[] = !to_value(obs)
+            tb.displayed_string[] = string(obs[])
             if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
         end
     end
@@ -235,6 +294,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         obs = active_target_obs[]
         isnothing(obs) && return
         tb.stored_string[] = "default" 
+        tb.displayed_string[] = "default"
     end
 end
 
@@ -351,7 +411,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     on(manager.widgets["Save_Defs_Button"].clicks) do _
-        GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
+        GLOBAL_SCENE_OPTIONS[]  = extract_scene_options(manager)
+        GLOBAL_LAYOUT_OPTIONS[] = extract_layout_options(manager) # THE FIX: Safely store the layout matrix!
         new_ui = Dict{String, Any}()
         for (scope, subdict) in manager.ui
             new_ui[scope] = Dict{String, Any}()
@@ -359,7 +420,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         GLOBAL_UI_OVERWRITE[] = new_ui
         GLOBAL_VAR_OVERWRITE[] = copy(manager.state["base_types"][])
-        @info "Current UI and Scene options successfully saved to global defaults!"
+        @info "Current UI, Layout, and Scene options successfully saved to global defaults!"
     end
     
     on(manager.widgets["Clear_Defs_Button"].clicks) do _
@@ -435,73 +496,88 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     end
 
     # 1. Sync Dropdown Options (Valid Axes & Components)
-    onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
-        isempty(plot_data_dict) && return
+onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
+        @with_lock manager "Data" begin
+            isempty(plot_data_dict) && return
 
-        pd_first = first(values(plot_data_dict))
-        
-        n_params = length(pd_first.active_param_keys)
-        if n_params > 0
-            manager.plot_vars[1:n_params] .= pd_first.active_param_keys
-        end
-        dim_names = manager.plot_vars
-        total_dims = length(dim_names)
-        n_params = total_dims - 5
-
-        valid_axes = String[]
-        comp_max = 1
-        
-        for i in 1:n_params
-            if length(pd_first.active_param_values[i]) > 1
-                push!(valid_axes, dim_names[i])
-            end
-        end
-        for i in (n_params+2):total_dims
-            push!(valid_axes, dim_names[i])
-        end
-        
-        for (key, tensor) in pd_first.data
-            varying = findall(s -> s > 1, size(tensor))
-            isempty(varying) && continue
+            pd_first = first(values(plot_data_dict))
             
-            if !(key in dim_names)
-                param_varying = filter(d -> d <= n_params, varying)
-                phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
-                is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
-                is_pure_param = isempty(phys_varying) && length(param_varying) == 1
-                if is_pure_series || is_pure_param; push!(valid_axes, key); end
+            n_params = length(pd_first.active_param_keys)
+            if n_params > 0
+                manager.plot_vars[1:n_params] .= pd_first.active_param_keys
             end
-            if key == "u"; comp_max = max(comp_max, size(tensor, n_params + 1)); end
-        end
-        unique!(valid_axes)
-        
-        if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
-        elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
-        elseif comp_tgt in dim_names; filter!(k -> k != comp_tgt, valid_axes)
-        end
-        
-        sort!(valid_axes)
-        
-        comp_names_tuple = manager.ui["Labels"]["comp_names"][]
-        c_options = Any[]
-        for i in 1:comp_max
-            name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
-            push!(c_options, (name, string(i)))
-        end
-        
-        _update_menu!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
-        _update_menu!(w["c"], c_options; fallbacks=["1"])
-        
-        p_dim = PLOT_DIM_MAP[ptype]
-        if p_dim >= 2
-            _update_menu!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
-        else
-            w["Y-Axis"].options[] = ["disabled"]; w["Y-Axis"].i_selected[] = 1
-        end
-        if p_dim >= 3
-            _update_menu!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
-        else
-            w["Z-Axis"].options[] = ["disabled"]; w["Z-Axis"].i_selected[] = 1
+            dim_names = manager.plot_vars
+            total_dims = length(dim_names)
+            n_params = total_dims - 5
+
+            valid_axes = String[]
+            comp_max = 1
+            
+            for i in 1:n_params
+                if length(pd_first.active_param_values[i]) > 1
+                    push!(valid_axes, dim_names[i])
+                end
+            end
+            
+            # --- THE FIX: DYNAMIC DIMENSION FILTERING ---
+            # Inspect the 'u' tensor to see which dimensions actually exist
+            u_tensor = haskey(pd_first.data, "u") ? pd_first.data["u"] : first(values(pd_first.data))
+            for i in (n_params+2):total_dims
+                # Only allow x, y, z, t if they have a length > 1!
+                if size(u_tensor, i) > 1
+                    push!(valid_axes, dim_names[i])
+                end
+            end
+            
+            # Safe Fallback: If it's a literal 0D point simulation, just give it 'x'
+            if isempty(valid_axes)
+                push!(valid_axes, "x")
+            end
+            # --------------------------------------------
+            
+            for (key, tensor) in pd_first.data
+                varying = findall(s -> s > 1, size(tensor))
+                isempty(varying) && continue
+                
+                if !(key in dim_names)
+                    param_varying = filter(d -> d <= n_params, varying)
+                    phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
+                    is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
+                    is_pure_param = isempty(phys_varying) && length(param_varying) == 1
+                    if is_pure_series || is_pure_param; push!(valid_axes, key); end
+                end
+                if key == "u"; comp_max = max(comp_max, size(tensor, n_params + 1)); end
+            end
+            unique!(valid_axes)
+            
+            if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
+            elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
+            elseif comp_tgt in dim_names; filter!(k -> k != comp_tgt, valid_axes)
+            end
+            
+            sort!(valid_axes)
+            
+            comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+            c_options = Any[]
+            for i in 1:comp_max
+                name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
+                push!(c_options, (name, string(i)))
+            end
+            
+            _update_menu!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
+            _update_menu!(w["c"], c_options; fallbacks=["1"])
+            
+            p_dim = PLOT_DIM_MAP[ptype]
+            if p_dim >= 2
+                _update_menu!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
+            else
+                w["Y-Axis"].options[] = ["disabled"]; w["Y-Axis"].i_selected[] = 1
+            end
+            if p_dim >= 3
+                _update_menu!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
+            else
+                w["Z-Axis"].options[] = ["disabled"]; w["Z-Axis"].i_selected[] = 1
+            end
         end
     end
 

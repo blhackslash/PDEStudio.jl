@@ -14,7 +14,48 @@ const NestedObsDict = Dict{String, Dict{String, Observable}}
 const BaseVariables = ["c","x","y","z","t"]
 const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
 const VariableControls = [:menu,:slider,:slider,:slider,:slider]
+# Define the strict hierarchy of your dashboard (Highest priority first)
+const LOCK_HIERARCHY = ["Layout", "Scene", "Primitive", "Data", "UI"]
 
+"""
+    @with_lock manager "LockName" begin ... end
+
+Safely executes a block of code ONLY if the requested lock is open AND 
+no higher-tier structural locks are currently running.
+"""
+macro with_lock(manager, lock_name, expr)
+    return quote
+        local mgr = $(esc(manager))
+        local lname = $(esc(lock_name))
+        local locks = mgr.locks
+        
+        # 1. Self-Lock Check (Prevents infinite loops)
+        if !locks[lname]
+            # 2. Hierarchy Check (Prevents race conditions)
+            local lock_idx = findfirst(isequal(lname), LOCK_HIERARCHY)
+            local blocked = false
+            if !isnothing(lock_idx)
+                for higher_tier in LOCK_HIERARCHY[1:(lock_idx - 1)]
+                    if locks[higher_tier]
+                        blocked = true
+                        break
+                    end
+                end
+            end
+            
+            # 3. Execution
+            if !blocked
+                locks[lname] = true
+                try
+                    $(esc(expr))
+                finally
+                    # ALWAYS release the lock, even if the code crashes
+                    locks[lname] = false
+                end
+            end
+        end
+    end
+end
 # --- 3. Makie Rendering Cache ---
 """
     PlotCache
@@ -42,10 +83,11 @@ mutable struct PlotManager
     ui::NestedObsDict
     config::ParamDict
     
-    # --- The New Clean Architecture ---
-    widgets::Dict{String, Any}              # Holds native Makie widgets (Menu, Slider, Button, etc.)
-    triggers::Dict{String, Observable{Int}} # Pure event pipelines (Layout_Update, UI_Update, etc.)
-    state::Dict{String, Any}                # Internal reactive flags and data (Reverse_Map, Active_Axes, etc.)
+    # --- The Clean Flat Architecture ---
+    widgets::Dict{String, Any}              
+    triggers::Dict{String, Observable{Int}} 
+    state::Dict{String, Any}                
+    locks::Dict{String, Bool}               # THE NEW FLAT FIELD
     
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}

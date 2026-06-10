@@ -111,7 +111,14 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         "UI_Update"         => Observable(0),
         "Simulation_Update" => Observable(0)
     )
-
+    locks = Dict{String, Bool}(
+        "Menu_Sync" => false, 
+        "Layout"    => false, 
+        "Scene"     => false,  # <-- ADD THIS 
+        "Primitive" => false,
+        "Data"      => false, 
+        "UI"        => false   
+    )
     state = Dict{String, Any}(
         "Config_Just_Loaded"      => Observable(false),
         "plot_window_initialized" => Observable(false),
@@ -136,9 +143,10 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         sim_obs, 
         ui_obs, 
         config_dict, 
-        Dict{String, Any}(), # widgets (Starts empty, filled cleanly by Controls.jl)
+        Dict{String, Any}(), 
         triggers, 
         state, 
+        locks,               # PASS IT DIRECTLY HERE
         methods_obs, 
         vars, 
         copy(sim_config.shared_params),
@@ -194,7 +202,8 @@ function launch_plotter()
     ACTIVE_PLOT_MANAGER[] = manager
 
     # Single Dashboard Layout Definition
-    master_fig = Figure(size = (1600, 1000))
+    master_fig = Figure()
+    display(master_fig)
     ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
     plot_layout = master_fig[1, 2] = GridLayout()
     
@@ -263,6 +272,7 @@ function launch_plotter()
         layout_opts = isempty(GLOBAL_LAYOUT_OPTIONS[]) ? get_base_layout_options() : GLOBAL_LAYOUT_OPTIONS[]
         apply_layout_options!(manager, layout_opts)
         
+        
         if !isempty(GLOBAL_UI_OVERWRITE[])
             for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
                 if haskey(manager.ui, scope)
@@ -277,8 +287,6 @@ function launch_plotter()
             manager.triggers["UI_Update"][] += 1
         end
 
-        # 2. UNLOCK THE PIPELINE AND FIRE ONCE
-        manager.state["Config_Just_Loaded"][] = false
         manager.triggers["Layout_Update"][] += 1
     end
     on(manager.triggers["Simulation_Update"]) do _
@@ -292,9 +300,12 @@ function launch_plotter()
 
     setup_plot_window!(master_fig, plot_layout, manager, plot_data_obs)
 
+    
+
     if ACTIVE_SIM_CONFIG[].simulation_func !== dummy_simulation_function
         manager.triggers["Simulation_Update"][] += 1
     end
+
     return master_fig, manager 
 end
 # ==============================================================================
@@ -321,23 +332,27 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         
         new_obs = setup_render_lift!(master_fig, plot_layout, plot_data_obs, manager, Val(ptype_sym))
         if !isnothing(new_obs); append!(render_observers, new_obs); end
-        
+        resize_to_layout!(master_fig)
+    end
+
+    on(manager.triggers["Layout_Update"]) do _
+        @with_lock manager "Layout" begin
+            curr_config = ACTIVE_SIM_CONFIG[]
+            if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
+            end
+            rebuild_plot_layout!()
+        end
         notify(plot_data_obs)
         manager.triggers["Primitive_Rebuild"][] += 1
     end
 
-    on(manager.triggers["Layout_Update"]) do _
-        curr_config = ACTIVE_SIM_CONFIG[]
-        if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-            Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
-        end
-        rebuild_plot_layout!()
-    end
-
     on(manager.triggers["Scene_Update"]) do _
-        curr_config = ACTIVE_SIM_CONFIG[]
-        if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-            Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
+        @with_lock manager "Scene" begin
+            curr_config = ACTIVE_SIM_CONFIG[]
+            if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
+            end
         end
         manager.triggers["Primitive_Rebuild"][] += 1
     end
@@ -479,42 +494,44 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # TIER 2: PRIMITIVE REBUILD
     # =========================================================================
     prim_obs = on(manager.triggers["Primitive_Rebuild"]) do _
-        (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
-        if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
-        if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
-        
-        data = plot_data_obs[]
-        isempty(data) && return
-        empty!(manager.caches)
-        
-        for ax in axes
-            empty!(ax)
-            if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
-        end
-        
-        sel_vals = [to_value(obs) for obs in selector_obs]
+        @with_lock manager "Primitive" begin
+            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
+            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
+            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
+            
+            data = plot_data_obs[]
+            isempty(data) && return
+            empty!(manager.caches)
+            
+            for ax in axes
+                empty!(ax)
+                if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
+            end
+            
+            sel_vals = [to_value(obs) for obs in selector_obs]
 
-        for i in 1:num_plots
-            manager.caches[i] = Dict{String, PlotCache}()
-            
-            mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-            dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
-            
-            local_methods = manager.methods[]
-            if target == "Methods" && i <= length(vl)
-                vl = [vl[i]]
-                dt = Tuple([slice[i]] for slice in dt)
-                local_methods = [manager.methods[][i]]
+            for i in 1:num_plots
+                manager.caches[i] = Dict{String, PlotCache}()
+                
+                mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+                dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                
+                local_methods = manager.methods[]
+                if target == "Methods" && i <= length(vl)
+                    vl = [vl[i]]
+                    dt = Tuple([slice[i]] for slice in dt)
+                    local_methods = [manager.methods[][i]]
+                end
+                
+                initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
+                
+                if !is_3d_axis; 
+                    plot_HUD!(axes[i], manager)
+                    set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+                end
             end
-            
-            initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
-            
-            if !is_3d_axis; 
-                plot_HUD!(axes[i], manager)
-                set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
-            end
+            resize_to_layout!(master_fig)
         end
-        
         manager.triggers["UI_Update"][] += 1
     end
 
@@ -522,141 +539,146 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # TIER 3: DATA SYNC
     # =========================================================================
     data_sync_obs = onany(plot_data_obs, selector_obs...) do data, sel_vals...
-        (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
-        if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
-        if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
-        
-        caches = manager.caches
-        (isempty(data) || isempty(caches)) && return
-        
-        for i in 1:num_plots
-            mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-            dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+        @with_lock manager "Data" begin
+            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
+            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
+            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
             
-            local_methods = manager.methods[]
-            if target == "Methods" && i <= length(vl)
-                vl = [vl[i]]
-                dt = Tuple([slice[i]] for slice in dt)
-                local_methods = [manager.methods[][i]]
-            end
+            caches = manager.caches
+            (isempty(data) || isempty(caches)) && return
             
-            if !is_3d_axis
-                safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-                if axes[i].xscale[] == log10 && safe_min(dt[1]) <= 0
-                    @warn "Negative X data encountered. Disabling logscale to prevent crash."
-                    axes[i].xscale[] = identity
+            for i in 1:num_plots
+                mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+                dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                
+                local_methods = manager.methods[]
+                if target == "Methods" && i <= length(vl)
+                    vl = [vl[i]]
+                    dt = Tuple([slice[i]] for slice in dt)
+                    local_methods = [manager.methods[][i]]
                 end
-                if axes[i].yscale[] == log10 && safe_min(dt[2]) <= 0
-                    @warn "Negative Y/U data encountered. Disabling logscale to prevent crash."
-                    axes[i].yscale[] = identity
+                
+                if !is_3d_axis
+                    safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
+                    if axes[i].xscale[] == log10 && safe_min(dt[1]) <= 0
+                        @warn "Negative X data encountered. Disabling logscale to prevent crash."
+                        axes[i].xscale[] = identity
+                    end
+                    if axes[i].yscale[] == log10 && safe_min(dt[2]) <= 0
+                        @warn "Negative Y/U data encountered. Disabling logscale to prevent crash."
+                        axes[i].yscale[] = identity
+                    end
+                end
+                
+                sync_data_to_cache!(caches[i], local_methods, dt, Val(PLOT_DIM_MAP[T]))
+                
+                default_title = is_compare ? compare_labels[i] : ts
+                axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+                
+                if !is_3d_axis
+                    set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
                 end
             end
-            
-            sync_data_to_cache!(caches[i], local_methods, dt, Val(PLOT_DIM_MAP[T]))
-            
-            default_title = is_compare ? compare_labels[i] : ts
-            axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
-            
-            if !is_3d_axis
-                set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
-            end
+            for ax in axes; apply_axis_limits_overrides!(ax, manager); end
         end
-        for ax in axes; apply_axis_limits_overrides!(ax, manager); end
     end
 
     # =========================================================================
     # TIER 4: UI & STYLE MUTATION 
     # =========================================================================
     ui_obs = on(manager.triggers["UI_Update"]) do _
-        ui_gen = manager.ui["Axis-General"]
-        ui_app = manager.ui["Plot-Style"]
-        
-        x_str, y_str = w["X-Axis"].selection[], w["Y-Axis"].selection[]
-        z_str, u_str = w["Z-Axis"].selection[], w["U-Axis"].selection[]
-        
-        for (i, ax) in enumerate(axes)
-            if is_3d_axis
-                set_axis_styles!(ax, manager, string(x_str), string(y_str), string(z_str), ax.title[])
-            elseif PLOT_DIM_MAP[T] == 1
-                set_axis_styles!(ax, manager, string(x_str), string(u_str), ax.title[])
-            else
-                set_axis_styles!(ax, manager, string(x_str), string(y_str), ax.title[])
-            end
-            apply_axis_limits_overrides!(ax, manager)
+        @with_lock manager "UI" begin
+            ui_gen = manager.ui["Axis-General"]
+            ui_app = manager.ui["Plot-Style"]
             
-            if haskey(manager.caches, i)
-                for (m_idx, method_name) in enumerate(manager.methods[])
-                    if haskey(manager.caches[i], method_name)
-                        prims = manager.caches[i][method_name].primitives
-                        colors = get(ui_app,"colors",nothing)
-                        color = isnothing(colors) ? nothing : colors[][mod1(m_idx, end)]
-                        
-                        if haskey(prims, "line")
-                            prims["line_color"][]   = color
-                            prims["line_width"][]   = ui_app["linewidth"][]
-                            prims["line_visible"][] = ui_app["show_lines"][]
+            x_str, y_str = w["X-Axis"].selection[], w["Y-Axis"].selection[]
+            z_str, u_str = w["Z-Axis"].selection[], w["U-Axis"].selection[]
+            
+            for (i, ax) in enumerate(axes)
+                if is_3d_axis
+                    z_str = z_str == "disabled" ? u_str : z_str
+                    set_axis_styles!(ax, manager, string(x_str), string(y_str), string(z_str), ax.title[])
+                elseif PLOT_DIM_MAP[T] == 1
+                    set_axis_styles!(ax, manager, string(x_str), string(u_str), ax.title[])
+                else
+                    set_axis_styles!(ax, manager, string(x_str), string(y_str), ax.title[])
+                end
+                apply_axis_limits_overrides!(ax, manager)
+                
+                if haskey(manager.caches, i)
+                    for (m_idx, method_name) in enumerate(manager.methods[])
+                        if haskey(manager.caches[i], method_name)
+                            prims = manager.caches[i][method_name].primitives
+                            colors = get(ui_app,"colors",nothing)
+                            color = isnothing(colors) ? nothing : colors[][mod1(m_idx, end)]
+                            
+                            if haskey(prims, "line")
+                                prims["line_color"][]   = color
+                                prims["line_width"][]   = ui_app["linewidth"][]
+                                prims["line_visible"][] = ui_app["show_lines"][]
+                            end
+                            if haskey(prims, "scatter")
+                                prims["scat_color"][]   = color
+                                prims["scat_size"][]    = ui_app["markersize"][]
+                                prims["scat_visible"][] = ui_app["show_scatter"][]
+                            end
+                            if haskey(prims, "contour")
+                                prims["contour"].color[] = color
+                                prims["contour"].linewidth[] = ui_app["linewidth"][]
+                            end
+                            if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["colormap"][]; end
+                            if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["colormap"][]; end
+                            if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["colormap"][]; end
+                            if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["colormap"][]; end
+                            
+                            if haskey(prims, "scatter2d")
+                                prims["scatter2d"].colormap[] = ui_app["colormap"][]
+                                prims["scatter2d"].markersize[] = ui_app["markersize"][]
+                            end
+                            if haskey(prims, "scatter3d")
+                                prims["scatter3d"].colormap[] = ui_app["colormap"][]
+                                prims["scatter3d"].markersize[] = ui_app["markersize"][]
+                            end
                         end
-                        if haskey(prims, "scatter")
-                            prims["scat_color"][]   = color
-                            prims["scat_size"][]    = ui_app["markersize"][]
-                            prims["scat_visible"][] = ui_app["show_scatter"][]
+                    end
+                end
+            end
+            
+            if !is_3d_axis && T in (:lines, :contour, :contourf) && haskey(manager.caches, 1)
+                plotted_objects = []
+                labels_for_legend = String[]
+                
+                for (m_idx, method_name) in enumerate(manager.methods[])
+                    if haskey(manager.caches[1], method_name)
+                        prims = manager.caches[1][method_name].primitives
+                        color = ui_app["colors"][][mod1(m_idx, end)]
+                        
+                        if haskey(prims, "contourf")
+                            push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["colormap"][])[end])])
+                            push!(labels_for_legend, "$(method_name) (Base)")
+                        end
+                        
+                        group = []
+                        if haskey(prims, "line") && ui_app["show_lines"][]
+                            ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][], linestyle=ls))
+                        end
+                        if haskey(prims, "scatter") && ui_app["show_scatter"][]
+                            mrk = ui_app["markers"][][mod1(m_idx, end)]
+                            push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["markersize"][]))
                         end
                         if haskey(prims, "contour")
-                            prims["contour"].color[] = color
-                            prims["contour"].linewidth[] = ui_app["linewidth"][]
+                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][]))
                         end
-                        if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["colormap"][]; end
-                        if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["colormap"][]; end
-                        if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["colormap"][]; end
-                        if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["colormap"][]; end
                         
-                        if haskey(prims, "scatter2d")
-                            prims["scatter2d"].colormap[] = ui_app["colormap"][]
-                            prims["scatter2d"].markersize[] = ui_app["markersize"][]
-                        end
-                        if haskey(prims, "scatter3d")
-                            prims["scatter3d"].colormap[] = ui_app["colormap"][]
-                            prims["scatter3d"].markersize[] = ui_app["markersize"][]
+                        if !isempty(group)
+                            push!(plotted_objects, group)
+                            if !haskey(prims, "contourf"); push!(labels_for_legend, method_name); end
                         end
                     end
                 end
+                create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
             end
-        end
-        
-        if !is_3d_axis && T in (:lines, :contour, :contourf) && haskey(manager.caches, 1)
-            plotted_objects = []
-            labels_for_legend = String[]
-            
-            for (m_idx, method_name) in enumerate(manager.methods[])
-                if haskey(manager.caches[1], method_name)
-                    prims = manager.caches[1][method_name].primitives
-                    color = ui_app["colors"][][mod1(m_idx, end)]
-                    
-                    if haskey(prims, "contourf")
-                         push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["colormap"][])[end])])
-                        push!(labels_for_legend, "$(method_name) (Base)")
-                    end
-                    
-                    group = []
-                    if haskey(prims, "line") && ui_app["show_lines"][]
-                        ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                        push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][], linestyle=ls))
-                    end
-                    if haskey(prims, "scatter") && ui_app["show_scatter"][]
-                        mrk = ui_app["markers"][][mod1(m_idx, end)]
-                        push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["markersize"][]))
-                    end
-                    if haskey(prims, "contour")
-                        push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][]))
-                    end
-                    
-                    if !isempty(group)
-                        push!(plotted_objects, group)
-                        if !haskey(prims, "contourf"); push!(labels_for_legend, method_name); end
-                    end
-                end
-            end
-            create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
         end
     end
     return ObserverFunction[prim_obs; data_sync_obs; ui_obs]

@@ -391,8 +391,6 @@ end
 
 function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods, base_types; force_reload=false, parallel=false)
     if force_reload; empty!(plot_data_dict); end
-    println(active_methods)
-    error("TEST")
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             # 1. Base math params from config

@@ -304,7 +304,8 @@ function extract_scene_options(manager::PlotManager)
         w_key = haskey(rev_map, k) ? rev_map[k] : k
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
-            if widget isa Slider
+            # THE FIX: Explicitly check for Makie.Slider!
+            if widget isa Makie.Slider
                 opts["$(k)_Value"] = widget.value[]
             end
         end
@@ -370,6 +371,16 @@ function get_base_layout_options()
         "Plot_Width_Selection"      => "600",
         "Plot_Height_Selection"     => "400",
         "Anim_Target_Selection"     => "None"
+    )
+end
+# --- TIER 2: SCENE OPTIONS ---
+function get_base_scene_options()
+    return Dict{String, Any}(
+        "X-Axis_Selection" => "x",
+        "Y-Axis_Selection" => "y",
+        "Z-Axis_Selection" => "disabled",
+        "U-Axis_Selection" => "u",
+        "c_Selection"      => "1"
     )
 end
 
