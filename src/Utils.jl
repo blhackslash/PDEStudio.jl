@@ -199,37 +199,32 @@ function _recombine_tuples!(params::Dict)
     end
     return params
 end
-"""
-    apply_scene_options!(manager::PlotManager, scene_options::Dict)
-
-Safely snaps UI widgets to the requested states natively through the MVC Dictionary structure.
-"""
 function apply_layout_options!(manager::PlotManager, layout_options::Dict)
     isempty(layout_options) && return
 
     for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
         sel_key = "$(k)_Selection"
-        if haskey(layout_options, sel_key) && haskey(manager.controls["Widget"], k)
+        if haskey(layout_options, sel_key) && haskey(manager.widgets, k)
             val = layout_options[sel_key]
-            widget = manager.controls["Widget"][k][]
-            opts = manager.controls["Options"][k][]
+            widget = manager.widgets[k]
+            
+            opts = widget.options[]
             isempty(opts) && continue
             
             valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
             idx = findfirst(v -> string(v) == string(val), valid_vals)
             
+            if isnothing(idx) && val isa String
+                idx = findfirst(v -> startswith(string(v), val), valid_vals)
+            end
+            
             if !isnothing(idx)
-                # THE FIX: Use native Makie triggers to update the UI text visually!
                 widget.i_selected[] = idx 
-                if haskey(manager.controls["Selection"], k)
-                    manager.controls["Selection"][k].val = valid_vals[idx]
-                end
             end
         end
     end
-    # THE FIX: Only trigger rebuilds if called manually outside of a preset load
-    if !manager.controls["State"]["Config_Just_Loaded"][]
-        manager.controls["State"]["Layout_Update"][] += 1
+    if !manager.state["Config_Just_Loaded"][]
+        manager.triggers["Layout_Update"][] += 1
     end
 end
 
@@ -239,51 +234,129 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
     # 1. Apply Axis Dropdowns
     for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
         sel_key = "$(k)_Selection"
-        if haskey(scene_options, sel_key) && haskey(manager.controls["Widget"], k)
-            # ... identical silent index matching logic as above ...
+        if haskey(scene_options, sel_key) && haskey(manager.widgets, k)
             val = scene_options[sel_key]
-            widget = manager.controls["Widget"][k][]
-            opts = manager.controls["Options"][k][]
+            widget = manager.widgets[k]
+            
+            opts = widget.options[]
             isempty(opts) && continue
+            
             valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
             idx = findfirst(v -> string(v) == string(val), valid_vals)
+            
+            if isnothing(idx) && val isa String
+                idx = findfirst(v -> startswith(string(v), val), valid_vals)
+            end
+            
             if !isnothing(idx)
-                # THE FIX: Use native Makie triggers to update the UI text visually!
                 widget.i_selected[] = idx
-                if haskey(manager.controls["Selection"], k)
-                    manager.controls["Selection"][k].val = valid_vals[idx]
-                end
             end
         end
     end
 
     # 2. Apply Slider Values
-    rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
     for (key, desired_val) in scene_options
         if endswith(key, "_Value")
             base_name = replace(key, "_Value" => "")
             w_key = haskey(rev_map, base_name) ? rev_map[base_name] : base_name
             
-            if haskey(manager.controls["Widget"], w_key)
-                widget = manager.controls["Widget"][w_key][]
+            if haskey(manager.widgets, w_key)
+                widget = manager.widgets[w_key]
                 if widget isa Makie.Slider
-                    rng = manager.controls["Range"][w_key][]
+                    rng = widget.range[]
                     isempty(rng) && continue
                     
                     val = Float64(rng[1])
                     if desired_val isa Real
                         val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
                     end
-                    # set_close_to! triggers the slider observable automatically, 
-                    # but doesn't cause a layout rebuild, which is perfect.
                     set_close_to!(widget, val) 
                 end
             end
         end
     end
-    if !manager.controls["State"]["Config_Just_Loaded"][]
-        manager.controls["State"]["Primitive_Rebuild"][] += 1
+    if !manager.state["Config_Just_Loaded"][]
+        manager.triggers["Primitive_Rebuild"][] += 1
     end
+end
+
+function extract_layout_options(manager::PlotManager)
+    opts = Dict{String, Any}()
+    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+        if haskey(manager.widgets, k)
+            opts["$(k)_Selection"] = manager.widgets[k].selection[]
+        end
+    end
+    return opts
+end
+
+function extract_scene_options(manager::PlotManager)
+    opts = Dict{String, Any}()
+    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
+        if haskey(manager.widgets, k)
+            opts["$(k)_Selection"] = manager.widgets[k].selection[]
+        end
+    end
+    
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
+    for k in manager.plot_vars
+        w_key = haskey(rev_map, k) ? rev_map[k] : k
+        if haskey(manager.widgets, w_key)
+            widget = manager.widgets[w_key]
+            if widget isa Slider
+                opts["$(k)_Value"] = widget.value[]
+            end
+        end
+    end
+    return opts
+end
+
+function load_and_apply_csv!(manager::PlotManager, filepath::String)
+    @info "Loading configuration from CSV: $filepath"
+    
+    parsed = parse_csv_to_dict(filepath)
+    sim_func_str = parsed["Config"]["General"]["simulation_func"]
+    
+    resolved_func = resolve_simulation_function(sim_func_str, nothing)
+    if isnothing(resolved_func)
+        @error "Aborting: Could not resolve simulation function '$sim_func_str'"
+        return
+    end
+    
+    new_config = csv_to_simulation_config(parsed, resolved_func)
+    
+    new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
+    if manager.plot_vars != new_vars
+        @warn "CSV contains different spatial/varied parameters. Please restart plotter to rebuild UI."
+        return
+    end
+
+    @info "CSV Loaded: Running all defined simulations for exact recreation..."
+    runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
+    
+    if haskey(parsed, "UI")
+        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
+    end
+    
+    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
+        scene_opts = get_base_scene_options()
+        for (k, v) in parsed["Scene"]["General"]
+            scene_opts[k] = v
+        end
+        GLOBAL_SCENE_OPTIONS[] = scene_opts
+    end
+    
+    if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
+        layout_opts = get_base_layout_options()
+        for (k, v) in parsed["Layout"]["General"]
+            layout_opts[k] = v
+        end
+        GLOBAL_LAYOUT_OPTIONS[] = layout_opts
+    end
+
+    ACTIVE_SIM_CONFIG[] = new_config
+    @info "Successfully applied CSV config to UI!"
 end
 # --- TIER 1: LAYOUT OPTIONS ---
 function get_base_layout_options()
@@ -300,46 +373,6 @@ function get_base_layout_options()
     )
 end
 
-function extract_layout_options(manager::PlotManager)
-    opts = Dict{String, Any}()
-    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
-        if haskey(manager.controls["Selection"], k)
-            opts["$(k)_Selection"] = to_value(manager.controls["Selection"][k])
-        end
-    end
-    return opts
-end
-
-# --- TIER 2: SCENE OPTIONS ---
-function get_base_scene_options()
-    return Dict{String, Any}(
-        "X-Axis_Selection" => "x",      
-        "Y-Axis_Selection" => "disabled",
-        "Z-Axis_Selection" => "disabled",
-        "U-Axis_Selection" => "u",      
-        "c_Selection"      => 1,        
-        "t_Value"          => 0.0,      
-        "x_Value"          => 0.0,
-    )
-end
-
-function extract_scene_options(manager::PlotManager)
-    opts = Dict{String, Any}()
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
-        if haskey(manager.controls["Selection"], k)
-            opts["$(k)_Selection"] = to_value(manager.controls["Selection"][k])
-        end
-    end
-    
-    rev_map = haskey(manager.controls["State"], "Reverse_Map") ? manager.controls["State"]["Reverse_Map"][] : Dict{String, String}()
-    for k in manager.plot_vars
-        w_key = haskey(rev_map, k) ? rev_map[k] : k
-        if haskey(manager.controls["Value"], w_key)
-            opts["$(k)_Value"] = to_value(manager.controls["Value"][w_key])
-        end
-    end
-    return opts
-end
 """
     csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
 
@@ -472,57 +505,6 @@ function parse_csv_to_dict(filepath::String)
     end
     
     return parsed
-end
-"""
-    load_and_apply_csv!(manager::PlotManager, filepath::String)
-
-Unified pipeline for loading a CSV config, executing the simulations, 
-and syncing the results back to the PlotManager UI and Scene options.
-"""
-function load_and_apply_csv!(manager::PlotManager, filepath::String)
-    @info "Loading configuration from CSV: $filepath"
-    
-    parsed = parse_csv_to_dict(filepath)
-    sim_func_str = parsed["Config"]["General"]["simulation_func"]
-    
-    resolved_func = resolve_simulation_function(sim_func_str, nothing)
-    if isnothing(resolved_func)
-        @error "Aborting: Could not resolve simulation function '$sim_func_str'"
-        return
-    end
-    
-    new_config = csv_to_simulation_config(parsed, resolved_func)
-    
-    # 1. Check Structural Compatibility
-    new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
-    if manager.plot_vars != new_vars
-        @warn "CSV contains different spatial/varied parameters. Please restart plotter to rebuild UI."
-        return
-    end
-
-    # 2. Execute Simulations
-    @info "CSV Loaded: Running all defined simulations for exact recreation..."
-    runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
-    
-    # 3. Load Options FIRST so they are ready in Global State
-    if haskey(parsed, "UI")
-        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
-    end
-    
-    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        scene_opts = get_base_scene_options()
-        for (k, v) in parsed["Scene"]["General"]
-            scene_opts[k] = v
-        end
-        GLOBAL_SCENE_OPTIONS[] = scene_opts
-    end
-
-    # 4. Update Global Brain LAST (Triggers the render cascade)
-    ACTIVE_SIM_CONFIG[] = new_config
-    
-    # 5. Trigger UI Update
-    manager.controls["State"]["Simulation_Update"][] += 1
-    @info "Successfully applied CSV config to UI!"
 end
 
 """

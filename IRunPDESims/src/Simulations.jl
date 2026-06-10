@@ -37,6 +37,7 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
         m = match(r"^(.+)__([a-zA-Z0-9]+)$", k)
         if !isnothing(m)
             base = String(m.captures[1])
+            base in ignore_keys && continue
             idx_str = m.captures[2]
             idx = (idx_str == "x" || idx_str == "1") ? 1 :
                   (idx_str == "y" || idx_str == "2") ? 2 :
@@ -73,6 +74,7 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
         m = match(r"^(.+)__([a-zA-Z0-9]+)$", k)
         if !isnothing(m)
             base = String(m.captures[1])
+            base in ignore_keys && continue
             idx_str = m.captures[2]
             idx = (idx_str == "x" || idx_str == "1") ? 1 :
                   (idx_str == "y" || idx_str == "2") ? 2 :

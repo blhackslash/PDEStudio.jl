@@ -86,7 +86,7 @@ function create_master_ui_observables()
     # --- 3. PLOT-SPECIFIC STYLES (Offsets Safely Extracted) ---
     master["Style-Lines"] = obs_dict(Dict(
         "colors"       => [:red, :blue, :green, :orange, :purple],
-        "lineStyles"   => [:solid, (:dash, :dense), (:dot, :dense)],
+        "line_styles"   => [:solid, (:dash, :dense), (:dot, :dense)],
         "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
         "linewidth"    => 5.0,
         "markersize"   => 15.0,
@@ -163,7 +163,7 @@ end
 
 function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     # THE FIX: Route the lookup through the "Misc" MVC folder
-    master = manager.controls["Misc"]["Master_UI_Ref"][]
+    master = manager.state["Master_UI_Ref"][]
     ui = manager.ui
     empty!(ui)
     
@@ -191,16 +191,17 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     end
     
     # Safely check if the UI is built before notifying
-    if haskey(manager.controls, "State") && haskey(manager.controls["State"], "UI_Update")
-        notify(manager.controls["State"]["UI_Update"])
+    if haskey(manager.triggers, "UI_Update")
+        notify(manager.triggers["UI_Update"])
     end
 end
 
 function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     preset_list = presets isa Symbol ? [presets] : presets
     ui_over = Dict{String, Any}()
+    
     scene_opt = get_base_scene_options()
-    master_tmp = create_master_ui_observables()
+    layout_opt = get_base_layout_options() # THE FIX: Bring Layout options back!
 
     function set_ui!(scope, key, val)
         if !haskey(ui_over, scope); ui_over[scope] = Dict{String, Any}(); end
@@ -209,10 +210,10 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     for preset in preset_list
         if preset == :convergence
-            scene_opt["X-Axis_Selection"]    = "Ns__1"
-            scene_opt["U-Axis_Selection"]    = "relative_l2error"
-            scene_opt["Plot_Type_Selection"] = "Lines"
-            scene_opt["t_Value"]             = 10.0^10
+            scene_opt["X-Axis_Selection"]     = "Ns__1"
+            scene_opt["U-Axis_Selection"]     = "relative_l2error"
+            layout_opt["Plot_Type_Selection"] = "Lines" # THE FIX: Move to Layout
+            scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "logscale", true)
             set_ui!("Y-Axis", "logscale", true)
@@ -232,21 +233,20 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
             set_ui!("Plot-Style", "linewidth", 4.0)
             set_ui!("Plot-Style", "dashed_lines", true)
-            set_ui!("Plot-Style", "lineStyles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
+            set_ui!("Plot-Style", "line_styles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])
             
-            # THE FIX: Presets now cleanly route the offsets directly into the Axis scopes!
             set_ui!("X-Axis", "label_offset", 5.)
             set_ui!("Y-Axis", "label_offset", 5.)
             set_ui!("Z-Axis", "label_offset", 5.)
 
-            scene_opt["Legend_Base_Selection"] = "top"
-            scene_opt["Legend_Add_Selection"]  = "detached"
-            scene_opt["Plot_Width_Selection"]  = 300
-            scene_opt["Plot_Height_Selection"]  = 300
+            layout_opt["Legend_Base_Selection"] = "top"      # THE FIX: Move to Layout
+            layout_opt["Legend_Add_Selection"]  = "detached" # THE FIX: Move to Layout
+            layout_opt["Plot_Width_Selection"]  = 300        # THE FIX: Move to Layout
+            layout_opt["Plot_Height_Selection"] = 300        # THE FIX: Move to Layout
             
         elseif preset == :heatmap
-            scene_opt["Plot_Type_Selection"] = "Heatmap"
+            layout_opt["Plot_Type_Selection"] = "Heatmap"    # THE FIX: Move to Layout
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
@@ -270,6 +270,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     GLOBAL_UI_OVERWRITE[] = ui_over
     GLOBAL_SCENE_OPTIONS[] = scene_opt
+    GLOBAL_LAYOUT_OPTIONS[] = layout_opt # THE FIX: Register layout to Global State
     GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
     @info "Successfully applied plot presets: $(join(preset_list, " + "))"
 end
@@ -277,6 +278,7 @@ end
 function set_plot_presets!()
     GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
     GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
+    GLOBAL_LAYOUT_OPTIONS[] = Dict{String, Any}() # THE FIX: Clear layout safely
     GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
     @info "Plot presets cleared. Reverted to default settings."
     return

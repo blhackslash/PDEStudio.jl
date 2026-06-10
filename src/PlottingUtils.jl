@@ -1,4 +1,3 @@
-
 function plot_reference_lines!(
     ax::Axis,
     exponents::Vector;
@@ -11,7 +10,6 @@ function plot_reference_lines!(
         return []
     end
 
-    # THE FIX: Dynamically calculate the bounding box of the data already plotted!
     bbox = Makie.data_limits(ax.scene)
     if !isfinite(bbox.origin[1]) || !isfinite(bbox.widths[1])
         return []
@@ -22,7 +20,7 @@ function plot_reference_lines!(
     ymax = ymin + bbox.widths[2]
     
     if (xmin <= 0 || xmax <= 0) && (ax.xscale[] == log10 || ax.yscale[] == log10)
-        return [] # Mathematically impossible to generate log-spaced reference lines crossing zero
+        return [] 
     end
 
     x_ref_values = 10 .^ range(log10(xmin), log10(xmax), length=100)
@@ -57,21 +55,17 @@ end
 """
     delete_plots_by_label!(ax::Axis, label_to_delete::String)
 
-Finds all plot objects in a given axis that have a specific label
-and deletes them. This version correctly accesses plots via `ax.scene`.
+Finds all plot objects in a given axis that have a specific label and deletes them.
 """
 function delete_plots_by_label!(ax::Axis, label_to_delete::String)
-    # CORRECT API: Access plots via the axis's scene.
-    # The `ax.scene` contains the list of all plot objects drawn into that axis.
     plots_to_delete = [p for p in ax.scene.plots if haskey(p,:label) && p.label[] == label_to_delete]
     
     if !isempty(plots_to_delete)
         for p in plots_to_delete
-            delete!(ax.scene, p) # Delete from the scene
+            delete!(ax.scene, p)
         end
         return true
     end
-    
     return false
 end
 
@@ -85,7 +79,6 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     use_log_x = ui_x["logscale"][]
     use_log_y = ui_y["logscale"][]
 
-    # 1. Enforce safety: If data <= 0, we absolutely cannot use logscale
     if raw_xlims[1] <= 0 && use_log_x
         ui_x["logscale"][] = false
         use_log_x = false
@@ -97,22 +90,19 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
         @warn "Y-Axis data contains non-positive values. Logscale disabled."
     end
 
-    # 2. Calculate limits using the new, strictly safe padding logic
     final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
     final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
 
-    # 3. Apply the limits first (This is safe because the axis scale is currently 'identity' from the pre-flight check)
     try limits!(ax, final_xlims..., final_ylims...) catch; end
 
-    # 4. Safely re-apply log10 NOW that the limits are mathematically guaranteed to be strictly positive
     if use_log_x; ax.xscale[] = log10; end
     if use_log_y; ax.yscale[] = log10; end
 end
+
 # ==============================================================================
 # --- MASTER GRID CALCULATOR ---
 # ==============================================================================
 function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::String, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
-
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
     
@@ -123,7 +113,7 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     
     row_offset = (has_legend && is_detached && valign == :top) ? 1 : 0
     col_offset = (has_legend && is_detached && halign == :left) ? 1 : 0
-    # THE FIX: Both Decoupled and "Axes Only" need separated colorbar columns assigned natively!
+
     if link_mode in ("Decoupled", "Axes Only") && has_colorbar
         for i in 1:num_plots
             r = (i - 1) ÷ cols + 1
@@ -180,16 +170,15 @@ end
 # --- LEGEND & COLORBAR BUILDERS ---
 # ==============================================================================
 function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
-    # THE FIX: Switch to Nested MVC Keys
-    base_align = manager.controls["Selection"]["Legend_Base"][]
-    add_align  = manager.controls["Selection"]["Legend_Add"][]
+    # THE FIX: Read Directly from the native Makie Menu selections
+    base_align = manager.widgets["Legend_Base"].selection[]
+    add_align  = manager.widgets["Legend_Add"].selection[]
     
     s = lowercase(string(base_align) * "_" * string(add_align))
     if occursin("none", s); return (false, :none, :none); end
     
     is_detached = occursin("detached", s)
     
-    # Smart Default: Snaps to Top-Detached when in compare mode if attached is requested
     if is_compare && !is_detached
         return (true, :center, :top)
     end
@@ -199,16 +188,15 @@ function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
 
     return (is_detached, halign, valign)
 end
+
 function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector, manager::PlotManager)
-    # THE FIX: Safely delete legends from the specific sub-layout
     for c in copy(plot_layout.content)
         if c.content isa Legend; delete!(c.content); end
     end
     
     if isempty(plotted_objects) || isempty(labels); return; end
     
-    # THE FIX: Read Layout_Dict from the Misc Category
-    layout_dict = manager.controls["Misc"]["Layout_Dict"][]
+    layout_dict = manager.state["Layout_Dict"][]
     if !haskey(layout_dict, "Legend") || isnothing(layout_dict["Legend"]); return; end
     
     ui_style = manager.ui["Axis-General"]
@@ -216,11 +204,11 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     final_title = isempty(strip(title_str)) ? nothing : title_str
     font_size = ui_style["font_size"][]
     
-    # THE FIX: Read Compare_Target from Selection Category
-    is_compare = manager.controls["Selection"]["Compare_Target"][] != "None"
+    # THE FIX: Query the native Compare_Target menu selection cleanly
+    is_compare = manager.widgets["Compare_Target"].selection[] != "None"
     is_detached, halign, valign = _parse_legend_position(manager, is_compare)
 
-    if halign==:none && valign==:none; return end
+    if halign==:none && valign==:none; return; end
     leg_pos = layout_dict["Legend"]
 
     try
@@ -238,7 +226,9 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
                 titlesize=font_size, labelsize=font_size, margin=(10, 10, 10, 10)
             )
         end
-    catch e; @error "Failed to create legend" exception=(e, catch_backtrace()); end
+    catch e
+        @error "Failed to create legend" exception=(e, catch_backtrace())
+    end
 end
 
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
@@ -246,19 +236,14 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manage
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "colormap"); return; end 
     
-    # THE FIX: Read Layout_Dict from the Misc Category
-    layout_dict = manager.controls["Misc"]["Layout_Dict"][]
+    layout_dict = manager.state["Layout_Dict"][]
     cb_list = layout_dict["Colorbars"]
     isempty(cb_list) && return
     
     is_global = length(cb_list) == 1
     
-    # 1. Prevent stacking global colorbars from multiple subplots
-    if is_global && plot_idx > 1
-        return 
-    end
+    if is_global && plot_idx > 1; return; end
     
-    # 2. Purge existing colorbars ONLY on the first plot pass
     if plot_idx == 1
         for c in copy(plot_layout.content)
             if c.content isa Colorbar; delete!(c.content); end
@@ -273,14 +258,14 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manage
     
     try
         Colorbar(plot_layout[cb_pos...], plot_object;
-            #label = final_label, 
             labelsize = ui_gen["label_size"][],
             ticklabelsize = ui_gen["ticklabel_size"][]
         )
-    catch e; @error "Failed to create colorbar." exception=(e, catch_backtrace()); end
+    catch e
+        @error "Failed to create colorbar." exception=(e, catch_backtrace())
+    end
 end
 
-# --- Utility Functions ---
 function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
     min_raw, max_raw = raw_limits
     if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw)
@@ -288,14 +273,11 @@ function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is
     end
 
     if is_log_scale && min_raw > 0
-        # THE FIX: Logarithmic padding (distance calculated in log space)
-        # This guarantees limits NEVER drop below 0!
         log_min, log_max = log10(min_raw), log10(max_raw)
-        log_range = max(log_max - log_min, 0.1) # Prevent 0 range
+        log_range = max(log_max - log_min, 0.1) 
         pad = log_range * padding_factor / 2.0
         return (10^(log_min - pad), 10^(log_max + pad))
     else
-        # Linear padding
         data_range = max_raw - min_raw
         pad = data_range ≈ 0 ? 0.1 : (data_range * padding_factor / 2.0)
         return (min_raw - pad, max_raw + pad)
@@ -358,6 +340,7 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{
     linear_outlier_indices = _find_outlier_indices(flat_vector, threshold)
     return CartesianIndices(matrix)[linear_outlier_indices]
 end
+
 function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
     ui_gen = manager.ui["Axis-General"]
     ui_lbl = manager.ui["Labels"]
@@ -374,7 +357,6 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     ax.xticklabelsize = ui_gen["ticklabel_size"][]
     ax.yticklabelsize = ui_gen["ticklabel_size"][]
 
-    # THE FIX: Pull label offsets directly from the independent Axis dictionaries!
     if haskey(ui_x, "label_offset")
         ax.xlabelpadding = ui_x["label_offset"][]
     end
@@ -429,7 +411,6 @@ function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y:
     ax.xgridvisible = ui_x["gridvisible"][]; ax.ygridvisible = ui_y["gridvisible"][]; ax.zgridvisible = ui_z["gridvisible"][]
     ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]; ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]; ax.zticklabelsvisible = ui_z["ticklabelsvisible"][]
 
-    # THE FIX: Pull 3D offsets directly from their independent Axis dictionaries!
     if haskey(ui_x, "label_offset")
         ax.xlabeloffset = ui_x["label_offset"][]
     end
@@ -444,28 +425,15 @@ function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y:
     ax.aspect = (1, 1, 0.6)
 end
 
-
-"""
-    plot_HUD!(ax, manager)
-
-Plots arbitrary relative shapes (0.0 to 1.0 space) directly onto the screen.
-Supports lines, scatter, scatterlines, and filled polygons.
-"""
 function plot_HUD!(ax::Axis, manager::PlotManager)
     ui_hud = manager.ui["HUD"]
-    
-    # Exit immediately if the HUD is off or no points are defined
-    if !ui_hud["visible"][] || isempty(ui_hud["points"][])
-        return
-    end
+    if !ui_hud["visible"][] || isempty(ui_hud["points"][])::Bool; return; end
     
     pts = ui_hud["points"][]
-    
     try
         x_pct = [Float64(p[1]) for p in pts]
         y_pct = [Float64(p[2]) for p in pts]
         
-        # Connect the end to the beginning for closed shapes
         if ui_hud["close_loop"][] && length(x_pct) > 2
             push!(x_pct, x_pct[1])
             push!(y_pct, y_pct[1])
@@ -477,72 +445,19 @@ function plot_HUD!(ax::Axis, manager::PlotManager)
         ls    = ui_hud["linestyle"][]
         ms    = ui_hud["markersize"][]
 
-        # Dispatch based on the requested HUD mode
         if mode == "scatter"
             scatter!(ax, x_pct, y_pct; color=color, markersize=ms, space=:relative)
-            
         elseif mode == "scatterlines"
             scatterlines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, markersize=ms, space=:relative)
-            
         elseif mode == "polygon"
-            # poly! requires a vector of Point2f objects
             poly_pts = Point2f.(zip(x_pct, y_pct))
             poly!(ax, poly_pts; color=(color, 0.3), strokecolor=color, strokewidth=lw, space=:relative)
-            
-        else # Default to lines
+        else
             lines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, space=:relative)
         end
-        
     catch e
         @warn "Failed to plot HUD. Ensure 'points' is a vector of tuples, e.g., [(0.1, 0.1), (0.9, 0.9)]."
     end
 end
 
-# Fallback for 3D axes (Relative space is tricky in 3D projection)
 plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
-
-"""
-    get_colorrange(ui_app::Dict, u_data::AbstractArray)
-
-Extracts the colorrange from the UI dict, or calculates it dynamically from the data 
-if set to "default". Always returns an Observable Tuple of Float64.
-"""
-function get_colorrange(ui_app::Dict, u_data::AbstractArray)
-    cr_val = ui_app["colorrange"][]
-    
-    if isempty(cr_val)
-        valid_u = filter(isfinite, vec(u_data))
-        l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-        if l_u == h_u; h_u += 1e-6; end
-        return Observable((l_u, h_u))
-    else
-        return Observable(Tuple(Float64.(cr_val)))
-    end
-end
-function apply_axis_limits_overrides!(ax, manager::PlotManager)
-    ui_x = manager.ui["X-Axis"]
-    ui_y = manager.ui["Y-Axis"]
-    
-    try
-        if haskey(ui_x, "lims") && length(ui_x["lims"][]) == 2
-            lx = Float64.(ui_x["lims"][])
-            if lx[1] < lx[2]; xlims!(ax, lx[1], lx[2]); end
-        end
-        
-        if haskey(ui_y, "lims") && length(ui_y["lims"][]) == 2
-            ly = Float64.(ui_y["lims"][])
-            if ly[1] < ly[2]; ylims!(ax, ly[1], ly[2]); end
-        end
-        
-        if ax isa Axis3 && haskey(manager.ui, "Z-Axis")
-            ui_z = manager.ui["Z-Axis"]
-            if haskey(ui_z, "lims") && length(ui_z["lims"][]) == 2
-                lz = Float64.(ui_z["lims"][])
-                if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
-            end
-        end
-    catch
-        @warn "Failed to apply manual axis limits. Please ensure the input is a 2-element vector like [-5.0, 5.0]."
-    end
-end
-

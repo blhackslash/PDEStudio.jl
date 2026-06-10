@@ -114,9 +114,6 @@ end
 
 
 
-# -----------------------------------------------------------------------------
-# 1D EXAMPLE: LINES
-# -----------------------------------------------------------------------------
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
     xs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
@@ -125,24 +122,48 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
-        # 1. Create the Cache and SEED IT with the first frame of data
         cache = PlotCache()
         cache.obs_x[] = xs_slices[m_idx]
         cache.obs_u[] = us_slices[m_idx]
         
-        # 2. Bind Makie directly to the Observables
-        l = lines!(ax, cache.obs_x, cache.obs_u; color=:black) # Color applied in Tier 4
-        s = scatter!(ax, cache.obs_x, cache.obs_u; color=:black, markersize=10.0)
+        # --- THE FIX: Safe Proxies for Mutables, Static for Types! ---
+        line_color = Observable{Any}(:black)
+        line_width = Observable{Any}(1.0)
+        line_vis   = Observable{Any}(true)
         
-        # 3. Store references for Tier 4 styling
+        scat_color = Observable{Any}(:black)
+        scat_size  = Observable{Any}(10.0)
+        scat_vis   = Observable{Any}(false)
+        
+        # Read structural styles exactly ONCE to prevent Makie type crashes
+        static_ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+        static_mk = ui_app["markers"][][mod1(m_idx, end)]
+        
+        l = lines!(ax, cache.obs_x, cache.obs_u; 
+            color=line_color, linewidth=line_width, linestyle=static_ls, visible=line_vis
+        )
+        s = scatter!(ax, cache.obs_x, cache.obs_u; 
+            color=scat_color, markersize=scat_size, marker=static_mk, visible=scat_vis
+        )
+        
         cache.primitives["line"] = l
         cache.primitives["scatter"] = s
+        
+        cache.primitives["line_color"] = line_color
+        cache.primitives["line_width"] = line_width
+        cache.primitives["line_visible"] = line_vis
+        
+        cache.primitives["scat_color"] = scat_color
+        cache.primitives["scat_size"]  = scat_size
+        cache.primitives["scat_visible"] = scat_vis
+        
         cache_dict[label] = cache
 
-        # Group for legend
         push!(plotted_objects, [l, s])
         push!(labels_for_legend, label)
     end
+    
+    create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
 end
 
 # -----------------------------------------------------------------------------

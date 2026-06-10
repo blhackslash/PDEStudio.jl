@@ -37,18 +37,21 @@ PlotCache() = PlotCache(
     Dict{String, Any}()
 )
 
-# In Controls.jl / Structs.jl
 mutable struct PlotManager 
     simulation::NestedObsDict
     ui::NestedObsDict
     config::ParamDict
-    controls::NestedObsDict # <-- Change this line
+    
+    # --- The New Clean Architecture ---
+    widgets::Dict{String, Any}              # Holds native Makie widgets (Menu, Slider, Button, etc.)
+    triggers::Dict{String, Observable{Int}} # Pure event pipelines (Layout_Update, UI_Update, etc.)
+    state::Dict{String, Any}                # Internal reactive flags and data (Reverse_Map, Active_Axes, etc.)
+    
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
     last_run_params::ParamDict
     caches::Dict{Int, Dict{String, PlotCache}}
 end
-
 
 # --- Plotting Data Structure ---
 

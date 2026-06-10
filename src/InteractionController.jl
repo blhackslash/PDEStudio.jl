@@ -7,20 +7,17 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, man
     _setup_run_and_drop_interactions!(master_fig, manager)
     _setup_overwrite_interactions!(manager, plot_data_obs)
     _setup_hierarchy_interactions!(manager)
-    
-    # THE FIX: Pass plot_data_obs into the exporter!
     _setup_export_interactions!(master_fig, plot_layout, manager, plot_data_obs)
-    
     _setup_data_sync_interactions!(manager, plot_data_obs)
     notify(manager.methods)
 end
 
 function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotManager)
-    drop_label = manager.controls["Widget"]["Drop_Label"][]
-    drop_box   = manager.controls["Widget"]["Drop_Box"][]
-    run_btn    = manager.controls["Widget"]["Run_Button"][]
+    drop_label = manager.widgets["Drop_Label"]
+    drop_box   = manager.widgets["Drop_Box"]
+    run_btn    = manager.widgets["Run_Button"]
 
-# --- CSV DROP PIPELINE ---
+    # --- CSV DROP PIPELINE ---
     on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
@@ -29,25 +26,24 @@ function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotMana
             drop_box.color[] = RGBAf(0.8, 1.0, 0.8, 1.0)
             run_btn.buttoncolor[] = :lightgreen
             
-            # Call the new helper!
             load_and_apply_csv!(manager, path)
         end
     end
 
     # --- REFRESH / RUN BUTTON ---
-    on(manager.controls["Button"]["Run_Clicks"]) do _
-        manager.controls["State"]["Simulation_Update"][] += 1
+    on(run_btn.clicks) do _
+        manager.triggers["Simulation_Update"][] += 1
     end
 end
 
 function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Observable)
-    menu_var = manager.controls["Widget"]["Overwrite_Var"][]
-    tb_val   = manager.controls["Widget"]["Overwrite_Text"][]
-    mode_btn = manager.controls["Widget"]["Mode_Button"][]
-    menu_mth = manager.controls["Widget"]["Method_Toggle"][]
+    menu_var = manager.widgets["Overwrite_Var"]
+    tb_val   = manager.widgets["Overwrite_Text"]
+    mode_btn = manager.widgets["Mode_Button"]
+    menu_mth = manager.widgets["Method_Toggle"]
     
-    is_activate_mode = manager.controls["State"]["Is_Activate_Mode"]
-    # --- NEW: Dynamic Overwrite Options Sync ---
+    is_activate_mode = manager.state["Is_Activate_Mode"]
+    
     # Variable Overwrite Dynamic Options Sync
     onany(plot_data_obs, manager.methods) do plot_data_dict, active_methods
         isempty(plot_data_dict) && return
@@ -68,25 +64,25 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
                 end
             end
             
-            is_fixed_by_user = manager.controls["State"]["base_types"][][i] isa Number
-            
+            is_fixed_by_user = manager.state["base_types"][][i] isa Number
             if has_variation || is_fixed_by_user
                 push!(valid_base_names, name)
             end
         end
         
-        current_sel = manager.controls["Selection"]["Overwrite_Var"][]
-        manager.controls["Options"]["Overwrite_Var"][] = isempty(valid_base_names) ? ["-"] : valid_base_names
+        current_sel = menu_var.selection[]
+        menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
         
         if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
-            menu_var.i_selected[] = isempty(valid_base_names) ? 0 : 1
+            menu_var.i_selected[] = isempty(valid_base_names) ? 1 : 1
         else
             menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
         end
     end
+
     # Dimension Overwrites 
-    on(manager.controls["String"]["Overwrite_Text"]) do input_str
-        var_name = manager.controls["Selection"]["Overwrite_Var"][]
+    on(tb_val.stored_string) do input_str
+        var_name = menu_var.selection[]
         if isnothing(var_name) || var_name == "-" || isempty(input_str)
             @warn "Overwrite Error: Please select a variable and provide an input."
             return
@@ -95,17 +91,16 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         idx = findfirst(isequal(var_name), VariableNames)
         isnothing(idx) && return
         
-        vt = copy(manager.controls["State"]["base_types"][])
+        vt = copy(manager.state["base_types"][])
         n_params = length(manager.plot_vars) - 5
         abs_idx = n_params + idx
       
-        if abs_idx in manager.controls["State"]["Active_Axes"][]
+        if abs_idx in manager.state["Active_Axes"][]
             @warn "Cannot fix the value of an active Plot Axis!"
             return
         end
 
         if lowercase(strip(input_str)) == "default"
-            # Component (idx=1) defaults to a :menu, space/time default to :slider
             vt[idx] = (idx == 1 ? :menu : :slider)
             @info "Restored default control for $var_name."
         else
@@ -115,35 +110,30 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             vt[idx] = val
         end
         
-        manager.controls["State"]["base_types"][] = vt
-        manager.controls["State"]["Simulation_Update"][] += 1
+        manager.state["base_types"][] = vt
+        manager.triggers["Simulation_Update"][] += 1
         tb_val.stored_string.val = "" 
         Makie.reset!(tb_val)
     end
 
-    # Methods Toggle
-    all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
-    
     onany(manager.methods, is_activate_mode) do active_list, activate_mode
-        # Move this INSIDE the observer so it dynamically checks the simulation dictionary every time!
         all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
-        
         opts = activate_mode ? filter(m -> !(m in active_list), all_method_names) : copy(active_list)
         new_opts = isempty(opts) ? ["-"] : sort(opts)
         
         if menu_mth.options[] != new_opts
             menu_mth.options[] = new_opts
-            menu_mth.i_selected[] = 0
+            menu_mth.i_selected[] = 1
         end
     end
 
-    on(manager.controls["Button"]["Mode_Clicks"]) do _
+    on(mode_btn.clicks) do _
         is_activate_mode[] = !is_activate_mode[]
         mode_btn.label[] = is_activate_mode[] ? "Mode: Activate" : "Mode: Deact."
         mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
     end
 
-    on(manager.controls["Selection"]["Method_Toggle"]) do m
+    on(menu_mth.selection) do m
         (isnothing(m) || m == "-") && return
         curr_list = manager.methods[]
         
@@ -154,26 +144,20 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             if (m in curr_list); manager.methods[] = filter(s -> s != m, curr_list); changed = true; end
         end
         
-        # Reset the selection box visually to the prompt
-        menu_mth.i_selected[] = 0
-        
-        # THE FIX: Instantly trigger the plot recalculation!
-        if changed
-            manager.controls["State"]["Simulation_Update"][] += 1
-        end
+        menu_mth.i_selected[] = 1
+        if changed; manager.triggers["Simulation_Update"][] += 1; end
     end
 end
-
 function _setup_hierarchy_interactions!(manager::PlotManager)
-    menu_cat   = manager.controls["Widget"]["Editor_Cat"][]
-    menu_scope = manager.controls["Widget"]["Editor_Scope"][]
-    menu_key   = manager.controls["Widget"]["Editor_Key"][]
-    tb         = manager.controls["Widget"]["Editor_Text"][]
+    menu_cat   = manager.widgets["Editor_Cat"]
+    menu_scope = manager.widgets["Editor_Scope"]
+    menu_key   = manager.widgets["Editor_Key"]
+    tb         = manager.widgets["Editor_Text"]
     
-    active_target_obs = manager.controls["State"]["Active_Target_Obs"]
+    active_target_obs = manager.state["Active_Target_Obs"]
     cat_mapping = Dict("Simulation" => :simulation, "UI" => :ui)
 
-    onany(manager.controls["Selection"]["Editor_Cat"], manager.methods) do cat, active_methods
+    onany(menu_cat.selection, manager.methods) do cat, active_methods
         isnothing(cat) && return
         field_name = cat_mapping[cat]
         data = getproperty(manager, field_name)
@@ -188,66 +172,79 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
             new_scopes = sort(collect(keys(data)))
         end
         
+        # THE FIX: Protect the scope menu from being empty
+        new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
+        
         if menu_scope.options[] != new_scopes
             menu_scope.options[] = new_scopes
             active_target_obs[] = nothing 
-            menu_scope.i_selected[] = 0; menu_key.i_selected[] = 0
+            menu_scope.i_selected[] = 1
+            
+            # THE FIX: Safely reset the child menu so it doesn't trigger an empty state crash
+            menu_key.options[] = ["-"]
+            menu_key.i_selected[] = 1
+            
             tb.stored_string.val = ""; Makie.reset!(tb)
         end
     end
 
-    on(manager.controls["Selection"]["Editor_Scope"]) do scope
-        isnothing(scope) && return
+    on(menu_scope.selection) do scope
+        # THE FIX: Safely abort if the dummy string is selected
+        (isnothing(scope) || scope == "-") && return
+        
         cat = menu_cat.selection[]
         data = getproperty(manager, cat_mapping[cat])
         
-        menu_key.options[] = sort(collect(keys(data[scope])))
+        new_keys = sort(collect(keys(data[scope])))
+        
+        # THE FIX: Protect the key menu from being empty
+        menu_key.options[] = isempty(new_keys) ? ["-"] : new_keys
         active_target_obs[] = nothing 
-        menu_key.i_selected[] = 0
+        menu_key.i_selected[] = 1
         Makie.reset!(tb)
     end
 
-    on(manager.controls["Selection"]["Editor_Key"]) do key
-        isnothing(key) && return
+    on(menu_key.selection) do key
+        # THE FIX: Safely abort if the dummy string is selected
+        (isnothing(key) || key == "-") && return
+        
         cat, scope = menu_cat.selection[], menu_scope.selection[]
         obs = getproperty(manager, cat_mapping[cat])[scope][key]
         
         active_target_obs[] = obs
         disp_string = string(to_value(obs))
-        manager.controls["String"]["Editor_Display"][] = isempty(disp_string) ? "none" : disp_string
     end
 
-    on(manager.controls["String"]["Editor_Text"]) do s
+    on(tb.stored_string) do s
         obs = active_target_obs[]
         isnothing(obs) && return
         smart_parse_and_update!(obs, s)
-        if menu_cat.selection[] == "UI"; manager.controls["State"]["UI_Update"][] += 1; end
+        if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
     end
     
-    on(manager.controls["Button"]["Editor_Toggle"]) do _
+    on(manager.widgets["Editor_Toggle"].clicks) do _
         obs = active_target_obs[]
         isnothing(obs) && return
         if to_value(obs) isa Bool
             obs[] = !to_value(obs)
-            manager.controls["String"]["Editor_Display"][] = string(to_value(obs))
-            if menu_cat.selection[] == "UI"; manager.controls["State"]["UI_Update"][] += 1; end
+            if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
         end
     end
 
-    on(manager.controls["Button"]["Editor_Reset"]) do _
+    on(manager.widgets["Editor_Reset"].clicks) do _
         obs = active_target_obs[]
         isnothing(obs) && return
-        manager.controls["String"]["Editor_Text"][] = "default" 
+        tb.stored_string[] = "default" 
     end
 end
 
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
-    saveBox = manager.controls["Widget"]["Export_Text"][]
-    btn_play = manager.controls["Widget"]["Play_Anim_Button"][]
+    saveBox = manager.widgets["Export_Text"]
+    btn_play = manager.widgets["Play_Anim_Button"]
     
-    anim_target_obs = manager.controls["Selection"]["Anim_Target"]
-    is_animating = manager.controls["State"]["Is_Animating"]
-    animation_timer = manager.controls["Misc"]["Animation_Timer"]
+    anim_target_obs = manager.widgets["Anim_Target"].selection
+    is_animating = manager.state["Is_Animating"]
+    animation_timer = manager.state["Animation_Timer"]
     
     n_params = length(manager.plot_vars)
     dim_names = Dict{Int, String}()
@@ -258,34 +255,26 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
     function check_selection_validity(idx)
         if idx == 0 || isnothing(idx); @warn "Export Error: No target selected."; return false; end
-        if idx in manager.controls["State"]["Active_Axes"][]; @warn "Cannot animate an active plot axis."; return false; end
+        if idx in manager.state["Active_Axes"][]; @warn "Cannot animate an active plot axis."; return false; end
         
         widget_key = "$(dim_names[idx])"
-        if !haskey(manager.controls["Widget"], widget_key); return false; end
+        if !haskey(manager.widgets, widget_key); return false; end
         
-        widget = manager.controls["Widget"][widget_key][]
+        widget = manager.widgets[widget_key]
         if !(widget isa Makie.Slider); @warn "Only Sliders can be animated."; return false; end
         if length(widget.range[]) < 2; @warn "Slider has no range to animate."; return false; end
         return true
     end
 
-    # --- THE FIX 1: Isolated Headless Clone Builder ---
     function build_pristine_export_figure()
         export_fig = Figure(size = (1200, 1000))
         export_layout = export_fig[1, 1] = GridLayout()
         
-        ptype_sym = manager.controls["Selection"]["Plot_Type"][]
-        
-        # We create a local, disconnected observable. 
-        # This prevents notify() from accidentally clearing the main window's active axes!
+        ptype_sym = manager.widgets["Plot_Type"].selection[]
         local_data_obs = Observable(plot_data_obs[])
-        
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
-        
-        # Safely trigger ONLY the clone figure to draw its plots
         notify(local_data_obs)
         
-        # Sync limits and camera angles seamlessly from live dashboard to the clone
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
         
@@ -296,19 +285,15 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 e_ax.perspectiveness[] = c_ax.perspectiveness[]
                 e_ax.lookat[] = c_ax.lookat[]
             elseif c_ax isa Axis
-                # THE FIX: Explicitly apply the numeric limits! 
-                # Assigning the observable fails to trigger the layout pipeline.
                 lims = c_ax.finallimits[]
                 limits!(e_ax, lims.origin[1], lims.origin[1] + lims.widths[1], 
                               lims.origin[2], lims.origin[2] + lims.widths[2])
             end
         end
-        
         return export_fig, export_obs
     end
 
-    # --- Image Export ---
-    on(manager.controls["Button"]["Save_Image_Clicks"]) do _
+    on(manager.widgets["Save_Image_Button"].clicks) do _
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "plot_export"; end
 
@@ -318,27 +303,23 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
         export_fig, export_obs = build_pristine_export_figure()
 
-        # THE FIX: Force CairoMakie for ALL static saves to protect the GL context
         for fmt in manager.ui["Various"]["save_formats"][]
             ext = lowercase(strip(fmt))
             full_path = joinpath(save_dir, base_name * ".$ext")
-            
             save(full_path, export_fig; backend=CairoMakie)
             @info "Pristine Image ($ext) saved safely via CairoMakie!"
         end
 
         if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
-
         metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
         saveParametersToCSV(base_name, save_dir, manager, metadata)
     end
 
-    # --- GIF Export ---
-    on(manager.controls["Button"]["Save_GIF_Clicks"]) do _
-        notify(manager.controls["Button"]["Save_Defs_Clicks"])
+    on(manager.widgets["Save_GIF_Button"].clicks) do _
+        notify(manager.widgets["Save_Defs_Button"].clicks)
         target_idx = anim_target_obs[]
         !check_selection_validity(target_idx) && return
-        target_widget = manager.controls["Widget"]["$(dim_names[target_idx])"][]
+        target_widget = manager.widgets["$(dim_names[target_idx])"]
         
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "anim_export"; end
@@ -355,14 +336,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         @info "Recording pristine '$(dim_names[target_idx])' animation to $fname..."
         try
             export_fig, export_obs = build_pristine_export_figure()
-            
             record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
                 set_close_to!(target_widget, val)
                 yield() 
             end
             
             if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
-
             metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
             saveParametersToCSV(base_name, save_path, manager, metadata) 
             @info "Pristine GIF Saved Successfully."
@@ -371,8 +350,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    # --- Save / Clear Defaults ---
-    on(manager.controls["Button"]["Save_Defs_Clicks"]) do _
+    on(manager.widgets["Save_Defs_Button"].clicks) do _
         GLOBAL_SCENE_OPTIONS[] = extract_scene_options(manager)
         new_ui = Dict{String, Any}()
         for (scope, subdict) in manager.ui
@@ -380,25 +358,24 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             for (k, v) in subdict; new_ui[scope][k] = to_value(v); end
         end
         GLOBAL_UI_OVERWRITE[] = new_ui
-        GLOBAL_VAR_OVERWRITE[] = copy(manager.controls["State"]["base_types"][])
+        GLOBAL_VAR_OVERWRITE[] = copy(manager.state["base_types"][])
         @info "Current UI and Scene options successfully saved to global defaults!"
     end
     
-    on(manager.controls["Button"]["Clear_Defs_Clicks"]) do _
+    on(manager.widgets["Clear_Defs_Button"].clicks) do _
         GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
-        GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
+        GLOBAL_UI_OVERWRITE[]  = Dict{String, Any}()
+        GLOBAL_LAYOUT_OPTIONS[]= Dict{String, Any}()
         GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
-        
         apply_scene_options!(manager, get_base_scene_options())
         @info "Global defaults cleared! Basic scene options restored."
     end
 
-    # --- Animation Play ---
     on(is_animating) do animating
         btn_play.label[] = animating ? "Stop Anim" : "Play Anim"
     end
 
-    on(manager.controls["Button"]["Play_Anim_Clicks"]) do _
+    on(btn_play.clicks) do _
         if is_animating[]
             is_animating[] = false
             !isnothing(animation_timer[]) && close(animation_timer[])
@@ -407,7 +384,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             target_idx = anim_target_obs[]
             !check_selection_validity(target_idx) && return
             
-            target_widget = manager.controls["Widget"]["$(dim_names[target_idx])"][]
+            target_widget = manager.widgets["$(dim_names[target_idx])"]
             is_animating[] = true
             
             duration = manager.ui["Various"]["animation_duration_s"][]
@@ -427,29 +404,23 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 end
 
 function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Observable)
-    c = manager.controls
-    x_sel = c["Selection"]["X-Axis"]
-    y_sel = c["Selection"]["Y-Axis"]
-    z_sel = c["Selection"]["Z-Axis"]
-    ptype_obs = c["Selection"]["Plot_Type"]
-    comp_tgt_obs = c["Selection"]["Compare_Target"]
+    w = manager.widgets
+    x_sel = w["X-Axis"].selection
+    y_sel = w["Y-Axis"].selection
+    z_sel = w["Z-Axis"].selection
+    ptype_obs = w["Plot_Type"].selection
+    comp_tgt_obs = w["Compare_Target"].selection
     
-    active_axes_obs = c["State"]["Active_Axes"]
-    dim_names = manager.plot_vars
-    total_dims = length(dim_names)
-    n_params = total_dims - 5
-    comp_idx = n_params + 1
-
+    active_axes_obs = manager.state["Active_Axes"]
+    
     function _update_menu!(menu_widget, new_options; fallbacks=["x", "y", "z", "t"])
         curr = menu_widget.selection[]
         menu_widget.options[] = isempty(new_options) ? ["-"] : new_options
-        
-        # THE FIX: Safely extract values if the options are (Display, Value) Tuples
         opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
 
         if curr == "-" || isnothing(curr) || curr ∉ opt_values
             if isempty(new_options)
-                menu_widget.i_selected[] = 0
+                menu_widget.i_selected[] = 1 
             else
                 idx = nothing
                 for f in fallbacks
@@ -467,21 +438,33 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
         isempty(plot_data_dict) && return
 
+        pd_first = first(values(plot_data_dict))
+        
+        n_params = length(pd_first.active_param_keys)
+        if n_params > 0
+            manager.plot_vars[1:n_params] .= pd_first.active_param_keys
+        end
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
         n_params = total_dims - 5
 
         valid_axes = String[]
         comp_max = 1
-        pd_first = first(values(plot_data_dict))
+        
+        for i in 1:n_params
+            if length(pd_first.active_param_values[i]) > 1
+                push!(valid_axes, dim_names[i])
+            end
+        end
+        for i in (n_params+2):total_dims
+            push!(valid_axes, dim_names[i])
+        end
         
         for (key, tensor) in pd_first.data
             varying = findall(s -> s > 1, size(tensor))
             isempty(varying) && continue
             
-            if key in dim_names
-                push!(valid_axes, key)
-            else
+            if !(key in dim_names)
                 param_varying = filter(d -> d <= n_params, varying)
                 phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
                 is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
@@ -490,6 +473,7 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
             if key == "u"; comp_max = max(comp_max, size(tensor, n_params + 1)); end
         end
+        unique!(valid_axes)
         
         if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
         elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
@@ -497,32 +481,27 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
         
         sort!(valid_axes)
-        # THE FIX: Apply custom component names using Makie's (Display, Value) syntax
+        
         comp_names_tuple = manager.ui["Labels"]["comp_names"][]
         c_options = Any[]
         for i in 1:comp_max
-            name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && 
-                    comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? 
-                    string(comp_names_tuple[i]) : string(i)
-            
-            push!(c_options, (name, string(i))) # (Display String, Actual Value)
+            name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
+            push!(c_options, (name, string(i)))
         end
         
-        _update_menu!(c["Widget"]["X-Axis"][], valid_axes; fallbacks=["x", "t", "y", "z"])
-        _update_menu!(c["Widget"]["c"][], c_options; fallbacks=["1"])
+        _update_menu!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
+        _update_menu!(w["c"], c_options; fallbacks=["1"])
         
         p_dim = PLOT_DIM_MAP[ptype]
         if p_dim >= 2
-            _update_menu!(c["Widget"]["Y-Axis"][], valid_axes; fallbacks=["y", "t", "z", "x"])
+            _update_menu!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
         else
-            c["Widget"]["Y-Axis"][].options[] = ["disabled"]
-            c["Widget"]["Y-Axis"][].i_selected[] = 1
+            w["Y-Axis"].options[] = ["disabled"]; w["Y-Axis"].i_selected[] = 1
         end
         if p_dim >= 3
-            _update_menu!(c["Widget"]["Z-Axis"][], valid_axes; fallbacks=["z", "t", "x", "y"])
+            _update_menu!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
         else
-            c["Widget"]["Z-Axis"][].options[] = ["disabled"]
-            c["Widget"]["Z-Axis"][].i_selected[] = 1
+            w["Z-Axis"].options[] = ["disabled"]; w["Z-Axis"].i_selected[] = 1
         end
     end
 
@@ -533,7 +512,6 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
         n_params = total_dims - 5
-
         p_dim = PLOT_DIM_MAP[ptype]
         axes_set = Set{Int}()
         active_indep_keys = String[]
@@ -541,7 +519,7 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
             if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
-                idx = get_base_dim_idx(pd_first, val, dim_names)
+                 idx = get_base_dim_idx(pd_first, val, dim_names)
                 !isnothing(idx) && push!(axes_set, idx)
                 push!(active_indep_keys, val)
             end
@@ -582,8 +560,7 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
         
         sort!(valid_fields)
-        # THE FIX: Add standard physical fallbacks so it doesn't default to index 1 ("x")
-        _update_menu!(c["Widget"]["U-Axis"][], valid_fields; fallbacks=["u", "v", "rho", "p"])
+        _update_menu!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"])
     end
 
     # 3. Sync Slider Ranges (The core data injection to the UI!)
@@ -594,12 +571,10 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         total_dims = length(dim_names)
         n_params = total_dims - 5
         comp_idx = n_params + 1
-
-        vt = c["State"]["base_types"][]
+        vt = manager.state["base_types"][]
 
         for i in 1:total_dims
             if i == comp_idx; continue; end 
-
             is_basevar = i > n_params
             if is_basevar
                 base_idx = i - n_params
@@ -607,11 +582,9 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
             
             is_axis = (i in active_axes) 
-            
             g_min, g_max = Inf, -Inf
             for pd in values(plot_data_dict)
                 vals = nothing
-            
                 if i <= n_params 
                     vals = pd.active_param_values[i]
                 elseif i == n_params + 1 
@@ -641,38 +614,30 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             if isinf(g_min); g_min = 0.0; g_max = 1.0; end
             
             dim_name = dim_names[i]
-            
-            # THE FIX: Route the physical name to the static UI widget!
             widget_key = dim_name
             if i <= n_params
-                widget_key = c["State"]["Reverse_Map"][][dim_name]
+                widget_key = haskey(manager.state["Reverse_Map"][], dim_name) ? manager.state["Reverse_Map"][][dim_name] : "param_$i"
             end
             
-            if haskey(c["Widget"], widget_key)
-                ctrl = c["Widget"][widget_key][]
+            if haskey(w, widget_key)
+                ctrl = w[widget_key]
                 if is_axis
                     ctrl.range[] = [0.0] 
                 elseif i <= n_params
-                    # THE FIX: Feed the EXACT discrete vector to the slider for varied parameters
                     all_vals = Float64[]
                     for pd in values(plot_data_dict)
                         append!(all_vals, pd.active_param_values[i])
                     end
                     ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
-                    
-                    # NEW FIX: Snap the current value to the new discrete range to prevent Makie from freezing!
                     set_close_to!(ctrl, ctrl.value[])
                 else
-                    # Keep continuous ranges for standard Space/Time dimensions
                     ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
-                    
-                    # Snap these as well, just to be mathematically safe
                     set_close_to!(ctrl, ctrl.value[])
                 end
             end
         end
-        if c["State"]["Config_Just_Loaded"][]
-            # Apply Scene Options NOW that the dropdowns and sliders have valid options!
+        
+        if manager.state["Config_Just_Loaded"][]
             opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
             
@@ -680,21 +645,16 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
                     if haskey(manager.ui, scope)
                         for (k, v) in keys_dict
-                            if haskey(manager.ui[scope], k)
-                                manager.ui[scope][k][] = v
-                            end
+                            if haskey(manager.ui[scope], k); manager.ui[scope][k][] = v; end
                         end
                     end
                 end
-                GLOBAL_UI_OVERWRITE[] = Dict{String, Any}() # Flush the queue
+                GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
             end
             
-            # NOW safely unlock the pipeline!
-            c["State"]["Config_Just_Loaded"].val = false
-            
-            # Force the first Render & Style passes natively
-            manager.controls["State"]["Primitive_Rebuild"][] += 1
-            manager.controls["State"]["UI_Update"][] += 1
+            manager.state["Config_Just_Loaded"].val = false
+            manager.triggers["Primitive_Rebuild"][] += 1
+            manager.triggers["UI_Update"][] += 1
         end
     end
 end
