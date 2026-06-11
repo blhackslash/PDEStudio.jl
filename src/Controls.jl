@@ -153,13 +153,20 @@ end
 # --- 3. DIMENSION OVERWRITES BUILDER ---
 # ==============================================================================
 function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManager)
-    manager.widgets["Overwrite_Var"]  = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
-    manager.widgets["Overwrite_Text"] = Textbox(layout[1, 2], placeholder = "Val / 'default'", width = nothing) 
-    manager.widgets["Mode_Button"]    = Button(layout[1, 3], label = "Mode: Activate", buttoncolor = :lightgreen)
-    manager.widgets["Method_Toggle"]  = Menu(layout[1, 4], options = ["-"], prompt = "Methods...")
+    # Row 1: Overwrites
+    manager.widgets["Overwrite_Var"]   = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
+    manager.widgets["Overwrite_Text"]  = Textbox(layout[1, 2:3], placeholder = "Val / 'default'", width = nothing) 
+    manager.widgets["Overwrite_Apply"] = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width = nothing)
 
-    colsize!(layout, 1, Relative(0.25)); colsize!(layout, 2, Relative(0.25))
-    colsize!(layout, 3, Relative(0.25)); colsize!(layout, 4, Relative(0.25))
+    # Row 2: Methods
+    manager.widgets["Mode_Button"]     = Button(layout[2, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
+    manager.widgets["Method_Toggle"]   = Menu(layout[2, 2:3], options = ["Methods..."], prompt = "Methods...")
+    manager.widgets["Method_Apply"]    = Button(layout[2, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
+
+    colsize!(layout, 1, Relative(0.25))
+    colsize!(layout, 2, Relative(0.25))
+    colsize!(layout, 3, Relative(0.25))
+    colsize!(layout, 4, Relative(0.25))
 end
 
 # ==============================================================================

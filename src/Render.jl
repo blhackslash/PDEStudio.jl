@@ -16,7 +16,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
     rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
 
-    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["colormap"][], colorrange=cr_obs, rasterize=rast_val)
+    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
 
     cache.primitives["heatmap"] = hm
     cache_dict[label] = cache
@@ -37,7 +37,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_u[] = us_slices[m_idx]
 
         color = ui_app["colors"][][mod1(m_idx, end)]
-        lw = ui_app["linewidth"][]
+        lw = ui_app["line_width"][]
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"][], color=color, linewidth=lw, labels=ui_app["labels"][])
         
@@ -69,11 +69,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     base_cache = PlotCache()
     base_cache.obs_x[] = xs_slices[base_idx]; base_cache.obs_y[] = ys_slices[base_idx]; base_cache.obs_u[] = us_slices[base_idx]
 
-    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["colormap"][], levels=lvl_range, rasterize=rast_val)
+    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"][], levels=lvl_range, rasterize=rast_val)
     base_cache.primitives["contourf"] = cf
     cache_dict[base_label] = base_cache
 
-    base_color = Makie.to_colormap(ui_app["colormap"][])[end]
+    base_color = Makie.to_colormap(ui_app["color_map"][])[end]
     push!(plotted_objects, [Makie.PolyElement(color=base_color)]); push!(labels_for_legend, "$base_label (Base)")
 
     for (i, label) in enumerate(active_methods)
@@ -82,7 +82,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_x[] = xs_slices[i]; cache.obs_y[] = ys_slices[i]; cache.obs_u[] = us_slices[i]
         
         color = ui_app["colors"][][mod1(i, end)]
-        lw = ui_app["linewidth"][]
+        lw = ui_app["line_width"][]
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; color=color, linewidth=lw, labels=true)
         cache.primitives["contour"] = ct
@@ -107,7 +107,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
     rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
 
-    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["colormap"][], colorrange=cr_obs, rasterize=rast_val)
+    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
     cache.primitives["surface"] = sf
     cache_dict[label] = cache
 end
@@ -187,7 +187,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
 
     # 2. Bind the primitives
-    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["colormap"][], colorrange=cr_obs)
+    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs)
     
     # 3. Save to cache
     cache.primitives["volume"] = vol
@@ -213,7 +213,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    sc = scatter!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["colormap"][], colorrange=cr_obs, markersize=ui_app["markersize"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, marker_size=ui_app["marker_size"][], marker=ui_app["markers"][][1])
 
     cache.primitives["scatter2d"] = sc
     cache_dict[label] = cache
@@ -237,7 +237,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    sc = scatter!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["colormap"][], colorrange=cr_obs, markersize=ui_app["markersize"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, marker_size=ui_app["marker_size"][], marker=ui_app["markers"][][1])
 
     cache.primitives["scatter3d"] = sc
     cache_dict[label] = cache

@@ -105,8 +105,16 @@ function safe_string(s::AbstractString)
 end
 
 function nice_string(s::AbstractString)
-    # Replace underscores with spaces and titlecase the result
-    return titlecase(replace(s, "_" => " "))
+    words = split(s, "_")
+    formatted_words = map(words) do word
+        # If the word has more than one uppercase letter, assume it's an acronym/code and keep it as-is.
+        if count(isuppercase, word) > 1
+            return word
+        else
+            return titlecase(word)
+        end
+    end
+    return join(formatted_words, " ")
 end
 
 # Update the signature to accept 'nothing' for the reference function name

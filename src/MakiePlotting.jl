@@ -205,8 +205,7 @@ function launch_plotter()
     master_fig = Figure()
     display(master_fig)
     ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
-    plot_layout = master_fig[1, 2] = GridLayout()
-    
+    plot_layout = master_fig[1, 2] = GridLayout() 
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
     
     create_controls(ctrl_layout, manager)
@@ -332,7 +331,6 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         
         new_obs = setup_render_lift!(master_fig, plot_layout, plot_data_obs, manager, Val(ptype_sym))
         if !isnothing(new_obs); append!(render_observers, new_obs); end
-        resize_to_layout!(master_fig)
     end
 
     on(manager.triggers["Layout_Update"]) do _
@@ -524,13 +522,13 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 end
                 
                 initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
-                
+                default_title = is_compare ? compare_labels[i] : ts
+                axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
                 if !is_3d_axis; 
                     plot_HUD!(axes[i], manager)
                     set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
                 end
             end
-            resize_to_layout!(master_fig)
         end
         manager.triggers["UI_Update"][] += 1
     end
@@ -561,11 +559,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 if !is_3d_axis
                     safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
                     if axes[i].xscale[] == log10 && safe_min(dt[1]) <= 0
-                        @warn "Negative X data encountered. Disabling logscale to prevent crash."
+                        @warn "Negative X data encountered. Disabling log_scale to prevent crash."
                         axes[i].xscale[] = identity
                     end
                     if axes[i].yscale[] == log10 && safe_min(dt[2]) <= 0
-                        @warn "Negative Y/U data encountered. Disabling logscale to prevent crash."
+                        @warn "Negative Y/U data encountered. Disabling log_scale to prevent crash."
                         axes[i].yscale[] = identity
                     end
                 end
@@ -614,31 +612,52 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                             
                             if haskey(prims, "line")
                                 prims["line_color"][]   = color
-                                prims["line_width"][]   = ui_app["linewidth"][]
+                                prims["line_width"][]   = ui_app["line_width"][]
                                 prims["line_visible"][] = ui_app["show_lines"][]
                             end
                             if haskey(prims, "scatter")
                                 prims["scat_color"][]   = color
-                                prims["scat_size"][]    = ui_app["markersize"][]
+                                prims["scat_size"][]    = ui_app["marker_size"][]
                                 prims["scat_visible"][] = ui_app["show_scatter"][]
                             end
                             if haskey(prims, "contour")
                                 prims["contour"].color[] = color
-                                prims["contour"].linewidth[] = ui_app["linewidth"][]
+                                prims["contour"].linewidth[] = ui_app["line_width"][]
                             end
-                            if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["colormap"][]; end
-                            if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["colormap"][]; end
-                            if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["colormap"][]; end
-                            if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["colormap"][]; end
+                            if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["color_map"][]; end
+                            if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["color_map"][]; end
+                            if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["color_map"][]; end
+                            if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["color_map"][]; end
                             
                             if haskey(prims, "scatter2d")
-                                prims["scatter2d"].colormap[] = ui_app["colormap"][]
-                                prims["scatter2d"].markersize[] = ui_app["markersize"][]
+                                prims["scatter2d"].colormap[] = ui_app["color_map"][]
+                                prims["scatter2d"].markersize[] = ui_app["marker_size"][]
                             end
                             if haskey(prims, "scatter3d")
-                                prims["scatter3d"].colormap[] = ui_app["colormap"][]
-                                prims["scatter3d"].markersize[] = ui_app["markersize"][]
+                                prims["scatter3d"].colormap[] = ui_app["color_map"][]
+                                prims["scatter3d"].markersize[] = ui_app["marker_size"][]
                             end
+                        end
+                    end
+                    if has_colorbar
+                        plot_obj = nothing
+                        
+                        # Find the first valid rendered primitive to attach the colorbar to
+                        for method_name in manager.methods[]
+                            if haskey(manager.caches[i], method_name)
+                                prims = manager.caches[i][method_name].primitives
+                                for pkey in ["heatmap", "contourf", "surface", "volume", "scatter2d", "scatter3d"]
+                                    if haskey(prims, pkey)
+                                        plot_obj = prims[pkey]
+                                        break
+                                    end
+                                end
+                            end
+                            !isnothing(plot_obj) && break
+                        end
+                        
+                        if !isnothing(plot_obj)
+                            create_or_update_colorbar!(plot_layout, plot_obj, manager, Observable((0.0, 1.0)), string(u_str), i)
                         end
                     end
                 end
@@ -654,21 +673,21 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         color = ui_app["colors"][][mod1(m_idx, end)]
                         
                         if haskey(prims, "contourf")
-                            push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["colormap"][])[end])])
+                            push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
                             push!(labels_for_legend, "$(method_name) (Base)")
                         end
                         
                         group = []
                         if haskey(prims, "line") && ui_app["show_lines"][]
                             ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][], linestyle=ls))
+                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
                         end
                         if haskey(prims, "scatter") && ui_app["show_scatter"][]
                             mrk = ui_app["markers"][][mod1(m_idx, end)]
-                            push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["markersize"][]))
+                            push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
                         end
                         if haskey(prims, "contour")
-                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["linewidth"][]))
+                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][]))
                         end
                         
                         if !isempty(group)
@@ -679,6 +698,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 end
                 create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
             end
+            resize_to_layout!(master_fig)
         end
     end
     return ObserverFunction[prim_obs; data_sync_obs; ui_obs]

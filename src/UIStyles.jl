@@ -34,9 +34,9 @@ function create_master_ui_observables()
     
     master["Labels"] = obs_dict(Dict(
         "title"          => "default", 
-        "xlabel"         => "default", 
-        "ylabel"         => "default", 
-        "zlabel"         => "default", 
+        "x_label"         => "default", 
+        "y_label"         => "default", 
+        "z_label"         => "default", 
         "colorbar_label" => "default", 
         "legend"         => "Methods",
         "comp_names"     => ("default",)
@@ -47,15 +47,15 @@ function create_master_ui_observables()
         "close_loop" => false,   
         "points"     => Any[],   
         "color"      => :red,
-        "linewidth"  => 3.0,
-        "linestyle"  => :dash,
-        "markersize" => 15.0
+        "line_width"  => 3.0,
+        "line_style"  => :dash,
+        "marker_size" => 15.0
     ))  
     master["Various"] = obs_dict(Dict(
         "save_formats"         => ["png"], 
         "create_savefolder"    => false,
-        "animation_duration_s" => 10.0, 
-        "animation_fps"        => 30, 
+        "animation_time" => 10.0, 
+        "animation_FPS"        => 30, 
         "remove_outliers"      => false, 
         "mark_outliers"        => false, 
         "outlier_threshold"    => 1.5, 
@@ -65,12 +65,12 @@ function create_master_ui_observables()
     
     # 2. THE FIX: Added 'label_offset' to the Universal Axis Template!
     axis_dict(pad, default_offset=15.0) = Dict{String, Any}(
-        "gridvisible"       => true, 
-        "ticklabelsvisible" => true, 
+        "grid_visibility"       => true, 
+        "tick_label_visibility" => true, 
         "tick_count"        => 0, 
-        "tickformat"        => "default", 
+        "tick_format"        => "default", 
         "scale_offset"      => 0.0, 
-        "logscale"          => false, 
+        "log_scale"          => false, 
         "padding"           => pad,
         "label_offset"      => default_offset,
         "lims"              => Any[]
@@ -88,8 +88,8 @@ function create_master_ui_observables()
         "colors"       => [:red, :blue, :green, :orange, :purple],
         "line_styles"   => [:solid, (:dash, :dense), (:dot, :dense)],
         "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
-        "linewidth"    => 5.0,
-        "markersize"   => 15.0,
+        "line_width"    => 5.0,
+        "marker_size"   => 15.0,
         "show_lines"   => true,
         "show_scatter" => false,
         "dashed_lines" => false,
@@ -97,8 +97,8 @@ function create_master_ui_observables()
     ))
     
     master["Style-Heatmap"] = obs_dict(Dict(
-        "colorrange"    => [],
-        "colormap"      => :viridis,
+        "color_range"    => [],
+        "color_map"      => :viridis,
         "bottom_margin" => 60,
         "rasterize"     => 2,
     ))
@@ -106,17 +106,17 @@ function create_master_ui_observables()
     master["Style-Contour"] = obs_dict(Dict(
         "colors"        => [:black, :red, :green, :orange, :purple],
         "levels"        => 15,
-        "linewidth"     => 2.0,
+        "line_width"     => 2.0,
         "bottom_margin" => 60,
         "labels"        => true,
     ))
     
     master["Style-Contourf"] = obs_dict(Dict(
-        "colorrange"    => [],
+        "color_range"    => [],
         "base_method_idx" => 1,
         "colors"        => [:red, :blue, :green, :orange, :purple],
-        "linewidth"     => 2.0,
-        "colormap"      => :viridis,
+        "line_width"     => 2.0,
+        "color_map"      => :viridis,
         "levels"        => 15,
         "bottom_margin" => 60,
         "rasterize"     => 2,
@@ -125,37 +125,37 @@ function create_master_ui_observables()
     master["Style-Contour3D"] = obs_dict(Dict(
         "colors"        => [:red, :blue, :green, :orange, :purple],
         "levels"        => 15,
-        "linewidth"     => 2.0,
+        "line_width"     => 2.0,
     ))
 
     master["Style-Surface"] = obs_dict(Dict(
-        "colorrange"    => [],
-        "colormap"      => :viridis,
+        "color_range"    => [],
+        "color_map"      => :viridis,
         "rasterize"     => 2,
     ))
     
     master["Style-Volume"] = obs_dict(Dict(
-        "colorrange"    => [],
-        "colormap"      => :viridis,
+        "color_range"    => [],
+        "color_map"      => :viridis,
         "rasterize"     => 2.0,
     ))
 
     master["Style-Scatter2D"] = obs_dict(Dict(
-        "colorrange"    => [],
-        "colormap"      => :viridis,
+        "color_range"    => [],
+        "color_map"      => :viridis,
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
-        "markersize"    => 15.0, 
+        "marker_size"    => 15.0, 
         "bottom_margin" => 60, 
         "rasterize"     => 2,
     ))
     
     master["Style-Scatter3D"] = obs_dict(Dict(
-        "colorrange"    => [],
-        "colormap"      => :viridis,
+        "color_range"    => [],
+        "color_map"      => :viridis,
         "colors"        => [:red, :blue], 
         "markers"       => [:circle, :rect], 
-        "markersize"    => 15.0, 
+        "marker_size"    => 15.0, 
         "rasterize"     => 2,
     ))
     return master
@@ -215,12 +215,12 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             layout_opt["Plot_Type_Selection"] = "Lines" # THE FIX: Move to Layout
             scene_opt["t_Value"]              = 10.0^10
             
-            set_ui!("X-Axis", "logscale", true)
-            set_ui!("Y-Axis", "logscale", true)
+            set_ui!("X-Axis", "log_scale", true)
+            set_ui!("Y-Axis", "log_scale", true)
             set_ui!("X-Axis", "padding", 0.0)
             
-            set_ui!("Labels", "xlabel", "Number of Cells (N)")
-            set_ui!("Labels", "ylabel", "Relative L2 Error")
+            set_ui!("Labels", "x_label", "Number of Cells (N)")
+            set_ui!("Labels", "y_label", "Relative L2 Error")
 
         elseif preset == :publication
             set_ui!("Labels", "title", "")
@@ -231,7 +231,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Axis-General", "ticklabel_size", 16)
             set_ui!("X-Axis", "padding", 0.0)
 
-            set_ui!("Plot-Style", "linewidth", 4.0)
+            set_ui!("Plot-Style", "line_width", 4.0)
             set_ui!("Plot-Style", "dashed_lines", true)
             set_ui!("Plot-Style", "line_styles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])

@@ -3,7 +3,7 @@ function plot_reference_lines!(
     exponents::Vector;
     label::String = "Reference Lines",
     color = :black,
-    linestyle = :dash,
+    line_style = :dash,
     kwargs...
 )
     if isnothing(exponents) || isempty(exponents)
@@ -43,7 +43,7 @@ function plot_reference_lines!(
         line = lines!(ax, x_ref_values, y_ref_line;
             label = label, 
             color = (color, 0.65),
-            linestyle = linestyle,
+            linestyle = line_style,
             kwargs...
         )
         push!(plotted_lines, line)
@@ -59,7 +59,7 @@ Extracts the colorrange from the UI dict, or calculates it dynamically from the 
 if set to "default". Always returns an Observable Tuple of Float64.
 """
 function get_colorrange(ui_app::Dict, u_data::AbstractArray)
-    cr_val = ui_app["colorrange"][]
+    cr_val = ui_app["color_range"][]
     
     if isempty(cr_val)
         valid_u = filter(isfinite, vec(u_data))
@@ -122,18 +122,18 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
 
-    use_log_x = ui_x["logscale"][]
-    use_log_y = ui_y["logscale"][]
+    use_log_x = ui_x["log_scale"][]
+    use_log_y = ui_y["log_scale"][]
 
     if raw_xlims[1] <= 0 && use_log_x
-        ui_x["logscale"][] = false
+        ui_x["log_scale"][] = false
         use_log_x = false
-        @warn "X-Axis data contains non-positive values. Logscale disabled."
+        @warn "X-Axis data contains non-positive values. log_scale disabled."
     end
     if raw_ylims[1] <= 0 && use_log_y
-        ui_y["logscale"][] = false
+        ui_y["log_scale"][] = false
         use_log_y = false
-        @warn "Y-Axis data contains non-positive values. Logscale disabled."
+        @warn "Y-Axis data contains non-positive values. log_scale disabled."
     end
 
     final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
@@ -280,7 +280,7 @@ end
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
     isnothing(plot_object) && return
     ui_stl = manager.ui["Plot-Style"]
-    if !haskey(ui_stl, "colormap"); return; end 
+    if !haskey(ui_stl, "color_map"); return; end 
     
     layout_dict = manager.state["Layout_Dict"][]
     cb_list = layout_dict["Colorbars"]
@@ -355,17 +355,17 @@ function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
     isempty(valid_pairs) && return
     
     color = ui_stl["colors"][][mod1(plot_idx, end)]
-    lw = haskey(ui_stl, "linewidth") ? (ui_stl["linewidth"][] / 2) : 2.0
+    lw = haskey(ui_stl, "line_width") ? (ui_stl["line_width"][] / 2) : 2.0
 
     if track_max
         max_u, idx = findmax(p -> p[2], valid_pairs)
         max_x = valid_pairs[idx][1]
-        linesegments!(ax, [Point2f(max_x, 0), Point2f(max_x, max_u)]; color=(color, 0.7), linestyle=:dash, linewidth=lw)
+        linesegments!(ax, [Point2f(max_x, 0), Point2f(max_x, max_u)]; color=(color, 0.7), linestyle=:dash, line_width=lw)
     end
     if track_min
         min_u, idx = findmin(p -> p[2], valid_pairs)
         min_x = valid_pairs[idx][1]
-        linesegments!(ax, [Point2f(min_x, 0), Point2f(min_x, min_u)]; color=(color, 0.7), linestyle=:dot, linewidth=lw)
+        linesegments!(ax, [Point2f(min_x, 0), Point2f(min_x, min_u)]; color=(color, 0.7), linestyle=:dot, line_width=lw)
     end
 end
 
@@ -393,8 +393,8 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     ui_x   = manager.ui["X-Axis"]
     ui_y   = manager.ui["Y-Axis"]
 
-    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
-    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
+    ax.xlabel = ui_lbl["x_label"][] == "default" ? def_x : ui_lbl["x_label"][]
+    ax.ylabel = ui_lbl["y_label"][] == "default" ? def_y : ui_lbl["y_label"][]
     ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
 
     ax.titlesize = ui_gen["title_size"][]
@@ -410,10 +410,10 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
         ax.ylabelpadding = ui_y["label_offset"][]
     end
     
-    ax.xgridvisible = ui_x["gridvisible"][]
-    ax.ygridvisible = ui_y["gridvisible"][]
-    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]
-    ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]
+    ax.xgridvisible = ui_x["grid_visibility"][]
+    ax.ygridvisible = ui_y["grid_visibility"][]
+    ax.xticklabelsvisible = ui_x["tick_label_visibility"][]
+    ax.yticklabelsvisible = ui_y["tick_label_visibility"][]
 
     if ui_x["tick_count"][] > 0
         ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(ui_x["tick_count"][])) : LinearTicks(ui_x["tick_count"][])
@@ -426,7 +426,7 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
     if x_offset != 0.0
         ax.xtickformat = ticks -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", ticks)
     else
-        ax.xtickformat = ui_x["tickformat"][] == "default" ? Makie.automatic : ui_x["tickformat"][]
+        ax.xtickformat = ui_x["tick_format"][] == "default" ? Makie.automatic : ui_x["tick_format"][]
     end
 
     y_offset = ui_y["scale_offset"][]
@@ -436,7 +436,7 @@ function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::
             "$(round(y_offset, sigdigits=3)) $(dev < 0 ? "-" : "+") $(@sprintf("%.1e", abs(dev)))"
         end
     else
-        ax.ytickformat = ui_y["tickformat"][] == "default" ? Makie.automatic : ui_y["tickformat"][]
+        ax.ytickformat = ui_y["tick_format"][] == "default" ? Makie.automatic : ui_y["tick_format"][]
     end
 end
 
@@ -445,17 +445,17 @@ function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y:
     ui_lbl = manager.ui["Labels"]
     ui_x, ui_y, ui_z = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
 
-    ax.xlabel = ui_lbl["xlabel"][] == "default" ? def_x : ui_lbl["xlabel"][]
-    ax.ylabel = ui_lbl["ylabel"][] == "default" ? def_y : ui_lbl["ylabel"][]
-    ax.zlabel = ui_lbl["zlabel"][] == "default" ? def_z : ui_lbl["zlabel"][]
+    ax.xlabel = ui_lbl["x_label"][] == "default" ? def_x : ui_lbl["x_label"][]
+    ax.ylabel = ui_lbl["y_label"][] == "default" ? def_y : ui_lbl["y_label"][]
+    ax.zlabel = ui_lbl["z_label"][] == "default" ? def_z : ui_lbl["z_label"][]
     ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
 
     ax.titlesize = ui_gen["title_size"][]
     ax.xlabelsize = ui_gen["label_size"][]; ax.ylabelsize = ui_gen["label_size"][]; ax.zlabelsize = ui_gen["label_size"][]
     ax.xticklabelsize = ui_gen["ticklabel_size"][]; ax.yticklabelsize = ui_gen["ticklabel_size"][]; ax.zticklabelsize = ui_gen["ticklabel_size"][]
 
-    ax.xgridvisible = ui_x["gridvisible"][]; ax.ygridvisible = ui_y["gridvisible"][]; ax.zgridvisible = ui_z["gridvisible"][]
-    ax.xticklabelsvisible = ui_x["ticklabelsvisible"][]; ax.yticklabelsvisible = ui_y["ticklabelsvisible"][]; ax.zticklabelsvisible = ui_z["ticklabelsvisible"][]
+    ax.xgridvisible = ui_x["grid_visibility"][]; ax.ygridvisible = ui_y["grid_visibility"][]; ax.zgridvisible = ui_z["grid_visibility"][]
+    ax.xticklabelsvisible = ui_x["tick_label_visibility"][]; ax.yticklabelsvisible = ui_y["tick_label_visibility"][]; ax.zticklabelsvisible = ui_z["tick_label_visibility"][]
 
     if haskey(ui_x, "label_offset")
         ax.xlabeloffset = ui_x["label_offset"][]
@@ -487,19 +487,19 @@ function plot_HUD!(ax::Axis, manager::PlotManager)
 
         mode  = lowercase(strip(ui_hud["mode"][]))
         color = ui_hud["color"][]
-        lw    = ui_hud["linewidth"][]
-        ls    = ui_hud["linestyle"][]
-        ms    = ui_hud["markersize"][]
+        lw    = ui_hud["line_width"][]
+        ls    = ui_hud["line_style"][]
+        ms    = ui_hud["marker_size"][]
 
         if mode == "scatter"
-            scatter!(ax, x_pct, y_pct; color=color, markersize=ms, space=:relative)
+            scatter!(ax, x_pct, y_pct; color=color, marker_size=ms, space=:relative)
         elseif mode == "scatterlines"
-            scatterlines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, markersize=ms, space=:relative)
+            scatterlines!(ax, x_pct, y_pct; color=color, line_width=lw, linestyle=ls, marker_size=ms, space=:relative)
         elseif mode == "polygon"
             poly_pts = Point2f.(zip(x_pct, y_pct))
             poly!(ax, poly_pts; color=(color, 0.3), strokecolor=color, strokewidth=lw, space=:relative)
         else
-            lines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, space=:relative)
+            lines!(ax, x_pct, y_pct; color=color, line_width=lw, linestyle=ls, space=:relative)
         end
     catch e
         @warn "Failed to plot HUD. Ensure 'points' is a vector of tuples, e.g., [(0.1, 0.1), (0.9, 0.9)]."
