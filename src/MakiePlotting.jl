@@ -203,7 +203,7 @@ function launch_plotter()
 
     # Single Dashboard Layout Definition
     master_fig = Figure()
-    display(master_fig)
+    #display(master_fig)
     ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
     plot_layout = master_fig[1, 2] = GridLayout() 
     plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
@@ -363,11 +363,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         manager.triggers["Primitive_Rebuild"][] += 1
     end
     
-    onany(
-        manager.widgets["Plot_Type"].selection, manager.widgets["Compare_Target"].selection, 
-        manager.widgets["Compare_Columns"].selection, manager.widgets["Compare_Link"].selection,
-        manager.widgets["Plot_Width"].selection, manager.widgets["Plot_Height"].selection
-    ) do _...
+    on(manager.widgets["Layout_Apply"].clicks) do _
         if manager.state["Config_Just_Loaded"][]; return; end
         manager.triggers["Layout_Update"][] += 1
     end

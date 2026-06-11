@@ -237,7 +237,7 @@ end
 
 function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector, manager::PlotManager)
     for c in copy(plot_layout.content)
-        if c.content isa Legend; delete!(c.content); end
+        if c.content isa Makie.Legend; delete!(c.content); end
     end
     
     if isempty(plotted_objects) || isempty(labels); return; end
@@ -292,7 +292,7 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manage
     
     if plot_idx == 1
         for c in copy(plot_layout.content)
-            if c.content isa Colorbar; delete!(c.content); end
+            if c.content isa Makie.Colorbar; delete!(c.content); end
         end
     end
     

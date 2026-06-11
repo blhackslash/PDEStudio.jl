@@ -793,8 +793,6 @@ onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
             end
             
             manager.state["Config_Just_Loaded"].val = false
-            manager.triggers["Primitive_Rebuild"][] += 1
-            manager.triggers["UI_Update"][] += 1
         end
     end
 end

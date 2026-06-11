@@ -162,8 +162,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         push!(plotted_objects, [l, s])
         push!(labels_for_legend, label)
     end
-    
-    create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
 end
 
 # -----------------------------------------------------------------------------
