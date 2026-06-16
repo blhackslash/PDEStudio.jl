@@ -6,49 +6,44 @@ function plot_reference_lines!(
     line_style = :dash,
     kwargs...
 )
-    if isnothing(exponents) || isempty(exponents)
-        return []
-    end
+    if isnothing(exponents) || isempty(exponents); return []; end
 
-    bbox = Makie.data_limits(ax.scene)
-    if !isfinite(bbox.origin[1]) || !isfinite(bbox.widths[1])
-        return []
-    end
-    
-    xmin, ymin = bbox.origin[1], bbox.origin[2]
-    xmax = xmin + bbox.widths[1]
-    ymax = ymin + bbox.widths[2]
-    
-    if (xmin <= 0 || xmax <= 0) && (ax.xscale[] == log10 || ax.yscale[] == log10)
-        return [] 
-    end
-
-    x_ref_values = 10 .^ range(log10(xmin), log10(xmax), length=100)
-    ref_x = xmin
     plotted_lines = []
-    
     for p_signed in exponents
         if p_signed == 0; continue; end
-
-        local y_anchor
-        if p_signed > 0
-            y_anchor = ymin
-        else 
-            y_anchor = ymax
-        end
-
-        C = y_anchor / (ref_x^p_signed)
-        y_ref_line = C .* (x_ref_values .^ p_signed)
         
-        line = lines!(ax, x_ref_values, y_ref_line;
-            label = label, 
-            color = (color, 0.65),
-            linestyle = line_style,
-            kwargs...
-        )
-        push!(plotted_lines, line)
+        pts = lift(ax.finallimits, ax.xscale, ax.yscale) do lims, xscl, yscl
+            xmin, xmax = lims.origin[1], lims.origin[1] + lims.widths[1]
+            ymin, ymax = lims.origin[2], lims.origin[2] + lims.widths[2]
+            
+            # =================================================================
+            # THE FIX: Absolute Domain Safety!
+            # Negative bases with float exponents crash Julia. Power-law reference 
+            # lines ONLY make sense in strictly positive quadrants anyway.
+            # =================================================================
+            xmin = max(1e-12, xmin)
+            xmax = max(1e-11, max(xmax, xmin + 1e-11))
+            ymin = max(1e-12, ymin)
+            ymax = max(1e-11, max(ymax, ymin + 1e-11))
+            
+            if xmin >= xmax || ymin >= ymax
+                return [Point2f(1.0, 1.0), Point2f(10.0, 10.0)]
+            end
+            
+            xs = xscl == log10 ? (10 .^ range(log10(xmin), log10(xmax), length=100)) : collect(range(xmin, xmax, length=100))
+            
+            y_anchor = p_signed > 0 ? ymin : ymax
+            ref_x = xs[1]
+            C = ref_x > 0 ? (y_anchor / (ref_x^p_signed)) : 0.0
+            ys = C .* (xs .^ p_signed)
+            
+            return Point2f.(xs, ys)
+        end
+        
+        # THE FIX: Explicitly assign the label so the UI Manager can delete/redraw it!
+        l = lines!(ax, pts; color=color, linestyle=line_style, label=label, kwargs...)
+        push!(plotted_lines, l)
     end
-
     return plotted_lines
 end
 
@@ -125,15 +120,15 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     use_log_x = ui_x["log_scale"][]
     use_log_y = ui_y["log_scale"][]
 
+    # THE FIX: Only disable log_scale temporarily for this specific render pass.
+    # Do NOT mutate ui_x["log_scale"][] so the preset survives until the Ns data loads!
     if raw_xlims[1] <= 0 && use_log_x
-        ui_x["log_scale"][] = false
         use_log_x = false
-        @warn "X-Axis data contains non-positive values. log_scale disabled."
+        @warn "X-Axis data contains non-positive values. log_scale temporarily disabled."
     end
     if raw_ylims[1] <= 0 && use_log_y
-        ui_y["log_scale"][] = false
         use_log_y = false
-        @warn "Y-Axis data contains non-positive values. log_scale disabled."
+        @warn "Y-Axis data contains non-positive values. log_scale temporarily disabled."
     end
 
     final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)

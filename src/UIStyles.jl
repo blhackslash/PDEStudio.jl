@@ -85,7 +85,7 @@ function create_master_ui_observables()
     
     # --- 3. PLOT-SPECIFIC STYLES (Offsets Safely Extracted) ---
     master["Style-Lines"] = obs_dict(Dict(
-        "colors"       => [:black, :blue, :green, :orange, :purple, :yellow],
+        "colors"       => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
         "line_styles"   => [:solid, (:dash, :dense), (:dot, :dense)],
         "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
         "line_width"    => 5.0,
@@ -210,8 +210,8 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     for preset in preset_list
         if preset == :convergence
-            scene_opt["X-Axis_Selection"]     = "Ns__1"
-            scene_opt["U-Axis_Selection"]     = "relative_l2error"
+            scene_opt["X_Axis_Selection"]     = "Ns__1"
+            scene_opt["U_Axis_Selection"]     = "relative_l2error"
             layout_opt["Plot_Type_Selection"] = "Lines" # THE FIX: Move to Layout
             scene_opt["t_Value"]              = 10.0^10
             
@@ -228,10 +228,11 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
             set_ui!("Axis-General", "font_size", 18)
             set_ui!("Axis-General", "label_size", 18)
+            set_ui!("Axis-General", "title_size", 22)
             set_ui!("Axis-General", "ticklabel_size", 16)
             set_ui!("X-Axis", "padding", 0.0)
 
-            set_ui!("Plot-Style", "line_width", 3.0)
+            set_ui!("Plot-Style", "line_width", 3.6)
             set_ui!("Plot-Style", "dashed_lines", true)
             set_ui!("Plot-Style", "line_styles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])

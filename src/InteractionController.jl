@@ -163,23 +163,19 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
     end
 
-    on(menu_mth.selection) do m
+    on(menu_mth.selection) do sel  # <-- THE FIX: Change 'm' to 'sel' here!
         @with_lock manager "Menu_Sync" begin
-            (isnothing(m) || m == "-") && return
-            
-            curr_staged = staged_methods[]
-            
             if is_activate_mode[]
-                if !(m in curr_staged)
-                    staged_methods[] = [curr_staged; m]
+                if !(sel in staged_methods[])
+                    new_staged = copy(staged_methods[])
+                    push!(new_staged, sel)
+                    # THE FIX: Sort immediately upon adding to the staged list!
+                    staged_methods[] = sort_methods_robust(new_staged) 
                 end
             else
-                if (m in curr_staged)
-                    staged_methods[] = filter(s -> s != m, curr_staged)
-                end
+                new_staged = filter(x -> x != sel, staged_methods[])
+                staged_methods[] = new_staged
             end
-            
-            # Snap back to default
             menu_mth.i_selected[] = 1
         end
     end
@@ -837,7 +833,9 @@ onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
                 for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
                     if haskey(manager.ui, scope)
                         for (k, v) in keys_dict
-                            if haskey(manager.ui[scope], k); manager.ui[scope][k][] = v; end
+                            if haskey(manager.ui[scope], k)
+                                manager.ui[scope][k].val = v
+                            end
                         end
                     end
                 end

@@ -522,8 +522,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 default_title = is_compare ? compare_labels[i] : ts
                 axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
                 if !is_3d_axis; 
-                    plot_HUD!(axes[i], manager)
                     set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+                    plot_HUD!(axes[i], manager)
                 end
                 # =================================================================
                 # THE FIX: Apply and Consume Camera Options
@@ -628,6 +628,17 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     set_axis_styles!(ax, manager, string(x_str), string(y_str), ax.title[])
                 end
                 apply_axis_limits_overrides!(ax, manager)
+                
+                # =============================================================
+                # THE FIX: Dynamically draw Reference Lines on UI Updates!
+                # =============================================================
+                if !is_3d_axis
+                    delete_plots_by_label!(ax, "Reference Lines")
+                    ref_exponents = manager.ui["Plot-Style"]["reference"][]
+                    if !isempty(ref_exponents)
+                        plot_reference_lines!(ax, ref_exponents; label="Reference Lines")
+                    end
+                end
                 
                 if haskey(manager.caches, i)
                     for (m_idx, method_name) in enumerate(manager.methods[])
