@@ -1,5 +1,21 @@
 function allMethodNames(config::SimulationConfig)
-    return collect(keys(config.methods_dict))
+    return sort_methods_robust(collect(keys(config.methods_dict)))
+end
+
+# =============================================================================
+# THE FIX: Robust Priority Sorting
+# =============================================================================
+function sort_methods_robust(methods::Vector{String})
+    priority_keys = ["analytic", "reference", "exact", "baseline", "true"]
+    
+    function method_rank(m::String)
+        lm = lowercase(m)
+        # Rank 0 if it contains a priority keyword (forces it to the top), Rank 1 otherwise.
+        rank = any(k -> occursin(k, lm), priority_keys) ? 0 : 1
+        return (rank, m)
+    end
+    
+    return sort(methods, by=method_rank)
 end
 
 function createObsDict(dict::Dict{String,Any})
@@ -356,6 +372,12 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
         GLOBAL_LAYOUT_OPTIONS[] = layout_opts
     end
 
+    if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General")
+        GLOBAL_CAMERA_OPTIONS[] = parsed["Camera"]["General"]
+    else
+        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+    end
+
     ACTIVE_SIM_CONFIG[] = new_config
     @info "Successfully applied CSV config to UI!"
 end
@@ -417,7 +439,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     end
 
     # 4. Default Methods
-    default_methods = collect(keys(methods_dict))
+    default_methods = sort_methods_robust(collect(keys(methods_dict)))
 
     # 5. Extract Reference Name explicitly from Config
     ref_name = nothing
@@ -444,15 +466,15 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         if !isnothing(ref_factory)
             ref_func = Base.invokelatest(ref_factory, shared_params)
             
-            # --- THE FIX: Auto-Inject the Reference Method! ---
-            # Because reference methods often have empty parameter dicts, they don't 
-            # get saved as rows in the CSV. We must explicitly rebuild their presence here.
+            # --- Auto-Inject the Reference Method! ---
             ns = nice_string(safe_ref_name)
             if !haskey(methods_dict, ns)
                 methods_dict[ns] = ParamDict()
             end
             if !(ns in default_methods)
                 push!(default_methods, ns)
+                # THE FIX: Re-sort after injecting the reference!
+                default_methods = sort_methods_robust(default_methods)
             end
             
         else
@@ -652,6 +674,13 @@ function saveParametersToCSV(
         scene_opts = extract_scene_options(manager)
         for (k, v) in scene_opts
             add_row("Scene", "General", k, v)
+        end
+        layout_opts = extract_layout_options(manager)
+        for (k, v) in layout_opts
+            add_row("Layout", "General", k, v)
+        end
+        for (k, v) in GLOBAL_CAMERA_OPTIONS[]
+            add_row("Camera", "General", k, v)
         end
 
         # --- 3. CATEGORY: Simulation ---

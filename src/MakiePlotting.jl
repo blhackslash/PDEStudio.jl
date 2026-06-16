@@ -5,6 +5,7 @@ const GLOBAL_UI_OVERWRITE = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slider, :slider])
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_LAYOUT_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
+const GLOBAL_CAMERA_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 
 # Singleton Global Observables & State
 const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
@@ -524,6 +525,35 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     plot_HUD!(axes[i], manager)
                     set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
                 end
+                # =================================================================
+                # THE FIX: Apply and Consume Camera Options
+                # =================================================================
+                cam_opts = GLOBAL_CAMERA_OPTIONS[]
+                if !isempty(cam_opts)
+                    for (i, ax) in enumerate(axes)
+                        if ax isa Axis && haskey(cam_opts, "Axis_$(i)_Limits")
+                            l = cam_opts["Axis_$(i)_Limits"]
+                            try limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4])) catch; end
+                        elseif ax isa Axis3
+                            try
+                                if haskey(cam_opts, "Axis_$(i)_Azimuth")
+                                    ax.azimuth[] = Float32(cam_opts["Axis_$(i)_Azimuth"])
+                                end
+                                if haskey(cam_opts, "Axis_$(i)_Elevation")
+                                    ax.elevation[] = Float32(cam_opts["Axis_$(i)_Elevation"])
+                                end
+                                if haskey(cam_opts, "Axis_$(i)_Lookat")
+                                    lk = cam_opts["Axis_$(i)_Lookat"]
+                                    ax.lookat[] = Makie.Point3f(lk[1], lk[2], lk[3])
+                                end
+                            catch
+                            end
+                        end
+                    end
+                    # Consume the options! It acts as a one-time snap on boot.
+                    GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}() 
+                end
+                # =================================================================
             end
         end
         manager.triggers["UI_Update"][] += 1

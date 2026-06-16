@@ -85,7 +85,7 @@ function create_master_ui_observables()
     
     # --- 3. PLOT-SPECIFIC STYLES (Offsets Safely Extracted) ---
     master["Style-Lines"] = obs_dict(Dict(
-        "colors"       => [:red, :blue, :green, :orange, :purple],
+        "colors"       => [:black, :blue, :green, :orange, :purple, :yellow],
         "line_styles"   => [:solid, (:dash, :dense), (:dot, :dense)],
         "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
         "line_width"    => 5.0,
@@ -231,7 +231,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Axis-General", "ticklabel_size", 16)
             set_ui!("X-Axis", "padding", 0.0)
 
-            set_ui!("Plot-Style", "line_width", 4.0)
+            set_ui!("Plot-Style", "line_width", 3.0)
             set_ui!("Plot-Style", "dashed_lines", true)
             set_ui!("Plot-Style", "line_styles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])
@@ -242,14 +242,20 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
             layout_opt["Legend_Base_Selection"] = "top"      # THE FIX: Move to Layout
             layout_opt["Legend_Add_Selection"]  = "detached" # THE FIX: Move to Layout
-            layout_opt["Plot_Width_Selection"]  = 300        # THE FIX: Move to Layout
-            layout_opt["Plot_Height_Selection"] = 300        # THE FIX: Move to Layout
+            layout_opt["Plot_Width_Selection"]  = 500        # THE FIX: Move to Layout
+            layout_opt["Plot_Height_Selection"] = 400        # THE FIX: Move to Layout
             
         elseif preset == :heatmap
             layout_opt["Plot_Type_Selection"] = "Heatmap"    # THE FIX: Move to Layout
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
+        elseif preset == :component
+            layout_opt["Compare_Target_Selection"]  = "Component"
+            layout_opt["Compare_Columns_Selection"] = "1"
+            layout_opt["Compare_Link_Selection"]    = "Decoupled"
+            set_ui!("Labels", "title", "default")
+            set_ui!("Labels", "y_label", "")
             
         elseif preset == :compact3d
             set_ui!("X-Axis", "label_offset", 5.0)
@@ -278,7 +284,8 @@ end
 function set_plot_presets!()
     GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
     GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
-    GLOBAL_LAYOUT_OPTIONS[] = Dict{String, Any}() # THE FIX: Clear layout safely
+    GLOBAL_LAYOUT_OPTIONS[] = Dict{String, Any}()
+    GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
     GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
     @info "Plot presets cleared. Reverted to default settings."
     return

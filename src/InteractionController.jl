@@ -143,7 +143,8 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     # =========================================================================
     onany(staged_methods, is_activate_mode) do staged, activate_mode
         @with_lock manager "Menu_Sync" begin
-            all_method_names = sort(filter(k -> k != "shared", collect(keys(manager.simulation))))
+            raw_method_names = filter(k -> k != "shared", collect(keys(manager.simulation)))
+            all_method_names = sort_methods_robust(raw_method_names)
             opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
             
             # ALWAYS provide a default "-" dash at index 1
@@ -220,7 +221,10 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         if haskey(data, scope) && haskey(data[scope], key)
             obs = data[scope][key]
             active_target_obs[] = obs
-            tb.displayed_string[] = string(to_value(obs))
+            
+            # THE FIX: Safely display empty strings to prevent Makie BoundsError
+            val_str = string(to_value(obs))
+            tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
         end
     end
 
@@ -235,7 +239,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         new_scopes = String[]
         if field_name == :simulation
             haskey(data, "shared") && push!(new_scopes, "shared")
-            for m in sort(active_methods)
+            for m in sort_methods_robust(active_methods)
                 haskey(data, m) && push!(new_scopes, m)
             end
         else
@@ -304,7 +308,11 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         isnothing(obs) && return
         if to_value(obs) isa Bool
             obs[] = !to_value(obs)
-            tb.displayed_string[] = string(obs[])
+            
+            # THE FIX: Safely display empty strings here too
+            val_str = string(obs[])
+            tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
+            
             if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
         end
     end
@@ -320,7 +328,23 @@ end
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
     saveBox = manager.widgets["Export_Text"]
     btn_play = manager.widgets["Play_Anim_Button"]
-    
+
+    function extract_and_store_camera_state!()
+        cam_opts = Dict{String, Any}()
+        axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
+        for (i, ax) in enumerate(axes)
+            if ax isa Axis
+                lims = ax.finallimits[]
+                cam_opts["Axis_$(i)_Limits"] = Float64[lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2]]
+            elseif ax isa Axis3
+                cam_opts["Axis_$(i)_Azimuth"]   = Float64(ax.azimuth[])
+                cam_opts["Axis_$(i)_Elevation"] = Float64(ax.elevation[])
+                cam_opts["Axis_$(i)_Lookat"]    = Float64[ax.lookat[][1], ax.lookat[][2], ax.lookat[][3]]
+            end
+        end
+        GLOBAL_CAMERA_OPTIONS[] = cam_opts
+    end
+
     anim_target_obs = manager.widgets["Anim_Target"].selection
     is_animating = manager.state["Is_Animating"]
     animation_timer = manager.state["Animation_Timer"]
@@ -362,13 +386,19 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     function build_pristine_export_figure()
-        export_fig = Figure(size = (1200, 1000))
+        # THE FIX: Remove hardcoded size to allow Makie to shrink-wrap it later!
+        export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
         ptype_sym = manager.widgets["Plot_Type"].selection[]
         local_data_obs = Observable(plot_data_obs[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
-        notify(local_data_obs)
+        
+        # THE FIX: Manually force the export pipeline to draw the primitives!
+        manager.triggers["Primitive_Rebuild"][] += 1
+        
+        # THE FIX: Shrink-wrap the export figure to perfectly match Plot_Width/Plot_Height!
+        resize_to_layout!(export_fig)
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
@@ -389,6 +419,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     on(manager.widgets["Save_Image_Button"].clicks) do _
+        extract_and_store_camera_state!() 
+        
+        # THE FIX: Cache the camera state before the export rebuild wipes it!
+        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
+        
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "plot_export"; end
 
@@ -406,8 +441,15 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
 
         if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
+        
+        # THE FIX: Restore the camera state so the CSV writer can see it!
+        GLOBAL_CAMERA_OPTIONS[] = cam_cache
         metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
         saveParametersToCSV(base_name, save_dir, manager, metadata)
+        
+        # THE FIX: Safely wipe the global options and restore the Main UI
+        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+        manager.triggers["Primitive_Rebuild"][] += 1
     end
 
     on(manager.widgets["Save_GIF_Button"].clicks) do _
@@ -415,6 +457,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         target_name = anim_target_obs[]
         !check_selection_validity(target_name) && return
         target_widget = get_target_widget(target_name)
+        
+        extract_and_store_camera_state!() 
+        
+        # THE FIX: Cache the camera state before the export rebuild wipes it!
+        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
         
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "anim_export"; end
@@ -429,30 +476,35 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         n_frames = Int(duration * fps)
         
         @info "Recording pristine '$target_name' animation to $fname..."
+        export_obs_ref = Ref{Any}(nothing)
         try
             export_fig, export_obs = build_pristine_export_figure()
+            export_obs_ref[] = export_obs
             record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
                 set_close_to!(target_widget, val)
                 yield() 
             end
             
-            if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
+            # THE FIX: Restore the camera state so the CSV writer can see it!
+            GLOBAL_CAMERA_OPTIONS[] = cam_cache
             metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
             saveParametersToCSV(base_name, save_path, manager, metadata) 
             @info "Pristine GIF Saved Successfully."
         catch e
             @error "GIF Recording Failed" exception=(e, catch_backtrace())
         finally
-            tmp = ACTIVE_SIM_CONFIG[]
-            reset_plotter!()
-            launch_plotter()
-            ACTIVE_SIM_CONFIG[] = tmp
+            if !isnothing(export_obs_ref[]); for obs in export_obs_ref[]; off(obs); end; end
+            
+            # THE FIX: Safely wipe the global options and restore the Main UI
+            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            manager.triggers["Primitive_Rebuild"][] += 1
         end
     end
 
     on(manager.widgets["Save_Defs_Button"].clicks) do _
+        extract_and_store_camera_state!()
         GLOBAL_SCENE_OPTIONS[]  = extract_scene_options(manager)
-        GLOBAL_LAYOUT_OPTIONS[] = extract_layout_options(manager) # THE FIX: Safely store the layout matrix!
+        GLOBAL_LAYOUT_OPTIONS[] = extract_layout_options(manager) 
         new_ui = Dict{String, Any}()
         for (scope, subdict) in manager.ui
             new_ui[scope] = Dict{String, Any}()
