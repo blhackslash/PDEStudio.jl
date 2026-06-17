@@ -87,14 +87,7 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
         end
         
-        current_sel = menu_var.selection[]
-        menu_var.options[] = isempty(valid_base_names) ? ["-"] : valid_base_names
-        
-        if current_sel == "-" || isnothing(current_sel) || current_sel ∉ valid_base_names
-            menu_var.i_selected[] = 1
-        else
-            menu_var.i_selected[] = findfirst(isequal(current_sel), valid_base_names)
-        end
+        update_menu_safe!(menu_var, valid_base_names)
     end
 
     # =========================================================================
@@ -150,10 +143,7 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             # ALWAYS provide a default "-" dash at index 1
             new_opts = isempty(opts) ? [("Methods...","-")] : [("Methods...","-"); sort(opts)]
             
-            if menu_mth.options[] != new_opts
-                menu_mth.options[] = new_opts
-                menu_mth.i_selected[] = 1
-            end
+            update_menu_safe!(menu_mth, new_opts)
         end
     end
 
@@ -244,12 +234,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         
         new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
         
-        if menu_scope.options[] != new_scopes
-            menu_scope.options[] = new_scopes
-            menu_scope.i_selected[] = 1 
-            # THE FIX: Force the cascade downward even if string is unchanged!
-            notify(menu_scope.selection)
-        end
+        update_menu_safe!(menu_scope, new_scopes; force_notify=true)
     end
 
     # =========================================================================
@@ -257,11 +242,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
     # =========================================================================
     on(menu_scope.selection) do scope
         if isnothing(scope) || scope == "-"
-            if menu_key.options[] != ["-"]
-                menu_key.options[] = ["-"]
-                menu_key.i_selected[] = 1
-                notify(menu_key.selection)
-            end
+            update_menu_safe!(menu_key, String[]; force_notify=true)
             sync_textbox_to_active_key()
             return
         end
@@ -272,13 +253,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         raw_keys = sort(collect(keys(data[scope])))
         new_keys = isempty(raw_keys) ? [("-", "-")] : [(nice_string(k), k) for k in raw_keys]
         
-        if menu_key.options[] != new_keys
-            menu_key.options[] = new_keys
-            menu_key.i_selected[] = 1
-            # THE FIX: Force the cascade downward!
-            notify(menu_key.selection)
-        end
-        
+        update_menu_safe!(menu_key, new_keys; force_notify=true)
         sync_textbox_to_active_key()
     end
 
@@ -561,30 +536,9 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     comp_tgt_obs = w["Compare_Target"].selection
     
     active_axes_obs = manager.state["Active_Axes"]
-    
-    function _update_menu!(menu_widget, new_options; fallbacks=["x", "y", "z", "t"])
-        curr = menu_widget.selection[]
-        menu_widget.options[] = isempty(new_options) ? ["-"] : new_options
-        opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
-
-        if curr == "-" || isnothing(curr) || curr ∉ opt_values
-            if isempty(new_options)
-                menu_widget.i_selected[] = 1 
-            else
-                idx = nothing
-                for f in fallbacks
-                    idx = findfirst(isequal(f), opt_values)
-                    !isnothing(idx) && break
-                end
-                menu_widget.i_selected[] = isnothing(idx) ? 1 : idx
-            end
-        else
-            menu_widget.i_selected[] = findfirst(isequal(curr), opt_values)
-        end
-    end
 
     # 1. Sync Dropdown Options (Valid Axes & Components)
-onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
+    onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
         @with_lock manager "Data" begin
             isempty(plot_data_dict) && return
 
@@ -652,20 +606,22 @@ onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
                 push!(c_options, (name, string(i)))
             end
             
-            _update_menu!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
-            _update_menu!(w["c"], c_options; fallbacks=["1"])
+            update_menu_safe!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
+            update_menu_safe!(w["c"], c_options; fallbacks=["1"])
             
             p_dim = PLOT_DIM_MAP[ptype]
             if p_dim >= 2
-                _update_menu!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
+                update_menu_safe!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
             else
-                w["Y-Axis"].options[] = ["disabled"]; w["Y-Axis"].i_selected[] = 1
+                update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"])
             end
+            
             if p_dim >= 3
-                _update_menu!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
+                update_menu_safe!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
             else
-                w["Z-Axis"].options[] = ["disabled"]; w["Z-Axis"].i_selected[] = 1
+                update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
             end
+
             anim_options = Any[("None", "None")]
             
             # 1. Add all valid varied parameters (Formatted nicely!)
@@ -689,7 +645,7 @@ onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
                 end
             end
             
-            _update_menu!(w["Anim_Target"], anim_options; fallbacks=["None"])
+            update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
         end
     end
 
@@ -748,7 +704,7 @@ onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
         end
         
         sort!(valid_fields)
-        _update_menu!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"])
+        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"], force_notify=false)
     end
 
     # 3. Sync Slider Ranges (The core data injection to the UI!)

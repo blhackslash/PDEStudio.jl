@@ -562,13 +562,17 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     # TIER 3: DATA SYNC
     # =========================================================================
-    data_sync_obs = onany(plot_data_obs, selector_obs...) do data, sel_vals...
+    data_sync_obs = onany(selector_obs...) do sel_vals...
         @with_lock manager "Data" begin
+            
+            
             (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
             if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
             if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
             
             caches = manager.caches
+            data = plot_data_obs[]
+
             (isempty(data) || isempty(caches)) && return
             
             for i in 1:num_plots
@@ -632,7 +636,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 # =============================================================
                 # THE FIX: Dynamically draw Reference Lines on UI Updates!
                 # =============================================================
-                if !is_3d_axis
+
+                if !is_3d_axis && haskey(manager.ui["Plot-Style"],"reference")
                     delete_plots_by_label!(ax, "Reference Lines")
                     ref_exponents = manager.ui["Plot-Style"]["reference"][]
                     if !isempty(ref_exponents)

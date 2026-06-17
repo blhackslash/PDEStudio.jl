@@ -37,7 +37,50 @@ function parseValue(s::String)
         return s == "<empty>" ? "" : string(strip(s, '\"'))
     end
 end
+"""
+    update_menu_safe!(menu_widget, new_options; fallbacks=String[], force_notify=false)
 
+Safely updates a Makie Menu's options, forces a WebGL buffer sync to prevent crashes,
+and preserves the current selection or falls back to a prioritized list.
+"""
+function update_menu_safe!(menu_widget, new_options; fallbacks=String[], force_notify=false)
+    curr = menu_widget.selection[]
+    options_changed = false
+    
+    # 1. Update Options & Sync WebGL Buffer
+    new_arr = isempty(new_options) ? ["-"] : new_options
+    if menu_widget.options[] != new_arr
+        menu_widget.options[] = new_arr
+        
+        # Safely rebuild the WebGL buffer to prevent JS crashes
+        menu_widget.is_open[] = true
+        menu_widget.is_open[] = false
+        options_changed = true
+    end
+
+    # Extract clean values if the options are formatted Tuples like ("Label", "value")
+    opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
+
+    # 2. Maintain Selection or Apply Fallbacks
+    if curr == "-" || isnothing(curr) || curr ∉ opt_values
+        if isempty(new_options)
+            menu_widget.i_selected[] = 1 
+        else
+            idx = nothing
+            for f in fallbacks
+                idx = findfirst(isequal(f), opt_values)
+                !isnothing(idx) && break
+            end
+            menu_widget.i_selected[] = isnothing(idx) ? 1 : idx
+        end
+        
+        # Ensure the pipeline registers the change if the string was mutated
+        if options_changed || force_notify; notify(menu_widget.selection); end
+    else
+        menu_widget.i_selected[] = findfirst(isequal(curr), opt_values)
+        if options_changed || force_notify; notify(menu_widget.selection); end
+    end
+end
 """
     smart_parse_and_update!(obs::Observable, input_str::String)
 
