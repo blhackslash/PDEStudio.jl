@@ -111,6 +111,11 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
 end
 
 function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
+
+    if get(manager.state, "Camera_Locked", Observable(false))[]
+        return
+    end
+    
     ui_x = manager.ui["X-Axis"]
     ui_y = manager.ui["Y-Axis"]
     

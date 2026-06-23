@@ -216,14 +216,20 @@ end
 # --- 6. EXPORT OPTIONS BUILDER ---
 # ==============================================================================
 function createExportOptions!(layout::GridLayout, manager::PlotManager)
-    manager.widgets["Export_Text"]       = Textbox(layout[2, 1:5], placeholder = "Filename...", width=nothing)
-    manager.widgets["Save_Defs_Button"]  = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral)
-    manager.widgets["Clear_Defs_Button"] = Button(layout[1, 2], label="Clear Defs", buttoncolor=:mistyrose) 
-    manager.widgets["Play_Anim_Button"]  = Button(layout[1, 3], label="Play Anim", buttoncolor=:lightyellow)
-    manager.widgets["Save_Image_Button"] = Button(layout[1, 4], label="Save Image", buttoncolor=:lightblue)
-    manager.widgets["Save_GIF_Button"]   = Button(layout[1, 5], label="Save GIF", buttoncolor=:lightgreen)
+    # Row 1: Configurations & Camera
+    manager.widgets["Save_Defs_Button"]  = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral, width=nothing)
+    manager.widgets["Clear_Defs_Button"] = Button(layout[1, 2], label="Clear Defs", buttoncolor=:mistyrose, width=nothing) 
+    manager.widgets["Lock_Camera_Button"]= Button(layout[1, 3], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
+    
+    # Row 2: Actions
+    manager.widgets["Play_Anim_Button"]  = Button(layout[2, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
+    manager.widgets["Save_Image_Button"] = Button(layout[2, 2], label="Save Image", buttoncolor=:lightblue, width=nothing)
+    manager.widgets["Save_GIF_Button"]   = Button(layout[2, 3], label="Save GIF", buttoncolor=:lightgreen, width=nothing)
 
-    for i in 1:5
-        colsize!(layout, i, Relative(0.20))
+    # Row 3: Textbox
+    manager.widgets["Export_Text"]       = Textbox(layout[3, 1:3], placeholder = "Filename...", width=nothing)
+
+    for i in 1:3
+        colsize!(layout, i, Relative(1/3))
     end
 end

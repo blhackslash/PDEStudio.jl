@@ -6,7 +6,27 @@ const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slid
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_LAYOUT_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_CAMERA_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
-
+function extract_and_store_camera_state!(plot_layout::GridLayout)
+    cam_opts = Dict{String, Any}()
+    axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
+    for (i, ax) in enumerate(axes)
+        if ax isa Axis
+            lims = ax.finallimits[]
+            cam_opts["Axis_$(i)_Limits"] = Float64[lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2]]
+        elseif ax isa Axis3
+            lims = ax.finallimits[]
+            cam_opts["Axis_$(i)_Limits3D"]  = Float64[
+                lims.origin[1], lims.origin[1] + lims.widths[1], 
+                lims.origin[2], lims.origin[2] + lims.widths[2], 
+                lims.origin[3], lims.origin[3] + lims.widths[3]
+            ]
+            cam_opts["Axis_$(i)_Azimuth"]   = Float64(ax.azimuth[])
+            cam_opts["Axis_$(i)_Elevation"] = Float64(ax.elevation[])
+            cam_opts["Axis_$(i)_Lookat"]    = Float64[ax.lookat[][1], ax.lookat[][2], ax.lookat[][3]]
+        end
+    end
+    GLOBAL_CAMERA_OPTIONS[] = cam_opts
+end
 # Singleton Global Observables & State
 const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
 const ACTIVE_PLOT_MANAGER = Ref{PlotManager}()
@@ -318,6 +338,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
     render_observers = ObserverFunction[]
 
     function rebuild_plot_layout!()
+
+        if get(manager.state, "Camera_Locked", Observable(false))[] && !manager.state["Config_Just_Loaded"][]
+            extract_and_store_camera_state!(plot_layout)
+        end
+        
         ptype_sym = manager.widgets["Plot_Type"].selection[]
         for obs in render_observers; off(obs); end
         empty!(render_observers)
@@ -525,9 +550,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
                     plot_HUD!(axes[i], manager)
                 end
-                # =================================================================
-                # THE FIX: Apply and Consume Camera Options
-                # =================================================================
+
                 cam_opts = GLOBAL_CAMERA_OPTIONS[]
                 if !isempty(cam_opts)
                     for (i, ax) in enumerate(axes)
@@ -536,6 +559,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                             try limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4])) catch; end
                         elseif ax isa Axis3
                             try
+                                if haskey(cam_opts, "Axis_$(i)_Limits3D")
+                                    l = cam_opts["Axis_$(i)_Limits3D"]
+                                    limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4]), Float32(l[5]), Float32(l[6]))
+                                end
                                 if haskey(cam_opts, "Axis_$(i)_Azimuth")
                                     ax.azimuth[] = Float32(cam_opts["Axis_$(i)_Azimuth"])
                                 end
@@ -551,9 +578,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         end
                     end
                     # Consume the options! It acts as a one-time snap on boot.
-                    GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}() 
+                    if !get(manager.state, "Camera_Locked", Observable(false))[]
+                        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}() 
+                    end
                 end
-                # =================================================================
             end
         end
         manager.triggers["UI_Update"][] += 1

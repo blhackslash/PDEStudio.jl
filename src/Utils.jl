@@ -432,7 +432,14 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     else
         GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
     end
-
+    if get(manager.state, "Camera_Locked", Observable(false))[]
+        manager.state["Camera_Locked"][] = false
+        if haskey(manager.widgets, "Lock_Camera_Button")
+            btn = manager.widgets["Lock_Camera_Button"]
+            btn.label[] = "Lock Camera"
+            btn.buttoncolor[] = :lightgray
+        end
+    end
     ACTIVE_SIM_CONFIG[] = new_config
     @info "Successfully applied CSV config to UI!"
 end

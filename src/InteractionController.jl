@@ -299,21 +299,28 @@ end
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
     saveBox = manager.widgets["Export_Text"]
     btn_play = manager.widgets["Play_Anim_Button"]
+    btn_lock = manager.widgets["Lock_Camera_Button"] # THE FIX
+    
+    if !haskey(manager.state, "Camera_Locked")
+        manager.state["Camera_Locked"] = Observable(false)
+    end
 
-    function extract_and_store_camera_state!()
-        cam_opts = Dict{String, Any}()
-        axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
-        for (i, ax) in enumerate(axes)
-            if ax isa Axis
-                lims = ax.finallimits[]
-                cam_opts["Axis_$(i)_Limits"] = Float64[lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2]]
-            elseif ax isa Axis3
-                cam_opts["Axis_$(i)_Azimuth"]   = Float64(ax.azimuth[])
-                cam_opts["Axis_$(i)_Elevation"] = Float64(ax.elevation[])
-                cam_opts["Axis_$(i)_Lookat"]    = Float64[ax.lookat[][1], ax.lookat[][2], ax.lookat[][3]]
-            end
+    # THE FIX: Listen to the new Lock Button!
+    on(btn_lock.clicks) do _
+        is_locked = !manager.state["Camera_Locked"][]
+        manager.state["Camera_Locked"][] = is_locked
+        
+        if is_locked
+            extract_and_store_camera_state!(plot_layout)
+            btn_lock.label[] = "Camera: Locked"
+            btn_lock.buttoncolor[] = :lightgreen
+            @info "Camera locked to current view."
+        else
+            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            btn_lock.label[] = "Lock Camera"
+            btn_lock.buttoncolor[] = :lightgray
+            @info "Camera unlocked. Will auto-scale on next data update."
         end
-        GLOBAL_CAMERA_OPTIONS[] = cam_opts
     end
 
     anim_target_obs = manager.widgets["Anim_Target"].selection
@@ -380,6 +387,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 e_ax.elevation[] = c_ax.elevation[]
                 e_ax.perspectiveness[] = c_ax.perspectiveness[]
                 e_ax.lookat[] = c_ax.lookat[]
+                
+                # THE FIX: Transfer 3D limits to the Pristine Export figure!
+                lims = c_ax.finallimits[]
+                limits!(e_ax, lims.origin[1], lims.origin[1] + lims.widths[1],
+                              lims.origin[2], lims.origin[2] + lims.widths[2],
+                              lims.origin[3], lims.origin[3] + lims.widths[3])
             elseif c_ax isa Axis
                 lims = c_ax.finallimits[]
                 limits!(e_ax, lims.origin[1], lims.origin[1] + lims.widths[1], 
@@ -390,9 +403,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     on(manager.widgets["Save_Image_Button"].clicks) do _
-        extract_and_store_camera_state!() 
+        # Auto-lock during save to protect the view from the rebuild cycle
+        was_locked = manager.state["Camera_Locked"][]
+        manager.state["Camera_Locked"][] = true 
         
-        # THE FIX: Cache the camera state before the export rebuild wipes it!
+        # THE FIX: ALWAYS scrape the exact live view right before saving!
+        extract_and_store_camera_state!(plot_layout)
         cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
         
         base_name = string(strip(saveBox.stored_string[]))
@@ -413,13 +429,14 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
         if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
         
-        # THE FIX: Restore the camera state so the CSV writer can see it!
-        GLOBAL_CAMERA_OPTIONS[] = cam_cache
         metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
         saveParametersToCSV(base_name, save_dir, manager, metadata)
         
-        # THE FIX: Safely wipe the global options and restore the Main UI
-        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+        # Restore lock state
+        if !was_locked
+            manager.state["Camera_Locked"][] = false
+            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+        end
         manager.triggers["Primitive_Rebuild"][] += 1
     end
 
@@ -429,9 +446,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         !check_selection_validity(target_name) && return
         target_widget = get_target_widget(target_name)
         
-        extract_and_store_camera_state!() 
+        # Auto-lock during save to protect the view from the rebuild cycle
+        was_locked = manager.state["Camera_Locked"][]
+        manager.state["Camera_Locked"][] = true 
         
-        # THE FIX: Cache the camera state before the export rebuild wipes it!
+        # THE FIX: ALWAYS scrape the exact live view right before saving!
+        extract_and_store_camera_state!(plot_layout)
         cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
         
         base_name = string(strip(saveBox.stored_string[]))
@@ -456,8 +476,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 yield() 
             end
             
-            # THE FIX: Restore the camera state so the CSV writer can see it!
-            GLOBAL_CAMERA_OPTIONS[] = cam_cache
             metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
             saveParametersToCSV(base_name, save_path, manager, metadata) 
             @info "Pristine GIF Saved Successfully."
@@ -466,14 +484,19 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         finally
             if !isnothing(export_obs_ref[]); for obs in export_obs_ref[]; off(obs); end; end
             
-            # THE FIX: Safely wipe the global options and restore the Main UI
-            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            # Restore lock state
+            if !was_locked
+                manager.state["Camera_Locked"][] = false
+                GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            end
             manager.triggers["Primitive_Rebuild"][] += 1
         end
     end
 
     on(manager.widgets["Save_Defs_Button"].clicks) do _
-        extract_and_store_camera_state!()
+        # THE FIX: ALWAYS scrape the exact live view right before saving!
+        extract_and_store_camera_state!(plot_layout)
+        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
         GLOBAL_SCENE_OPTIONS[]  = extract_scene_options(manager)
         GLOBAL_LAYOUT_OPTIONS[] = extract_layout_options(manager) 
         new_ui = Dict{String, Any}()
