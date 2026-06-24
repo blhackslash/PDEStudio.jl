@@ -1,5 +1,59 @@
 # -----------------------------------------------------------------------------
-# 2D PRIMITIVES: INITIALIZERS
+# 1D PRIMITIVES: MODULAR COMPONENTS
+# -----------------------------------------------------------------------------
+function draw_lines!(ax, cache, m_idx, ui_app)
+    c  = ui_app["colors"][][mod1(m_idx, end)]
+    ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+    lw = ui_app["line_width"][]
+    
+    l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls)
+    cache.primitives[:lines] = l
+    
+    return Makie.LineElement(color=c, linewidth=lw, linestyle=ls)
+end
+
+function draw_scatter!(ax, cache, m_idx, ui_app)
+    c   = ui_app["colors"][][mod1(m_idx, end)]
+    mrk = ui_app["markers"][][mod1(m_idx, end)]
+    ms  = ui_app["marker_size"][]
+    
+    s = scatter!(ax, cache.obs_x, cache.obs_u; color=c, markersize=ms, marker=mrk)
+    cache.primitives[:scatter] = s
+    
+    return Makie.MarkerElement(color=c, marker=mrk, markersize=ms)
+end
+
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
+    xs_slices, us_slices = data_tuples
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+
+    plotted_objects, labels_for_legend = [], String[]
+    
+    for (m_idx, label) in enumerate(active_methods)
+        cache = PlotCache()
+        cache.obs_x[] = xs_slices[m_idx]
+        cache.obs_u[] = us_slices[m_idx]
+        
+        group = []
+        if ui_app["show_lines"][]
+            push!(group, draw_lines!(ax, cache, m_idx, ui_app))
+        end
+        if ui_app["show_scatter"][]
+            push!(group, draw_scatter!(ax, cache, m_idx, ui_app))
+        end
+        
+        cache_dict[label] = cache
+        if !isempty(group)
+            push!(plotted_objects, group)
+            push!(labels_for_legend, label)
+        end
+    end
+end
+
+
+# -----------------------------------------------------------------------------
+# 2D PRIMITIVES
 # -----------------------------------------------------------------------------
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
     xs, ys, us = data_tuples
@@ -18,18 +72,19 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
 
-    cache.primitives["heatmap"] = hm
+    cache.primitives[:heatmap] = hm
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, hm, manager, cr_obs, label, plot_idx)
 end
 
+# --- THE FIX: Solid Color Contour (Multi-Method Overlay) ---
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
 
     plotted_objects, labels_for_legend = [], String[]
-
+    
     for (m_idx, label) in enumerate(active_methods)
         cache = PlotCache()
         cache.obs_x[] = xs_slices[m_idx]
@@ -37,16 +92,46 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_u[] = us_slices[m_idx]
 
         color = ui_app["colors"][][mod1(m_idx, end)]
-        lw = ui_app["line_width"][]
+        lw    = ui_app["line_width"][]
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"][], color=color, linewidth=lw, labels=ui_app["labels"][])
         
-        cache.primitives["contour"] = ct
+        cache.primitives[:contour] = ct
         cache_dict[label] = cache
 
         push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
         push!(labels_for_legend, label)
     end
+end
+
+# --- THE FIX: Colormapped Contour (Single Base Method) ---
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
+    xs_slices, ys_slices, us_slices = data_tuples
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+
+    # Select base method
+    raw_idx = get(ui_app, "base_method_idx", Ref(1))[]
+    base_idx = clamp(raw_idx, 1, length(active_methods))
+    base_label = active_methods[base_idx]
+
+    cache = PlotCache()
+    cache.obs_x[] = xs_slices[base_idx]
+    cache.obs_y[] = ys_slices[base_idx]
+    cache.obs_u[] = us_slices[base_idx]
+    
+    valid_u = filter(isfinite, cache.obs_u[])
+    cr_obs = get_colorrange(ui_app, valid_u)
+
+    ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
+        colormap=ui_app["color_map"][], colorrange=cr_obs, 
+        levels=ui_app["levels"][], linewidth=ui_app["line_width"][], labels=ui_app["labels"][]
+    )
+    
+    cache.primitives[:contour_cmap] = ct
+    cache_dict[base_label] = cache
+
+    create_or_update_colorbar!(plot_layout, ct, manager, cr_obs, base_label, plot_idx)
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int)
@@ -64,13 +149,12 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     plotted_objects, labels_for_legend = [], String[]
     
-    # Base method filled contour
     base_label = active_methods[base_idx]
     base_cache = PlotCache()
     base_cache.obs_x[] = xs_slices[base_idx]; base_cache.obs_y[] = ys_slices[base_idx]; base_cache.obs_u[] = us_slices[base_idx]
 
     cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"][], levels=lvl_range, rasterize=rast_val)
-    base_cache.primitives["contourf"] = cf
+    base_cache.primitives[:contourf] = cf
     cache_dict[base_label] = base_cache
 
     base_color = Makie.to_colormap(ui_app["color_map"][])[end]
@@ -85,7 +169,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         lw = ui_app["line_width"][]
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; color=color, linewidth=lw, labels=true)
-        cache.primitives["contour"] = ct
+        cache.primitives[:contour] = ct
         cache_dict[label] = cache
         
         push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)]); push!(labels_for_legend, label)
@@ -108,64 +192,13 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
 
     sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
-    cache.primitives["surface"] = sf
+    cache.primitives[:surface] = sf
     cache_dict[label] = cache
 end
 
 
-
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
-    xs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
-    cache_dict = manager.caches[plot_idx]
-
-    plotted_objects, labels_for_legend = [], String[]
-    
-    for (m_idx, label) in enumerate(active_methods)
-        cache = PlotCache()
-        cache.obs_x[] = xs_slices[m_idx]
-        cache.obs_u[] = us_slices[m_idx]
-        
-        # --- THE FIX: Safe Proxies for Mutables, Static for Types! ---
-        line_color = Observable{Any}(:black)
-        line_width = Observable{Any}(1.0)
-        line_vis   = Observable{Any}(true)
-        
-        scat_color = Observable{Any}(:black)
-        scat_size  = Observable{Any}(10.0)
-        scat_vis   = Observable{Any}(false)
-        
-        # Read structural styles exactly ONCE to prevent Makie type crashes
-        static_ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-        static_mk = ui_app["markers"][][mod1(m_idx, end)]
-        
-        l = lines!(ax, cache.obs_x, cache.obs_u; 
-            color=line_color, linewidth=line_width, linestyle=static_ls, visible=line_vis
-        )
-        s = scatter!(ax, cache.obs_x, cache.obs_u; 
-            color=scat_color, markersize=scat_size, marker=static_mk, visible=scat_vis
-        )
-        
-        cache.primitives["line"] = l
-        cache.primitives["scatter"] = s
-        
-        cache.primitives["line_color"] = line_color
-        cache.primitives["line_width"] = line_width
-        cache.primitives["line_visible"] = line_vis
-        
-        cache.primitives["scat_color"] = scat_color
-        cache.primitives["scat_size"]  = scat_size
-        cache.primitives["scat_visible"] = scat_vis
-        
-        cache_dict[label] = cache
-
-        push!(plotted_objects, [l, s])
-        push!(labels_for_legend, label)
-    end
-end
-
 # -----------------------------------------------------------------------------
-# 3D EXAMPLE: VOLUME
+# 3D PRIMITIVES
 # -----------------------------------------------------------------------------
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int)
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
@@ -174,7 +207,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     x_data, y_data, z_data, u_data = xs_slices[1], ys_slices[1], zs_slices[1], us_slices[1]
 
-    # 1. Seed the Observables cleanly! (Makie won't crash because u_data is a real 3D Array)
     cache = PlotCache()
     cache.obs_x[] = extrema(x_data)
     cache.obs_y[] = extrema(y_data)
@@ -184,11 +216,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    # 2. Bind the primitives
     vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs)
     
-    # 3. Save to cache
-    cache.primitives["volume"] = vol
+    cache.primitives[:volume] = vol
     cache_dict[active_methods[1]] = cache
     
     create_or_update_colorbar!(plot_layout, vol, manager, cr_obs, active_methods[1], plot_idx)
@@ -202,7 +232,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     label = active_methods[1]
     cache = PlotCache()
     
-    # 1. Generate the initial flattened grid
     x_data, y_data, u_data = xs_slices[1], ys_slices[1], us_slices[1]
     cache.obs_x[] = vec([x for x in x_data, y in y_data])
     cache.obs_y[] = vec([y for x in x_data, y in y_data])
@@ -211,9 +240,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    sc = scatter!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, marker_size=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
 
-    cache.primitives["scatter2d"] = sc
+    cache.primitives[:scatter2d] = sc
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
 end
@@ -235,15 +264,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    sc = scatter!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, marker_size=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
 
-    cache.primitives["scatter3d"] = sc
+    cache.primitives[:scatter3d] = sc
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
 end
 
 # -----------------------------------------------------------------------------
-# TIER 3 DATA INJECTION HELPERS (One for 1D, 2D, and 3D)
+# TIER 3 DATA INJECTION HELPERS (Unchanged)
 # -----------------------------------------------------------------------------
 function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{1})
     xs_slices, us_slices = data_tuples
@@ -251,7 +280,6 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{1})
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
-        # Silent update (.val) for x, trigger update ([]) for u to redraw exactly once!
         cache.obs_x.val = xs_slices[m_idx] 
         cache.obs_u[]   = us_slices[m_idx] 
     end
@@ -263,8 +291,7 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
-        if haskey(cache.primitives, "scatter2d")
-            # Flatten the grid dynamically for scatter plots
+        if haskey(cache.primitives, :scatter2d) || haskey(cache.primitives, :scatter3d)
             cache.obs_x.val = vec([x for x in xs_slices[m_idx], y in ys_slices[m_idx]])
             cache.obs_y.val = vec([y for x in xs_slices[m_idx], y in ys_slices[m_idx]])
             cache.obs_u[]   = vec(us_slices[m_idx])
@@ -282,7 +309,7 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
     haskey(cache_dict, label) || return
     cache = cache_dict[label]
     
-    if haskey(cache.primitives, "scatter3d")
+    if haskey(cache.primitives, :scatter3d)
         cache.obs_x.val = vec([x for x in xs_slices[1], y in ys_slices[1], z in zs_slices[1]])
         cache.obs_y.val = vec([y for x in xs_slices[1], y in ys_slices[1], z in zs_slices[1]])
         cache.obs_z.val = vec([z for x in xs_slices[1], y in ys_slices[1], z in zs_slices[1]])

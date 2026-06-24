@@ -251,6 +251,14 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         data = getproperty(manager, cat_mapping[cat])
         
         raw_keys = sort(collect(keys(data[scope])))
+        if scope == "Plot-Style"
+            base_sel  = manager.widgets["Base_Plot"].selection[]
+            style_sel = manager.widgets["Plot_Style"].selection[]
+            ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+            
+            valid_keys = get(STYLE_DEPENDENCIES, ptype, raw_keys)
+            filter!(k -> k in valid_keys, raw_keys)
+        end
         new_keys = isempty(raw_keys) ? [("-", "-")] : [(nice_string(k), k) for k in raw_keys]
         
         update_menu_safe!(menu_key, new_keys; force_notify=true)
@@ -271,7 +279,14 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         obs = active_target_obs[]
         isnothing(obs) && return
         smart_parse_and_update!(obs, s)
-        if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
+        if menu_cat.selection[] == "UI"
+            # THE FIX: Dynamically switching to a colormap requires a full WebGL geometry rebuild!
+            if menu_key.selection[] == "use_color_map"
+                manager.triggers["Primitive_Rebuild"][] += 1
+            else
+                manager.triggers["UI_Update"][] += 1
+            end
+        end
     end
     
     on(manager.widgets["Editor_Toggle"].clicks) do _
@@ -280,11 +295,17 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         if to_value(obs) isa Bool
             obs[] = !to_value(obs)
             
-            # THE FIX: Safely display empty strings here too
             val_str = string(obs[])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
             
-            if menu_cat.selection[] == "UI"; manager.triggers["UI_Update"][] += 1; end
+            if menu_cat.selection[] == "UI"
+                # THE FIX: Dynamically switching to a colormap requires a full WebGL geometry rebuild!
+                if menu_key.selection[] == "use_color_map"
+                    manager.triggers["Primitive_Rebuild"][] += 1
+                else
+                    manager.triggers["UI_Update"][] += 1
+                end
+            end
         end
     end
 
@@ -309,6 +330,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     on(btn_lock.clicks) do _
         is_locked = !manager.state["Camera_Locked"][]
         manager.state["Camera_Locked"][] = is_locked
+        extract_and_store_camera_state!(plot_layout)
         
         if is_locked
             extract_and_store_camera_state!(plot_layout)
@@ -364,18 +386,24 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     function build_pristine_export_figure()
-        # THE FIX: Remove hardcoded size to allow Makie to shrink-wrap it later!
         export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
-        ptype_sym = manager.widgets["Plot_Type"].selection[]
+        # =====================================================================
+        # THE FIX: Resolve the Plot Type through the Routing Matrix!
+        # =====================================================================
+        base_sel  = manager.widgets["Base_Plot"].selection[]
+        style_sel = manager.widgets["Plot_Style"].selection[]
+        ptype_sym = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+        
         local_data_obs = Observable(plot_data_obs[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
+        # =====================================================================
         
-        # THE FIX: Manually force the export pipeline to draw the primitives!
+        # Manually force the export pipeline to draw the primitives!
         manager.triggers["Primitive_Rebuild"][] += 1
         
-        # THE FIX: Shrink-wrap the export figure to perfectly match Plot_Width/Plot_Height!
+        # Shrink-wrap the export figure to perfectly match Plot_Width/Plot_Height!
         resize_to_layout!(export_fig)
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
@@ -386,9 +414,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 e_ax.azimuth[] = c_ax.azimuth[]
                 e_ax.elevation[] = c_ax.elevation[]
                 e_ax.perspectiveness[] = c_ax.perspectiveness[]
-                e_ax.lookat[] = c_ax.lookat[]
                 
-                # THE FIX: Transfer 3D limits to the Pristine Export figure!
+                # Transfer 3D limits to the Pristine Export figure!
                 lims = c_ax.finallimits[]
                 limits!(e_ax, lims.origin[1], lims.origin[1] + lims.widths[1],
                               lims.origin[2], lims.origin[2] + lims.widths[2],
@@ -555,15 +582,27 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     x_sel = w["X-Axis"].selection
     y_sel = w["Y-Axis"].selection
     z_sel = w["Z-Axis"].selection
-    ptype_obs = w["Plot_Type"].selection
     comp_tgt_obs = w["Compare_Target"].selection
     
+    # THE NEW MENU BRIDGE
+    base_obs = w["Base_Plot"].selection
+    style_obs = w["Plot_Style"].selection
+    
+    # Ensure impossible combos are physically prevented
+    on(base_obs) do base_type
+        isnothing(base_type) && return
+        valid_styles = get(PLOT_STYLE_OPTIONS, base_type, ["2D"])
+        update_menu_safe!(w["Plot_Style"], valid_styles)
+        notify(manager.widgets["Editor_Scope"].selection)
+    end
+
     active_axes_obs = manager.state["Active_Axes"]
 
     # 1. Sync Dropdown Options (Valid Axes & Components)
-    onany(plot_data_obs, ptype_obs, comp_tgt_obs) do plot_data_dict, ptype, comp_tgt
+    onany(plot_data_obs, base_obs, style_obs, comp_tgt_obs) do plot_data_dict, base_sel, style_sel, comp_tgt
         @with_lock manager "Data" begin
             isempty(plot_data_dict) && return
+            ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
 
             pd_first = first(values(plot_data_dict))
             
@@ -673,9 +712,10 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     end
 
     # 2. Sync Active Axes State
-    onany(x_sel, y_sel, z_sel, ptype_obs, plot_data_obs) do x_val, y_val, z_val, ptype, plot_data_dict
+    onany(x_sel, y_sel, z_sel, base_obs, style_obs, plot_data_obs) do x_val, y_val, z_val, base_sel, style_sel, plot_data_dict
         isempty(plot_data_dict) && return
 
+        ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
         n_params = total_dims - 5

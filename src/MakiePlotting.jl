@@ -22,7 +22,6 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
             ]
             cam_opts["Axis_$(i)_Azimuth"]   = Float64(ax.azimuth[])
             cam_opts["Axis_$(i)_Elevation"] = Float64(ax.elevation[])
-            cam_opts["Axis_$(i)_Lookat"]    = Float64[ax.lookat[][1], ax.lookat[][2], ax.lookat[][3]]
         end
     end
     GLOBAL_CAMERA_OPTIONS[] = cam_opts
@@ -342,8 +341,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         if get(manager.state, "Camera_Locked", Observable(false))[] && !manager.state["Config_Just_Loaded"][]
             extract_and_store_camera_state!(plot_layout)
         end
-        
-        ptype_sym = manager.widgets["Plot_Type"].selection[]
+
+        base_sel  = manager.widgets["Base_Plot"].selection[]
+        style_sel = manager.widgets["Plot_Style"].selection[]
+        ptype_sym = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+
         for obs in render_observers; off(obs); end
         empty!(render_observers)
         empty!(manager.caches)
@@ -471,7 +473,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     is_compare = target != "None"
     is_det, halign, valign = _parse_legend_position(manager, is_compare)
     has_legend = T in (:lines, :contourf, :contour, :contour3d) && target != "Methods"
-    has_colorbar = T in (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume)
+    has_colorbar = T in (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap)
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
     manager.state["Layout_Dict"] = Observable(layout_dict)
@@ -551,37 +553,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     plot_HUD!(axes[i], manager)
                 end
 
-                cam_opts = GLOBAL_CAMERA_OPTIONS[]
-                if !isempty(cam_opts)
-                    for (i, ax) in enumerate(axes)
-                        if ax isa Axis && haskey(cam_opts, "Axis_$(i)_Limits")
-                            l = cam_opts["Axis_$(i)_Limits"]
-                            try limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4])) catch; end
-                        elseif ax isa Axis3
-                            try
-                                if haskey(cam_opts, "Axis_$(i)_Limits3D")
-                                    l = cam_opts["Axis_$(i)_Limits3D"]
-                                    limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4]), Float32(l[5]), Float32(l[6]))
-                                end
-                                if haskey(cam_opts, "Axis_$(i)_Azimuth")
-                                    ax.azimuth[] = Float32(cam_opts["Axis_$(i)_Azimuth"])
-                                end
-                                if haskey(cam_opts, "Axis_$(i)_Elevation")
-                                    ax.elevation[] = Float32(cam_opts["Axis_$(i)_Elevation"])
-                                end
-                                if haskey(cam_opts, "Axis_$(i)_Lookat")
-                                    lk = cam_opts["Axis_$(i)_Lookat"]
-                                    ax.lookat[] = Makie.Point3f(lk[1], lk[2], lk[3])
-                                end
-                            catch
-                            end
-                        end
-                    end
-                    # Consume the options! It acts as a one-time snap on boot.
-                    if !get(manager.state, "Camera_Locked", Observable(false))[]
-                        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}() 
-                    end
-                end
+                _enforce_camera_lock!(axes, manager)
             end
         end
         manager.triggers["UI_Update"][] += 1
@@ -644,131 +616,56 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     ui_obs = on(manager.triggers["UI_Update"]) do _
         @with_lock manager "UI" begin
-            ui_gen = manager.ui["Axis-General"]
             ui_app = manager.ui["Plot-Style"]
             
-            x_str, y_str = w["X-Axis"].selection[], w["Y-Axis"].selection[]
-            z_str, u_str = w["Z-Axis"].selection[], w["U-Axis"].selection[]
-            
             for (i, ax) in enumerate(axes)
-                if is_3d_axis
-                    z_str = z_str == "disabled" ? u_str : z_str
-                    set_axis_styles!(ax, manager, string(x_str), string(y_str), string(z_str), ax.title[])
-                elseif PLOT_DIM_MAP[T] == 1
-                    set_axis_styles!(ax, manager, string(x_str), string(u_str), ax.title[])
-                else
-                    set_axis_styles!(ax, manager, string(x_str), string(y_str), ax.title[])
-                end
+                # 1. Modular Axis Styles
+                _apply_axis_styles!(ax, manager, T)
                 apply_axis_limits_overrides!(ax, manager)
                 
-                # =============================================================
-                # THE FIX: Dynamically draw Reference Lines on UI Updates!
-                # =============================================================
-
-                if !is_3d_axis && haskey(manager.ui["Plot-Style"],"reference")
+                # 2. Reference Lines
+                if !is_3d_axis && haskey(ui_app, "reference")
                     delete_plots_by_label!(ax, "Reference Lines")
-                    ref_exponents = manager.ui["Plot-Style"]["reference"][]
-                    if !isempty(ref_exponents)
-                        plot_reference_lines!(ax, ref_exponents; label="Reference Lines")
-                    end
+                    ref_exp = ui_app["reference"][]
+                    !isempty(ref_exp) && plot_reference_lines!(ax, ref_exp; label="Reference Lines")
                 end
                 
+                # 3. Cache-driven Primitive Updates
                 if haskey(manager.caches, i)
-                    for (m_idx, method_name) in enumerate(manager.methods[])
-                        if haskey(manager.caches[i], method_name)
-                            prims = manager.caches[i][method_name].primitives
-                            colors = get(ui_app,"colors",nothing)
-                            color = isnothing(colors) ? nothing : colors[][mod1(m_idx, end)]
-                            
-                            if haskey(prims, "line")
-                                prims["line_color"][]   = color
-                                prims["line_width"][]   = ui_app["line_width"][]
-                                prims["line_visible"][] = ui_app["show_lines"][]
-                            end
-                            if haskey(prims, "scatter")
-                                prims["scat_color"][]   = color
-                                prims["scat_size"][]    = ui_app["marker_size"][]
-                                prims["scat_visible"][] = ui_app["show_scatter"][]
-                            end
-                            if haskey(prims, "contour")
-                                prims["contour"].color[] = color
-                                prims["contour"].linewidth[] = ui_app["line_width"][]
-                            end
-                            if haskey(prims, "volume");    prims["volume"].colormap[]    = ui_app["color_map"][]; end
-                            if haskey(prims, "heatmap");   prims["heatmap"].colormap[]   = ui_app["color_map"][]; end
-                            if haskey(prims, "surface");   prims["surface"].colormap[]   = ui_app["color_map"][]; end
-                            if haskey(prims, "contourf");  prims["contourf"].colormap[]  = ui_app["color_map"][]; end
-                            
-                            if haskey(prims, "scatter2d")
-                                prims["scatter2d"].colormap[] = ui_app["color_map"][]
-                                prims["scatter2d"].markersize[] = ui_app["marker_size"][]
-                            end
-                            if haskey(prims, "scatter3d")
-                                prims["scatter3d"].colormap[] = ui_app["color_map"][]
-                                prims["scatter3d"].markersize[] = ui_app["marker_size"][]
-                            end
+                    for (method_name, cache) in manager.caches[i]
+                        # THE FIX: Safely grab the method index to prevent async race conditions!
+                        m_idx = findfirst(isequal(method_name), manager.methods[])
+                        isnothing(m_idx) && continue 
+                        
+                        colors = get(ui_app, "colors", nothing)
+                        c = !isnothing(colors) ? colors[][mod1(m_idx, length(colors[]))] : :black
+                        
+                        # Apply to all modular primitives
+                        for (key, prim) in cache.primitives
+                            apply_ui_style!(key, prim, ui_app, c)
                         end
                     end
+                    
+                    # 4. Colorbar update
                     if has_colorbar
-                        plot_obj = nothing
-                        
-                        # Find the first valid rendered primitive to attach the colorbar to
-                        for method_name in manager.methods[]
-                            if haskey(manager.caches[i], method_name)
-                                prims = manager.caches[i][method_name].primitives
-                                for pkey in ["heatmap", "contourf", "surface", "volume", "scatter2d", "scatter3d"]
-                                    if haskey(prims, pkey)
-                                        plot_obj = prims[pkey]
-                                        break
-                                    end
-                                end
-                            end
-                            !isnothing(plot_obj) && break
-                        end
-                        
+                        plot_obj = _find_first_drawable_primitive(manager.caches[i])
                         if !isnothing(plot_obj)
-                            create_or_update_colorbar!(plot_layout, plot_obj, manager, Observable((0.0, 1.0)), string(u_str), i)
+                            # THE FIX: Safely extract the dynamically calculated colorrange from the Makie Primitive!
+                            cr_obs = haskey(plot_obj.attributes, :colorrange) ? plot_obj.colorrange : Observable((0.0, 1.0))
+                            
+                            create_or_update_colorbar!(plot_layout, plot_obj, manager, cr_obs, w["U-Axis"].selection[], i)
                         end
                     end
                 end
             end
             
-            if !is_3d_axis && T in (:lines, :contour, :contourf) && haskey(manager.caches, 1)
-                plotted_objects = []
-                labels_for_legend = String[]
-                
-                for (m_idx, method_name) in enumerate(manager.methods[])
-                    if haskey(manager.caches[1], method_name)
-                        prims = manager.caches[1][method_name].primitives
-                        color = ui_app["colors"][][mod1(m_idx, end)]
-                        
-                        if haskey(prims, "contourf")
-                            push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
-                            push!(labels_for_legend, "$(method_name) (Base)")
-                        end
-                        
-                        group = []
-                        if haskey(prims, "line") && ui_app["show_lines"][]
-                            ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
-                        end
-                        if haskey(prims, "scatter") && ui_app["show_scatter"][]
-                            mrk = ui_app["markers"][][mod1(m_idx, end)]
-                            push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
-                        end
-                        if haskey(prims, "contour")
-                            push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][]))
-                        end
-                        
-                        if !isempty(group)
-                            push!(plotted_objects, group)
-                            if !haskey(prims, "contourf"); push!(labels_for_legend, method_name); end
-                        end
-                    end
-                end
-                create_or_update_legend!(plot_layout, plotted_objects, labels_for_legend, manager)
+            # 5. Legend Update
+            if !is_3d_axis && T in (:lines, :contour, :contourf)
+                create_or_update_legend!(plot_layout, _collect_legend_elements(manager, ui_app)..., manager)
             end
+            
             resize_to_layout!(master_fig)
+            _enforce_camera_lock!(axes, manager)
         end
     end
     return ObserverFunction[prim_obs; data_sync_obs; ui_obs]

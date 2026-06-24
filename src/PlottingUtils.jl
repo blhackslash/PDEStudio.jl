@@ -67,6 +67,9 @@ function get_colorrange(ui_app::Dict, u_data::AbstractArray)
 end
 
 function apply_axis_limits_overrides!(ax, manager::PlotManager)
+    if get(manager.state, "Camera_Locked", Observable(false))[]
+        return
+    end
     ui_x = manager.ui["X-Axis"]
     ui_y = manager.ui["Y-Axis"]
     
@@ -115,7 +118,7 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     if get(manager.state, "Camera_Locked", Observable(false))[]
         return
     end
-    
+
     ui_x = manager.ui["X-Axis"]
     ui_y = manager.ui["Y-Axis"]
     
@@ -276,9 +279,8 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
         @error "Failed to create legend" exception=(e, catch_backtrace())
     end
 end
-
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
-    isnothing(plot_object) && return
+    # Note: plot_object isn't even strictly needed anymore since we pass colors directly!
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "color_map"); return; end 
     
@@ -303,7 +305,11 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manage
     final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
     
     try
-        Colorbar(plot_layout[cb_pos...], plot_object;
+        # THE FIX: Explicitly pass colormap and limits to bypass Makie's buggy auto-extraction!
+        Colorbar(plot_layout[cb_pos...];
+            colormap = ui_stl["color_map"],
+            limits = color_range_obs,
+            label = final_label,
             labelsize = ui_gen["label_size"][],
             ticklabelsize = ui_gen["ticklabel_size"][]
         )
@@ -468,7 +474,9 @@ function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y:
     end
 
     ax.perspectiveness = 0.5
-    ax.aspect = (1, 1, 0.6)
+    if !get(manager.state, "Camera_Locked", Observable(false))[]
+        ax.aspect = (1, 1, 0.6)
+    end
 end
 
 function plot_HUD!(ax::Axis, manager::PlotManager)
@@ -507,3 +515,122 @@ function plot_HUD!(ax::Axis, manager::PlotManager)
 end
 
 plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
+
+function _apply_axis_styles!(ax, manager, T)
+    x, y, z = manager.widgets["X-Axis"].selection[], manager.widgets["Y-Axis"].selection[], manager.widgets["Z-Axis"].selection[]
+    t = ax.title[]
+    if T == :surface || PLOT_DIM_MAP[T] == 3
+        set_axis_styles!(ax, manager, string(x), string(y), string(z == "disabled" ? manager.widgets["U-Axis"].selection[] : z), t)
+    elseif PLOT_DIM_MAP[T] == 1
+        set_axis_styles!(ax, manager, string(x), string(manager.widgets["U-Axis"].selection[]), t)
+    else
+        set_axis_styles!(ax, manager, string(x), string(y), t)
+    end
+end
+
+function _find_first_drawable_primitive(cache_dict)
+    for method_name in keys(cache_dict)
+        prims = cache_dict[method_name].primitives
+        for pkey in [:heatmap, :contourf, :surface, :volume, :scatter2d, :scatter3d, :contour_cmap]
+            haskey(prims, pkey) && return prims[pkey]
+        end
+    end
+    return nothing
+end
+"""
+    _collect_legend_elements(manager::PlotManager, ui_app::Dict)
+
+Iterates through the first plot's cache and constructs the appropriate Makie 
+legend elements based on the modular primitives registered for each method.
+"""
+function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
+    plotted_objects = []
+    labels_for_legend = String[]
+    
+    # We only build the legend from the first plot index
+    if !haskey(manager.caches, 1)
+        return [], []
+    end
+    
+    # Helper to calculate color
+    get_color(idx) = get(ui_app, "colors", nothing) !== nothing ? 
+                     ui_app["colors"][][mod1(idx, end)] : :black
+
+    for (m_idx, method_name) in enumerate(manager.methods[])
+        if haskey(manager.caches[1], method_name)
+            prims = manager.caches[1][method_name].primitives
+            color = get_color(m_idx)
+            
+            # --- 1. Poly elements (for filled contours) ---
+            if haskey(prims, :contourf)
+                push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
+                push!(labels_for_legend, "$(method_name) (Base)")
+            end
+            
+            # --- 2. Modular group of elements ---
+            group = []
+            
+            # Lines
+            if haskey(prims, :line) && ui_app["show_lines"][]
+                ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+                push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
+            end
+            
+            # Scatter
+            if haskey(prims, :scatter) && ui_app["show_scatter"][]
+                mrk = ui_app["markers"][][mod1(m_idx, end)]
+                push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
+            end
+            
+            # Contours
+            if haskey(prims, :contour)
+                push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][]))
+            end
+            
+            # --- 3. Registration ---
+            if !isempty(group)
+                push!(plotted_objects, group)
+                # If it's a contourf, we already added the (Base) label, so we don't add the method name again
+                if !haskey(prims, :contourf)
+                    push!(labels_for_legend, method_name)
+                end
+            end
+        end
+    end
+    
+    return plotted_objects, labels_for_legend
+end
+
+"""
+    _enforce_camera_lock!(axes::Vector, manager::PlotManager)
+
+Checks if the camera is globally locked and aggressively re-applies the saved 
+view to squash any secret auto-centering Makie performs during UI updates.
+"""
+function _enforce_camera_lock!(axes::Vector, manager::PlotManager)
+    if get(manager.state, "Camera_Locked", Observable(false))[]
+        cam_opts = GLOBAL_CAMERA_OPTIONS[]
+        if !isempty(cam_opts)
+            for (i, ax) in enumerate(axes)
+                if ax isa Axis && haskey(cam_opts, "Axis_$(i)_Limits")
+                    l = cam_opts["Axis_$(i)_Limits"]
+                    try limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4])) catch; end
+                elseif ax isa Axis3
+                    try
+                        if haskey(cam_opts, "Axis_$(i)_Limits3D")
+                            l = cam_opts["Axis_$(i)_Limits3D"]
+                            limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4]), Float32(l[5]), Float32(l[6]))
+                        end
+                        if haskey(cam_opts, "Axis_$(i)_Azimuth")
+                            ax.azimuth[] = Float32(cam_opts["Axis_$(i)_Azimuth"])
+                        end
+                        if haskey(cam_opts, "Axis_$(i)_Elevation")
+                            ax.elevation[] = Float32(cam_opts["Axis_$(i)_Elevation"])
+                        end
+                    catch
+                    end
+                end
+            end
+        end
+    end
+end

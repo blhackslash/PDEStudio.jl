@@ -1,18 +1,62 @@
 const UIType = Union{Symbol,MethodDict}
 
-# --- Source of Truth for Dimensionality ---
+# --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
-    :lines     => 1,
-    :heatmap   => 2,
-    :contour   => 2,
-    :contourf  => 2,
-    :scatter2d => 2,
-    :surface   => 2,
-    :contour3d => 3,
-    :scatter3d => 3,
-    :volume    => 3
+    :lines        => 1,
+    :heatmap      => 2,
+    :contour      => 2,
+    :contour_cmap => 2,  # THE NEW RENDERER
+    :contourf     => 2,
+    :scatter2d    => 2,
+    :surface      => 2,
+    :contour3d    => 3,
+    :scatter3d    => 3,
+    :volume       => 3
 )
 
+# Maps User UI Selections (Base Plot, Plot Style) to the underlying Render Symbol
+const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
+    ("Lines", "2D")          => :lines,
+    
+    ("Scatter", "2D")        => :scatter2d,
+    ("Scatter", "3D")        => :scatter3d,
+    
+    ("Contour", "Lines")     => :contour,
+    ("Contour", "Colormap")  => :contour_cmap, # THE NEW ROUTE
+    ("Contour", "Filled")    => :contourf,
+    ("Contour", "3D")        => :contour3d,
+    
+    ("Heatmap", "Flat")      => :heatmap,
+    ("Heatmap", "Surface")   => :surface,
+    
+    ("Volume", "3D Cloud")   => :volume
+)
+
+# Used to dynamically populate the second dropdown menu based on the first
+const PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
+    "Lines"   => ["2D"],
+    "Scatter" => ["2D", "3D"],
+    "Contour" => ["Lines", "Colormap", "Filled", "3D"],
+    "Heatmap" => ["Flat", "Surface"],
+    "Volume"  => ["3D Cloud"]
+)
+
+# The Flat-State Filter Matrix: Determines which UI controls are visible for which plot
+const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
+    :lines        => ["colors", "line_width", "line_styles", "dashed_lines", "show_lines", "show_scatter", "markers", "marker_size", "reference"],
+    :scatter2d    => ["color_map", "color_range", "markers", "marker_size", "bottom_margin", "rasterize"],
+    :scatter3d    => ["color_map", "color_range", "markers", "marker_size", "rasterize"],
+    :contour      => ["colors", "levels", "line_width", "labels"],
+    :contour_cmap => ["color_map", "color_range", "levels", "line_width", "labels", "bottom_margin"],
+    :contourf     => ["color_map", "color_range", "levels", "base_method_idx", "rasterize", "bottom_margin"],
+    :heatmap      => ["color_map", "color_range", "rasterize", "bottom_margin"],
+    :surface      => ["color_map", "color_range", "rasterize"],
+    :volume       => ["color_map", "color_range", "rasterize"],
+    :contour3d    => ["colors", "levels", "line_width"]
+)
+
+
+# --- 2. OBSERVABLE TEMPLATES ---
 """
     create_master_ui_observables()
 
@@ -34,27 +78,29 @@ function create_master_ui_observables()
     
     master["Labels"] = obs_dict(Dict(
         "title"          => "default", 
-        "x_label"         => "default", 
-        "y_label"         => "default", 
-        "z_label"         => "default", 
+        "x_label"        => "default", 
+        "y_label"        => "default", 
+        "z_label"        => "default", 
         "colorbar_label" => "default", 
         "legend"         => "Methods",
         "comp_names"     => ("default",)
     ))
+    
     master["HUD"] = obs_dict(Dict(
-        "visible"    => false,
-        "mode"       => "lines", 
-        "close_loop" => false,   
-        "points"     => Any[],   
-        "color"      => :red,
+        "visible"     => false,
+        "mode"        => "lines", 
+        "close_loop"  => false,   
+        "points"      => Any[],   
+        "color"       => :red,
         "line_width"  => 3.0,
         "line_style"  => :dash,
         "marker_size" => 15.0
     ))  
+    
     master["Various"] = obs_dict(Dict(
         "save_formats"         => ["png"], 
         "create_savefolder"    => false,
-        "animation_time" => 10.0, 
+        "animation_time"       => 10.0, 
         "animation_FPS"        => 30, 
         "remove_outliers"      => false, 
         "mark_outliers"        => false, 
@@ -63,14 +109,14 @@ function create_master_ui_observables()
         "track_min"            => false,
     ))
     
-    # 2. THE FIX: Added 'label_offset' to the Universal Axis Template!
+    # 2. Universal Axis Templates
     axis_dict(pad, default_offset=15.0) = Dict{String, Any}(
         "grid_visibility"       => true, 
         "tick_label_visibility" => true, 
         "tick_count"        => 0, 
-        "tick_format"        => "default", 
+        "tick_format"       => "default", 
         "scale_offset"      => 0.0, 
-        "log_scale"          => false, 
+        "log_scale"         => false, 
         "padding"           => pad,
         "label_offset"      => default_offset,
         "lims"              => Any[]
@@ -81,88 +127,34 @@ function create_master_ui_observables()
     
     master["X-Axis-ND"] = obs_dict(axis_dict(0.0, 15.0))
     master["Y-Axis-ND"] = obs_dict(axis_dict(0.0, 15.0))
-    master["Z-Axis-3D"] = obs_dict(axis_dict(0.05, 20.0)) # Z gets slightly more default space
+    master["Z-Axis-3D"] = obs_dict(axis_dict(0.05, 20.0)) 
     
-    # --- 3. PLOT-SPECIFIC STYLES (Offsets Safely Extracted) ---
-    master["Style-Lines"] = obs_dict(Dict(
-        "colors"       => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
-        "line_styles"   => [:solid, (:dash, :dense), (:dot, :dense)],
-        "markers"      => [:circle, :rect, :utriangle, :dtriangle, :cross],
-        "line_width"    => 5.0,
-        "marker_size"   => 15.0,
-        "show_lines"   => true,
-        "show_scatter" => false,
-        "dashed_lines" => false,
-        "reference"    => [],
-    ))
-    
-    master["Style-Heatmap"] = obs_dict(Dict(
-        "color_range"    => [],
-        "color_map"      => :viridis,
-        "bottom_margin" => 60,
-        "rasterize"     => 2,
-    ))
-    
-    master["Style-Contour"] = obs_dict(Dict(
-        "colors"        => [:black, :red, :green, :orange, :purple],
-        "levels"        => 15,
-        "line_width"     => 2.0,
-        "bottom_margin" => 60,
-        "labels"        => true,
-    ))
-    
-    master["Style-Contourf"] = obs_dict(Dict(
-        "color_range"    => [],
+    # 3. THE FIX: The Single, Flat Plot-Style Dictionary!
+    master["Plot-Style"] = obs_dict(Dict(
+        "colors"          => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
+        "color_map"       => :viridis,
+        "color_range"     => Any[],
+        "line_width"      => 3.0,
+        "line_styles"     => [:solid, :dash, :dot, (:dash, :dense), (:dot, :dense)],
+        "markers"         => [:circle, :rect, :utriangle, :dtriangle, :cross],
+        "marker_size"     => 15.0,
+        "levels"          => 15,
         "base_method_idx" => 1,
-        "colors"        => [:red, :blue, :green, :orange, :purple],
-        "line_width"     => 2.0,
-        "color_map"      => :viridis,
-        "levels"        => 15,
-        "bottom_margin" => 60,
-        "rasterize"     => 2,
-    ))
-
-    master["Style-Contour3D"] = obs_dict(Dict(
-        "colors"        => [:red, :blue, :green, :orange, :purple],
-        "levels"        => 15,
-        "line_width"     => 2.0,
-    ))
-
-    master["Style-Surface"] = obs_dict(Dict(
-        "color_range"    => [],
-        "color_map"      => :viridis,
-        "rasterize"     => 2,
+        "bottom_margin"   => 60,
+        "rasterize"       => 2,
+        "show_lines"      => true,
+        "show_scatter"    => false,
+        "dashed_lines"    => false,
+        "labels"          => false,
+        "reference"       => Any[],
     ))
     
-    master["Style-Volume"] = obs_dict(Dict(
-        "color_range"    => [],
-        "color_map"      => :viridis,
-        "rasterize"     => 2.0,
-    ))
-
-    master["Style-Scatter2D"] = obs_dict(Dict(
-        "color_range"    => [],
-        "color_map"      => :viridis,
-        "colors"        => [:red, :blue], 
-        "markers"       => [:circle, :rect], 
-        "marker_size"    => 15.0, 
-        "bottom_margin" => 60, 
-        "rasterize"     => 2,
-    ))
-    
-    master["Style-Scatter3D"] = obs_dict(Dict(
-        "color_range"    => [],
-        "color_map"      => :viridis,
-        "colors"        => [:red, :blue], 
-        "markers"       => [:circle, :rect], 
-        "marker_size"    => 15.0, 
-        "rasterize"     => 2,
-    ))
     return master
 end
 
+const MASTER_UI_DICT = create_master_ui_observables()
+
 function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
-    # THE FIX: Route the lookup through the "Misc" MVC folder
     master = manager.state["Master_UI_Ref"][]
     ui = manager.ui
     empty!(ui)
@@ -174,9 +166,8 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     ui["Various"]      = master["Various"]
     ui["HUD"]          = master["HUD"]
     
-    style_key = "Style-" * titlecase(string(plot_type)) 
-    style_key = replace(style_key, "2d" => "2D", "3d" => "3D", "Contourf" => "Contourf") 
-    ui["Plot-Style"] = master[style_key]
+    # THE FIX: Always use the shared, flat Plot-Style!
+    ui["Plot-Style"]   = master["Plot-Style"]
     
     if dim == 1
         ui["X-Axis"] = master["X-Axis-1D"]
@@ -190,7 +181,6 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
         ui["Z-Axis"] = master["Z-Axis-3D"]
     end
     
-    # Safely check if the UI is built before notifying
     if haskey(manager.triggers, "UI_Update")
         notify(manager.triggers["UI_Update"])
     end
@@ -212,7 +202,8 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
         if preset == :convergence
             scene_opt["X_Axis_Selection"]     = "Ns__1"
             scene_opt["U_Axis_Selection"]     = "relative_l2error"
-            layout_opt["Plot_Type_Selection"] = "Lines" # THE FIX: Move to Layout
+            layout_opt["Base_Plot_Selection"]  = "Lines"
+            layout_opt["Plot_Style_Selection"] = "2D"
             scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "log_scale", true)
@@ -247,7 +238,8 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             layout_opt["Plot_Height_Selection"] = 400        # THE FIX: Move to Layout
             
         elseif preset == :heatmap
-            layout_opt["Plot_Type_Selection"] = "Heatmap"    # THE FIX: Move to Layout
+            layout_opt["Base_Plot_Selection"]  = "Heatmap"
+            layout_opt["Plot_Style_Selection"] = "Flat"
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
@@ -265,8 +257,9 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Axis-General", "legend_pos", :td)
 
         elseif preset == :nolabels
-            for key = keys(master_tmp["Labels"])
-                set_ui!("Labels",key,"")
+            # THE FIX: Safely pull the keys from the global master!
+            for key in keys(MASTER_UI_DICT["Labels"])
+                set_ui!("Labels", key, "")
             end
         elseif preset == :darkmode
             set_ui!("Plot-Style", "colors", [:cyan, :magenta, :yellow, :white])
@@ -290,4 +283,31 @@ function set_plot_presets!()
     GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
     @info "Plot presets cleared. Reverted to default settings."
     return
+end
+
+# ==============================================================================
+# --- MODULAR UI MODIFIERS ---
+# ==============================================================================
+function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any)
+    k = Symbol(prim_key) # Forgive strings and cast to symbol automatically
+    
+    if k == :line
+        prim.color[] = color
+        prim.linewidth[] = ui_app["line_width"][]
+        prim.visible[] = ui_app["show_lines"][]
+    elseif k == :scatter
+        prim.color[] = color
+        prim.markersize[] = ui_app["marker_size"][]
+        prim.visible[] = ui_app["show_scatter"][]
+    elseif k in (:heatmap, :surface, :volume, :contourf, :scatter2d, :scatter3d, :contour_cmap)
+        prim.colormap[] = ui_app["color_map"][]
+        if k in (:scatter2d, :scatter3d)
+            prim.markersize[] = ui_app["marker_size"][]
+        elseif k == :contour_cmap
+            prim.linewidth[] = ui_app["line_width"][]
+        end
+    elseif k == :contour
+        prim.color[] = color
+        prim.linewidth[] = ui_app["line_width"][]
+    end
 end

@@ -66,16 +66,15 @@ mutable struct PlotCache
     obs_y::Observable{Any}
     obs_z::Observable{Any}
     obs_u::Observable{Any}
-    primitives::Dict{String, Any}
+    primitives::Dict{Symbol, Any} # THE FIX: Native Symbol Dict
 end
 
-# Helper to initialize empty caches
 PlotCache() = PlotCache(
     Observable{Any}(Float64[]), 
     Observable{Any}(Float64[]), 
     Observable{Any}(Float64[]), 
     Observable{Any}(Float64[]), 
-    Dict{String, Any}()
+    Dict{Symbol, Any}()           # THE FIX: Native Symbol Dict
 )
 
 mutable struct PlotManager 

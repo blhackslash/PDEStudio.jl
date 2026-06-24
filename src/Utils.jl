@@ -261,7 +261,7 @@ end
 function apply_layout_options!(manager::PlotManager, layout_options::Dict)
     isempty(layout_options) && return
 
-    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+    for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
         sel_key = "$(k)_Selection"
         if haskey(layout_options, sel_key) && haskey(manager.widgets, k)
             val = layout_options[sel_key]
@@ -354,7 +354,7 @@ end
 
 function extract_layout_options(manager::PlotManager)
     opts = Dict{String, Any}()
-    for k in ["Plot_Type", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+    for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
         if haskey(manager.widgets, k)
             opts["$(k)_Selection"] = manager.widgets[k].selection[]
         end
@@ -446,7 +446,8 @@ end
 # --- TIER 1: LAYOUT OPTIONS ---
 function get_base_layout_options()
     return Dict{String, Any}(
-        "Plot_Type_Selection"       => "Lines",  
+        "Base_Plot_Selection"       => "Lines",  
+        "Plot_Style_Selection"      => "2D",
         "Compare_Target_Selection"  => "None", 
         "Compare_Columns_Selection" => "2",     
         "Compare_Link_Selection"    => "Fully Coupled",

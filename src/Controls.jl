@@ -49,100 +49,102 @@ end
 # ==============================================================================
 function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout, manager::PlotManager)
     
+    # Track the row dynamically and collect gaps to apply safely at the end!
+    cr = 1
+    gaps = Int[]
+    
     # =========================================================================
     # SECTION 1: LAYOUT OPTIONS (Requires Apply Button)
     # =========================================================================
-    Label(menu_layout[1, 1:3], "Layout Options", fontsize=16, font=:bold, color=:darkred)
+    Label(menu_layout[cr, 1:3], "Layout Options", fontsize=16, font=:bold, color=:darkred)
+    push!(gaps, 5); cr += 1
     
-    # Row 1 Labels
-    Label(menu_layout[2,1], "Plot Width", font=:bold, color=:teal)
-    Label(menu_layout[2,2], "Plot Height", font=:bold, color=:teal)
-    Label(menu_layout[2,3], "Plot Type", font=:bold)
-
     # Dynamically build Compare Targets
     compare_opts = String["None", "Methods"]
     for p in manager.plot_vars
-        if p == "c"
-            push!(compare_opts, "Component")
-        elseif p == "t"
-            push!(compare_opts, "Time")
-        elseif !(p in ("x", "y", "z"))
-            push!(compare_opts, p)
+        if p == "c"; push!(compare_opts, "Component")
+        elseif p == "t"; push!(compare_opts, "Time")
+        elseif !(p in ("x", "y", "z")); push!(compare_opts, p)
         end
     end
-
-    # Row 1 Menus
+    
+    base_opts = ["Lines", "Scatter", "Contour", "Heatmap", "Volume"]
     size_opts = [string(i) for i in 100:100:1000]
-    plot_opts = [("Lines", :lines), ("Heatmap", :heatmap), ("Contour", :contour), ("Contourf", :contourf), ("Volume", :volume), ("Surface", :surface), ("Scatter 2D", :scatter2d), ("Scatter 3D", :scatter3d)]
 
-    manager.widgets["Plot_Width"]  = Menu(menu_layout[3,1], options = size_opts)
-    manager.widgets["Plot_Height"] = Menu(menu_layout[3,2], options = size_opts)
-    manager.widgets["Plot_Type"]   = Menu(menu_layout[3,3], options = plot_opts)
+    # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
+    Label(menu_layout[cr,1], "Base Plot", font=:bold, color=:teal)
+    Label(menu_layout[cr,2], "Plot Width", font=:bold, color=:teal)
+    Label(menu_layout[cr,3], "Legend Base", font=:bold, color=:darkorchid)
+    push!(gaps, 2); cr += 1
 
-    # Row 2 Labels
-    Label(menu_layout[4,1], "Compare Target", font=:bold, color=:darkorange)
-    Label(menu_layout[4,2], "Grid Columns", font=:bold, color=:darkorange)
-    Label(menu_layout[4,3], "Compare Link", font=:bold, color=:darkorange)
+    manager.widgets["Base_Plot"]   = Menu(menu_layout[cr,1], options = base_opts)
+    manager.widgets["Plot_Width"]  = Menu(menu_layout[cr,2], options = size_opts)
+    manager.widgets["Legend_Base"] = Menu(menu_layout[cr,3], options = ["none", "center", "left", "right", "top", "bottom"])
+    push!(gaps, 10); cr += 1
 
-    # Row 2 Menus
-    manager.widgets["Compare_Target"]  = Menu(menu_layout[5,1], options = compare_opts)
-    manager.widgets["Compare_Columns"] = Menu(menu_layout[5,2], options = ["1", "2", "3", "4", "5"])
-    manager.widgets["Compare_Link"]    = Menu(menu_layout[5,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
+    # --- ROW BLOCK 2: Plot, Size, and Legend (Modifiers) ---
+    Label(menu_layout[cr,1], "Plot Style", font=:bold, color=:teal)
+    Label(menu_layout[cr,2], "Plot Height", font=:bold, color=:teal)
+    Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
+    push!(gaps, 2); cr += 1
 
-    # Row 3 Labels (Column 3 is intentionally left empty so the Apply Button can fill the space below it)
-    Label(menu_layout[6,1], "Legend Base", font=:bold, color=:darkorchid)
-    Label(menu_layout[6,2], "Legend Modifier", font=:bold, color=:darkorchid)
+    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["2D", "3D"])
+    manager.widgets["Plot_Height"] = Menu(menu_layout[cr,2], options = size_opts)
+    manager.widgets["Legend_Add"]  = Menu(menu_layout[cr,3], options = ["none", "detached", "left", "right", "top", "bottom"])
+    push!(gaps, 15); cr += 1
 
-    # Row 3 Menus & Apply Button
-    manager.widgets["Legend_Base"]  = Menu(menu_layout[7,1], options = ["none", "center", "left", "right", "top", "bottom"])
-    manager.widgets["Legend_Add"]   = Menu(menu_layout[7,2], options = ["none", "detached", "left", "right", "top", "bottom"])
-    manager.widgets["Layout_Apply"] = Button(menu_layout[7,3], label="Apply Layout", buttoncolor=:lightblue, width=nothing)
+    # --- ROW BLOCK 3: Comparisons ---
+    Label(menu_layout[cr,1], "Compare Target", font=:bold, color=:darkorange)
+    Label(menu_layout[cr,2], "Grid Columns", font=:bold, color=:darkorange)
+    Label(menu_layout[cr,3], "Compare Link", font=:bold, color=:darkorange)
+    push!(gaps, 2); cr += 1
+
+    manager.widgets["Compare_Target"]  = Menu(menu_layout[cr,1], options = compare_opts)
+    manager.widgets["Compare_Columns"] = Menu(menu_layout[cr,2], options = ["1", "2", "3", "4", "5"])
+    manager.widgets["Compare_Link"]    = Menu(menu_layout[cr,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
+    push!(gaps, 10); cr += 1
+
+    # --- ROW BLOCK 4: APPLY BUTTON ---
+    manager.widgets["Layout_Apply"] = Button(menu_layout[cr, 1:3], label="Apply Layout", buttoncolor=:lightblue, width=nothing)
+    push!(gaps, 25); cr += 1
 
     # =========================================================================
     # SECTION 2: SCENE OPTIONS (Automatic Sync)
     # =========================================================================
-    Label(menu_layout[8, 1:3], "Scene Options", fontsize=16, font=:bold, color=:darkred)
+    Label(menu_layout[cr, 1:3], "Scene Options", fontsize=16, font=:bold, color=:darkred)
+    push!(gaps, 5); cr += 1
 
-    # Row 4 Labels (Independent Axes)
-    Label(menu_layout[9,1], "X-Axis", font=:bold)
-    Label(menu_layout[9,2], "Y-Axis", font=:bold)
-    Label(menu_layout[9,3], "Z-Axis", font=:bold)
+    # --- ROW BLOCK 5: Independent Axes ---
+    Label(menu_layout[cr,1], "X-Axis", font=:bold)
+    Label(menu_layout[cr,2], "Y-Axis", font=:bold)
+    Label(menu_layout[cr,3], "Z-Axis", font=:bold)
+    push!(gaps, 2); cr += 1
 
-    # Row 4 Menus
-    manager.widgets["X-Axis"] = Menu(menu_layout[10,1], options = ["-"])
-    manager.widgets["Y-Axis"] = Menu(menu_layout[10,2], options = ["disabled"])
-    manager.widgets["Z-Axis"] = Menu(menu_layout[10,3], options = ["disabled"])
+    manager.widgets["X-Axis"] = Menu(menu_layout[cr,1], options = ["-"])
+    manager.widgets["Y-Axis"] = Menu(menu_layout[cr,2], options = ["disabled"])
+    manager.widgets["Z-Axis"] = Menu(menu_layout[cr,3], options = ["disabled"])
+    push!(gaps, 10); cr += 1
 
-    # Row 5 Labels (Rest)
-    Label(menu_layout[11,1], "U-Axis (Dep)", font=:bold)
-    Label(menu_layout[11,2], "Anim Target", font=:bold, color=:darkorange)
-    Label(menu_layout[11,3], "Component", font=:bold)
+    # --- ROW BLOCK 6: Rest ---
+    Label(menu_layout[cr,1], "U-Axis (Dep)", font=:bold)
+    Label(menu_layout[cr,2], "Anim Target", font=:bold, color=:darkorange)
+    Label(menu_layout[cr,3], "Component", font=:bold)
+    push!(gaps, 2); cr += 1
 
-    # Row 5 Menus
-    manager.widgets["U-Axis"]      = Menu(menu_layout[12,1], options = ["-"])
-    manager.widgets["Anim_Target"] = Menu(menu_layout[12,2], options = [("None", "None")])
-    manager.widgets["c"]           = Menu(menu_layout[12,3], options = ["1"])
+    manager.widgets["U-Axis"]      = Menu(menu_layout[cr,1], options = ["-"])
+    manager.widgets["Anim_Target"] = Menu(menu_layout[cr,2], options = [("None", "None")])
+    manager.widgets["c"]           = Menu(menu_layout[cr,3], options = ["1"])
 
-    # --- 3-COLUMN EQUAL SPACING ---
+    # --- APPLY GAPS & SPACING ---
     for i in 1:3; colsize!(menu_layout, i, Relative(1/3)); end
-
-    # --- PERFECTED ROW GAPS ---
-    rowgap!(menu_layout, 1, 5)   # Header 1 to Row 1 Labels
-    rowgap!(menu_layout, 2, 2)   # Row 1 Labels to Menus (Tight)
-    rowgap!(menu_layout, 3, 10)  # Row 1 Menus to Row 2 Labels
-    rowgap!(menu_layout, 4, 2)   # Row 2 Labels to Menus (Tight)
-    rowgap!(menu_layout, 5, 10)  # Row 2 Menus to Row 3 Labels
-    rowgap!(menu_layout, 6, 2)   # Row 3 Labels to Menus & Button (Tight)
-    rowgap!(menu_layout, 7, 25)  # Layout Section to Header 2 (Large Divider Gap)
-    rowgap!(menu_layout, 8, 5)   # Header 2 to Row 4 Labels
-    rowgap!(menu_layout, 9, 2)   # Row 4 Labels to Menus (Tight)
-    rowgap!(menu_layout, 10, 10) # Row 4 Menus to Row 5 Labels
-    rowgap!(menu_layout, 11, 2)  # Row 5 Labels to Menus (Tight)
+    for (i, gap) in enumerate(gaps)
+        rowgap!(menu_layout, i, gap)
+    end
 
     # =========================================================================
     # --- SLIDERS ---
     # =========================================================================
-    slider_row = 1
+    slider_row = 0
     
     for i in 1:3 
         p_key = "param_$i"
@@ -169,7 +171,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     colsize!(slider_layout, 1, Fixed(80))    
     colsize!(slider_layout, 2, Relative(0.7)) 
     colsize!(slider_layout, 3, Fixed(60))
-    for r in 1:6; rowgap!(slider_layout, r, 5); end
+    for r in 1:(slider_row-1); rowgap!(slider_layout, r, 5); end
 end
 
 # ==============================================================================
