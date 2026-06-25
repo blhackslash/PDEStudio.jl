@@ -99,12 +99,13 @@ function getFileName(params::ParamDict)
 
     all_files = readdir(save_data)
     
-    # We only care about the prefix.
-    candidate_files = filter(f -> startswith(f, "$(hash_val)_") && endswith(f, ".jld2"), all_files)
+    # THE FIX: Support both new (timestamp_hash) and old (hash_timestamp) formats!
+    candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2") || startswith(f, "$(hash_val)_")) && endswith(f, ".jld2"), all_files)
 
     if !isempty(candidate_files)
-        # Sort descending to always grab the newest run for these parameters (if there are duplicates)
-        sort!(candidate_files, rev=true)
+        # THE FIX: Sort by actual file modification time to guarantee the newest file is picked, 
+        # regardless of whether it uses the old or new naming convention!
+        sort!(candidate_files, by = f -> mtime(joinpath(save_data, f)), rev=true)
         return joinpath(save_data, candidate_files[1])
     end
 
@@ -125,7 +126,9 @@ function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
         save_data = joinpath(get_save_path(), "data")
         if !isdir(save_data); mkpath(save_data); end
-        file_name = joinpath(save_data, "$(hash_val)_$(timestamp).jld2")
+        
+        # THE FIX: Put the timestamp first so OS file explorers sort them chronologically!
+        file_name = joinpath(save_data, "$(timestamp)_$(hash_val).jld2")
     end
 
     # 2. Open the file safely. Use "a+" to append/create, "r+" to update
@@ -203,13 +206,16 @@ function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_da
     if !isdir(save_data); throw(SimFileNotFoundError("Data directory does not exist.")); end
 
     all_files = readdir(save_data)
-    candidates = filter(f -> startswith(f, clean_prefix) && endswith(f, ".jld2"), all_files)
+    
+    # THE FIX: Use occursin instead of startswith so it finds the hash anywhere in the name
+    candidates = filter(f -> occursin(clean_prefix, f) && endswith(f, ".jld2"), all_files)
     
     if isempty(candidates)
          throw(SimFileNotFoundError("No files found matching the hash prefix: $clean_prefix"))
     end
 
-    sort!(candidates, rev=true)
+    # THE FIX: Sort by modification time here as well for perfect chronological indexing
+    sort!(candidates, by = f -> mtime(joinpath(save_data, f)), rev=true)
     
     if index > length(candidates) || index < 1
         error("Requested index $index, but only $(length(candidates)) files match the hash '$clean_prefix'.")
