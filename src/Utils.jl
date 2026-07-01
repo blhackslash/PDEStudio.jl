@@ -447,7 +447,7 @@ end
 function get_base_layout_options()
     return Dict{String, Any}(
         "Base_Plot_Selection"       => "Lines",  
-        "Plot_Style_Selection"      => "2D",
+        "Plot_Style_Selection"      => "1D",
         "Compare_Target_Selection"  => "None", 
         "Compare_Columns_Selection" => "2",     
         "Compare_Link_Selection"    => "Fully Coupled",

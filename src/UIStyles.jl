@@ -1,60 +1,72 @@
 const UIType = Union{Symbol,MethodDict}
-
+const LEGEND_SUPPORTED_PLOTS = (:lines, :scatter1d, :scatterlines, :contour, :contourf, :contour3d)
+const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
 # --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
     :lines        => 1,
+    :scatter1d    => 1,
+    :scatterlines => 1,
+    :lines2d      => 2,
     :heatmap      => 2,
     :contour      => 2,
-    :contour_cmap => 2,  # THE NEW RENDERER
+    :contour_cmap => 2, 
     :contourf     => 2,
     :scatter2d    => 2,
     :surface      => 2,
+    :lines3d      => 3,
     :contour3d    => 3,
     :scatter3d    => 3,
     :volume       => 3
 )
 
-# Maps User UI Selections (Base Plot, Plot Style) to the underlying Render Symbol
 const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
-    ("Lines", "2D")          => :lines,
+    ("Lines", "1D")           => :lines,
+    ("Lines", "2D")           => :lines2d,
+    ("Lines", "3D")           => :lines3d,
+    ("Lines", "Scatterlines") => :scatterlines,
     
-    ("Scatter", "2D")        => :scatter2d,
-    ("Scatter", "3D")        => :scatter3d,
+    ("Scatter", "1D")         => :scatter1d,
+    ("Scatter", "2D")         => :scatter2d,
+    ("Scatter", "3D")         => :scatter3d,
     
-    ("Contour", "Lines")     => :contour,
-    ("Contour", "Colormap")  => :contour_cmap, # THE NEW ROUTE
-    ("Contour", "Filled")    => :contourf,
-    ("Contour", "3D")        => :contour3d,
+    ("Contour", "Lines")      => :contour,
+    ("Contour", "Colormap")   => :contour_cmap, 
+    ("Contour", "Filled")     => :contourf,
+    ("Contour", "3D")         => :contour3d,
     
-    ("Heatmap", "Flat")      => :heatmap,
-    ("Heatmap", "Surface")   => :surface,
+    ("Heatmap", "Flat")       => :heatmap,
+    ("Heatmap", "Surface")    => :surface,
     
-    ("Volume", "3D Cloud")   => :volume
+    ("Volume", "3D Cloud")    => :volume
 )
 
-# Used to dynamically populate the second dropdown menu based on the first
 const PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
-    "Lines"   => ["2D"],
-    "Scatter" => ["2D", "3D"],
+    "Lines"   => ["1D", "2D", "3D", "Scatterlines"],
+    "Scatter" => ["1D", "2D", "3D"],
     "Contour" => ["Lines", "Colormap", "Filled", "3D"],
     "Heatmap" => ["Flat", "Surface"],
     "Volume"  => ["3D Cloud"]
 )
 
-# The Flat-State Filter Matrix: Determines which UI controls are visible for which plot
 const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
-    :lines        => ["colors", "line_width", "line_styles", "dashed_lines", "show_lines", "show_scatter", "markers", "marker_size", "reference"],
-    :scatter2d    => ["color_map", "color_range", "markers", "marker_size", "bottom_margin", "rasterize"],
-    :scatter3d    => ["color_map", "color_range", "markers", "marker_size", "rasterize"],
+    :lines        => ["colors", "line_width", "line_styles", "dashed_lines", "reference"],
+    :scatter1d    => ["colors", "markers", "marker_size"],
+    :scatterlines => ["colors", "line_width", "line_styles", "dashed_lines", "markers", "marker_size", "reference"],
+    
+    :lines2d      => ["color_map", "color_range", "line_width", "line_direction", "bottom_margin", "method_index"],
+    :lines3d      => ["color_map", "color_range", "line_width", "line_direction", "bottom_margin", "method_index"],
+    
+    :scatter2d    => ["color_map", "color_range", "markers", "marker_size", "bottom_margin", "rasterize", "method_index"],
+    :scatter3d    => ["color_map", "color_range", "markers", "marker_size", "rasterize", "method_index"],
+    
     :contour      => ["colors", "levels", "line_width", "labels"],
-    :contour_cmap => ["color_map", "color_range", "levels", "line_width", "labels", "bottom_margin"],
-    :contourf     => ["color_map", "color_range", "levels", "base_method_idx", "rasterize", "bottom_margin"],
-    :heatmap      => ["color_map", "color_range", "rasterize", "bottom_margin"],
-    :surface      => ["color_map", "color_range", "rasterize"],
-    :volume       => ["color_map", "color_range", "rasterize"],
-    :contour3d    => ["colors", "levels", "line_width"]
+    :contour_cmap => ["color_map", "color_range", "levels", "line_width", "labels", "bottom_margin", "method_index"],
+    :contourf     => ["color_map", "color_range", "levels", "method_index", "rasterize", "bottom_margin"],
+    :heatmap      => ["color_map", "color_range", "rasterize", "bottom_margin", "method_index"],
+    :surface      => ["color_map", "color_range", "rasterize", "method_index"],
+    :volume       => ["color_map", "color_range", "rasterize", "method_index"],
+    :contour3d    => ["colors", "levels", "line_width", "method_index"]
 )
-
 
 # --- 2. OBSERVABLE TEMPLATES ---
 """
@@ -135,11 +147,12 @@ function create_master_ui_observables()
         "color_map"       => :viridis,
         "color_range"     => Any[],
         "line_width"      => 3.0,
+        "line_direction"  => "Horizontal",
         "line_styles"     => [:solid, :dash, :dot, (:dash, :dense), (:dot, :dense)],
         "markers"         => [:circle, :rect, :utriangle, :dtriangle, :cross],
         "marker_size"     => 15.0,
         "levels"          => 15,
-        "base_method_idx" => 1,
+        "method_index"    => 1,
         "bottom_margin"   => 60,
         "rasterize"       => 2,
         "show_lines"      => true,
@@ -289,21 +302,23 @@ end
 # --- MODULAR UI MODIFIERS ---
 # ==============================================================================
 function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any)
-    k = Symbol(prim_key) # Forgive strings and cast to symbol automatically
+    k = Symbol(prim_key)
     
-    if k == :line
+    if k == :lines
         prim.color[] = color
         prim.linewidth[] = ui_app["line_width"][]
-        prim.visible[] = ui_app["show_lines"][]
     elseif k == :scatter
         prim.color[] = color
         prim.markersize[] = ui_app["marker_size"][]
-        prim.visible[] = ui_app["show_scatter"][]
-    elseif k in (:heatmap, :surface, :volume, :contourf, :scatter2d, :scatter3d, :contour_cmap)
+    elseif k == :scatterlines
+        prim.color[] = color
+        prim.linewidth[] = ui_app["line_width"][]
+        prim.markersize[] = ui_app["marker_size"][]
+    elseif k in (:heatmap, :surface, :volume, :contourf, :scatter2d, :scatter3d, :contour_cmap, :lines2d, :lines3d)
         prim.colormap[] = ui_app["color_map"][]
         if k in (:scatter2d, :scatter3d)
             prim.markersize[] = ui_app["marker_size"][]
-        elseif k == :contour_cmap
+        elseif k in (:contour_cmap, :lines2d, :lines3d)
             prim.linewidth[] = ui_app["line_width"][]
         end
     elseif k == :contour

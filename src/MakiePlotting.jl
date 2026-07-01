@@ -314,7 +314,7 @@ function launch_plotter()
         Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = true)
         
         notify(plot_data_obs)
-        manager.triggers["Primitive_Rebuild"][] += 1
+        manager.triggers["Layout_Update"][] += 1
     end
 
     setup_plot_window!(master_fig, plot_layout, manager, plot_data_obs)
@@ -472,8 +472,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     
     is_compare = target != "None"
     is_det, halign, valign = _parse_legend_position(manager, is_compare)
-    has_legend = T in (:lines, :contourf, :contour, :contour3d) && target != "Methods"
-    has_colorbar = T in (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap)
+    
+    # THE FIX: Query the centralized Source of Truth!
+    has_legend = T in LEGEND_SUPPORTED_PLOTS && target != "Methods"
+    has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
     manager.state["Layout_Dict"] = Observable(layout_dict)
@@ -530,30 +532,31 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 if !is_3d_axis; ax.xscale[] = identity; ax.yscale[] = identity; end
             end
             
-            sel_vals = [to_value(obs) for obs in selector_obs]
+            if !isempty(manager.methods[])
+                sel_vals = [to_value(obs) for obs in selector_obs]
 
-            for i in 1:num_plots
-                manager.caches[i] = Dict{String, PlotCache}()
-                
-                mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
-                
-                local_methods = manager.methods[]
-                if target == "Methods" && i <= length(vl)
-                    vl = [vl[i]]
-                    dt = Tuple([slice[i]] for slice in dt)
-                    local_methods = [manager.methods[][i]]
-                end
-                
-                initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
-                default_title = is_compare ? compare_labels[i] : ts
-                axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
-                if !is_3d_axis; 
-                    set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
-                    plot_HUD!(axes[i], manager)
-                end
+                for i in 1:num_plots
+                    manager.caches[i] = Dict{String, PlotCache}()
+                    
+                    mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+                    dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                    
+                    local_methods = manager.methods[]
+                    if target == "Methods" && i <= length(vl)
+                        vl = [vl[i]]
+                        dt = Tuple([slice[i]] for slice in dt)
+                        local_methods = [manager.methods[][i]]
+                    end
+                    
+                    initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
+                    default_title = is_compare ? compare_labels[i] : ts
+                    axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+                    if !is_3d_axis; set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+                        plot_HUD!(axes[i], manager)
+                    end
 
-                _enforce_camera_lock!(axes, manager)
+                    _enforce_camera_lock!(axes, manager)
+                end
             end
         end
         manager.triggers["UI_Update"][] += 1
@@ -573,7 +576,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             caches = manager.caches
             data = plot_data_obs[]
 
-            (isempty(data) || isempty(caches)) && return
+            (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
             
             for i in 1:num_plots
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
@@ -598,7 +601,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     end
                 end
                 
-                sync_data_to_cache!(caches[i], local_methods, dt, Val(PLOT_DIM_MAP[T]))
+                sync_data_to_cache!(caches[i], local_methods, dt, manager, Val(PLOT_DIM_MAP[T]))
                 
                 default_title = is_compare ? compare_labels[i] : ts
                 axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
@@ -660,7 +663,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             end
             
             # 5. Legend Update
-            if !is_3d_axis && T in (:lines, :contour, :contourf)
+            if !is_3d_axis && T in LEGEND_SUPPORTED_PLOTS
                 create_or_update_legend!(plot_layout, _collect_legend_elements(manager, ui_app)..., manager)
             end
             

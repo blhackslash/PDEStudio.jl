@@ -88,7 +88,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["2D", "3D"])
+    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["1D", "2D", "3D", "Scatterlines"])
     manager.widgets["Plot_Height"] = Menu(menu_layout[cr,2], options = size_opts)
     manager.widgets["Legend_Add"]  = Menu(menu_layout[cr,3], options = ["none", "detached", "left", "right", "top", "bottom"])
     push!(gaps, 15); cr += 1

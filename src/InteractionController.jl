@@ -153,21 +153,24 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
     end
 
-    on(menu_mth.selection) do sel  # <-- THE FIX: Change 'm' to 'sel' here!
-        @with_lock manager "Menu_Sync" begin
-            if is_activate_mode[]
-                if !(sel in staged_methods[])
-                    new_staged = copy(staged_methods[])
-                    push!(new_staged, sel)
-                    # THE FIX: Sort immediately upon adding to the staged list!
-                    staged_methods[] = sort_methods_robust(new_staged) 
-                end
-            else
-                new_staged = filter(x -> x != sel, staged_methods[])
-                staged_methods[] = new_staged
+    on(menu_mth.selection) do sel
+        # THE FIX: Ignore empty selections and the default dash!
+        (isnothing(sel) || sel == "-") && return
+        
+        # THE FIX: We calculate the new state OUTSIDE of a lock so the 
+        # downstream listener is allowed to acquire "Menu_Sync" and update the UI!
+        new_staged = copy(staged_methods[])
+        if is_activate_mode[]
+            if !(sel in new_staged)
+                push!(new_staged, sel)
+                new_staged = sort_methods_robust(new_staged) 
             end
-            menu_mth.i_selected[] = 1
+        else
+            filter!(x -> x != sel, new_staged)
         end
+        
+        # Triggers the onany(staged_methods) listener naturally
+        staged_methods[] = new_staged
     end
 
     # Only fire the simulation when Apply is explicitly clicked!
@@ -281,7 +284,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         smart_parse_and_update!(obs, s)
         if menu_cat.selection[] == "UI"
             # THE FIX: Dynamically switching to a colormap requires a full WebGL geometry rebuild!
-            if menu_key.selection[] == "use_color_map"
+            if menu_key.selection[] in ("use_color_map", "line_direction", "base_method_idx")
                 manager.triggers["Primitive_Rebuild"][] += 1
             else
                 manager.triggers["UI_Update"][] += 1
@@ -300,7 +303,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
             
             if menu_cat.selection[] == "UI"
                 # THE FIX: Dynamically switching to a colormap requires a full WebGL geometry rebuild!
-                if menu_key.selection[] == "use_color_map"
+                if menu_key.selection[] in ("use_color_map", "line_direction", "base_method_idx")
                     manager.triggers["Primitive_Rebuild"][] += 1
                 else
                     manager.triggers["UI_Update"][] += 1
@@ -593,6 +596,9 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         isnothing(base_type) && return
         valid_styles = get(PLOT_STYLE_OPTIONS, base_type, ["2D"])
         update_menu_safe!(w["Plot_Style"], valid_styles)
+        notify(manager.widgets["Editor_Scope"].selection)
+    end
+    on(style_obs) do _
         notify(manager.widgets["Editor_Scope"].selection)
     end
 

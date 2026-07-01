@@ -531,7 +531,7 @@ end
 function _find_first_drawable_primitive(cache_dict)
     for method_name in keys(cache_dict)
         prims = cache_dict[method_name].primitives
-        for pkey in [:heatmap, :contourf, :surface, :volume, :scatter2d, :scatter3d, :contour_cmap]
+        for pkey in [:heatmap, :contourf, :surface, :volume, :scatter2d, :scatter3d, :contour_cmap, :lines2d, :lines3d]
             haskey(prims, pkey) && return prims[pkey]
         end
     end
@@ -571,15 +571,25 @@ function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
             group = []
             
             # Lines
-            if haskey(prims, :line) && ui_app["show_lines"][]
+            if haskey(prims, :lines)
                 ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
                 push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
             end
             
             # Scatter
-            if haskey(prims, :scatter) && ui_app["show_scatter"][]
+            if haskey(prims, :scatter) || haskey(prims, :scatter1d)
                 mrk = ui_app["markers"][][mod1(m_idx, end)]
                 push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
+            end
+            
+            # Scatterlines
+            if haskey(prims, :scatterlines)
+                ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+                mrk = ui_app["markers"][][mod1(m_idx, end)]
+                lw = ui_app["line_width"][]
+                ms = ui_app["marker_size"][]
+                push!(group, Makie.LineElement(color=color, linewidth=lw, linestyle=ls))
+                push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ms))
             end
             
             # Contours
