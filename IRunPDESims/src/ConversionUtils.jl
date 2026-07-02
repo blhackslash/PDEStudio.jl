@@ -62,7 +62,57 @@ function createSimData(
     return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
 end
 
-function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int) where {D, M}
+function resample_time(data::ESimData{D}, target_t::Vector{Float64}) where {D}
+    # If the time vectors perfectly match, skip the overhead
+    if length(data.t) == length(target_t) && all(isapprox.(data.t, target_t, atol=1e-8))
+        
+        return data
+    end
+    @info "Interpolating Eulerian data from $(length(data.t)) to $(length(target_t)) timesteps to fix mismatch..."
+    
+    T_new = length(target_t)
+    T_old = length(data.t)
+    
+    # 1. Allocate new tensor
+    new_u = similar(data.u, size(data.u)[1:end-1]..., T_new)
+    
+    # 2. Allocate new fields, scalars, and series
+    new_fields = Dict{String, Array{Float64}}()
+    for (k, v) in data.fields; new_fields[k] = similar(v, size(v)[1:end-1]..., T_new); end
+    
+    new_series = Dict{String, Matrix{Float64}}()
+    for (k, v) in data.series; new_series[k] = similar(v, size(v)[1:end-1]..., T_new); end
+
+    # 3. Helper to find interpolation indices and weights
+    function get_weights(t)
+        if t <= data.t[1]; return 1, 1, 0.0; end
+        if t >= data.t[end]; return T_old, T_old, 0.0; end
+        idx = searchsortedlast(data.t, t)
+        if idx == T_old; return T_old, T_old, 0.0; end
+        t1, t2 = data.t[idx], data.t[idx+1]
+        return idx, idx+1, (t - t1) / (t2 - t1)
+    end
+
+    # 4. Fast Broadcast Interpolation Loop
+    Threads.@threads for i in 1:T_new
+        idx1, idx2, w = get_weights(target_t[i])
+        w1, w2 = 1.0 - w, w
+        
+        if idx1 == idx2
+            selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), idx1)
+            for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), idx1); end
+            for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), idx1); end
+        else
+            selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), idx1) .* w1 .+ selectdim(data.u, ndims(data.u), idx2) .* w2
+            for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), idx1) .* w1 .+ selectdim(v, ndims(v), idx2) .* w2; end
+            for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), idx1) .* w1 .+ selectdim(v, ndims(v), idx2) .* w2; end
+        end
+    end
+
+    return ESimData(data.params, data.x, new_u, target_t, data.scalars, new_series, data.profiles, new_fields)
+end
+
+function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int; target_t::Union{Vector{Float64}, Nothing}=nothing) where {D, M}
     T_len = length(ldata.t)
 
     mins = fill(Inf, D); maxs = fill(-Inf, D)
@@ -248,5 +298,10 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int) where {D, M}
         end
     end
 
-    return ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
+    edata = ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
+    
+    if !isnothing(target_t)
+        return resample_time(edata, target_t)
+    end
+    return edata
 end

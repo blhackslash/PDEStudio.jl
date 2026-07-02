@@ -211,7 +211,7 @@ function runAllSimulations(
     fixed_params::ParamDict = ParamDict(),
     force_overwrite::Bool = false,
     convert_eulerian::Bool = false, 
-    calculate_stats::Bool = false,     # NEW: Toggle for eager stats calculation
+    calculate_stats::Bool = false,     
     stats_to_calculate::Union{Symbol, Vector{Symbol}} = [:series],
     parallel::Bool = false
 )
@@ -220,7 +220,6 @@ function runAllSimulations(
     
     # 1. Generate all parameter combinations across all methods
     all_tasks = Vector{ParamDict}()
-    local grid_indices
     for method in active_methods
         if contains(safe_string(method), "analytic") || contains(safe_string(method), "reference"); continue; end
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
@@ -231,45 +230,27 @@ function runAllSimulations(
     
     num_tasks = length(all_tasks)
     if num_tasks == 0
-        @info "No simulations generated to run."
-        return
+        @info "No numerical simulations generated to run."
+        return Float64[]
     end
     
-    @info "Starting batch execution of $num_tasks simulations (Parallel: $parallel)..."
+    @info "Pass 1: Executing $num_tasks simulations (Parallel: $parallel)..."
     p = Progress(num_tasks; desc="Running Simulations...")
     counter = Threads.Atomic{Int}(0)
-    ana_cache = Dict{Float64, Array{Float64}}()
-    # --- Helper for eager Eulerian conversion & Stat Calculation ---
-    function _process_task(params)
-        N_grid = _LAGRANGE_N_GRID[]
-        # 1. Run the simulation
+    
+    # THE FIX: Track the time vectors to enforce a global standard
+    t_vectors = Vector{Vector{Float64}}(undef, num_tasks)
+    
+    function _run_task(i, params)
         run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
         sim_data = loadSimData(params)
-        # 2. Handle eager post-processing
-        if !isnothing(sim_data)  
-            if calculate_stats
-                calculateAllStats!(
-                    sim_data, 
-                    sim_config.reference_func; 
-                    stats_to_calculate=stats_to_calculate, 
-                    data_key="sim_data_raw",
-                    force_overwrite=force_overwrite,
-                    ana_cache=ana_cache
-                )
-            end
-            if convert_eulerian && (sim_data isa LSimData); 
-                conv_data = convert_to_eulerian(sim_data, N_grid)
-                saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
-                sim_data = conv_data 
-            end
-        end
+        t_vectors[i] = !isnothing(sim_data) ? sim_data.t : Float64[]
     end
 
-    # 2. Execute tasks using the smart wrapper
     if parallel
-        Threads.@threads for params in all_tasks
+        Threads.@threads for i in 1:num_tasks
             try
-                _process_task(params)
+                _run_task(i, all_tasks[i])
             catch e
                 @error "Simulation Thread Error" exception=(e, catch_backtrace())
             end
@@ -277,12 +258,60 @@ function runAllSimulations(
             ProgressMeter.update!(p, counter[])
         end
     else
-        for params in all_tasks
-            _process_task(params)
+        for i in 1:num_tasks
+            _run_task(i, all_tasks[i])
             counter[] += 1
             ProgressMeter.update!(p, counter[])
         end
     end
     
+    # Determine the master time vector (the longest one from all successful runs)
+    valid_t_vecs = filter(!isempty, t_vectors)
+    target_t = isempty(valid_t_vecs) ? Float64[] : valid_t_vecs[argmax(length.(valid_t_vecs))]
+    
+    if calculate_stats || convert_eulerian
+        @info "Pass 2: Calculating Stats & Eulerian Conversions..."
+        p2 = Progress(num_tasks; desc="Post-processing...")
+        counter2 = Threads.Atomic{Int}(0)
+        ana_cache = Dict{Float64, Array{Float64}}()
+        
+        function _post_task(params)
+            sim_data = loadSimData(params)
+            if !isnothing(sim_data)  
+                if calculate_stats
+                    calculateAllStats!(
+                        sim_data, 
+                        sim_config.reference_func; 
+                        stats_to_calculate=stats_to_calculate, 
+                        data_key="sim_data_raw",
+                        force_overwrite=force_overwrite,
+                        ana_cache=ana_cache
+                    )
+                end
+                if convert_eulerian && (sim_data isa LSimData)
+                    N_grid = _LAGRANGE_N_GRID[]
+                    # THE FIX: Interpolate Eulerian conversion strictly to the global time sequence
+                    conv_data = convert_to_eulerian(sim_data, N_grid; target_t=target_t)
+                    saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
+                end
+            end
+        end
+        
+        if parallel
+            Threads.@threads for i in 1:num_tasks
+                try _post_task(all_tasks[i]) catch e; @error "Post Thread Error" exception=(e, catch_backtrace()) end
+                Threads.atomic_add!(counter2, 1)
+                ProgressMeter.update!(p2, counter2[])
+            end
+        else
+            for i in 1:num_tasks
+                _post_task(all_tasks[i])
+                counter2[] += 1
+                ProgressMeter.update!(p2, counter2[])
+            end
+        end
+    end
+    
     @info "Batch simulation run complete!"
+    return target_t
 end

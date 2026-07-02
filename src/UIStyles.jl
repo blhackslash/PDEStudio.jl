@@ -216,7 +216,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             scene_opt["X_Axis_Selection"]     = "Ns__1"
             scene_opt["U_Axis_Selection"]     = "relative_l2error"
             layout_opt["Base_Plot_Selection"]  = "Lines"
-            layout_opt["Plot_Style_Selection"] = "2D"
+            layout_opt["Plot_Style_Selection"] = "1D"
             scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "log_scale", true)
@@ -237,7 +237,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("X-Axis", "padding", 0.0)
 
             set_ui!("Plot-Style", "line_width", 3.6)
-            set_ui!("Plot-Style", "dashed_lines", true)
+            set_ui!("Plot-Style", "dashed_lines", false)
             set_ui!("Plot-Style", "line_styles", [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
             set_ui!("Various", "save_formats", ["pdf", "svg"])
             

@@ -1,5 +1,11 @@
+# =============================================================================
+# MODULAR HELPERS
+# =============================================================================
 function get_base_method_index(ui_app::Dict, active_methods::Vector{String})
-    raw_idx = get(ui_app, "method_index", Ref(1))[]
+    # THE FIX: Mathematically protect against empty arrays
+    isempty(active_methods) && return 1
+    
+    raw_idx = get(ui_app, "base_method_idx", Ref(1))[]
     return clamp(raw_idx, 1, length(active_methods))
 end
 # -----------------------------------------------------------------------------
@@ -126,6 +132,33 @@ end
 # -----------------------------------------------------------------------------
 # 2D PRIMITIVES
 # -----------------------------------------------------------------------------
+
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
+    xs_slices, ys_slices, us_slices = data_tuples
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+
+    plotted_objects, labels_for_legend = [], String[]
+    
+    for (m_idx, label) in enumerate(active_methods)
+        cache = PlotCache()
+        cache.obs_x[] = xs_slices[m_idx]
+        cache.obs_y[] = ys_slices[m_idx]
+        cache.obs_u[] = us_slices[m_idx]
+
+        color = ui_app["colors"][][mod1(m_idx, length(ui_app["colors"][]))]
+        lw    = ui_app["line_width"][]
+        
+        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"][], color=color, linewidth=lw, labels=ui_app["labels"][])
+        
+        cache.primitives[:contour] = ct
+        cache_dict[label] = cache
+
+        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
+        push!(labels_for_legend, label)
+    end
+end
+
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
     xs, ys, us = data_tuples
     ui_app = manager.ui["Plot-Style"]

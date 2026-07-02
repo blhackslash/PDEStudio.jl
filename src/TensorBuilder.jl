@@ -8,6 +8,25 @@ _get_D(sim_data::AbstractSimData) = length(sim_data.x[1][1])
 safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
 safe_reshape(data::Real, dims...) = data
 
+function _get_global_target_t(sim_config::SimulationConfig, fixed_params::Dict)
+    for (m_name, params) in sim_config.methods_dict
+        if contains(safe_string(m_name), "analytic") || contains(safe_string(m_name), "reference"); continue; end
+        
+        base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
+        ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
+        tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)), fixed_params; ignore_keys=ik)
+        
+        if !isempty(tasks)
+            try
+                sim_data = loadSimData(tasks[1])
+                if !isnothing(sim_data); return sim_data.t; end
+            catch
+            end
+        end
+    end
+    return Float64[]
+end
+
 """
 Safely assigns a 1D vector (or flat scalar) into an N-Dimensional target tensor.
 `target_dim` is relative to the core 5 dimensions (C, X, Y, Z, T):
@@ -191,7 +210,6 @@ end
 # ==============================================================================
 # MAIN TENSOR CREATION ROUTINE
 # ==============================================================================
-
 function create_method_plot_data(
     method_name::String, 
     base_params::ParamDict,
@@ -202,48 +220,38 @@ function create_method_plot_data(
 )
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
     
-    # THE FIX: Fetch ignore keys using the backend helper
     ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
-    
-    # Pass them into the generator
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
-    # --- THE FIX: Recombine double-underscore tuple parameters natively ---
     for task in tasks
         _recombine_tuples!(task)
     end
 
     local first_data
+    local target_t
 
-# --- THE VIRTUAL METHOD INTERCEPTOR ---
+    # --- THE VIRTUAL METHOD INTERCEPTOR ---
     safe_method = safe_string(method_name)
     safe_ref = isnothing(sim_config.reference_name) ? nothing : safe_string(sim_config.reference_name)
-    
     is_reference = !isnothing(safe_ref) && safe_method == safe_ref
 
     if is_reference
         isnothing(sim_config.reference_func) && return nothing
+        target_t = _get_global_target_t(sim_config, sim_fixes)
         @info "Generating high-res Reference solution in-memory (N=$(_REFERENCE_RESOLUTION[]))..."
-        first_data = generate_reference_simdata(sim_config.reference_func, tasks[1])
+        first_data = generate_reference_simdata(sim_config.reference_func, tasks[1], target_t)
     else
-        # --- Standard Numerical Run Logic ---
-        if parallel
-            Threads.@threads for params in tasks
-                try
-                    run_smart_simulation(sim_config.simulation_func, params; force_overwrite=false)
-                    
-                catch e
-                    @error "Simulation Error" exception=(e, catch_backtrace())
-                end
-            end
-        else
-            for params in tasks
-                run_smart_simulation(sim_config.simulation_func, params; force_overwrite=false)
-                
-            end
-        end
-
+        # --- THE FIX: Delegate to Pass 1 & Pass 2 centralized runner ---
+        target_t = runAllSimulations(
+            sim_config; 
+            active_methods=[method_name], 
+            varied_params=sim_config.varied_params, 
+            fixed_params=sim_fixes, 
+            convert_eulerian=true, 
+            parallel=parallel
+        )
+        
         first_data = loadSimData(tasks[1]) 
         if isnothing(first_data)
             @warn "Failed to load simulation data after execution."
@@ -254,14 +262,12 @@ function create_method_plot_data(
         if first_data isa LSimData
             N_grid = _LAGRANGE_N_GRID[]
             try
-                # Smart Tracker: Grab the closest pre-converted resolution
                 first_data = loadBestConversion(tasks[1], N_grid)
                 @info "Loaded cached Eulerian conversion for plotting."
             catch e
-                if !(e isa SimFileNotFoundError); e end
+                if !(e isa SimFileNotFoundError); @warn e end
                 @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
-                first_data = convert_to_eulerian(first_data,N_grid)
-                # Save the new conversion using the data_key format
+                first_data = convert_to_eulerian(first_data, N_grid; target_t=target_t)
                 saveSimData(first_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
             end
         end
@@ -320,16 +326,13 @@ function create_method_plot_data(
     for k in keys(first_data.profiles); data_store[k] = allocate_tensor(:profile); end
     for k in keys(first_data.fields); data_store[k] = allocate_tensor(:field); end
 
-# --- 6. Data Filling Loop ---
-    # Loads SimData from disk one by one, keeping RAM usage low
+    # --- 6. Data Filling Loop ---
     for (k, params) in enumerate(tasks)
         
         local sim_data
         
-        # THE FIX: Intercept the loop loading for Reference methods!
         if is_reference
-            # Reuse first_data for the first frame, generate the rest on the fly
-            sim_data = k == 1 ? first_data : generate_reference_simdata(sim_config.reference_func, params)
+            sim_data = k == 1 ? first_data : generate_reference_simdata(sim_config.reference_func, params, target_t)
         else
             sim_data = loadSimData(params)
             
@@ -339,8 +342,8 @@ function create_method_plot_data(
                 try
                     sim_data = loadBestConversion(params, N_grid)
                 catch e
-                    if !(e isa SimFileNotFoundError); e end
-                    sim_data = convert_to_eulerian(sim_data, N_grid)
+                    if !(e isa SimFileNotFoundError); @warn e end
+                    sim_data = convert_to_eulerian(sim_data, N_grid; target_t=target_t)
                     saveSimData(sim_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
                 end
             end

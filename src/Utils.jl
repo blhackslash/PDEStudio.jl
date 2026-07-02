@@ -164,17 +164,12 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
-function generate_reference_simdata(ref_func::Function, params::ParamDict)
+function generate_reference_simdata(ref_func::Function, params::ParamDict, target_t::Vector{Float64})
     N = _REFERENCE_RESOLUTION[]
     
     # 1. Extract physical bounds directly from parameters (Strict requires)
     xmin = params["mins"]
     xmax = params["maxs"]
-    tmax = params["tmax"]
-    snapshots = params["snapshots"]
-    
-    # Optional parameters
-    tmin = get(params, "tmin", 0.0)
     
     # Determine dimensionality based on the type of xmin
     D = length(xmin)
@@ -186,12 +181,11 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
         collect(range(min_val, max_val, length=N))
     end
     
-    # 3. Build the time vector (snapshots + 1 ensures we include t=0)
-    t_vec = tmax > tmin ? collect(range(tmin, tmax, length=snapshots+1)) : [Float64(tmin)]
+    # THE FIX: Use the data-driven target time vector! (Fallback to [0,1] if purely analytical setup)
+    t_vec = isempty(target_t) ? [0.0, 1.0] : target_t
     T = length(t_vec)
     
     # Evaluate one point to find the number of components (C)
-    # --- THE FIX: Create an SVector cleanly using ntuple ---
     sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
     sample_val = ref_func(sample_pos, t_vec[1])
     C = length(sample_val)
@@ -204,7 +198,6 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
     Threads.@threads for t_idx in 1:T
         t = t_vec[t_idx]
         for idx in CartesianIndices(grid_shape)
-            # --- THE FIX: Native, allocation-free SVector creation ---
             pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
             exact_val = ref_func(pos, t)
             
@@ -214,10 +207,10 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict)
         end
     end
     
-# Create the lightweight ESimData that exists ONLY in RAM
+    # Create the lightweight ESimData that exists ONLY in RAM
     ram_data = ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
     
-    # THE FIX: Calculate baseline stats instantly without touching the hard drive!
+    # Calculate baseline stats instantly without touching the hard drive!
     IRunPDESims._calculate_stats!(Val(:series), ram_data, ram_data.x, ram_data.u, ref_func)
     
     return ram_data

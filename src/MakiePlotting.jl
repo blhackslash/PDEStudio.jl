@@ -541,6 +541,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
                     dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
                     
+                    isempty(vl) && continue
+                    
                     local_methods = manager.methods[]
                     if target == "Methods" && i <= length(vl)
                         vl = [vl[i]]
