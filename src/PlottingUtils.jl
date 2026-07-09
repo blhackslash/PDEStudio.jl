@@ -114,11 +114,7 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
 end
 
 function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
-
-    if get(manager.state, "Camera_Locked", Observable(false))[]
-        return
-    end
-
+    # 1. Always extract UI state first
     ui_x = manager.ui["X-Axis"]
     ui_y = manager.ui["Y-Axis"]
     
@@ -128,8 +124,7 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
     use_log_x = ui_x["log_scale"][]
     use_log_y = ui_y["log_scale"][]
 
-    # THE FIX: Only disable log_scale temporarily for this specific render pass.
-    # Do NOT mutate ui_x["log_scale"][] so the preset survives until the Ns data loads!
+    # 2. Safety Check: Only disable log_scale temporarily for this render pass.
     if raw_xlims[1] <= 0 && use_log_x
         use_log_x = false
         @warn "X-Axis data contains non-positive values. log_scale temporarily disabled."
@@ -139,13 +134,21 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
         @warn "Y-Axis data contains non-positive values. log_scale temporarily disabled."
     end
 
-    final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
-    final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
+    # 3. Handle Auto-scaling (Only if Camera is NOT Locked)
+    if !get(manager.state, "Camera_Locked", Observable(false))[]
+        final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
+        final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
 
-    try limits!(ax, final_xlims..., final_ylims...) catch; end
+        # Apply limits BEFORE scales to prevent Makie DomainErrors
+        try limits!(ax, final_xlims..., final_ylims...) catch; end
+    end
 
-    if use_log_x; ax.xscale[] = log10; end
-    if use_log_y; ax.yscale[] = log10; end
+    # 4. ALWAYS apply the scales (This handles both Locking and Reverting)
+    # By using the ternary operator, we ensure it properly reverts to `identity` 
+    # when the user unchecks the log scale box!
+    ax.xscale[] = use_log_x ? log10 : identity
+    ax.yscale[] = use_log_y ? log10 : identity
+    return
 end
 
 # ==============================================================================

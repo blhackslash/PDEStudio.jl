@@ -284,7 +284,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         smart_parse_and_update!(obs, s)
         if menu_cat.selection[] == "UI"
             # THE FIX: Dynamically switching to a colormap requires a full WebGL geometry rebuild!
-            if menu_key.selection[] in ("use_color_map", "line_direction", "base_method_idx")
+            if menu_key.selection[] in ("use_color_map", "line_direction", "base_method_idx","log_scale","dashed_lines")
                 manager.triggers["Primitive_Rebuild"][] += 1
             else
                 manager.triggers["UI_Update"][] += 1
@@ -403,15 +403,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
         # =====================================================================
         
-        # Manually force the export pipeline to draw the primitives!
-        manager.triggers["Primitive_Rebuild"][] += 1
-        
-        # Shrink-wrap the export figure to perfectly match Plot_Width/Plot_Height!
-        resize_to_layout!(export_fig)
-        
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
-        
+        # Manually force the export pipeline to draw the primitives!
+        manager.triggers["Primitive_Rebuild"][] += 1
         for (c_ax, e_ax) in zip(current_axes, export_axes)
             if c_ax isa Axis3
                 e_ax.azimuth[] = c_ax.azimuth[]
@@ -429,6 +424,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                               lims.origin[2], lims.origin[2] + lims.widths[2])
             end
         end
+        
+        
+        # Shrink-wrap the export figure to perfectly match Plot_Width/Plot_Height!
+        resize_to_layout!(export_fig)
         return export_fig, export_obs
     end
 
@@ -622,7 +621,6 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
 
             valid_axes = String[]
             comp_max = 1
-            
             for i in 1:n_params
                 if length(pd_first.active_param_values[i]) > 1
                     push!(valid_axes, dim_names[i])
@@ -738,8 +736,6 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
         end
         
-        active_axes_obs[] = collect(axes_set)
-        
         req_space = false; req_time = false; req_params = Int[]
         for key in active_indep_keys
             tensor = get(pd_first.data, key, nothing)
@@ -774,6 +770,14 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         
         sort!(valid_fields)
         update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"], force_notify=false)
+        # 2. THE NEW FIX: Update the internal state silently!
+        active_axes_obs.val = collect(axes_set)
+        
+        # 3. Only trigger the downstream slider updates if we are NOT 
+        # in the middle of the delicate config load cascade!
+        if !manager.state["Config_Just_Loaded"][]
+            notify(active_axes_obs)
+        end
     end
 
     # 3. Sync Slider Ranges (The core data injection to the UI!)
@@ -851,6 +855,7 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
         end
         
         if manager.state["Config_Just_Loaded"][]
+            
             opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
             
@@ -866,7 +871,6 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 end
                 GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
             end
-            
             manager.state["Config_Just_Loaded"].val = false
         end
     end

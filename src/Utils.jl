@@ -301,20 +301,24 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
             end
             
             if !isnothing(idx)
-                    widget.i_selected[] = idx
+                widget.i_selected[] = idx
+                notify(widget.selection)
+                println(k,": idx_found:",idx)
+            else
+                # THE FIX: Force inject the option so it survives the reactive cascade!
+                if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
+                    new_opts = copy(opts)
+                    push!(new_opts, (string(val), val))
+                    widget.options[] = new_opts
                 else
-                    # THE FIX: Force inject the option so it survives the reactive cascade!
-                    if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
-                        new_opts = copy(opts)
-                        push!(new_opts, (string(val), val))
-                        widget.options[] = new_opts
-                    else
-                        new_opts = copy(opts)
-                        push!(new_opts, val)
-                        widget.options[] = new_opts
-                    end
-                    widget.i_selected[] = length(widget.options[])
+                    new_opts = copy(opts)
+                    push!(new_opts, val)
+                    widget.options[] = new_opts
                 end
+                println(k, ": ",widget.selection[])
+                widget.i_selected[] = length(widget.options[])
+                notify(widget.selection)
+            end
         end
     end
 
@@ -455,7 +459,7 @@ end
 function get_base_scene_options()
     return Dict{String, Any}(
         "X-Axis_Selection" => "x",
-        "Y-Axis_Selection" => "y",
+        "Y-Axis_Selection" => "disabled",
         "Z-Axis_Selection" => "disabled",
         "U-Axis_Selection" => "u",
         "c_Selection"      => "1"

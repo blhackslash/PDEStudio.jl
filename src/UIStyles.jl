@@ -213,8 +213,8 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     for preset in preset_list
         if preset == :convergence
-            scene_opt["X_Axis_Selection"]     = "Ns__1"
-            scene_opt["U_Axis_Selection"]     = "relative_l2error"
+            scene_opt["X-Axis_Selection"]      = "Ns__1"
+            scene_opt["U-Axis_Selection"]      = "relative_l2error"
             layout_opt["Base_Plot_Selection"]  = "Lines"
             layout_opt["Plot_Style_Selection"] = "1D"
             scene_opt["t_Value"]              = 10.0^10
