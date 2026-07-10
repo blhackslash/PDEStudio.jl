@@ -590,7 +590,6 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     base_obs = w["Base_Plot"].selection
     style_obs = w["Plot_Style"].selection
     
-    # Ensure impossible combos are physically prevented
     on(base_obs) do base_type
         isnothing(base_type) && return
         valid_styles = get(PLOT_STYLE_OPTIONS, base_type, ["2D"])
@@ -602,68 +601,57 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
     end
 
     active_axes_obs = manager.state["Active_Axes"]
+    
+    # Local observables to carry valid axes and their dimensional mappings
+    base_valid_axes = Observable{Vector{String}}(String[])
+    base_axis_to_dim = Observable{Dict{String, Int}}(Dict())
 
-    # 1. Sync Dropdown Options (Valid Axes & Components)
+    # =========================================================================
+    # 1. Sync Base Dropdown Options (Dimensionality-Driven)
+    # =========================================================================
     onany(plot_data_obs, base_obs, style_obs, comp_tgt_obs) do plot_data_dict, base_sel, style_sel, comp_tgt
         @with_lock manager "Data" begin
             isempty(plot_data_dict) && return
-            ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
-
-            pd_first = first(values(plot_data_dict))
             
+            pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
-            if n_params > 0
-                manager.plot_vars[1:n_params] .= pd_first.active_param_keys
-            end
+            if n_params > 0; manager.plot_vars[1:n_params] .= pd_first.active_param_keys; end
+            
             dim_names = manager.plot_vars
             total_dims = length(dim_names)
-            n_params = total_dims - 5
-
+            comp_idx = n_params + 1
+            
             valid_axes = String[]
+            axis_to_dim = Dict{String, Int}()
             comp_max = 1
-            for i in 1:n_params
-                if length(pd_first.active_param_values[i]) > 1
-                    push!(valid_axes, dim_names[i])
+            
+            # --- THE MAGIC RULE ---
+            # Any tensor that varies across EXACTLY ONE dimension (ignoring components) 
+            # is mathematically valid as an independent 1D Axis!
+            for (key, tensor) in pd_first.data
+                if key == "u"; comp_max = max(comp_max, size(tensor, comp_idx)); end
+                
+                varying = findall(s -> s > 1, size(tensor))
+                filter!(d -> d != comp_idx, varying) # Ignore the component dimension
+                
+                if length(varying) == 1
+                    push!(valid_axes, key)
+                    axis_to_dim[key] = varying[1]
                 end
             end
             
-            # --- THE FIX: DYNAMIC DIMENSION FILTERING ---
-            # Inspect the 'u' tensor to see which dimensions actually exist
-            u_tensor = haskey(pd_first.data, "u") ? pd_first.data["u"] : first(values(pd_first.data))
-            for i in (n_params+2):total_dims
-                # Only allow x, y, z, t if they have a length > 1!
-                if size(u_tensor, i) > 1
-                    push!(valid_axes, dim_names[i])
-                end
-            end
-            
-            # Safe Fallback: If it's a literal 0D point simulation, just give it 'x'
+            # Safety Fallback for 0D / static single-point simulations
             if isempty(valid_axes)
                 push!(valid_axes, "x")
+                axis_to_dim["x"] = n_params + 2
             end
-            # --------------------------------------------
             
-            for (key, tensor) in pd_first.data
-                varying = findall(s -> s > 1, size(tensor))
-                isempty(varying) && continue
-                
-                if !(key in dim_names)
-                    param_varying = filter(d -> d <= n_params, varying)
-                    phys_varying = filter(d -> d > n_params && d != n_params + 1, varying)
-                    is_pure_series = (length(phys_varying) == 1 && phys_varying[1] == n_params + 5) && isempty(param_varying)
-                    is_pure_param = isempty(phys_varying) && length(param_varying) == 1
-                    if is_pure_series || is_pure_param; push!(valid_axes, key); end
-                end
-                if key == "u"; comp_max = max(comp_max, size(tensor, n_params + 1)); end
-            end
-            unique!(valid_axes)
+            unique!(valid_axes); sort!(valid_axes)
             
             if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
             elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
             elseif comp_tgt in dim_names; filter!(k -> k != comp_tgt, valid_axes)
             end
-            
-            sort!(valid_axes)
             
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
             c_options = Any[]
@@ -672,115 +660,113 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 push!(c_options, (name, string(i)))
             end
             
+            # X gets EVERYTHING. Y and Z are handled dynamically below.
             update_menu_safe!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
             update_menu_safe!(w["c"], c_options; fallbacks=["1"])
             
-            p_dim = PLOT_DIM_MAP[ptype]
-            if p_dim >= 2
-                update_menu_safe!(w["Y-Axis"], valid_axes; fallbacks=["y", "t", "z", "x"])
-            else
-                update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"])
-            end
-            
-            if p_dim >= 3
-                update_menu_safe!(w["Z-Axis"], valid_axes; fallbacks=["z", "t", "x", "y"])
-            else
-                update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
-            end
-
+            # --- Animation Targets (Only base sliders can be animated) ---
             anim_options = Any[("None", "None")]
-            
-            # 1. Add all valid varied parameters (Formatted nicely!)
             for i in 1:n_params
                 if length(pd_first.active_param_values[i]) > 1
                     p_name = dim_names[i]
                     push!(anim_options, (nice_string(p_name), p_name))
                 end
             end
-
             for i in (n_params+2):total_dims
                 ax_name = dim_names[i]
-                if ax_name in valid_axes
-                    # Format these to perfectly match your Dimension Overwrite labels!
-                    nice_ax = ax_name == "x" ? "Space(X)" :
-                              ax_name == "y" ? "Space(Y)" :
-                              ax_name == "z" ? "Space(Z)" :
-                              ax_name == "t" ? "Time"     : nice_string(ax_name)
-                    
+                if haskey(axis_to_dim, ax_name)
+                    nice_ax = ax_name == "x" ? "Space(X)" : ax_name == "y" ? "Space(Y)" :
+                              ax_name == "z" ? "Space(Z)" : ax_name == "t" ? "Time" : nice_string(ax_name)
                     push!(anim_options, (nice_ax, ax_name))
                 end
             end
-            
             update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
+            
+            # Pass the structural mappings downstream
+            base_axis_to_dim[] = axis_to_dim
+            base_valid_axes[] = valid_axes
         end
     end
 
-    # 2. Sync Active Axes State
-    onany(x_sel, y_sel, z_sel, base_obs, style_obs, plot_data_obs) do x_val, y_val, z_val, base_sel, style_sel, plot_data_dict
-        isempty(plot_data_dict) && return
+    # =========================================================================
+    # 1.5 Cascading Hierarchy: Dimensional Collision Prevention
+    # =========================================================================
+    onany(base_valid_axes, base_axis_to_dim, x_sel, y_sel, base_obs, style_obs) do valid_axes, axis_map, x_val, y_val, base_sel, style_sel
+        (isempty(valid_axes) || isnothing(x_val) || isempty(axis_map)) && return
+        
+        ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+        p_dim = PLOT_DIM_MAP[ptype]
+        
+        # Grab the underlying dimension index of the chosen X-Axis
+        dim_x = get(axis_map, x_val, -1)
+        
+        # 1. Update Y-Axis options (Exclude any variable sharing X's underlying dimension)
+        if p_dim >= 2
+            y_axes = filter(v -> get(axis_map, v, -2) != dim_x, valid_axes)
+            update_menu_safe!(w["Y-Axis"], y_axes; fallbacks=["y", "t", "z", "x"], force_notify=false)
+        else
+            update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"], force_notify=false)
+        end
+        
+        curr_y = w["Y-Axis"].selection[]
+        dim_y = get(axis_map, curr_y, -3)
+        
+        # 2. Update Z-Axis options (Exclude any variable sharing X's OR Y's underlying dimension)
+        if p_dim >= 3
+            z_axes = filter(v -> get(axis_map, v, -4) != dim_x && get(axis_map, v, -4) != dim_y, valid_axes)
+            update_menu_safe!(w["Z-Axis"], z_axes; fallbacks=["z", "t", "x", "y"], force_notify=false)
+        else
+            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"], force_notify=false)
+        end
+    end
+
+    # =========================================================================
+    # 2. U-Axis Sync & Active Axes State (Subset Validation)
+    # =========================================================================
+    onany(x_sel, y_sel, z_sel, base_obs, style_obs, plot_data_obs, base_axis_to_dim) do x_val, y_val, z_val, base_sel, style_sel, plot_data_dict, axis_map
+        (isempty(plot_data_dict) || isempty(axis_map)) && return
 
         ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
-        dim_names = manager.plot_vars
-        total_dims = length(dim_names)
-        n_params = total_dims - 5
         p_dim = PLOT_DIM_MAP[ptype]
-        axes_set = Set{Int}()
-        active_indep_keys = String[]
         pd_first = first(values(plot_data_dict))
+        comp_idx = length(pd_first.active_param_keys) + 1
+        
+        axes_set = Set{Int}()
         
         for (dim_req, val) in zip([1, 2, 3], [x_val, y_val, z_val])
             if p_dim >= dim_req && !isnothing(val) && val != "-" && val != "disabled"
-                 idx = get_base_dim_idx(pd_first, val, dim_names)
+                idx = get(axis_map, val, nothing)
                 !isnothing(idx) && push!(axes_set, idx)
-                push!(active_indep_keys, val)
             end
         end
         
-        req_space = false; req_time = false; req_params = Int[]
-        for key in active_indep_keys
-            tensor = get(pd_first.data, key, nothing)
-            isnothing(tensor) && continue
-            varying = findall(s -> s > 1, size(tensor))
-            
-            idx = findfirst(isequal(key), dim_names)
-            !isnothing(idx) && push!(varying, idx)
-            
-            if any(d -> d in (n_params+2, n_params+3, n_params+4), varying); req_space = true; end
-            if any(d -> d == n_params+5, varying); req_time = true; end
-            for d in varying
-                if d <= n_params && !(d in req_params); push!(req_params, d); end
-            end
-        end
-        
+        # --- THE FIX: Subset Validation ---
+        # A tensor is mathematically valid for the U-Axis if it varies 
+        # across AT LEAST the underlying dimensions currently locked into X, Y, Z.
         valid_fields = String[]
         for (key, tensor) in pd_first.data
-            varying = findall(s -> s > 1, size(tensor))
-            isempty(varying) && continue
+            varying = Set(findall(s -> s > 1, size(tensor)))
+            delete!(varying, comp_idx) 
             
-            has_space = any(d -> d in (n_params+2, n_params+3, n_params+4), varying)
-            has_time = any(d -> d == n_params+5, varying)
-            has_params = filter(d -> d <= n_params, varying)
-            
-            is_valid = true
-            req_space && !has_space && (is_valid = false)
-            req_time && !has_time && (is_valid = false)
-            for p in req_params; !(p in has_params) && (is_valid = false); end
-            if is_valid; push!(valid_fields, key); end
+            if issubset(axes_set, varying)
+                push!(valid_fields, key)
+            end
         end
         
         sort!(valid_fields)
         update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"], force_notify=false)
-        # 2. THE NEW FIX: Update the internal state silently!
+        
+        # Update the internal state silently!
         active_axes_obs.val = collect(axes_set)
         
-        # 3. Only trigger the downstream slider updates if we are NOT 
-        # in the middle of the delicate config load cascade!
         if !manager.state["Config_Just_Loaded"][]
             notify(active_axes_obs)
         end
     end
 
-    # 3. Sync Slider Ranges (The core data injection to the UI!)
+    # =========================================================================
+    # 3. Sync Slider Ranges (Data injection to UI & Config Load Finalization)
+    # =========================================================================
     onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
         isempty(plot_data_dict) && return
 
@@ -854,8 +840,8 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
             end
         end
         
+        # --- Config Initialization Cleanup ---
         if manager.state["Config_Just_Loaded"][]
-            
             opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
             
@@ -871,6 +857,7 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 end
                 GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
             end
+            
             manager.state["Config_Just_Loaded"].val = false
         end
     end

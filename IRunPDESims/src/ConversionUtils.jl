@@ -1,133 +1,151 @@
-"""
-    createSimData(x::Vector, u::Matrix, t::Vector, params)
+# ==============================================================================
+# --- EULERIAN CONSTRUCTORS ---
+# ==============================================================================
 
-1D Scalar Eulerian. Auto-expands the `[Space, Time]` matrix into 
-the required `[Component, Space, Time]` tensor.
-"""
-function createSimData(x::AbstractVector{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict)
+function createSimData(x::AbstractVector{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
     u_expanded = reshape(u, 1, size(u, 1), size(u, 2))
-    return ESimData{1}(params, (Float64.(x),), Float64.(u_expanded), Float64.(t), Dict(), Dict(), Dict(), Dict())
+    
+    _xmins = isnothing(xmins) ? (Float64(minimum(x)),) : Float64.(Tuple(xmins))
+    _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x)),) : Float64.(Tuple(xmaxs))
+    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
+    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
+    
+    return ESimData{1}(params, (Float64.(x),), Float64.(u_expanded), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
-function createSimData(x::AbstractVector{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict)
-    return ESimData{1}(params, (Float64.(x),), Float64.(u), Float64.(t), Dict(), Dict(), Dict(), Dict())
+function createSimData(x::AbstractVector{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
+    _xmins = isnothing(xmins) ? (Float64(minimum(x)),) : Float64.(Tuple(xmins))
+    _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x)),) : Float64.(Tuple(xmaxs))
+    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
+    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
+
+    return ESimData{1}(params, (Float64.(x),), Float64.(u), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
-"""
-    createSimData(x_grid::Matrix, y_grid::Matrix, u::Array{T,3}, t::Vector, params)
-
-2D Scalar Eulerian. Accepts standard meshgrids and a `[X, Y, Time]` tensor.
-"""
-function createSimData(x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict)
-    # Extract the 1D axes from the meshgrids (assuming standard ndgrid layout)
+function createSimData(x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
     x_axis = vec(x_grid[:, 1]) 
     y_axis = vec(y_grid[1, :]) 
-    
     u_expanded = reshape(u, 1, size(u, 1), size(u, 2), size(u, 3))
-    # Pass as a Tuple of Vectors
-    return ESimData{2}(params, (Float64.(x_axis), Float64.(y_axis)), Float64.(u_expanded), Float64.(t), Dict(), Dict(), Dict(), Dict())
+    
+    _xmins = isnothing(xmins) ? (Float64(minimum(x_axis)), Float64(minimum(y_axis))) : Float64.(Tuple(xmins))
+    _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x_axis)), Float64(maximum(y_axis))) : Float64.(Tuple(xmaxs))
+    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
+    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
+
+    return ESimData{2}(params, (Float64.(x_axis), Float64.(y_axis)), Float64.(u_expanded), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
 # ==============================================================================
-# --- LAGRANGIAN CONVERSIONS ---
+# --- LAGRANGIAN CONSTRUCTORS ---
 # ==============================================================================
 
-"""
-    createSimData(x::Matrix, u::Matrix, t::Vector, params)
+# Internal helper to calculate bounds of scattered SVector data
+function _get_lsim_bounds(x::Vector{Vector{SVector{D, Float64}}}) where D
+    mins = fill(Inf, D)
+    maxs = fill(-Inf, D)
+    for step in x; for p in step; for d in 1:D
+        mins[d] = min(mins[d], p[d])
+        maxs[d] = max(maxs[d], p[d])
+    end; end; end
+    return Tuple(mins), Tuple(maxs)
+end
 
-1D Scalar Lagrangian. Converts flat `[Particle, Time]` matrices into 
-nested `SVector` time-steps.
-"""
-function createSimData(x::AbstractMatrix{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict)
+function createSimData(x::AbstractMatrix{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
     n_p, n_t = size(x)
-    
     x_vec = [[SVector{1, Float64}(x[p, m]) for p in 1:n_p] for m in 1:n_t]
     u_vec = [[SVector{1, Float64}(u[p, m]) for p in 1:n_p] for m in 1:n_t]
     
-    return LSimData{1, 1}(params, x_vec, u_vec, Float64.(t), Dict(), Dict(), Dict(), Dict())
+    auto_mins, auto_maxs = _get_lsim_bounds(x_vec)
+    _xmins = isnothing(xmins) ? auto_mins : Float64.(Tuple(xmins))
+    _xmaxs = isnothing(xmaxs) ? auto_maxs : Float64.(Tuple(xmaxs))
+    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
+    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
+    
+    return LSimData{1, 1}(params, x_vec, u_vec, Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
-"""
-    createSimData(x::Vector{Vector{Space{D}}}, u::Vector{Vector{State{M}}}, t, params)
-
-Native Multi-D / Multi-Component Lagrangian. 
-Directly maps your simulation package's output!
-"""
 function createSimData(
     x::Vector{Vector{SVector{D, Float64}}}, 
     u::Vector{Vector{SVector{M, Float64}}}, 
     t::Vector{Float64}, 
-    params::ParamDict
+    params::ParamDict;
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
 ) where {D, M}
-    return LSimData{D, M}(params, x, u, t, Dict(), Dict(), Dict(), Dict())
+    auto_mins, auto_maxs = _get_lsim_bounds(x)
+    _xmins = isnothing(xmins) ? auto_mins : Float64.(Tuple(xmins))
+    _xmaxs = isnothing(xmaxs) ? auto_maxs : Float64.(Tuple(xmaxs))
+    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
+    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
+
+    return LSimData{D, M}(params, x, u, t, _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
-function resample_time(data::ESimData{D}, target_t::Vector{Float64}) where {D}
-    # If the time vectors perfectly match, skip the overhead
-    if length(data.t) == length(target_t) && all(isapprox.(data.t, target_t, atol=1e-8))
-        
+function resample_time(data::ESimData{D}, T_grid::Int) where {D}
+    target_t = collect(range(data.tmin, data.tmax, length=T_grid))
+    
+    # If the time vectors perfectly match the uniform grid, skip the overhead
+    if length(data.t) == T_grid && all(isapprox.(data.t, target_t, atol=1e-8))
         return data
     end
-    @info "Interpolating Eulerian data from $(length(data.t)) to $(length(target_t)) timesteps to fix mismatch..."
     
-    T_new = length(target_t)
+    @info "Nearest-Neighbor resampling Eulerian data from $(length(data.t)) to $T_grid timesteps..."
+    
+    T_new = T_grid
     T_old = length(data.t)
     
-    # 1. Allocate new tensor
+    # 1. Allocate new tensors
     new_u = similar(data.u, size(data.u)[1:end-1]..., T_new)
     
-    # 2. Allocate new fields, scalars, and series
     new_fields = Dict{String, Array{Float64}}()
     for (k, v) in data.fields; new_fields[k] = similar(v, size(v)[1:end-1]..., T_new); end
     
     new_series = Dict{String, Matrix{Float64}}()
     for (k, v) in data.series; new_series[k] = similar(v, size(v)[1:end-1]..., T_new); end
 
-    # 3. Helper to find interpolation indices and weights
-    function get_weights(t)
-        if t <= data.t[1]; return 1, 1, 0.0; end
-        if t >= data.t[end]; return T_old, T_old, 0.0; end
-        idx = searchsortedlast(data.t, t)
-        if idx == T_old; return T_old, T_old, 0.0; end
-        t1, t2 = data.t[idx], data.t[idx+1]
-        return idx, idx+1, (t - t1) / (t2 - t1)
-    end
-
-    # 4. Fast Broadcast Interpolation Loop
-    Threads.@threads for i in 1:T_new
-        idx1, idx2, w = get_weights(target_t[i])
-        w1, w2 = 1.0 - w, w
+    # 2. Helper to find the absolute closest native frame
+    function get_nearest_idx(t)
+        if t <= data.t[1]; return 1; end
+        if t >= data.t[end]; return T_old; end
         
-        if idx1 == idx2
-            selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), idx1)
-            for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), idx1); end
-            for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), idx1); end
-        else
-            selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), idx1) .* w1 .+ selectdim(data.u, ndims(data.u), idx2) .* w2
-            for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), idx1) .* w1 .+ selectdim(v, ndims(v), idx2) .* w2; end
-            for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), idx1) .* w1 .+ selectdim(v, ndims(v), idx2) .* w2; end
-        end
+        idx = searchsortedlast(data.t, t)
+        if idx == T_old; return T_old; end
+        
+        # Return whichever frame is closer in time
+        return abs(t - data.t[idx]) < abs(t - data.t[idx+1]) ? idx : idx+1
     end
 
-    return ESimData(data.params, data.x, new_u, target_t, data.scalars, new_series, data.profiles, new_fields)
+    # 3. Fast Broadcast Snapping Loop (No w1/w2 blending!)
+    Threads.@threads for i in 1:T_new
+        nearest = get_nearest_idx(target_t[i])
+        
+        selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), nearest)
+        for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), nearest); end
+        for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), nearest); end
+    end
+
+    return ESimData(
+        data.params, data.x, new_u, target_t, 
+        data.xmins, data.xmaxs, data.tmin, data.tmax,
+        data.scalars, new_series, data.profiles, new_fields
+    )
 end
 
-function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int; target_t::Union{Vector{Float64}, Nothing}=nothing) where {D, M}
+function convert_to_eulerian(ldata::LSimData{D, M}) where {D, M}
+    # THE FIX: Pull directly from the global state
+    N_grid = _N_GRID[]
+    T_grid = _T_GRID[]
     T_len = length(ldata.t)
 
-    mins = fill(Inf, D); maxs = fill(-Inf, D)
-    for step in ldata.x; for p in step; for d in 1:D
-        mins[d] = min(mins[d], p[d]); maxs[d] = max(maxs[d], p[d])
-    end; end; end
-
+    mins = collect(ldata.xmins)
+    maxs = collect(ldata.xmaxs)
+    
     for d in 1:D
-        pad = 0. # max(1e-5, (maxs[d] - mins[d]) * 0.01)
+        pad = 0. 
         mins[d] -= pad; maxs[d] += pad
     end
 
     grid_axes = ntuple(d -> collect(range(mins[d], maxs[d], length=N_grid)), Val(D))
     grid_shape = ntuple(d -> N_grid, Val(D))
-
     x_euler = ntuple(d -> grid_axes[d], Val(D))
 
     # Preallocate Eulerian grids
@@ -298,10 +316,10 @@ function convert_to_eulerian(ldata::LSimData{D, M}, N_grid::Int; target_t::Union
         end
     end
 
-    edata = ESimData(ldata.params, x_euler, u_euler, ldata.t, ldata.scalars, ldata.series, e_profiles, e_fields)
+    edata = ESimData(ldata.params, x_euler, u_euler, ldata.t, 
+                     ldata.xmins, ldata.xmaxs, ldata.tmin, ldata.tmax, 
+                     ldata.scalars, ldata.series, e_profiles, e_fields)
     
-    if !isnothing(target_t)
-        return resample_time(edata, target_t)
-    end
-    return edata
+    # Unconditionally push it through the uniform time resampler!
+    return resample_time(edata, T_grid)
 end

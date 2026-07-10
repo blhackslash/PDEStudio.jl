@@ -8,8 +8,9 @@ _get_D(sim_data::AbstractSimData) = length(sim_data.x[1][1])
 safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
 safe_reshape(data::Real, dims...) = data
 
-function _get_global_target_t(sim_config::SimulationConfig, fixed_params::Dict)
+function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
     for (m_name, params) in sim_config.methods_dict
+        # SKIP LOGIC: Ignore reference methods
         if contains(safe_string(m_name), "analytic") || contains(safe_string(m_name), "reference"); continue; end
         
         base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
@@ -19,14 +20,19 @@ function _get_global_target_t(sim_config::SimulationConfig, fixed_params::Dict)
         if !isempty(tasks)
             try
                 sim_data = loadSimData(tasks[1])
-                if !isnothing(sim_data); return sim_data.t; end
+                if !isnothing(sim_data)
+                    # Force conversion if it's Lagrangian to get the exact Eulerian bounds
+                    if sim_data isa LSimData
+                        return convert_to_eulerian(sim_data)
+                    end
+                    return sim_data
+                end
             catch
             end
         end
     end
-    return Float64[]
+    return nothing
 end
-
 # ==============================================================================
 # 1. TASK & CONFIGURATION ANALYSIS
 # ==============================================================================
@@ -158,24 +164,17 @@ function create_method_plot_data(
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
-    for task in tasks
-        _recombine_tuples!(task)
-    end
-
-    local first_data
-    local target_t
+    for task in tasks; _recombine_tuples!(task); end
 
     safe_method = safe_string(method_name)
     safe_ref = isnothing(sim_config.reference_name) ? nothing : safe_string(sim_config.reference_name)
     is_reference = !isnothing(safe_ref) && safe_method == safe_ref
 
-    if is_reference
-        isnothing(sim_config.reference_func) && return nothing
-        target_t = _get_global_target_t(sim_config, sim_fixes)
-        @info "Generating high-res Reference solution in-memory (N=$(_REFERENCE_RESOLUTION[]))..."
-        first_data = generate_reference_simdata(sim_config.reference_func, tasks[1], target_t)
-    else
-        target_t = runAllSimulations(
+    # =========================================================================
+    # 1. ENSURE DATA EXISTS (Run simulations if this isn't the reference)
+    # =========================================================================
+    if !is_reference
+        runAllSimulations(
             sim_config; 
             active_methods=[method_name], 
             varied_params=sim_config.varied_params, 
@@ -183,28 +182,32 @@ function create_method_plot_data(
             convert_eulerian=true, 
             parallel=parallel
         )
-        
-        first_data = loadSimData(tasks[1]) 
-        if isnothing(first_data)
-            @warn "Failed to load simulation data after execution."
-            return nothing
-        end
-        
-        if first_data isa LSimData
-            N_grid = _LAGRANGE_N_GRID[]
-            try
-                first_data = loadBestConversion(tasks[1], N_grid)
-            catch e
-                if !(e isa SimFileNotFoundError); @warn e end
-                @info "Converting LSimData to ESimData at N=$N_grid for plotting..."
-                first_data = convert_to_eulerian(first_data, N_grid; target_t=target_t)
-                saveSimData(first_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
-            end
-        end
     end
     
-    D = _get_D(first_data)  
-    eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(first_data, base_types)
+    # =========================================================================
+    # 2. GRAB THE UNIVERSAL TEMPLATE
+    # =========================================================================
+    base_template = _get_template_simdata(sim_config, sim_fixes)
+    if isnothing(base_template)
+        @warn "Cannot generate plot data: No valid simulation data found to use as a domain template."
+        return nothing
+    end
+
+    # THE FIX: If this is the reference method, we must use a high-res template
+    # to allocate the arrays! Otherwise, we use the standard base_template.
+    local template_data
+    if is_reference
+        @info "Generating high-res Reference solution in-memory (N=$(_REF_GRID[]), T=$(_T_GRID[]))..."
+        template_data = generate_reference_simdata(sim_config.reference_func, tasks[1], base_template)
+    else
+        template_data = base_template
+    end
+
+    # =========================================================================
+    # 3. SETUP DIMENSIONS & ALLOCATE TENSORS
+    # =========================================================================
+    D = _get_D(template_data)  
+    eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(template_data, base_types)
     grid_dims = length.(active_values)
     n_params = length(active_keys)
     
@@ -222,29 +225,29 @@ function create_method_plot_data(
         end
     end
 
-    # --- 1. Construct Perfectly Independent Grids! ---
-    c_src_first, space_src_first, t_src_first = get_source_slices(base_types, D, raw_c, raw_space, raw_t, first_data)
+    # --- Construct Perfectly Independent Grids! ---
+    c_src_first, space_src_first, t_src_first = get_source_slices(base_types, D, raw_c, raw_space, raw_t, template_data)
     
     function make_independent_dims(target_dim_idx, eff_len)
         return ntuple(i -> i == target_dim_idx ? eff_len : 1, n_params + 5)
     end
 
     len_t = t_src_first isa Int ? 1 : length(t_src_first)
-    data_store["t"] = reshape(first_data.t[t_src_first], make_independent_dims(n_params + 5, len_t))
+    data_store["t"] = reshape(template_data.t[t_src_first], make_independent_dims(n_params + 5, len_t))
 
     len_x = space_src_first[1] isa Int ? 1 : length(space_src_first[1])
-    data_store["x"] = reshape(first_data.x[1][space_src_first[1]], make_independent_dims(n_params + 2, len_x))
+    data_store["x"] = reshape(template_data.x[1][space_src_first[1]], make_independent_dims(n_params + 2, len_x))
     
     if D >= 2
         len_y = space_src_first[2] isa Int ? 1 : length(space_src_first[2])
-        data_store["y"] = reshape(first_data.x[2][space_src_first[2]], make_independent_dims(n_params + 3, len_y))
+        data_store["y"] = reshape(template_data.x[2][space_src_first[2]], make_independent_dims(n_params + 3, len_y))
     end
     if D == 3
         len_z = space_src_first[3] isa Int ? 1 : length(space_src_first[3])
-        data_store["z"] = reshape(first_data.x[3][space_src_first[3]], make_independent_dims(n_params + 4, len_z))
+        data_store["z"] = reshape(template_data.x[3][space_src_first[3]], make_independent_dims(n_params + 4, len_z))
     end
 
-    # --- 2. Inject Parameters as Tensors ---
+    # --- Inject Parameters as Tensors ---
     for (i, key) in enumerate(active_keys)
         param_tensor = fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
         vals = Float64.(active_values[i])
@@ -259,42 +262,44 @@ function create_method_plot_data(
         data_store[key] = param_tensor
     end
 
-    # --- 3. Allocate Results ---
+    # --- Allocate Results using Template Keys ---
     data_store["u"] = allocate_tensor(:field)
-    
-    for k in keys(first_data.scalars); data_store[k] = allocate_tensor(:scalar); end
-    for k in keys(first_data.series); data_store[k] = allocate_tensor(:series); end
-    for k in keys(first_data.profiles); data_store[k] = allocate_tensor(:profile); end
-    for k in keys(first_data.fields); data_store[k] = allocate_tensor(:field); end
+    for k in keys(template_data.scalars); data_store[k] = allocate_tensor(:scalar); end
+    for k in keys(template_data.series); data_store[k] = allocate_tensor(:series); end
+    for k in keys(template_data.profiles); data_store[k] = allocate_tensor(:profile); end
+    for k in keys(template_data.fields); data_store[k] = allocate_tensor(:field); end
 
-    # --- 4. Data Filling Loop ---
+    # =========================================================================
+    # 4. UNIFORM DATA FILLING LOOP (No more k==1 exceptions!)
+    # =========================================================================
     for (k, params) in enumerate(tasks)
-        
         local sim_data
         
         if is_reference
-            sim_data = k == 1 ? first_data : generate_reference_simdata(sim_config.reference_func, params, target_t)
+            # THE FIX: Reuse the high-res template for the first task to save time!
+            sim_data = (k == 1) ? template_data : generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
             sim_data = loadSimData(params)
             
             if sim_data isa LSimData
-                N_grid = _LAGRANGE_N_GRID[]
-                try
-                    sim_data = loadBestConversion(params, N_grid)
-                catch e
-                    if !(e isa SimFileNotFoundError); @warn e end
-                    sim_data = convert_to_eulerian(sim_data, N_grid; target_t=target_t)
-                    saveSimData(sim_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
+                plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
+                plot_data = loadSimData(params; data_key=plot_key)
+                if !isnothing(plot_data)
+                    sim_data = plot_data
+                else
+                    sim_data = convert_to_eulerian(sim_data)
+                    saveSimData(sim_data; data_key=plot_key, overwrite=true)
                 end
             end
         end
-        # --- THE FIX: Grid Consistency Check ---
-        if !isapprox(sim_data.t, first_data.t, rtol=1e-5)
-            @warn "Time vectors do not match perfectly for task $(k)! Ensure simulations output matching temporal sequences."
+        
+        # --- Grid Consistency Check ---
+        if length(sim_data.t) != length(template_data.t)
+            @warn "Time steps mismatch for task $(k)! Expected $(length(template_data.t)), got $(length(sim_data.t))."
         end
         for d in 1:D
-            if !isapprox(sim_data.x[d], first_data.x[d], rtol=1e-5)
-                @warn "Spatial grid axis $d does not perfectly match for task $(k)! The parameter $k might have physically shifted the domain."
+            if length(sim_data.x[d]) != length(template_data.x[d])
+                @error "Spatial grid size mismatch on axis $d for task $(k)! Tensor assignment will fail."
             end
         end
         
@@ -303,15 +308,26 @@ function create_method_plot_data(
         if sim_data isa ESimData
             slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
             
-            for (sk, sv) in sim_data.scalars; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data); end
-            for (sk, sv) in sim_data.series; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data); end
-            for (sk, sv) in sim_data.profiles; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data); end
-            for (sk, sv) in sim_data.fields; slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data); end
+            # THE FIX: Added `haskey(data_store, sk)` safety checks.
+            # If a specific simulation outputs a field that the global template didn't have, 
+            # it safely skips it instead of throwing a KeyError!
+            for (sk, sv) in sim_data.scalars
+                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data)
+            end
+            for (sk, sv) in sim_data.series
+                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data)
+            end
+            for (sk, sv) in sim_data.profiles
+                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data)
+            end
+            for (sk, sv) in sim_data.fields
+                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
+            end
         end
     end
 
     return UnifiedPlotData{ndims(data_store["u"])}(
-        data_store, active_keys, active_values, first_data.t, fixed_params
+        data_store, active_keys, active_values, template_data.t, fixed_params
     )
 end
 

@@ -289,10 +289,8 @@ function runAllSimulations(
                     )
                 end
                 if convert_eulerian && (sim_data isa LSimData)
-                    N_grid = _LAGRANGE_N_GRID[]
-                    # THE FIX: Interpolate Eulerian conversion strictly to the global time sequence
-                    conv_data = convert_to_eulerian(sim_data, N_grid; target_t=target_t)
-                    saveSimData(conv_data; data_key="sim_data_plot_$(N_grid)", overwrite=true)
+                    conv_data = convert_to_eulerian(sim_data)
+                    saveSimData(conv_data; data_key="sim_data_plot_$(_N_GRID[])_$(_T_GRID[])", overwrite=true)
                 end
             end
         end

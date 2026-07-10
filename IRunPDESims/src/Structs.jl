@@ -7,12 +7,14 @@ const FixedDict = ParamDict
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _SIM_ROOT_PATH = Ref{String}(pwd())
-const _LAGRANGE_N_GRID = Ref{Int}(100)
-const _REFERENCE_RESOLUTION = Ref{Int}(500)
+const _N_GRID = Ref{Int}(100)
+const _T_GRID = Ref{Int}(100) # THE NEW FIX: Global Time Resolution
+const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
-set_lagrange_resolution!(n::Int) = (_LAGRANGE_N_GRID[] = n)
-set_reference_resolution!(n::Int) = (_REFERENCE_RESOLUTION[] = n)
+set_space_resolution!(n::Int) = (_N_GRID[] = n)
+set_time_resolution!(n::Int) = (_T_GRID[] = n)
+set_reference_resolution!(n::Int) = (_REF_GRID[] = n)
 set_sim_path!(path::String) = (_SIM_ROOT_PATH[] = path)
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 
@@ -48,7 +50,9 @@ function NoSimData(D::Int=0)
     return NoSimData{D}(Dict(), Dict(), Dict(), Dict())
 end
 
+# ==============================================================================
 # --- 2. D-Dimensional Data Structures ---
+# ==============================================================================
 
 """
     ESimData{D}
@@ -61,6 +65,12 @@ struct ESimData{D} <: AbstractSimData{D}
     x::NTuple{D, Vector{Float64}}  # ONLY stores the 1D coordinate axes!
     u::Array{Float64}              # [Component, Space..., Time]
     t::Vector{Float64}
+    
+    # --- THE FIX: Explicit Domain Boundaries ---
+    xmins::NTuple{D, Float64}
+    xmaxs::NTuple{D, Float64}
+    tmin::Float64
+    tmax::Float64
 
     scalars::Dict{String, Float64} 
     series::Dict{String, Matrix{Float64}} 
@@ -79,6 +89,12 @@ struct LSimData{D, M} <: AbstractSimData{D}
     x::Vector{Vector{SVector{D, Float64}}} # Time -> Particles -> Space
     u::Vector{Vector{SVector{M, Float64}}} # Time -> Particles -> Components
     t::Vector{Float64}
+
+    # --- THE FIX: Explicit Domain Boundaries ---
+    xmins::NTuple{D, Float64}
+    xmaxs::NTuple{D, Float64}
+    tmin::Float64
+    tmax::Float64
 
     # The strongly typed stat dictionaries
     scalars::Dict{String, Float64} 

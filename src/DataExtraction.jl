@@ -76,7 +76,6 @@ function get_base_dim_idx(pd::UnifiedPlotData, key::Union{String, Nothing}, dim_
         return isempty(varying) ? 1 : varying[1]
     end
 end
-
 # --- 1D Data Extraction ---
 function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, z_key, u_key, ::Val{1})
     dim_names = manager.plot_vars
@@ -91,21 +90,14 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         (isnothing(x_tensor) || isnothing(u_tensor)) && continue
         
         des_idx = _get_desired_indices(pd, (slice_dim_idx,), sel_vals)
-        n_params = length(pd.active_param_keys)
-        # Force orthogonal dimensions (dims > n_params) to index 1 to avoid NaN padding
-        safe_x = map(i -> i == slice_dim_idx ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
-        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        
+        # Simplified Slicing: Only extract the target dimension
+        safe_x = map(i -> i == slice_dim_idx ? (:) : 1, 1:ndims(x_tensor))
+        safe_u = map(i -> i == slice_dim_idx ? (:) : (des_idx[i] isa Colon ? 1 : min(des_idx[i], size(u_tensor, i))), 1:ndims(u_tensor))
         
         try
-            x_val = x_tensor[safe_x...]
-            u_val = u_tensor[safe_u...]
-            x_vec = x_val isa AbstractVector ? vec(x_val) : [Float64(x_val)]
-            u_vec = u_val isa AbstractVector ? vec(u_val) : [Float64(u_val)]
-            
-            # THE FIX: Broadcast flat scalars into vectors (e.g. for plotting y vs x)
-            len = max(length(x_vec), length(u_vec))
-            if length(x_vec) == 1 && len > 1; x_vec = fill(x_vec[1], len); end
-            if length(u_vec) == 1 && len > 1; u_vec = fill(u_vec[1], len); end
+            x_vec = vec(x_tensor[safe_x...])
+            u_vec = vec(u_tensor[safe_u...])
             
             valid_idx = .!(isnan.(x_vec)) .& .!(isnan.(u_vec))
             x_vec = x_vec[valid_idx]
@@ -120,7 +112,6 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
     title_str = generate_dynamic_title(slice_dim_idx, dim_names, sel_vals)
     return (xs, us), valid_labels, title_str
 end
-
 # --- 2D Data Extraction ---
 function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, z_key, u_key, ::Val{2})
     dim_names = manager.plot_vars
@@ -136,33 +127,34 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         (isnothing(x_tensor) || isnothing(y_tensor) || isnothing(u_tensor)) && continue
         
         des_idx = _get_desired_indices(pd, (dim1, dim2), sel_vals)
-        n_params = length(pd.active_param_keys)
-        safe_x = map(i -> i == dim1 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
-        safe_y = map(i -> i == dim2 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i)))), 1:ndims(y_tensor))
-        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        
+        safe_x = map(i -> i == dim1 ? (:) : 1, 1:ndims(x_tensor))
+        safe_y = map(i -> i == dim2 ? (:) : 1, 1:ndims(y_tensor))
+        
+        # THE FIX: Use `idx:idx` to prevent Julia from dropping the dimension!
+        safe_u = map(1:ndims(u_tensor)) do i
+            if i == dim1 || i == dim2
+                return (:)
+            else
+                idx = des_idx[i] isa Colon ? 1 : min(des_idx[i], size(u_tensor, i))
+                return idx:idx 
+            end
+        end
         
         try
-            x_val = x_tensor[safe_x...]; y_val = y_tensor[safe_y...]
-            x_vec = x_val isa AbstractVector ? vec(x_val) : [Float64(x_val)]
-            y_vec = y_val isa AbstractVector ? vec(y_val) : [Float64(y_val)]
-            
+            x_vec = vec(x_tensor[safe_x...])
+            y_vec = vec(y_tensor[safe_y...])
             Nx, Ny = length(x_vec), length(y_vec)
-            u_raw = u_tensor[safe_u...]
             
-            # THE FIX: Robust 2D Broadcasting Matrix
-            if length(u_raw) == 1
-                u_mat = fill(Float64(u_raw[1]), Nx, Ny)
-            elseif length(u_raw) == Nx && length(u_raw) == Ny && dim1 == dim2
+            u_raw = u_tensor[safe_u...] # Now guaranteed to have ndims(u_tensor) dimensions
+            
+            if dim1 == dim2
                 u_mat = repeat(vec(u_raw), 1, Ny)
-            elseif length(u_raw) == Nx * Ny
-                u_mat = reshape([u_raw...], Nx, Ny)
-                if dim1 > dim2; u_mat = transpose(u_mat) |> collect; end 
-            elseif length(u_raw) == Nx
-                u_mat = repeat(vec(u_raw), 1, Ny)
-            elseif length(u_raw) == Ny
-                u_mat = repeat(reshape(vec(u_raw), 1, Ny), Nx, 1)
             else
-                u_mat = fill(NaN, Nx, Ny)
+                other_dims = setdiff(1:ndims(u_tensor), [dim1, dim2])
+                perm = [dim1, dim2, other_dims...]
+                u_permuted = permutedims(u_raw, perm)
+                u_mat = reshape(u_permuted, Nx, Ny)
             end
             
             push!(xs, x_vec); push!(ys, y_vec); push!(us, u_mat); push!(valid_labels, m_name)
@@ -188,30 +180,37 @@ function extract_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, 
         (isnothing(x_tensor) || isnothing(y_tensor) || isnothing(z_tensor) || isnothing(u_tensor)) && continue
         
         des_idx = _get_desired_indices(pd, (dim1, dim2, dim3), sel_vals)
-        n_params = length(pd.active_param_keys)
-        safe_x = map(i -> i == dim1 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(x_tensor, i)))), 1:ndims(x_tensor))
-        safe_y = map(i -> i == dim2 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(y_tensor, i)))), 1:ndims(y_tensor))
-        safe_z = map(i -> i == dim3 ? (:) : (des_idx[i] isa Colon ? 1 : (i > n_params ? 1 : min(des_idx[i], size(z_tensor, i)))), 1:ndims(z_tensor))
-        safe_u = map(i -> des_idx[i] isa Colon ? (:) : min(des_idx[i], size(u_tensor, i)), 1:ndims(u_tensor))
+        
+        safe_x = map(i -> i == dim1 ? (:) : 1, 1:ndims(x_tensor))
+        safe_y = map(i -> i == dim2 ? (:) : 1, 1:ndims(y_tensor))
+        safe_z = map(i -> i == dim3 ? (:) : 1, 1:ndims(z_tensor))
+        
+        # THE FIX: Apply `idx:idx` here as well
+        safe_u = map(1:ndims(u_tensor)) do i
+            if i == dim1 || i == dim2 || i == dim3
+                return (:)
+            else
+                idx = des_idx[i] isa Colon ? 1 : min(des_idx[i], size(u_tensor, i))
+                return idx:idx
+            end
+        end
         
         try
-            x_val = x_tensor[safe_x...]; y_val = y_tensor[safe_y...]; z_val = z_tensor[safe_z...]
-            x_vec = x_val isa AbstractVector ? vec(x_val) : [Float64(x_val)]
-            y_vec = y_val isa AbstractVector ? vec(y_val) : [Float64(y_val)]
-            z_vec = z_val isa AbstractVector ? vec(z_val) : [Float64(z_val)]
-            
+            x_vec = vec(x_tensor[safe_x...])
+            y_vec = vec(y_tensor[safe_y...])
+            z_vec = vec(z_tensor[safe_z...])
             Nx, Ny, Nz = length(x_vec), length(y_vec), length(z_vec)
+            
             u_raw = u_tensor[safe_u...]
             
-            if length(u_raw) == 1
-                u_mat = fill(Float64(u_raw[1]), Nx, Ny, Nz)
-            elseif length(u_raw) == Nx * Ny * Nz
-                u_mat = reshape([u_raw...], Nx, Ny, Nz)
-                s_dims = sort([dim1, dim2, dim3])
-                t_order = [findfirst(==(dim1), s_dims), findfirst(==(dim2), s_dims), findfirst(==(dim3), s_dims)]
-                if t_order != [1, 2, 3] && ndims(u_mat) == 3; u_mat = permutedims(u_mat, t_order); end
-            else
+            unique_dims = unique([dim1, dim2, dim3])
+            if length(unique_dims) < 3
                 u_mat = fill(NaN, Nx, Ny, Nz)
+            else
+                other_dims = setdiff(1:ndims(u_tensor), [dim1, dim2, dim3])
+                perm = [dim1, dim2, dim3, other_dims...]
+                u_permuted = permutedims(u_raw, perm)
+                u_mat = reshape(u_permuted, Nx, Ny, Nz)
             end
             
             push!(xs, x_vec); push!(ys, y_vec); push!(zs, z_vec)

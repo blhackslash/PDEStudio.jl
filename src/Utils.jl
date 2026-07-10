@@ -164,37 +164,36 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
-function generate_reference_simdata(ref_func::Function, params::ParamDict, target_t::Vector{Float64})
-    N = _REFERENCE_RESOLUTION[]
+function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::AbstractSimData)
+    N = _REF_GRID[]
+    T = _T_GRID[] # Use the global time resolution!
     
-    # 1. Extract physical bounds directly from parameters (Strict requires)
-    xmin = params["mins"]
-    xmax = params["maxs"]
-    
-    # Determine dimensionality based on the type of xmin
-    D = length(xmin)
+    # 1. Extract physical bounds directly from the TEMPLATE DATA!
+    # This guarantees perfect alignment with the numerical simulation domains.
+    D = length(template_data.xmins)
+    xmins = template_data.xmins
+    xmaxs = template_data.xmaxs
+    tmin = template_data.tmin
+    tmax = template_data.tmax
     
     # 2. Build the high-res spatial axes
     axes_list = ntuple(D) do d
-        min_val = Float64(xmin[d])
-        max_val = Float64(xmax[d])
-        collect(range(min_val, max_val, length=N))
+        collect(range(xmins[d], xmaxs[d], length=N))
     end
     
-    # THE FIX: Use the data-driven target time vector! (Fallback to [0,1] if purely analytical setup)
-    t_vec = isempty(target_t) ? [0.0, 1.0] : target_t
-    T = length(t_vec)
+    # 3. Build the high-res time vector
+    t_vec = collect(range(tmin, tmax, length=T))
     
-    # Evaluate one point to find the number of components (C)
+    # 4. Evaluate one point to find the number of components (C)
     sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
     sample_val = ref_func(sample_pos, t_vec[1])
     C = length(sample_val)
     
-    # 4. Allocate the dense tensor
+    # 5. Allocate the dense tensor
     grid_shape = ntuple(d -> N, D)
     u_exact = zeros(Float64, C, grid_shape..., T)
     
-    # 5. Evaluate the exact function on the fly
+    # 6. Evaluate the exact function on the fly
     Threads.@threads for t_idx in 1:T
         t = t_vec[t_idx]
         for idx in CartesianIndices(grid_shape)
@@ -207,8 +206,13 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, targe
         end
     end
     
-    # Create the lightweight ESimData that exists ONLY in RAM
-    ram_data = ESimData{D}(params, axes_list, u_exact, t_vec, Dict(), Dict(), Dict(), Dict())
+    # 7. Create the lightweight ESimData that exists ONLY in RAM
+    # THE FIX: Add the xmins, xmaxs, tmin, tmax fields to match the new struct!
+    ram_data = ESimData{D}(
+        params, axes_list, u_exact, t_vec, 
+        xmins, xmaxs, tmin, tmax, 
+        Dict(), Dict(), Dict(), Dict()
+    )
     
     # Calculate baseline stats instantly without touching the hard drive!
     IRunPDESims._calculate_stats!(Val(:series), ram_data, ram_data.x, ram_data.u, ref_func)
@@ -303,7 +307,6 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
             if !isnothing(idx)
                 widget.i_selected[] = idx
                 notify(widget.selection)
-                println(k,": idx_found:",idx)
             else
                 # THE FIX: Force inject the option so it survives the reactive cascade!
                 if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
@@ -315,7 +318,6 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
                     push!(new_opts, val)
                     widget.options[] = new_opts
                 end
-                println(k, ": ",widget.selection[])
                 widget.i_selected[] = length(widget.options[])
                 notify(widget.selection)
             end
