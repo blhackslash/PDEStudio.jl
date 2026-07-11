@@ -96,25 +96,35 @@ end
 
 # --- Plotting Data Structure ---
 
+# ==============================================================================
+# --- PLOT DATA STRUCTURES ---
+# ==============================================================================
+abstract type AbstractPlotData end
+
 """
-    UnifiedPlotData
-The cached tensor ready for plotting.
-It contains the subset of data where specific parameters are fixed.
-Tensor Shape: [Component, ActiveParam1, ActiveParam2, ..., Space, Time]
+    EulerianPlotData{N}
+Stores dense, N-dimensional matrices representing perfectly orthogonal grids 
+for heatmap, surface, and contour rendering.
 """
-struct UnifiedPlotData{N}
-    # The Tensor Dictionary
-    # Keys: "u", "x", "mass", etc.
+struct EulerianPlotData{N} <: AbstractPlotData
     data::Dict{String, Array{Float64, N}}
-    
-    # Metadata for Axes
-    active_param_keys::Vector{String}       # Names of P1, P2...
-    active_param_values::Vector{Vector{Any}} # Values of P1, P2...
-    
+    active_param_keys::Vector{String}
+    active_param_values::Vector{Vector{Any}}
     t_vals::Vector{Float64}
-    
-    # Snapshot of the configuration used to create this
-    fixed_params::FixedDict 
+    fixed_params::FixedDict
+end
+
+"""
+    LagrangianPlotData{N}
+Stores raw, unstructured particle data mapped to the parameter grid. 
+N is the number of varied parameters.
+"""
+struct LagrangianPlotData{N} <: AbstractPlotData
+    data::Array{Any, N} # Holds the raw LSimData objects!
+    active_param_keys::Vector{String}
+    active_param_values::Vector{Vector{Any}}
+    t_vals::Vector{Float64}
+    fixed_params::FixedDict
 end
 
 # ==============================================================================

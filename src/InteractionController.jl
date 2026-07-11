@@ -3,18 +3,26 @@
 # ==============================================================================
 # This file contains ONLY the reactive logic connecting the UI to the Data.
 
-function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
+function setup_common_interactions!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
     _setup_run_and_drop_interactions!(master_fig, manager)
-    _setup_overwrite_interactions!(manager, plot_data_obs)
+    _setup_method_interactions!(manager)
     _setup_hierarchy_interactions!(manager)
     _setup_export_interactions!(master_fig, plot_layout, manager, plot_data_obs)
-    _setup_data_sync_interactions!(manager, plot_data_obs)
     
-    # Kick off the cascade and FORCE Makie to listen
     manager.widgets["Editor_Cat"].i_selected[] = 1
     notify(manager.widgets["Editor_Cat"].selection)
-    
     notify(manager.methods)
+end
+
+function setup_eulerian_interactions!(manager::PlotManager, plot_data_obs::Observable)
+    @info "Initializing Eulerian Interaction Pipeline..."
+    _setup_overwrite_interactions!(manager, plot_data_obs)
+    _setup_eulerian_data_sync!(manager, plot_data_obs)
+end
+
+function setup_lagrangian_interactions!(manager::PlotManager, plot_data_obs::Observable)
+    @info "Initializing Lagrangian Interaction Pipeline..."
+    _setup_lagrangian_data_sync!(manager, plot_data_obs)
 end
 
 function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotManager)
@@ -40,28 +48,68 @@ function _setup_run_and_drop_interactions!(master_fig::Figure, manager::PlotMana
         manager.triggers["Simulation_Update"][] += 1
     end
 end
-function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Observable)
-    menu_var = manager.widgets["Overwrite_Var"]
-    tb_val   = manager.widgets["Overwrite_Text"]
+# ==============================================================================
+# --- SPLIT: METHOD & OVERWRITE LISTENERS ---
+# ==============================================================================
+
+function _setup_method_interactions!(manager::PlotManager)
     mode_btn = manager.widgets["Mode_Button"]
     menu_mth = manager.widgets["Method_Toggle"]
-    
     is_activate_mode = manager.state["Is_Activate_Mode"]
     
-    # -------------------------------------------------------------------------
-    # STAGED METHODS STATE: Decouples UI selection from simulation execution
-    # -------------------------------------------------------------------------
     if !haskey(manager.state, "Staged_Methods")
         manager.state["Staged_Methods"] = Observable(copy(manager.methods[]))
     end
     staged_methods = manager.state["Staged_Methods"]
 
-    # Keep staging in sync if a completely new CSV config is loaded
     on(manager.methods) do active_methods
         staged_methods[] = copy(active_methods)
     end
 
-    # Variable Overwrite Dynamic Options Sync
+    onany(staged_methods, is_activate_mode) do staged, activate_mode
+        @with_lock manager "Menu_Sync" begin
+            raw_method_names = filter(k -> k != "shared", collect(keys(manager.simulation)))
+            all_method_names = sort_methods_robust(raw_method_names)
+            opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
+            
+            new_opts = isempty(opts) ? [("Methods...","-")] : [("Methods...","-"); sort(opts)]
+            update_menu_safe!(menu_mth, new_opts)
+        end
+    end
+
+    on(mode_btn.clicks) do _
+        is_activate_mode[] = !is_activate_mode[]
+        mode_btn.label[] = is_activate_mode[] ? "Mode: Activate" : "Mode: Deact."
+        mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
+    end
+
+    on(menu_mth.selection) do sel
+        (isnothing(sel) || sel == "-") && return
+        
+        new_staged = copy(staged_methods[])
+        if is_activate_mode[]
+            if !(sel in new_staged)
+                push!(new_staged, sel)
+                new_staged = sort_methods_robust(new_staged) 
+            end
+        else
+            filter!(x -> x != sel, new_staged)
+        end
+        staged_methods[] = new_staged
+    end
+
+    on(manager.widgets["Method_Apply"].clicks) do _
+        if sort(manager.methods[]) != sort(staged_methods[])
+            manager.methods[] = copy(staged_methods[])
+            manager.triggers["Simulation_Update"][] += 1
+        end
+    end
+end
+
+function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Observable)
+    menu_var = manager.widgets["Overwrite_Var"]
+    tb_val   = manager.widgets["Overwrite_Text"]
+
     onany(plot_data_obs, manager.methods) do plot_data_dict, active_methods
         isempty(plot_data_dict) && return
         
@@ -86,16 +134,12 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
                 push!(valid_base_names, name)
             end
         end
-        
         update_menu_safe!(menu_var, valid_base_names)
     end
 
-    # =========================================================================
-    # APPLY BUTTON: Dimension Overwrites 
-    # =========================================================================
     on(manager.widgets["Overwrite_Apply"].clicks) do _
         var_name = menu_var.selection[]
-        input_str = tb_val.stored_string.val # Safely pull the text on click
+        input_str = tb_val.stored_string.val 
         
         if isnothing(var_name) || var_name == "-" || isempty(input_str)
             @warn "Overwrite Error: Please select a variable and provide an input."
@@ -129,56 +173,6 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         Makie.reset!(tb_val)
         
         manager.triggers["Simulation_Update"][] += 1
-    end
-
-    # =========================================================================
-    # APPLY BUTTON: Methods Toggle 
-    # =========================================================================
-    onany(staged_methods, is_activate_mode) do staged, activate_mode
-        @with_lock manager "Menu_Sync" begin
-            raw_method_names = filter(k -> k != "shared", collect(keys(manager.simulation)))
-            all_method_names = sort_methods_robust(raw_method_names)
-            opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
-            
-            # ALWAYS provide a default "-" dash at index 1
-            new_opts = isempty(opts) ? [("Methods...","-")] : [("Methods...","-"); sort(opts)]
-            
-            update_menu_safe!(menu_mth, new_opts)
-        end
-    end
-
-    on(mode_btn.clicks) do _
-        is_activate_mode[] = !is_activate_mode[]
-        mode_btn.label[] = is_activate_mode[] ? "Mode: Activate" : "Mode: Deact."
-        mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
-    end
-
-    on(menu_mth.selection) do sel
-        # THE FIX: Ignore empty selections and the default dash!
-        (isnothing(sel) || sel == "-") && return
-        
-        # THE FIX: We calculate the new state OUTSIDE of a lock so the 
-        # downstream listener is allowed to acquire "Menu_Sync" and update the UI!
-        new_staged = copy(staged_methods[])
-        if is_activate_mode[]
-            if !(sel in new_staged)
-                push!(new_staged, sel)
-                new_staged = sort_methods_robust(new_staged) 
-            end
-        else
-            filter!(x -> x != sel, new_staged)
-        end
-        
-        # Triggers the onany(staged_methods) listener naturally
-        staged_methods[] = new_staged
-    end
-
-    # Only fire the simulation when Apply is explicitly clicked!
-    on(manager.widgets["Method_Apply"].clicks) do _
-        if sort(manager.methods[]) != sort(staged_methods[])
-            manager.methods[] = copy(staged_methods[])
-            manager.triggers["Simulation_Update"][] += 1
-        end
     end
 end
 
@@ -310,13 +304,6 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
                 end
             end
         end
-    end
-
-    on(manager.widgets["Editor_Reset"].clicks) do _
-        obs = active_target_obs[]
-        isnothing(obs) && return
-        tb.stored_string[] = "default" 
-        tb.displayed_string[] = "default"
     end
 end
 
@@ -579,7 +566,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 end
 
-function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Observable)
+function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observable)
     w = manager.widgets
     x_sel = w["X-Axis"].selection
     y_sel = w["Y-Axis"].selection
@@ -858,6 +845,166 @@ function _setup_data_sync_interactions!(manager::PlotManager, plot_data_obs::Obs
                 GLOBAL_UI_OVERWRITE[] = Dict{String, Any}()
             end
             
+            manager.state["Config_Just_Loaded"].val = false
+        end
+    end
+    # =========================================================================
+    # LAGRANGIAN GATEKEEPER LOGIC
+    # =========================================================================
+    on(manager.widgets["Data_Mode_Button"].clicks) do _
+        current_mode = manager.state["Data_Mode"]
+        new_mode = current_mode[] == :eulerian ? :lagrangian : :eulerian
+        current_mode[] = new_mode
+        
+        btn = manager.widgets["Data_Mode_Button"]
+        btn.label[] = new_mode == :eulerian ? "Mode: Eulerian" : "Mode: Lagrangian"
+        btn.buttoncolor[] = new_mode == :eulerian ? :lightgray : :lightblue
+        
+        if new_mode == :lagrangian
+            @info "Switching to Lagrangian Mode. Locking spatial axes..."
+            
+            # 1. Lock the Base Plot to Scatter logic
+            update_menu_safe!(manager.widgets["Base_Plot"], ["Scatter"]; fallbacks=["Scatter"], force_notify=true)
+            
+            # 2. Hard-lock the spatial axes (Data Extraction will handle 1D vs 2D vs 3D)
+            update_menu_safe!(manager.widgets["X-Axis"], ["x"]; fallbacks=["x"])
+            update_menu_safe!(manager.widgets["Y-Axis"], ["y", "disabled"]; fallbacks=["y", "disabled"])
+            update_menu_safe!(manager.widgets["Z-Axis"], ["z", "disabled"]; fallbacks=["z", "disabled"])
+            
+            # 3. Disable Animation Target for Space
+            anim_menu = manager.widgets["Anim_Target"]
+            if anim_menu.selection[] in ["x", "y", "z"]
+                update_menu_safe!(anim_menu, anim_menu.options[]; fallbacks=["None"], force_notify=true)
+            end
+        else
+            @info "Switching to Eulerian Mode. Rebuilding dense grids..."
+            # Triggering a full update will naturally unlock the menus via your existing sync logic!
+        end
+        
+        # Fire the simulation update to completely rebuild the PlotData dictionaries!
+        manager.triggers["Simulation_Update"][] += 1
+    end
+end
+
+# ==============================================================================
+# --- LAGRANGIAN PIPELINE SPECIFICS ---
+# ==============================================================================
+function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Observable)
+    w = manager.widgets
+    active_axes_obs = manager.state["Active_Axes"]
+    
+    # 1. Lock the UI Menus and Populate U-Axis / Components
+    onany(plot_data_obs) do plot_data_dict
+        isempty(plot_data_dict) && return
+        
+        pd_first = first(values(plot_data_dict))
+        l_data = pd_first.data[1] # Grab the first raw LSimData run
+        n_params = length(pd_first.active_param_keys)
+        dim_names = manager.plot_vars
+        
+        update_menu_safe!(w["Base_Plot"], ["Scatter"]; fallbacks=["Scatter"], force_notify=false)
+        update_menu_safe!(w["X-Axis"], ["x"]; fallbacks=["x"])
+        update_menu_safe!(w["Y-Axis"], ["y", "disabled"]; fallbacks=["y", "disabled"])
+        update_menu_safe!(w["Z-Axis"], ["z", "disabled"]; fallbacks=["z", "disabled"])
+        
+        # --- THE FIX: POPULATE U-AXIS ---
+        valid_fields = ["u"]
+        if haskey(l_data.fields, "v"); push!(valid_fields, "v"); end
+        if haskey(l_data.fields, "rho"); push!(valid_fields, "rho"); end
+        if haskey(l_data.fields, "p"); push!(valid_fields, "p"); end
+        append!(valid_fields, keys(l_data.fields))
+        append!(valid_fields, keys(l_data.profiles))
+        unique!(valid_fields); sort!(valid_fields)
+        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u"], force_notify=false)
+        
+        # --- THE FIX: POPULATE COMPONENTS ---
+        comp_max = length(l_data.u[1][1])
+        comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+        c_options = Any[]
+        for i in 1:comp_max
+            name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
+            push!(c_options, (name, string(i)))
+        end
+        update_menu_safe!(w["c"], c_options; fallbacks=["1"], force_notify=false)
+
+        # --- THE FIX: SYNC ACTIVE AXES STATE ---
+        axes_set = Set{Int}()
+        push!(axes_set, n_params + 2) # X is always active
+        if w["Y-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 3); end
+        if w["Z-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 4); end
+        
+        active_axes_obs.val = collect(axes_set)
+        if !manager.state["Config_Just_Loaded"][]
+            notify(active_axes_obs)
+        end
+
+        # In Lagrangian, you can ONLY animate parameters, not space!
+        anim_options = Any[("None", "None")]
+        for i in 1:n_params
+            if length(pd_first.active_param_values[i]) > 1
+                push!(anim_options, (nice_string(dim_names[i]), dim_names[i]))
+            end
+        end
+        update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
+    end
+    
+    # 2. Sync Parameter & Time Sliders (Ignore Spatial Bounds)
+    onany(plot_data_obs) do plot_data_dict
+        isempty(plot_data_dict) && return
+
+        dim_names = manager.plot_vars
+        total_dims = length(dim_names)
+        n_params = total_dims - 5
+        
+        for i in 1:total_dims
+            if i == n_params + 1; continue end
+            # Skip spatial axes
+            if i in (n_params + 2, n_params + 3, n_params + 4)
+                widget_key = dim_names[i]
+                if haskey(w, widget_key)
+                    w[widget_key].range[] = [0.0]
+                end
+                continue
+            end
+            
+            g_min, g_max = Inf, -Inf
+            for pd in values(plot_data_dict)
+                vals = i <= n_params ? pd.active_param_values[i] : pd.t_vals
+               
+                if !isnothing(vals) && !isempty(vals)
+                    l, h = extrema(vals)
+                    if l < g_min; g_min = l; end
+                    if h > g_max; g_max = h; end
+                end
+            end
+            
+            if isinf(g_min); g_min = 0.0; g_max = 1.0; end
+            
+            widget_key = dim_names[i]
+            if i <= n_params
+                widget_key = haskey(manager.state["Reverse_Map"][], dim_names[i]) ? manager.state["Reverse_Map"][][dim_names[i]] : "param_$i"
+            end
+            
+            if haskey(w, widget_key)
+                ctrl = w[widget_key]
+                if i <= n_params
+                    all_vals = Float64[]
+                    for pd in values(plot_data_dict)
+                        append!(all_vals, pd.active_param_values[i])
+                    end
+                    ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
+                    set_close_to!(ctrl, ctrl.value[])
+                else # Time slider
+                    ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                    set_close_to!(ctrl, ctrl.value[])
+                end
+            end
+        end
+        
+        # Cleanup
+        if manager.state["Config_Just_Loaded"][]
+            opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
+            apply_scene_options!(manager, opts)
             manager.state["Config_Just_Loaded"].val = false
         end
     end

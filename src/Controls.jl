@@ -14,26 +14,32 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     drop_layout = layout[current_row, 1] = GridLayout() 
     drop_box = Box(drop_layout[1, 1], color=:lightgray, width=450, strokecolor=:gray, strokewidth=2, cornerradius=10, height=80)
     drop_label = Label(drop_layout[1, 1], "Drag & Drop CSV Here", halign=:center, valign=:center, color=RGBAf(0.3, 0.3, 0.3, 1.0))
-    
     manager.widgets["Drop_Box"]   = drop_box
     manager.widgets["Drop_Label"] = drop_label
     current_row += 1
 
     # --- 2. HIERARCHICAL EDITOR ---
-    Label(layout[current_row, 1], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
-    current_row += 1
     param_nav_layout = layout[current_row, 1] = GridLayout()
     create_hierarchical_param_controls!(param_nav_layout, manager)
     current_row += 1
     
-    # --- 3. OVERWRITES & METHODS ---
-    Label(layout[current_row, 1], "Dimension Overwrites & Methods", fontsize=16, font=:bold, color=:darkred)
+    # --- 3. METHODS ---
+    Label(layout[current_row, 1], "Active Methods", fontsize=16, font=:bold, color=:darkred)
     current_row += 1
-    lock_layout = layout[current_row, 1] = GridLayout()
-    create_base_overwrite_controls!(lock_layout, manager) 
+    method_layout = layout[current_row, 1] = GridLayout()
+    create_method_controls!(method_layout, manager) 
     current_row += 1
+
+    # --- 4. OVERWRITES (Eulerian ONLY) ---
+    if manager.state["Data_Mode"][] == :eulerian
+        Label(layout[current_row, 1], "Dimension Overwrites", fontsize=16, font=:bold, color=:darkred)
+        current_row += 1
+        lock_layout = layout[current_row, 1] = GridLayout()
+        create_overwrite_controls!(lock_layout, manager) 
+        current_row += 1
+    end
     
-    # --- 4. STATIC PLOT CONTROLS ---
+    # --- 5. STATIC PLOT CONTROLS ---
     menu_area = layout[current_row, 1] = GridLayout()
     current_row += 1
     slider_area = layout[current_row, 1] = GridLayout()
@@ -44,6 +50,27 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     createExportOptions!(export_layout, manager)
 end
 
+function create_method_controls!(layout::GridLayout, manager::PlotManager)
+    manager.widgets["Mode_Button"]     = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
+    manager.widgets["Method_Toggle"]   = Menu(layout[1, 2:3], options = ["Methods..."], prompt = "Methods...")
+    manager.widgets["Method_Apply"]    = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
+
+    colsize!(layout, 1, Relative(0.25))
+    colsize!(layout, 2, Relative(0.25))
+    colsize!(layout, 3, Relative(0.25))
+    colsize!(layout, 4, Relative(0.25))
+end
+
+function create_overwrite_controls!(layout::GridLayout, manager::PlotManager)
+    manager.widgets["Overwrite_Var"]   = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
+    manager.widgets["Overwrite_Text"]  = Textbox(layout[1, 2:3], placeholder = "Val / 'default'", width = nothing) 
+    manager.widgets["Overwrite_Apply"] = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width = nothing)
+
+    colsize!(layout, 1, Relative(0.25))
+    colsize!(layout, 2, Relative(0.25))
+    colsize!(layout, 3, Relative(0.25))
+    colsize!(layout, 4, Relative(0.25))
+end
 # ==============================================================================
 # --- 2. STATIC PLOT CONTROLS BUILDER ---
 # ==============================================================================
@@ -175,43 +202,32 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 end
 
 # ==============================================================================
-# --- 3. DIMENSION OVERWRITES BUILDER ---
-# ==============================================================================
-function create_base_overwrite_controls!(layout::GridLayout, manager::PlotManager)
-    # Row 1: Overwrites
-    manager.widgets["Overwrite_Var"]   = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
-    manager.widgets["Overwrite_Text"]  = Textbox(layout[1, 2:3], placeholder = "Val / 'default'", width = nothing) 
-    manager.widgets["Overwrite_Apply"] = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width = nothing)
-
-    # Row 2: Methods
-    manager.widgets["Mode_Button"]     = Button(layout[2, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
-    manager.widgets["Method_Toggle"]   = Menu(layout[2, 2:3], options = ["Methods..."], prompt = "Methods...")
-    manager.widgets["Method_Apply"]    = Button(layout[2, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
-
-    colsize!(layout, 1, Relative(0.25))
-    colsize!(layout, 2, Relative(0.25))
-    colsize!(layout, 3, Relative(0.25))
-    colsize!(layout, 4, Relative(0.25))
-end
-
-# ==============================================================================
 # --- 4. HIERARCHICAL EDITOR BUILDER ---
 # ==============================================================================
 function create_hierarchical_param_controls!(layout::GridLayout, manager::PlotManager)
-    manager.widgets["Editor_Cat"]   = Menu(layout[1, 1], options = ["Simulation", "UI"], prompt = "Category...", width=nothing)
-    manager.widgets["Editor_Scope"] = Menu(layout[1, 2], options = ["-"], default = "-", prompt = "Scope...", width=nothing)
-    manager.widgets["Editor_Key"]   = Menu(layout[1, 3], options = ["-"], default = "-", prompt = "Key...", width=nothing)
+    # 1. Initialize the state observable for the data pipeline
+    if !haskey(manager.state, "Data_Mode")
+        manager.state["Data_Mode"] = Observable(:eulerian)
+    end
+
+    # THE FIX: Use `layout[...]` to correctly assign Makie Parents instead of `fig`!
     
-    colsize!(layout, 1, Relative(1/3)); colsize!(layout, 2, Relative(1/3)); colsize!(layout, 3, Relative(1/3))
+    # Row 1: Top Execution Controls (No Header above them)
+    manager.widgets["Data_Mode_Button"] = Button(layout[1, 1:2], label="Mode: Eulerian", buttoncolor=:lightgray, width = nothing)
+    manager.widgets["Run_Button"]       = Button(layout[1, 3:4], label="Run Sim", buttoncolor=:lightgreen, width = nothing)
     
-    btn_layout = layout[2, 1:3] = GridLayout()
-    manager.widgets["Editor_Toggle"] = Button(btn_layout[1, 1], label="Toggle", buttoncolor=:lightgray, width=nothing)
-    manager.widgets["Editor_Reset"]  = Button(btn_layout[1, 2], label="Reset", buttoncolor=:lightcoral, width=nothing)
-    manager.widgets["Run_Button"]    = Button(btn_layout[1, 3], label="Run Sim", buttoncolor=:lightgray, width=nothing) 
+    # Row 2: The Header (Positioned perfectly between the execution controls and the dropdowns)
+    Label(layout[2, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     
-    colsize!(btn_layout, 1, Relative(1/3)); colsize!(btn_layout, 2, Relative(1/3)); colsize!(btn_layout, 3, Relative(1/3))
+    # Row 3: The 3 Dropdowns (Nested to divide 3 items evenly across the row)
+    drop_gl = layout[3, 1:4] = GridLayout()
+    manager.widgets["Editor_Cat"]   = Menu(drop_gl[1, 1], options=["Simulation", "UI", "Config", "Scene", "Layout"], prompt="Category")
+    manager.widgets["Editor_Scope"] = Menu(drop_gl[1, 2], options=["-"], prompt="Scope")
+    manager.widgets["Editor_Key"]   = Menu(drop_gl[1, 3], options=["-"], prompt="Parameter")
     
-    manager.widgets["Editor_Text"] = Textbox(layout[3, 1:3], placeholder = "Select key...", reset_on_defocus = false, width = nothing)
+    # Row 4: The 3:1 Textbox/Toggle Layout
+    manager.widgets["Editor_Text"]   = Textbox(layout[4, 1:3], placeholder="Val / 'default'", width=nothing) # Spans 3 columns
+    manager.widgets["Editor_Toggle"] = Button(layout[4, 4], label="Toggle", buttoncolor=:lightgray)          # Spans 1 column
 end
 
 # ==============================================================================

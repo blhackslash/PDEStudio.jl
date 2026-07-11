@@ -187,13 +187,14 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     end
     return manager
 end
+
 """
-    launch_plotter()
+    launch_plotter(; data_mode::Symbol=:eulerian)
 
 Backend-agnostic Single Dashboard entry point. 
-Returns the Figure natively so the active backend (GLMakie, WGLMakie) can display it.
+Initializes either the dense Eulerian or unstructured Lagrangian pipeline.
 """
-function launch_plotter()
+function launch_plotter(; data_mode::Symbol=:eulerian)
     if isnothing(ACTIVE_SIM_CONFIG[])
         ACTIVE_SIM_CONFIG[] = SimulationConfig(
             dummy_simulation_function,"none", nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
@@ -204,11 +205,11 @@ function launch_plotter()
         old_manager = ACTIVE_PLOT_MANAGER[]
         new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); BaseVariables]
         
-        if old_manager.plot_vars == new_vars
+        if old_manager.plot_vars == new_vars && old_manager.state["Data_Mode"][] == data_mode
             old_manager.triggers["Simulation_Update"][] += 1
             return PLOTTER_UI_STATE[][:master_fig], old_manager
         else
-            @info "Dimensionality changed. Rebuilding UI..."
+            @info "Configuration changed. Rebuilding UI..."
             PLOTTER_UI_STATE[][:is_open] = false
         end
     end
@@ -219,17 +220,26 @@ function launch_plotter()
     
     manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, :lines)
     manager.state["base_types"][] = var_overwrite
+    
+    # --- 1. SET THE MODE STATE IMMEDIATELY ---
+    manager.state["Data_Mode"] = Observable(data_mode)
     ACTIVE_PLOT_MANAGER[] = manager
 
-    # Single Dashboard Layout Definition
     master_fig = Figure()
-    #display(master_fig)
     ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
     plot_layout = master_fig[1, 2] = GridLayout() 
-    plot_data_obs = Observable(Dict{String, UnifiedPlotData}())
+    plot_data_obs = Observable(Dict{String, AbstractPlotData}())
     
+    # --- 2. BUILD THE UI ---
     create_controls(ctrl_layout, manager)
-    setup_ui_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    
+    # --- 3. FORK THE INTERACTION PIPELINES ---
+    setup_common_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    if data_mode == :eulerian
+        setup_eulerian_interactions!(manager, plot_data_obs)
+    else
+        setup_lagrangian_interactions!(manager, plot_data_obs)
+    end
 
     PLOTTER_UI_STATE[][:is_open] = true
     PLOTTER_UI_STATE[][:master_fig] = master_fig
@@ -239,7 +249,6 @@ function launch_plotter()
     on(ACTIVE_SIM_CONFIG) do new_config
         (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
         
-        # --- THE FIX: Map real physics names to the static abstract UI sliders ---
         real_params = sort(collect(keys(new_config.varied_params)))
         param_map = Dict{String, String}()
         reverse_map = Dict{String, String}()
@@ -285,12 +294,11 @@ function launch_plotter()
         else
             manager.methods[] = filter(k -> k != "shared", copy(new_config.default_methods))
         end
-        # 1. LOCK THE PIPELINE
+        
         manager.state["Config_Just_Loaded"][] = true
         
         layout_opts = isempty(GLOBAL_LAYOUT_OPTIONS[]) ? get_base_layout_options() : GLOBAL_LAYOUT_OPTIONS[]
         apply_layout_options!(manager, layout_opts)
-        
         
         if !isempty(GLOBAL_UI_OVERWRITE[])
             for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
@@ -308,18 +316,20 @@ function launch_plotter()
 
         manager.triggers["Layout_Update"][] += 1
     end
+
     on(manager.triggers["Simulation_Update"]) do _
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
-        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = true)
+        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
+            force_reload = true, 
+            data_mode = manager.state["Data_Mode"][]
+        )
         
         notify(plot_data_obs)
         manager.triggers["Layout_Update"][] += 1
     end
 
     setup_plot_window!(master_fig, plot_layout, manager, plot_data_obs)
-
-    
 
     if ACTIVE_SIM_CONFIG[].simulation_func !== dummy_simulation_function
         manager.triggers["Simulation_Update"][] += 1
@@ -365,7 +375,10 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Layout" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
+            force_reload = false, 
+            data_mode = manager.state["Data_Mode"][]
+        )
             end
             rebuild_plot_layout!()
         end
@@ -377,7 +390,10 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Scene" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); force_reload = false)
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
+            force_reload = false, 
+            data_mode = manager.state["Data_Mode"][]
+        )
             end
         end
         manager.triggers["Primitive_Rebuild"][] += 1
@@ -539,7 +555,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     manager.caches[i] = Dict{String, PlotCache}()
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                    dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                    if first(values(data)) isa LagrangianPlotData
+                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[], Val(PLOT_DIM_MAP[T]))
+                    else
+                        dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                    end
                     
                     isempty(vl) && continue
                     
@@ -582,7 +602,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             
             for i in 1:num_plots
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                dt, vl, ts = extract_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                if first(values(data)) isa LagrangianPlotData
+                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[], Val(PLOT_DIM_MAP[T]))
+                else
+                    dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                end
                 
                 local_methods = manager.methods[]
                 if target == "Methods" && i <= length(vl)
@@ -675,3 +699,4 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     end
     return ObserverFunction[prim_obs; data_sync_obs; ui_obs]
 end
+

@@ -164,13 +164,39 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
-function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::AbstractSimData)
+function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::LSimData{D, M}) where {D, M}
+    # 1. Extract structure from the numerical Lagrangian template
+    t_vec = template_data.t
+    
+    # 2. Sample ref_func at every particle position for every time step
+    # x_ref will be identical to the numerical simulation's particle positions
+    x_ref = template_data.x 
+    u_ref = Vector{Vector{SVector{M, Float64}}}(undef, length(t_vec))
+    
+    for t_idx in 1:length(t_vec)
+        t = t_vec[t_idx]
+        particles = template_data.x[t_idx]
+        u_step = Vector{SVector{M, Float64}}(undef, length(particles))
+        
+        for p_idx in 1:length(particles)
+            u_step[p_idx] = ref_func(particles[p_idx], t)
+        end
+        u_ref[t_idx] = u_step
+    end
+    
+    # 3. Return a Lagrangian SimData container
+    return LSimData{D, M}(
+        params, x_ref, u_ref, t_vec,
+        template_data.xmins, template_data.xmaxs, template_data.tmin, template_data.tmax,
+        Dict(), Dict(), Dict(), Dict()
+    )
+end
+function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::ESimData{D}) where {D}
     N = _REF_GRID[]
     T = _T_GRID[] # Use the global time resolution!
     
     # 1. Extract physical bounds directly from the TEMPLATE DATA!
     # This guarantees perfect alignment with the numerical simulation domains.
-    D = length(template_data.xmins)
     xmins = template_data.xmins
     xmaxs = template_data.xmaxs
     tmin = template_data.tmin
