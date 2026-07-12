@@ -224,7 +224,7 @@ end
 # ==============================================================================
 # LAGRANGIAN DATA EXTRACTION PIPELINE
 # ==============================================================================
-function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_key, ::Val{D}) where D
+function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_key)
     dim_names = manager.plot_vars
     n_params = length(dim_names) - 5
     comp_idx = n_params + 1
@@ -234,14 +234,19 @@ function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_k
     target_c_str = sel_vals[comp_idx]
     target_c = target_c_str isa String ? parse(Int, target_c_str) : target_c_str
     
-    xs_all, ys_all, zs_all, us_all = Vector{Float64}[], Vector{Float64}[], Vector{Float64}[], Vector{Float64}[]
+    # THE FIX: Infer D natively from the actual simulation data!
+    pd_first = first(values(data))
+    l_data_first = pd_first.data[1]
+    D = length(l_data_first.xmins)
+    
+    pts_all = (D == 1) ? Vector{Float64}[] : Vector{Point{D, Float64}}[]
+    us_all  = Vector{Float64}[]
     valid_labels = String[]
     
     for m_name in manager.methods[]
         !haskey(data, m_name) && continue
         pd = data[m_name]
         
-        # 1. Find the correct parameter simulation
         p_idx = map(1:n_params) do i
             p_vals = pd.active_param_values[i]
             isempty(p_vals) ? 1 : findmin(v -> abs(v - sel_vals[i]), p_vals)[2]
@@ -250,43 +255,42 @@ function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_k
         l_data = isempty(p_idx) ? pd.data[1] : pd.data[p_idx...]
         isnothing(l_data) && continue
         
-        # 2. Slice time
         t_idx = findmin(v -> abs(v - target_t), l_data.t)[2]
         x_step = l_data.x[t_idx]
         
-        # 3. Identify the requested component or field
         u_step = nothing
         if u_key == "u" || u_key == "v" || u_key == "rho" || u_key == "p"
             u_step = l_data.u[t_idx]
         elseif haskey(l_data.fields, u_key)
             u_step = l_data.fields[u_key][t_idx]
         elseif haskey(l_data.profiles, u_key)
-            u_step = l_data.profiles[u_key][1] # Static spatial profile
+            u_step = l_data.profiles[u_key][1]
         end
         isnothing(u_step) && continue
         
-        # 4. Unpack SVectors into flat arrays
         N_p = length(x_step)
-        xs = zeros(Float64, N_p)
-        ys = D >= 2 ? zeros(Float64, N_p) : Float64[]
-        zs = D == 3 ? zeros(Float64, N_p) : Float64[]
         us = zeros(Float64, N_p)
         
-        @inbounds for p in 1:N_p
-            xs[p] = x_step[p][1]
-            if D >= 2; ys[p] = x_step[p][2]; end
-            if D == 3; zs[p] = x_step[p][3]; end
-            us[p] = target_c <= length(u_step[p]) ? u_step[p][target_c] : NaN
+        if D == 1
+            pts = zeros(Float64, N_p)
+            @inbounds for p in 1:N_p
+                pts[p] = x_step[p][1]
+                us[p] = target_c <= length(u_step[p]) ? u_step[p][target_c] : NaN
+            end
+            push!(pts_all, pts)
+        else
+            pts = Vector{Point{D, Float64}}(undef, N_p)
+            @inbounds for p in 1:N_p
+                pts[p] = Point{D, Float64}(x_step[p]...)
+                us[p] = target_c <= length(u_step[p]) ? u_step[p][target_c] : NaN
+            end
+            push!(pts_all, pts)
         end
         
-        push!(xs_all, xs)
-        if D >= 2; push!(ys_all, ys); end
-        if D == 3; push!(zs_all, zs); end
         push!(us_all, us)
         push!(valid_labels, m_name)
     end
     
-    # 5. Build Dynamic Title
     title_parts = String[]
     for i in 1:n_params
         val_str = sel_vals[i] isa AbstractFloat ? @sprintf("%.3f", sel_vals[i]) : string(sel_vals[i])
@@ -295,11 +299,5 @@ function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_k
     push!(title_parts, "t = $(@sprintf("%.3f", target_t))")
     title_str = join(title_parts, " | ")
     
-    if D == 1
-        return (xs_all, us_all), valid_labels, title_str
-    elseif D == 2
-        return (xs_all, ys_all, us_all), valid_labels, title_str
-    else
-        return (xs_all, ys_all, zs_all, us_all), valid_labels, title_str
-    end
+    return (pts_all, us_all), valid_labels, title_str
 end

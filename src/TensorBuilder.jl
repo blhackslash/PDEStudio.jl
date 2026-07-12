@@ -8,7 +8,7 @@ _get_D(sim_data::AbstractSimData) = length(sim_data.x[1][1])
 safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
 safe_reshape(data::Real, dims...) = data
 
-function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict, data_mode::Symbol=:eulerian)
+function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
     for (m_name, params) in sim_config.methods_dict
         if contains(safe_string(m_name), "analytic") || contains(safe_string(m_name), "reference"); continue; end
         
@@ -21,7 +21,7 @@ function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict,
                 sim_data = loadSimData(tasks[1])
                 if !isnothing(sim_data)
                     # THE FIX: Only force Eulerian conversion if requested!
-                    if data_mode == :eulerian && sim_data isa LSimData
+                    if PLOT_MODE[] == :eulerian && sim_data isa LSimData
                         return convert_to_eulerian(sim_data)
                     end
                     return sim_data
@@ -169,7 +169,7 @@ function create_lagrangian_plot_data(
     runAllSimulations(sim_config; active_methods=[method_name], varied_params=sim_config.varied_params, fixed_params=sim_fixes, convert_eulerian=false, parallel=parallel)
     
     # THE FIX: Request a natively Lagrangian template!
-    base_template = _get_template_simdata(sim_config, sim_fixes, :lagrangian)
+    base_template = _get_template_simdata(sim_config, sim_fixes)
     if isnothing(base_template)
         @warn "Cannot generate Lagrangian data: No valid simulation data found."
         return nothing
@@ -182,21 +182,21 @@ function create_lagrangian_plot_data(
         is_ref = contains(safe_string(method_name), "analytic") || contains(safe_string(method_name), "reference")
         
         if is_ref
-            # Now correctly dispatches to the LSimData analytical generator!
             sim_data = generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
             sim_data = loadSimData(params)
         end
         
-        if !(sim_data isa LSimData)
-            @warn "Lagrangian Mode selected, but method '$method_name' output ESimData. It will be skipped."
-            continue
+        # THE ELEGANT FIX: Seamlessly convert dense grids to particles in RAM!
+        if sim_data isa ESimData
+            sim_data = convert_to_lagrangian(sim_data)
         end
         
         dest_prefix = isempty(grid_indices[k]) ? (1,) : grid_indices[k]
         l_data_store[dest_prefix...] = sim_data
     end
 
+    # Return pristine, raw Lagrangian data!
     return LagrangianPlotData{ndims(l_data_store)}(
         l_data_store, active_keys, active_values, base_template.t, fixed_params
     )
@@ -242,7 +242,7 @@ function create_eulerian_plot_data(
     # =========================================================================
     # 2. GRAB THE UNIVERSAL TEMPLATE
     # =========================================================================
-    base_template = _get_template_simdata(sim_config, sim_fixes, :eulerian)
+    base_template = _get_template_simdata(sim_config, sim_fixes)
     if isnothing(base_template)
         @warn "Cannot generate plot data: No valid simulation data found to use as a domain template."
         return nothing
@@ -387,7 +387,7 @@ function create_eulerian_plot_data(
 end
 
 function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods, base_types;
-    force_reload=false, parallel=false, data_mode=:eulerian)
+    force_reload=false, parallel=false)
     
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
@@ -406,7 +406,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotM
             for (k, v) in method_ui; k == "ignore" && continue; fixed_params[k] = v; end
             
             # THE FIX: Route the Builder based on the Data Mode!
-            builder_func = data_mode == :lagrangian ? create_lagrangian_plot_data : create_eulerian_plot_data
+            builder_func = PLOT_MODE[] == :lagrangian ? create_lagrangian_plot_data : create_eulerian_plot_data
             
             new_data = Base.invokelatest(builder_func, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
             

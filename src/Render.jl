@@ -80,7 +80,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
-        cache = PlotCache()
+        cache = EulerianPlotCache()
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
         cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
         
@@ -97,56 +97,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     end
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
-    xs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
-    cache_dict = manager.caches[plot_idx]
-    plotted_objects, labels_for_legend = [], String[]
-    
-    for (m_idx, label) in enumerate(active_methods)
-        cache = PlotCache()
-        cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
-        
-        c   = ui_app["colors"][][mod1(m_idx, end)]
-        mrk = ui_app["markers"][][mod1(m_idx, end)]
-        ms  = ui_app["marker_size"][]
-        
-        s = scatter!(ax, cache.obs_x, cache.obs_u; color=c, markersize=ms, marker=mrk)
-        cache.primitives[:scatter1d] = s
-        cache_dict[label] = cache
-        
-        push!(plotted_objects, [Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
-        push!(labels_for_legend, label)
-    end
-end
-
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
-    xs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
-    cache_dict = manager.caches[plot_idx]
-    plotted_objects, labels_for_legend = [], String[]
-    
-    for (m_idx, label) in enumerate(active_methods)
-        cache = PlotCache()
-        cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
-        
-        c   = ui_app["colors"][][mod1(m_idx, end)]
-        ls  = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-        lw  = ui_app["line_width"][]
-        mrk = ui_app["markers"][][mod1(m_idx, end)]
-        ms  = ui_app["marker_size"][]
-        
-        sl = scatterlines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk)
-        cache.primitives[:scatterlines] = sl
-        cache_dict[label] = cache
-        
-        push!(plotted_objects, [Makie.LineElement(color=c, linewidth=lw, linestyle=ls), Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
-        push!(labels_for_legend, label)
-    end
-end
-
 # -----------------------------------------------------------------------------
 # 2D PRIMITIVES
 # -----------------------------------------------------------------------------
@@ -158,7 +108,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
-        cache = PlotCache()
+        cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[m_idx]
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u[]   = us_slices[m_idx]
@@ -183,7 +133,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx] 
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     
     cache.obs_x.val = xs[base_idx]
     cache.obs_y.val = ys[base_idx]
@@ -207,7 +157,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     
     dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
     X, Y, U = build_2d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx], dir)
@@ -224,38 +174,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     create_or_update_colorbar!(plot_layout, l2d, manager, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
-    xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
-    cache_dict = manager.caches[plot_idx]
-
-    base_idx = get_base_method_index(ui_app, active_methods)
-    label = active_methods[base_idx]
-    cache = PlotCache()
-    
-    x_data, y_data, u_data = xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx]
-    
-    # Bypass meshgrid generation if we are in Lagrangian Mode
-    if get(manager.state, "Data_Mode", Observable(:eulerian))[] == :lagrangian
-        cache.obs_x.val = x_data
-        cache.obs_y.val = y_data
-        cache.obs_u[]   = u_data
-    else
-        cache.obs_x.val = vec([x for x in x_data, y in y_data])
-        cache.obs_y.val = vec([y for x in x_data, y in y_data])
-        cache.obs_u[]   = vec(u_data)
-    end
-
-    valid_u = filter(isfinite, cache.obs_u[])
-    cr_obs = get_colorrange(ui_app, valid_u)
-
-    sc = scatter!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
-
-    cache.primitives[:scatter2d] = sc
-    cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
-end
-
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
@@ -264,7 +182,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     base_idx = get_base_method_index(ui_app, active_methods)
     base_label = active_methods[base_idx]
 
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
     cache.obs_u[]   = us_slices[base_idx]
@@ -297,7 +215,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     plotted_objects, labels_for_legend = [], String[]
     
-    base_cache = PlotCache()
+    base_cache = EulerianPlotCache()
     base_cache.obs_x.val = xs_slices[base_idx]
     base_cache.obs_y.val = ys_slices[base_idx]
     base_cache.obs_u[]   = us_slices[base_idx]
@@ -312,7 +230,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     for (i, label) in enumerate(active_methods)
         if i == base_idx; continue; end
-        cache = PlotCache()
+        cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[i]
         cache.obs_y.val = ys_slices[i]
         cache.obs_u[]   = us_slices[i]
@@ -339,7 +257,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
     cache.obs_u[]   = us_slices[base_idx]
@@ -366,7 +284,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     label = active_methods[base_idx]
     x_data, y_data, z_data, u_data = xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx]
 
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     cache.obs_x.val = extrema(x_data)
     cache.obs_y.val = extrema(y_data)
     cache.obs_z.val = extrema(z_data)
@@ -389,7 +307,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
-    cache = PlotCache()
+    cache = EulerianPlotCache()
     
     dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
     X, Y, Z, U = build_3d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx], dir)
@@ -407,72 +325,133 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     create_or_update_colorbar!(plot_layout, l3d, manager, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
-    xs_slices, ys_slices, zs_slices, us_slices = data_tuples
+# =============================================================================
+# STRICT LAGRANGIAN PRIMITIVES (Scatters)
+# =============================================================================
+
+
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{T}, plot_idx::Int) where {T}
+    if !(T in (:scatter1d, :scatter2d, :scatter3d)); @warn "Fallback Render had to be used!"; return end
+    
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
+    pts_slices, us_slices = data_tuples
 
+
+    # The New Behavior: Unified Colormap (1D, 2D, 3D)
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
-    cache = PlotCache()
-
-    x_data, y_data, z_data, u_data = xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx]
     
-    if get(manager.state, "Data_Mode", Observable(:eulerian))[] == :lagrangian
-        cache.obs_x.val = x_data
-        cache.obs_y.val = y_data
-        cache.obs_z.val = z_data
-        cache.obs_u[]   = u_data
-    else
-        cache.obs_x.val = vec([x for x in x_data, y in y_data, z in z_data])
-        cache.obs_y.val = vec([y for x in x_data, y in y_data, z in z_data])
-        cache.obs_z.val = vec([z for x in x_data, y in y_data, z in z_data])
-        cache.obs_u[]   = vec(u_data)
-    end
+    cache = LagrangianPlotCache()
+    cache.obs_pts.val = pts_slices[base_idx]
+    cache.obs_u[]   = us_slices[base_idx]
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-
-    sc = scatter!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
-
-    cache.primitives[:scatter3d] = sc
+    
+    # THE FIX: 1D requires explicitly passing X and Y. 2D/3D use Point natively.
+    if T == :scatter1d
+        sc = scatter!(ax, cache.obs_pts, cache.obs_u; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    else
+        sc = scatter!(ax, cache.obs_pts; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    end
+    
+    # Save dynamically using T so the UI styler knows which mode it is in!
+    cache.primitives[T] = sc
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
 end
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scattercolors}, plot_idx::Int)
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+    pts_slices, us_slices = data_tuples
+    # The Old Behavior: Multiplexed Solid Colors for 1D
+    plotted_objects, labels_for_legend = [], String[]
+    for (m_idx, label) in enumerate(active_methods)
+        cache = LagrangianPlotCache()
+        cache.obs_pts.val = pts_slices[m_idx]
+        cache.obs_u[]   = us_slices[m_idx]
 
-# -----------------------------------------------------------------------------
-# TIER 3 DATA INJECTION HELPERS
-# -----------------------------------------------------------------------------
-function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::PlotManager, ::Val{1})
+        c   = ui_app["colors"][][mod1(m_idx, end)]
+        mrk = ui_app["markers"][][mod1(m_idx, end)]
+        ms  = ui_app["marker_size"][]
+        
+        s = scatter!(ax, cache.obs_pts, cache.obs_u; color=c, markersize=ms, marker=mrk)
+        cache.primitives[:scattercolors] = s
+        cache_dict[label] = cache
+        
+        push!(plotted_objects, [Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
+        push!(labels_for_legend, label)
+    end
+end
+
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+    plotted_objects, labels_for_legend = [], String[]
+    pts_slices, us_slices = data_tuples
+
+    for (m_idx, label) in enumerate(active_methods)
+        cache = LagrangianPlotCache()
+        cache.obs_pts.val = pts_slices[m_idx]
+        cache.obs_u[]   = us_slices[m_idx]
+        
+        c   = ui_app["colors"][][mod1(m_idx, end)]
+        ls  = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+        lw  = ui_app["line_width"][]
+        mrk = ui_app["markers"][][mod1(m_idx, end)]
+        ms  = ui_app["marker_size"][]
+        
+        sl = scatterlines!(ax, cache.obs_pts, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk)
+        cache.primitives[:scatterlines] = sl
+        cache_dict[label] = cache
+        
+        push!(plotted_objects, [Makie.LineElement(color=c, linewidth=lw, linestyle=ls), Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
+        push!(labels_for_legend, label)
+    end
+end
+# =============================================================================
+# TIER 3 DATA INJECTION HELPERS (Perfectly Forked)
+# =============================================================================
+
+function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::PlotManager, ::Val{D}) where D
+    # Safely grab the first available cache to check its actual physical type
+    first_cache = isempty(cache_dict) ? nothing : first(values(cache_dict))
+    
+    # THE FIX: Sync based on the cache in memory, NOT the global state!
+    if first_cache isa LagrangianPlotCache
+        pts_slices, us_slices = data_tuples
+        for (m_idx, label) in enumerate(active_methods)
+            haskey(cache_dict, label) || continue
+            cache = cache_dict[label]
+            
+            # We no longer need (D == 1) checks here, DataExtraction handles it natively!
+            cache.obs_pts.val = _unwrap_1tuples(pts_slices[m_idx])
+            cache.obs_u[]     = _unwrap_1tuples(us_slices[m_idx])
+        end
+    elseif first_cache isa EulerianPlotCache
+        _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, Val(D))
+    end
+end
+
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{1})
     xs_slices, us_slices = data_tuples
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
-        
-        # Flatten 1-Tuples safely if present
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
         cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
     end
 end
 
-function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::PlotManager, ::Val{2})
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{2})
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
-        if haskey(cache.primitives, :scatter2d) || haskey(cache.primitives, :scatter3d)
-            if get(manager.state, "Data_Mode", Observable(:eulerian))[] == :lagrangian
-                cache.obs_x.val = xs_slices[m_idx]
-                cache.obs_y.val = ys_slices[m_idx]
-                cache.obs_u[]   = us_slices[m_idx]
-            else
-                cache.obs_x.val = vec([x for x in xs_slices[m_idx], y in ys_slices[m_idx]])
-                cache.obs_y.val = vec([y for x in xs_slices[m_idx], y in ys_slices[m_idx]])
-                cache.obs_u[]   = vec(us_slices[m_idx])
-            end
-        elseif haskey(cache.primitives, :lines2d)
+        if haskey(cache.primitives, :lines2d)
             dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
             X, Y, U = build_2d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
@@ -486,7 +465,7 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::P
     end
 end
 
-function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::PlotManager, ::Val{3})
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{3})
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
 
@@ -494,19 +473,7 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::P
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
-        if haskey(cache.primitives, :scatter3d)
-            if get(manager.state, "Data_Mode", Observable(:eulerian))[] == :lagrangian
-                cache.obs_x.val = xs_slices[m_idx]
-                cache.obs_y.val = ys_slices[m_idx]
-                cache.obs_z.val = zs_slices[m_idx]
-                cache.obs_u[]   = us_slices[m_idx]
-            else
-                cache.obs_x.val = vec([x for x in xs_slices[m_idx], y in ys_slices[m_idx], z in zs_slices[m_idx]])
-                cache.obs_y.val = vec([y for x in xs_slices[m_idx], y in ys_slices[m_idx], z in zs_slices[m_idx]])
-                cache.obs_z.val = vec([z for x in xs_slices[m_idx], y in ys_slices[m_idx], z in zs_slices[m_idx]])
-                cache.obs_u[]   = vec(us_slices[m_idx])
-            end
-        elseif haskey(cache.primitives, :lines3d)
+        if haskey(cache.primitives, :lines3d)
             dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
             X, Y, Z, U = build_3d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], zs_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X

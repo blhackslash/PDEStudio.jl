@@ -165,29 +165,56 @@ function generate_dynamic_title(
     return join(title_parts, " | ")
 end
 function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::LSimData{D, M}) where {D, M}
-    # 1. Extract structure from the numerical Lagrangian template
-    t_vec = template_data.t
+    N = _REF_GRID[]
+    T_len = _T_GRID[] # Use the global time resolution
     
-    # 2. Sample ref_func at every particle position for every time step
-    # x_ref will be identical to the numerical simulation's particle positions
-    x_ref = template_data.x 
-    u_ref = Vector{Vector{SVector{M, Float64}}}(undef, length(t_vec))
+    # 1. Extract physical bounds directly from the TEMPLATE DATA!
+    xmins = template_data.xmins
+    xmaxs = template_data.xmaxs
+    tmin = template_data.tmin
+    tmax = template_data.tmax
     
-    for t_idx in 1:length(t_vec)
+    # 2. Build the high-res time vector
+    t_vec = collect(range(tmin, tmax, length=T_len))
+    
+    # 3. Build the high-res spatial axes
+    axes_list = ntuple(d -> collect(range(xmins[d], xmaxs[d], length=N)), D)
+    grid_shape = ntuple(d -> N, D)
+    N_pts = prod(grid_shape)
+    
+    # 4. Generate the dense, structured particle positions ONCE
+    static_particles = Vector{SVector{D, Float64}}(undef, N_pts)
+    for (i, idx) in enumerate(CartesianIndices(grid_shape))
+        static_particles[i] = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
+    end
+    
+    # Since reference analytical grids are perfectly static, we just copy the 
+    # positions across all timesteps to act as Eulerian-style "particles"
+    x_ref = [copy(static_particles) for _ in 1:T_len]
+    u_ref = Vector{Vector{SVector{M, Float64}}}(undef, T_len)
+    
+    # 5. Evaluate the exact function on the fly using multithreading
+    Threads.@threads for t_idx in 1:T_len
         t = t_vec[t_idx]
-        particles = template_data.x[t_idx]
-        u_step = Vector{SVector{M, Float64}}(undef, length(particles))
+        u_step = Vector{SVector{M, Float64}}(undef, N_pts)
         
-        for p_idx in 1:length(particles)
-            u_step[p_idx] = ref_func(particles[p_idx], t)
+        for p_idx in 1:N_pts
+            val = ref_func(static_particles[p_idx], t)
+            
+            # Safely handle single numbers vs iterables to cast into SVector
+            if val isa Number
+                u_step[p_idx] = SVector{M, Float64}(val)
+            else
+                u_step[p_idx] = SVector{M, Float64}(val...)
+            end
         end
         u_ref[t_idx] = u_step
     end
     
-    # 3. Return a Lagrangian SimData container
+    # 6. Return a pristine, high-resolution Lagrangian SimData container
     return LSimData{D, M}(
         params, x_ref, u_ref, t_vec,
-        template_data.xmins, template_data.xmaxs, template_data.tmin, template_data.tmax,
+        xmins, xmaxs, tmin, tmax,
         Dict(), Dict(), Dict(), Dict()
     )
 end

@@ -534,8 +534,10 @@ end
 function _find_first_drawable_primitive(cache_dict)
     for method_name in keys(cache_dict)
         prims = cache_dict[method_name].primitives
-        for pkey in [:heatmap, :contourf, :surface, :volume, :scatter2d, :scatter3d, :contour_cmap, :lines2d, :lines3d]
-            haskey(prims, pkey) && return prims[pkey]
+        for (pkey, prim) in prims
+            if pkey in COLORBAR_SUPPORTED_PLOTS
+                return prim
+            end
         end
     end
     return nothing
@@ -550,61 +552,48 @@ function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
     plotted_objects = []
     labels_for_legend = String[]
     
-    # We only build the legend from the first plot index
     if !haskey(manager.caches, 1)
         return [], []
     end
     
-    # Helper to calculate color
-    get_color(idx) = get(ui_app, "colors", nothing) !== nothing ? 
-                     ui_app["colors"][][mod1(idx, end)] : :black
+    get_color(idx) = get(ui_app, "colors", nothing) !== nothing ? ui_app["colors"][][mod1(idx, end)] : :black
 
     for (m_idx, method_name) in enumerate(manager.methods[])
         if haskey(manager.caches[1], method_name)
             prims = manager.caches[1][method_name].primitives
             color = get_color(m_idx)
             
-            # --- 1. Poly elements (for filled contours) ---
-            if haskey(prims, :contourf)
-                push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
-                push!(labels_for_legend, "$(method_name) (Base)")
-            end
-            
-            # --- 2. Modular group of elements ---
             group = []
+            is_base = false
             
-            # Lines
-            if haskey(prims, :lines)
-                ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
+            # --- THE FIX: Build legend elements dynamically via STYLE_DEPENDENCIES ---
+            for (pkey, prim) in prims
+                deps = get(STYLE_DEPENDENCIES, pkey, String[])
+                
+                # Special Case: Poly elements for filled base contours
+                if pkey == :contourf
+                    push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
+                    push!(labels_for_legend, "$(method_name) (Base)")
+                    is_base = true
+                end
+                
+                # Check for Line Capabilities
+                if "line_width" in deps && "colors" in deps
+                    ls = (ui_app["dashed_lines"][] && "dashed_lines" in deps) ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
+                    push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
+                end
+                
+                # Check for Marker Capabilities
+                if "markers" in deps && "colors" in deps
+                    mrk = ui_app["markers"][][mod1(m_idx, end)]
+                    push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
+                end
             end
             
-            # Scatter
-            if haskey(prims, :scatter) || haskey(prims, :scatter1d)
-                mrk = ui_app["markers"][][mod1(m_idx, end)]
-                push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
-            end
-            
-            # Scatterlines
-            if haskey(prims, :scatterlines)
-                ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                mrk = ui_app["markers"][][mod1(m_idx, end)]
-                lw = ui_app["line_width"][]
-                ms = ui_app["marker_size"][]
-                push!(group, Makie.LineElement(color=color, linewidth=lw, linestyle=ls))
-                push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ms))
-            end
-            
-            # Contours
-            if haskey(prims, :contour)
-                push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][]))
-            end
-            
-            # --- 3. Registration ---
+            # Registration
             if !isempty(group)
                 push!(plotted_objects, group)
-                # If it's a contourf, we already added the (Base) label, so we don't add the method name again
-                if !haskey(prims, :contourf)
+                if !is_base
                     push!(labels_for_legend, method_name)
                 end
             end

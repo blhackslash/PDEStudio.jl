@@ -6,6 +6,7 @@ const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slid
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_LAYOUT_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_CAMERA_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
+
 function extract_and_store_camera_state!(plot_layout::GridLayout)
     cam_opts = Dict{String, Any}()
     axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
@@ -170,7 +171,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         methods_obs, 
         vars, 
         copy(sim_config.shared_params),
-        Dict{Int, Dict{String, PlotCache}}()
+        Dict{Int, Dict{String, AbstractPlotCache}}()
     )
 
     # Notice we pass `state` directly here instead of using the old nested keys!
@@ -189,12 +190,17 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
 end
 
 """
-    launch_plotter(; data_mode::Symbol=:eulerian)
+    launch_plotter()
 
 Backend-agnostic Single Dashboard entry point. 
 Initializes either the dense Eulerian or unstructured Lagrangian pipeline.
 """
-function launch_plotter(; data_mode::Symbol=:eulerian)
+function launch_plotter()
+
+    on(PLOT_MODE) do _
+        reset_plotter!()
+    end
+        
     if isnothing(ACTIVE_SIM_CONFIG[])
         ACTIVE_SIM_CONFIG[] = SimulationConfig(
             dummy_simulation_function,"none", nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
@@ -205,7 +211,7 @@ function launch_plotter(; data_mode::Symbol=:eulerian)
         old_manager = ACTIVE_PLOT_MANAGER[]
         new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); BaseVariables]
         
-        if old_manager.plot_vars == new_vars && old_manager.state["Data_Mode"][] == data_mode
+        if old_manager.plot_vars == new_vars
             old_manager.triggers["Simulation_Update"][] += 1
             return PLOTTER_UI_STATE[][:master_fig], old_manager
         else
@@ -218,11 +224,12 @@ function launch_plotter(; data_mode::Symbol=:eulerian)
     var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
     ui_obs = create_master_ui_observables()
     
-    manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, :lines)
+    # THE FIX: Route the initial layout dynamically
+    init_type = PLOT_MODE[] == :eulerian ? :lines : :scatter1d
+    manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, init_type)
     manager.state["base_types"][] = var_overwrite
     
     # --- 1. SET THE MODE STATE IMMEDIATELY ---
-    manager.state["Data_Mode"] = Observable(data_mode)
     ACTIVE_PLOT_MANAGER[] = manager
 
     master_fig = Figure()
@@ -235,7 +242,7 @@ function launch_plotter(; data_mode::Symbol=:eulerian)
     
     # --- 3. FORK THE INTERACTION PIPELINES ---
     setup_common_interactions!(master_fig, plot_layout, manager, plot_data_obs)
-    if data_mode == :eulerian
+    if PLOT_MODE[] == :eulerian
         setup_eulerian_interactions!(manager, plot_data_obs)
     else
         setup_lagrangian_interactions!(manager, plot_data_obs)
@@ -321,8 +328,7 @@ function launch_plotter(; data_mode::Symbol=:eulerian)
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
         Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = true, 
-            data_mode = manager.state["Data_Mode"][]
+            force_reload = true
         )
         
         notify(plot_data_obs)
@@ -354,7 +360,18 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 
         base_sel  = manager.widgets["Base_Plot"].selection[]
         style_sel = manager.widgets["Plot_Style"].selection[]
-        ptype_sym = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+        ptype_sym = PLOT_ROUTING_MATRIX[(base_sel, style_sel)]
+
+        if PLOT_MODE[] == :lagrangian && !isempty(plot_data_obs[])
+            D = length(first(values(plot_data_obs[])).data[1].xmins)
+            if style_sel == "Lines" && D == 1
+                ptype_sym = :scatterlines
+            elseif style_sel == "Colors" && D == 1
+                ptype_sym = :scattercolors
+            else
+                ptype_sym = D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
+            end
+        end
 
         for obs in render_observers; off(obs); end
         empty!(render_observers)
@@ -376,8 +393,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
                 Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = false, 
-            data_mode = manager.state["Data_Mode"][]
+            force_reload = false
         )
             end
             rebuild_plot_layout!()
@@ -391,8 +407,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
                 Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = false, 
-            data_mode = manager.state["Data_Mode"][]
+            force_reload = false
         )
             end
         end
@@ -434,6 +449,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface
     w = manager.widgets
     rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
+    CT = PLOT_MODE[] == :eulerian ? EulerianPlotCache : LagrangianPlotCache
     
     # Read the data dimensions dynamically
     selector_obs = map(manager.plot_vars) do n
@@ -552,11 +568,12 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 sel_vals = [to_value(obs) for obs in selector_obs]
 
                 for i in 1:num_plots
-                    manager.caches[i] = Dict{String, PlotCache}()
+                    manager.caches[i] = Dict{String, CT}()
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
                     if first(values(data)) isa LagrangianPlotData
-                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[], Val(PLOT_DIM_MAP[T]))
+                        # THE FIX: Call extraction without the Val(PLOT_DIM_MAP[T]) helper
+                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[])
                     else
                         dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
                     end
@@ -603,7 +620,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             for i in 1:num_plots
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
                 if first(values(data)) isa LagrangianPlotData
-                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[], Val(PLOT_DIM_MAP[T]))
+                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[])
                 else
                     dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
                 end

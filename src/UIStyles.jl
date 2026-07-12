@@ -1,11 +1,12 @@
 const UIType = Union{Symbol,MethodDict}
-const LEGEND_SUPPORTED_PLOTS = (:lines, :scatter1d, :scatterlines, :contour, :contourf, :contour3d)
-const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
+const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour3d)
+const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
 # --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
     :lines        => 1,
     :scatter1d    => 1,
     :scatterlines => 1,
+    :scattercolors=> 1,
     :lines2d      => 2,
     :heatmap      => 2,
     :contour      => 2,
@@ -19,38 +20,42 @@ const PLOT_DIM_MAP = Dict(
     :volume       => 3
 )
 
-const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
-    ("Lines", "1D")           => :lines,
-    ("Lines", "2D")           => :lines2d,
-    ("Lines", "3D")           => :lines3d,
-    ("Lines", "Scatterlines") => :scatterlines,
-    
-    ("Scatter", "1D")         => :scatter1d,
-    ("Scatter", "2D")         => :scatter2d,
-    ("Scatter", "3D")         => :scatter3d,
-    
-    ("Contour", "Lines")      => :contour,
-    ("Contour", "Colormap")   => :contour_cmap, 
-    ("Contour", "Filled")     => :contourf,
-    ("Contour", "3D")         => :contour3d,
-    
-    ("Heatmap", "Flat")       => :heatmap,
-    ("Heatmap", "Surface")    => :surface,
-    
-    ("Volume", "3D Cloud")    => :volume
-)
-
-const PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
-    "Lines"   => ["1D", "2D", "3D", "Scatterlines"],
-    "Scatter" => ["1D", "2D", "3D"],
+const EULERIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
+    "Lines"   => ["1D", "2D", "3D"],
     "Contour" => ["Lines", "Colormap", "Filled", "3D"],
     "Heatmap" => ["Flat", "Surface"],
     "Volume"  => ["3D Cloud"]
 )
 
+const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
+    "Scatter" => ["1D", "2D", "3D", "Lines", "Colors"] # Maps "Lines" to :scatterlines
+)
+
+const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
+    # Eulerian
+    ("Lines", "1D")           => :lines,
+    ("Lines", "2D")           => :lines2d,
+    ("Lines", "3D")           => :lines3d,
+    ("Contour", "Lines")      => :contour,
+    ("Contour", "Colormap")   => :contour_cmap, 
+    ("Contour", "Filled")     => :contourf,
+    ("Contour", "3D")         => :contour3d,
+    ("Heatmap", "Flat")       => :heatmap,
+    ("Heatmap", "Surface")    => :surface,
+    ("Volume", "3D Cloud")    => :volume,
+    
+    # Lagrangian
+    ("Scatter", "1D")         => :scatter1d,
+    ("Scatter", "2D")         => :scatter2d,
+    ("Scatter", "3D")         => :scatter3d,
+    ("Scatter", "Lines")      => :scatterlines,
+    ("Scatter", "Colors")     => :scattercolors,
+)
+
 const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
     :lines        => ["colors", "line_width", "line_styles", "dashed_lines", "reference"],
-    :scatter1d    => ["colors", "markers", "marker_size"],
+    :scatter1d    => ["color_map", "color_range", "markers", "marker_size", "bottom_margin", "rasterize", "method_index"],
+    :scattercolors=> ["colors", "markers", "marker_size"],
     :scatterlines => ["colors", "line_width", "line_styles", "dashed_lines", "markers", "marker_size", "reference"],
     
     :lines2d      => ["color_map", "color_range", "line_width", "line_direction", "bottom_margin", "method_index"],
@@ -303,26 +308,21 @@ end
 # ==============================================================================
 function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any)
     k = Symbol(prim_key)
+    deps = get(STYLE_DEPENDENCIES, k, String[])
     
-    if k == :lines
+    # 1. Color Management
+    if "colors" in deps
         prim.color[] = color
-        prim.linewidth[] = ui_app["line_width"][]
-    elseif k == :scatter
-        prim.color[] = color
-        prim.markersize[] = ui_app["marker_size"][]
-    elseif k == :scatterlines
-        prim.color[] = color
-        prim.linewidth[] = ui_app["line_width"][]
-        prim.markersize[] = ui_app["marker_size"][]
-    elseif k in (:heatmap, :surface, :volume, :contourf, :scatter2d, :scatter3d, :contour_cmap, :lines2d, :lines3d)
+    elseif "color_map" in deps
         prim.colormap[] = ui_app["color_map"][]
-        if k in (:scatter2d, :scatter3d)
-            prim.markersize[] = ui_app["marker_size"][]
-        elseif k in (:contour_cmap, :lines2d, :lines3d)
-            prim.linewidth[] = ui_app["line_width"][]
-        end
-    elseif k == :contour
-        prim.color[] = color
+    end
+    
+    # 2. Geometry Attributes
+    if "line_width" in deps
         prim.linewidth[] = ui_app["line_width"][]
+    end
+    
+    if "marker_size" in deps
+        prim.markersize[] = ui_app["marker_size"][]
     end
 end

@@ -573,13 +573,19 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     z_sel = w["Z-Axis"].selection
     comp_tgt_obs = w["Compare_Target"].selection
     
+    
     # THE NEW MENU BRIDGE
     base_obs = w["Base_Plot"].selection
     style_obs = w["Plot_Style"].selection
-    
+    update_menu_safe!(w["Base_Plot"], collect(keys(EULERIAN_PLOT_STYLE_OPTIONS)); fallbacks=["Lines"], force_notify=false)
+
     on(base_obs) do base_type
         isnothing(base_type) && return
-        valid_styles = get(PLOT_STYLE_OPTIONS, base_type, ["2D"])
+        
+        # THE FIX: Route the styles using the strictly disjoint dictionaries!
+        active_dict = PLOT_MODE[] == :lagrangian ? LAGRANGIAN_PLOT_STYLE_OPTIONS : EULERIAN_PLOT_STYLE_OPTIONS
+        valid_styles = get(active_dict, base_type, ["1D"])
+    
         update_menu_safe!(w["Plot_Style"], valid_styles)
         notify(manager.widgets["Editor_Scope"].selection)
     end
@@ -848,42 +854,6 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             manager.state["Config_Just_Loaded"].val = false
         end
     end
-    # =========================================================================
-    # LAGRANGIAN GATEKEEPER LOGIC
-    # =========================================================================
-    on(manager.widgets["Data_Mode_Button"].clicks) do _
-        current_mode = manager.state["Data_Mode"]
-        new_mode = current_mode[] == :eulerian ? :lagrangian : :eulerian
-        current_mode[] = new_mode
-        
-        btn = manager.widgets["Data_Mode_Button"]
-        btn.label[] = new_mode == :eulerian ? "Mode: Eulerian" : "Mode: Lagrangian"
-        btn.buttoncolor[] = new_mode == :eulerian ? :lightgray : :lightblue
-        
-        if new_mode == :lagrangian
-            @info "Switching to Lagrangian Mode. Locking spatial axes..."
-            
-            # 1. Lock the Base Plot to Scatter logic
-            update_menu_safe!(manager.widgets["Base_Plot"], ["Scatter"]; fallbacks=["Scatter"], force_notify=true)
-            
-            # 2. Hard-lock the spatial axes (Data Extraction will handle 1D vs 2D vs 3D)
-            update_menu_safe!(manager.widgets["X-Axis"], ["x"]; fallbacks=["x"])
-            update_menu_safe!(manager.widgets["Y-Axis"], ["y", "disabled"]; fallbacks=["y", "disabled"])
-            update_menu_safe!(manager.widgets["Z-Axis"], ["z", "disabled"]; fallbacks=["z", "disabled"])
-            
-            # 3. Disable Animation Target for Space
-            anim_menu = manager.widgets["Anim_Target"]
-            if anim_menu.selection[] in ["x", "y", "z"]
-                update_menu_safe!(anim_menu, anim_menu.options[]; fallbacks=["None"], force_notify=true)
-            end
-        else
-            @info "Switching to Eulerian Mode. Rebuilding dense grids..."
-            # Triggering a full update will naturally unlock the menus via your existing sync logic!
-        end
-        
-        # Fire the simulation update to completely rebuild the PlotData dictionaries!
-        manager.triggers["Simulation_Update"][] += 1
-    end
 end
 
 # ==============================================================================
@@ -892,7 +862,6 @@ end
 function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Observable)
     w = manager.widgets
     active_axes_obs = manager.state["Active_Axes"]
-    
     # 1. Lock the UI Menus and Populate U-Axis / Components
     onany(plot_data_obs) do plot_data_dict
         isempty(plot_data_dict) && return
@@ -902,7 +871,17 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         n_params = length(pd_first.active_param_keys)
         dim_names = manager.plot_vars
         
-        update_menu_safe!(w["Base_Plot"], ["Scatter"]; fallbacks=["Scatter"], force_notify=false)
+        # --- THE FIX: Read native D and adapt the menu dynamically ---
+        D = length(l_data.xmins)
+        
+        if D == 1
+            update_menu_safe!(w["Plot_Style"], ["1D", "Lines", "Colors"]; fallbacks=["1D"], force_notify=false)
+        elseif D == 2
+            update_menu_safe!(w["Plot_Style"], ["2D"]; fallbacks=["2D"], force_notify=false)
+        else
+            update_menu_safe!(w["Plot_Style"], ["3D"]; fallbacks=["3D"], force_notify=false)
+        end
+        
         update_menu_safe!(w["X-Axis"], ["x"]; fallbacks=["x"])
         update_menu_safe!(w["Y-Axis"], ["y", "disabled"]; fallbacks=["y", "disabled"])
         update_menu_safe!(w["Z-Axis"], ["z", "disabled"]; fallbacks=["z", "disabled"])

@@ -323,3 +323,55 @@ function convert_to_eulerian(ldata::LSimData{D, M}) where {D, M}
     # Unconditionally push it through the uniform time resampler!
     return resample_time(edata, T_grid)
 end
+# ==============================================================================
+# Eulerian to Lagrangian Conversion (Grid Shattering)
+# ==============================================================================
+function convert_to_lagrangian(data::ESimData{D}) where {D}
+    @info "Shattering Eulerian grid into unstructured Lagrangian particles..."
+    T_len = length(data.t)
+    C = size(data.u,1)
+    # 1. Flatten the spatial meshgrid into 1D particle arrays
+    if D == 1
+        pts = [SVector{1, Float64}(x) for x in data.x[1]]
+    elseif D == 2
+        pts = vec([SVector{2, Float64}(x, y) for x in data.x[1], y in data.x[2]])
+    elseif D == 3
+        pts = vec([SVector{3, Float64}(x, y, z) for x in data.x[1], y in data.x[2], z in data.x[3]])
+    end
+    N_pts = length(pts)
+    
+    # Since Eulerian grids are static, particles don't move. Duplicate the positions.
+    new_x = [copy(pts) for _ in 1:T_len]
+    
+    # 2. Fast Reshape Helper for Tensors
+    function flatten_field(field_tensor)
+        C_dim = size(field_tensor, D + 1)
+        new_field = Vector{Vector{SVector{C_dim, Float64}}}(undef, T_len)
+        
+        for t in 1:T_len
+            slice = selectdim(field_tensor, ndims(field_tensor), t)
+            flat_slice = reshape(slice, N_pts, C_dim)
+            new_field[t] = [SVector{C_dim, Float64}(flat_slice[p, :]...) for p in 1:N_pts]
+        end
+        return new_field
+    end
+    
+    # 3. Apply to all data
+    new_u = flatten_field(data.u)
+    
+    new_fields = Dict{String, Any}()
+    for (k, v) in data.fields; new_fields[k] = flatten_field(v); end
+    
+    new_profiles = Dict{String, Any}()
+    for (k, v) in data.profiles
+        C_dim = size(v, D + 1)
+        flat_slice = reshape(v, N_pts, C_dim)
+        new_profiles[k] = [[SVector{C_dim, Float64}(flat_slice[p, :]...) for p in 1:N_pts]]
+    end
+    
+    return LSimData{D,C}(
+        data.params, new_x, new_u, data.t, 
+        data.xmins, data.xmaxs, data.tmin, data.tmax,
+        data.scalars, data.series, new_profiles, new_fields
+    )
+end

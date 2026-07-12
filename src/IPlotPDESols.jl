@@ -8,7 +8,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using IRunPDESims # <-- Your new backend!
 # Export UI specific
-export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!, reset_plotter!
+export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!, reset_plotter!, set_mode!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 const BaseVariables = ["c","x","y","z","t"]
@@ -16,6 +16,8 @@ const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
 const VariableControls = [:menu,:slider,:slider,:slider,:slider]
 # Define the strict hierarchy of your dashboard (Highest priority first)
 const LOCK_HIERARCHY = ["Layout", "Scene", "Primitive", "Data", "UI"]
+const PLOT_MODE = Observable{Symbol}(:eulerian)
+set_mode!(mode::Symbol) = (PLOT_MODE[] = mode)
 
 """
     @with_lock manager "LockName" begin ... end
@@ -57,25 +59,33 @@ macro with_lock(manager, lock_name, expr)
     end
 end
 # --- 3. Makie Rendering Cache ---
+abstract type AbstractPlotCache end
+
 """
-    PlotCache
-Holds the reactive observables and primitive objects for a single plot layer.
+    EulerianPlotCache
+Stores dense, multi-dimensional axes arrays and flattened matrices 
+for heatmap, surface, and contour rendering.
 """
-mutable struct PlotCache
+mutable struct EulerianPlotCache <: AbstractPlotCache
     obs_x::Observable{Any}
     obs_y::Observable{Any}
     obs_z::Observable{Any}
     obs_u::Observable{Any}
-    primitives::Dict{Symbol, Any} # THE FIX: Native Symbol Dict
+    primitives::Dict{Symbol, Any}
 end
+EulerianPlotCache() = EulerianPlotCache(Observable{Any}(Float64[]), Observable{Any}(Float64[]), Observable{Any}(Float64[]), Observable{Any}(Float64[]), Dict{Symbol, Any}())
 
-PlotCache() = PlotCache(
-    Observable{Any}(Float64[]), 
-    Observable{Any}(Float64[]), 
-    Observable{Any}(Float64[]), 
-    Observable{Any}(Float64[]), 
-    Dict{Symbol, Any}()           # THE FIX: Native Symbol Dict
-)
+"""
+    LagrangianPlotCache
+Stores raw, unstructured particle data as Points/NTuples for direct 
+ingestion into Makie scatter objects.
+"""
+mutable struct LagrangianPlotCache <: AbstractPlotCache
+    obs_pts::Observable{Any} # Holds Point2f, Point3f, or Float64 (for 1D)
+    obs_u::Observable{Any}
+    primitives::Dict{Symbol, Any}
+end
+LagrangianPlotCache() = LagrangianPlotCache(Observable{Any}([]), Observable{Any}(Float64[]), Dict{Symbol, Any}())
 
 mutable struct PlotManager 
     simulation::NestedObsDict
@@ -91,7 +101,7 @@ mutable struct PlotManager
     methods::Observable{Vector{String}}
     plot_vars::Vector{String}
     last_run_params::ParamDict
-    caches::Dict{Int, Dict{String, PlotCache}}
+    caches::Dict{Int, Dict{String, AbstractPlotCache}}
 end
 
 # --- Plotting Data Structure ---

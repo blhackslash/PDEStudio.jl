@@ -17,6 +17,13 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     manager.widgets["Drop_Box"]   = drop_box
     manager.widgets["Drop_Label"] = drop_label
     current_row += 1
+    # Row 1: Top Execution Controls 
+    exec_layout = layout[current_row, 1] = GridLayout()    
+    manager.widgets["Run_Button"]       = Button(exec_layout[1, 1], label="Run Sim", buttoncolor=:lightgreen, width = nothing)
+    manager.widgets["Layout_Apply"] = Button(exec_layout[1, 2], label="Apply Layout", buttoncolor=:lightblue, width=nothing)
+    colsize!(exec_layout, 1, Relative(0.5))
+    colsize!(exec_layout, 2, Relative(0.5))
+    current_row += 1
 
     # --- 2. HIERARCHICAL EDITOR ---
     param_nav_layout = layout[current_row, 1] = GridLayout()
@@ -31,7 +38,7 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     current_row += 1
 
     # --- 4. OVERWRITES (Eulerian ONLY) ---
-    if manager.state["Data_Mode"][] == :eulerian
+    if PLOT_MODE[] == :eulerian
         Label(layout[current_row, 1], "Dimension Overwrites", fontsize=16, font=:bold, color=:darkred)
         current_row += 1
         lock_layout = layout[current_row, 1] = GridLayout()
@@ -95,7 +102,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
         end
     end
     
-    base_opts = ["Lines", "Scatter", "Contour", "Heatmap", "Volume"]
+    base_opts = PLOT_MODE[] == :eulerian ? ["Lines", "Scatter", "Contour", "Heatmap", "Volume"] : ["Scatter"]
     size_opts = [string(i) for i in 100:100:1000]
 
     # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
@@ -115,7 +122,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["1D", "2D", "3D", "Scatterlines"])
+    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["1D", "2D", "3D"])
     manager.widgets["Plot_Height"] = Menu(menu_layout[cr,2], options = size_opts)
     manager.widgets["Legend_Add"]  = Menu(menu_layout[cr,3], options = ["none", "detached", "left", "right", "top", "bottom"])
     push!(gaps, 15); cr += 1
@@ -129,10 +136,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     manager.widgets["Compare_Target"]  = Menu(menu_layout[cr,1], options = compare_opts)
     manager.widgets["Compare_Columns"] = Menu(menu_layout[cr,2], options = ["1", "2", "3", "4", "5"])
     manager.widgets["Compare_Link"]    = Menu(menu_layout[cr,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
-    push!(gaps, 10); cr += 1
 
-    # --- ROW BLOCK 4: APPLY BUTTON ---
-    manager.widgets["Layout_Apply"] = Button(menu_layout[cr, 1:3], label="Apply Layout", buttoncolor=:lightblue, width=nothing)
     push!(gaps, 25); cr += 1
 
     # =========================================================================
@@ -205,29 +209,19 @@ end
 # --- 4. HIERARCHICAL EDITOR BUILDER ---
 # ==============================================================================
 function create_hierarchical_param_controls!(layout::GridLayout, manager::PlotManager)
-    # 1. Initialize the state observable for the data pipeline
-    if !haskey(manager.state, "Data_Mode")
-        manager.state["Data_Mode"] = Observable(:eulerian)
-    end
-
-    # THE FIX: Use `layout[...]` to correctly assign Makie Parents instead of `fig`!
-    
-    # Row 1: Top Execution Controls (No Header above them)
-    manager.widgets["Data_Mode_Button"] = Button(layout[1, 1:2], label="Mode: Eulerian", buttoncolor=:lightgray, width = nothing)
-    manager.widgets["Run_Button"]       = Button(layout[1, 3:4], label="Run Sim", buttoncolor=:lightgreen, width = nothing)
     
     # Row 2: The Header (Positioned perfectly between the execution controls and the dropdowns)
-    Label(layout[2, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
+    Label(layout[1, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     
     # Row 3: The 3 Dropdowns (Nested to divide 3 items evenly across the row)
-    drop_gl = layout[3, 1:4] = GridLayout()
+    drop_gl = layout[2, 1:4] = GridLayout()
     manager.widgets["Editor_Cat"]   = Menu(drop_gl[1, 1], options=["Simulation", "UI", "Config", "Scene", "Layout"], prompt="Category")
     manager.widgets["Editor_Scope"] = Menu(drop_gl[1, 2], options=["-"], prompt="Scope")
     manager.widgets["Editor_Key"]   = Menu(drop_gl[1, 3], options=["-"], prompt="Parameter")
     
     # Row 4: The 3:1 Textbox/Toggle Layout
-    manager.widgets["Editor_Text"]   = Textbox(layout[4, 1:3], placeholder="Val / 'default'", width=nothing) # Spans 3 columns
-    manager.widgets["Editor_Toggle"] = Button(layout[4, 4], label="Toggle", buttoncolor=:lightgray)          # Spans 1 column
+    manager.widgets["Editor_Text"]   = Textbox(layout[3, 1:3], placeholder="Val / 'default'", width=nothing) # Spans 3 columns
+    manager.widgets["Editor_Toggle"] = Button(layout[3, 4], label="Toggle", buttoncolor=:lightgray)          # Spans 1 column
 end
 
 # ==============================================================================
