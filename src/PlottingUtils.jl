@@ -522,7 +522,7 @@ plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
 function _apply_axis_styles!(ax, manager, T)
     x, y, z = manager.widgets["X-Axis"].selection[], manager.widgets["Y-Axis"].selection[], manager.widgets["Z-Axis"].selection[]
     t = ax.title[]
-    if T == :surface || PLOT_DIM_MAP[T] == 3
+    if T == :surface || T == :scatter2d_surface || PLOT_DIM_MAP[T] == 3
         set_axis_styles!(ax, manager, string(x), string(y), string(z == "disabled" ? manager.widgets["U-Axis"].selection[] : z), t)
     elseif PLOT_DIM_MAP[T] == 1
         set_axis_styles!(ax, manager, string(x), string(manager.widgets["U-Axis"].selection[]), t)

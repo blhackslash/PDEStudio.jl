@@ -215,7 +215,7 @@ function create_hierarchical_param_controls!(layout::GridLayout, manager::PlotMa
     
     # Row 3: The 3 Dropdowns (Nested to divide 3 items evenly across the row)
     drop_gl = layout[2, 1:4] = GridLayout()
-    manager.widgets["Editor_Cat"]   = Menu(drop_gl[1, 1], options=["Simulation", "UI", "Config", "Scene", "Layout"], prompt="Category")
+    manager.widgets["Editor_Cat"]   = Menu(drop_gl[1, 1], options=["Simulation", "UI"], prompt="Category")
     manager.widgets["Editor_Scope"] = Menu(drop_gl[1, 2], options=["-"], prompt="Scope")
     manager.widgets["Editor_Key"]   = Menu(drop_gl[1, 3], options=["-"], prompt="Parameter")
     

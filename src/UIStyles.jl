@@ -1,6 +1,6 @@
 const UIType = Union{Symbol,MethodDict}
 const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour3d)
-const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
+const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :scatter2d_surface, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
 # --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
     :lines        => 1,
@@ -13,6 +13,7 @@ const PLOT_DIM_MAP = Dict(
     :contour_cmap => 2, 
     :contourf     => 2,
     :scatter2d    => 2,
+    :scatter2d_surface => 2,
     :surface      => 2,
     :lines3d      => 3,
     :contour3d    => 3,
@@ -28,13 +29,14 @@ const EULERIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
 )
 
 const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
-    "Scatter" => ["1D", "2D", "3D", "Lines", "Colors"] # Maps "Lines" to :scatterlines
+    "Scatter" => ["1D", "2D","2D (Surface)", "3D", "Lines", "Colors"] # Maps "Lines" to :scatterlines
 )
 
 const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
     # Eulerian
     ("Lines", "1D")           => :lines,
     ("Lines", "2D")           => :lines2d,
+    ("Scatter", "2D (Surface)") => :scatter2d_surface,
     ("Lines", "3D")           => :lines3d,
     ("Contour", "Lines")      => :contour,
     ("Contour", "Colormap")   => :contour_cmap, 
@@ -62,6 +64,7 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
     :lines3d      => ["color_map", "color_range", "line_width", "line_direction", "bottom_margin", "method_index"],
     
     :scatter2d    => ["color_map", "color_range", "markers", "marker_size", "bottom_margin", "rasterize", "method_index"],
+    :scatter2d_surface => ["color_map", "color_range", "markers", "marker_size", "rasterize", "method_index"],
     :scatter3d    => ["color_map", "color_range", "markers", "marker_size", "rasterize", "method_index"],
     
     :contour      => ["colors", "levels", "line_width", "labels"],
@@ -72,6 +75,22 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
     :volume       => ["color_map", "color_range", "rasterize", "method_index"],
     :contour3d    => ["colors", "levels", "line_width", "method_index"]
 )
+
+# --- TIER 1: LAYOUT OPTIONS ---
+function get_base_layout_options()
+    return Dict{String, Any}(
+        "Base_Plot_Selection"       => "Lines",  
+        "Plot_Style_Selection"      => "1D",
+        "Compare_Target_Selection"  => "None", 
+        "Compare_Columns_Selection" => "2",     
+        "Compare_Link_Selection"    => "Fully Coupled",
+        "Legend_Base_Selection"     => "right",
+        "Legend_Add_Selection"      => "detached",
+        "Plot_Width_Selection"      => "600",
+        "Plot_Height_Selection"     => "400",
+        "Anim_Target_Selection"     => "None"
+    )
+end
 
 # --- 2. OBSERVABLE TEMPLATES ---
 """
@@ -190,10 +209,10 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     if dim == 1
         ui["X-Axis"] = master["X-Axis-1D"]
         ui["Y-Axis"] = master["Y-Axis-1D"]
-    elseif dim == 2 && !(plot_type==:surface)
+    elseif dim == 2 && !(plot_type==:surface || plot_type==:scatter2d_surface)
         ui["X-Axis"] = master["X-Axis-ND"]
         ui["Y-Axis"] = master["Y-Axis-ND"]
-    elseif dim == 3 || plot_type==:surface
+    elseif dim == 3 || plot_type==:surface || plot_type==:scatter2d_surface
         ui["X-Axis"] = master["X-Axis-ND"]
         ui["Y-Axis"] = master["Y-Axis-ND"]
         ui["Z-Axis"] = master["Z-Axis-3D"]
@@ -208,7 +227,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     preset_list = presets isa Symbol ? [presets] : presets
     ui_over = Dict{String, Any}()
     
-    scene_opt = get_base_scene_options()
+    scene_opt = Dict{String, Any}()
     layout_opt = get_base_layout_options() # THE FIX: Bring Layout options back!
 
     function set_ui!(scope, key, val)

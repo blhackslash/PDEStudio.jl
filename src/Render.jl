@@ -270,7 +270,32 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.primitives[:surface] = sf
     cache_dict[label] = cache
 end
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d_surface}, plot_idx::Int)
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+    pts_slices, us_slices = data_tuples
 
+    base_idx = get_base_method_index(ui_app, active_methods)
+    label = active_methods[base_idx]
+    
+    cache = LagrangianPlotCache()
+    cache.obs_pts.val = pts_slices[base_idx]
+    cache.obs_u[]     = us_slices[base_idx]
+
+    valid_u = filter(isfinite, cache.obs_u[])
+    cr_obs = get_colorrange(ui_app, valid_u)
+    
+    # Lift the 2D Points and 1D Scalars into native 3D space!
+    pts_3d = lift(cache.obs_pts, cache.obs_u) do pts, us
+        [Point3f(p[1], p[2], u) for (p, u) in zip(pts, us)]
+    end
+
+    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    
+    cache.primitives[:scatter2d_surface] = sc
+    cache_dict[label] = cache
+    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
+end
 
 # -----------------------------------------------------------------------------
 # 3D PRIMITIVES
@@ -410,6 +435,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         push!(labels_for_legend, label)
     end
 end
+initialize_base_plot!(kwargs...) = @warn "Could not find requested Plotting Style!"
 # =============================================================================
 # TIER 3 DATA INJECTION HELPERS (Perfectly Forked)
 # =============================================================================
@@ -440,7 +466,8 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
+        cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
+        notify(cache.obs_x)
     end
 end
 
@@ -456,12 +483,13 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
             X, Y, U = build_2d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
             cache.obs_y.val = Y
-            cache.obs_u[]   = U
+            cache.obs_u.val = U
         else
             cache.obs_x.val = xs_slices[m_idx]
             cache.obs_y.val = ys_slices[m_idx]
-            cache.obs_u[]   = us_slices[m_idx]
+            cache.obs_u.val = us_slices[m_idx]
         end
+        notify(cache.obs_x)
     end
 end
 
@@ -479,12 +507,13 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
             cache.obs_x.val = X
             cache.obs_y.val = Y
             cache.obs_z.val = Z
-            cache.obs_u[]   = U
+            cache.obs_u.val   = U
         else
             cache.obs_x.val = extrema(xs_slices[m_idx])
             cache.obs_y.val = extrema(ys_slices[m_idx])
             cache.obs_z.val = extrema(zs_slices[m_idx])
-            cache.obs_u[]   = us_slices[m_idx]
+            cache.obs_u.val   = us_slices[m_idx]
         end
+        notify(cache.obs_x)
     end
 end

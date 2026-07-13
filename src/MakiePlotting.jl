@@ -368,6 +368,8 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
                 ptype_sym = :scatterlines
             elseif style_sel == "Colors" && D == 1
                 ptype_sym = :scattercolors
+            elseif style_sel == "2D (Surface)" && D == 2
+                ptype_sym = :scatter2d_surface
             else
                 ptype_sym = D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
             end
@@ -446,7 +448,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 end
 
 function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
-    is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface
+    is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface || T == :scatter2d_surface
     w = manager.widgets
     rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
     CT = PLOT_MODE[] == :eulerian ? EulerianPlotCache : LagrangianPlotCache
@@ -590,8 +592,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
                     default_title = is_compare ? compare_labels[i] : ts
                     axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
-                    if !is_3d_axis; set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
-                        plot_HUD!(axes[i], manager)
+                    if !is_3d_axis
+                        if first(values(data)) isa LagrangianPlotData && PLOT_DIM_MAP[T] == 2
+                            x_lims = [[p[1] for p in slice] for slice in dt[1]]
+                            y_lims = [[p[2] for p in slice] for slice in dt[1]]
+                            set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
+                        else
+                            set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+                        end
                     end
 
                     _enforce_camera_lock!(axes, manager)
@@ -633,15 +641,24 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 end
                 
                 if !is_3d_axis
+                    # THE FIX: Same coordinate stripping for real-time limit syncing
+                    x_lims, y_lims = if first(values(data)) isa LagrangianPlotData && PLOT_DIM_MAP[T] == 2
+                        [[p[1] for p in slice] for slice in dt[1]], [[p[2] for p in slice] for slice in dt[1]]
+                    else
+                        dt[1], dt[2]
+                    end
+                    
                     safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-                    if axes[i].xscale[] == log10 && safe_min(dt[1]) <= 0
+                    if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
                         @warn "Negative X data encountered. Disabling log_scale to prevent crash."
                         axes[i].xscale[] = identity
                     end
-                    if axes[i].yscale[] == log10 && safe_min(dt[2]) <= 0
+                    if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0
                         @warn "Negative Y/U data encountered. Disabling log_scale to prevent crash."
                         axes[i].yscale[] = identity
                     end
+                    
+                    set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                 end
                 
                 sync_data_to_cache!(caches[i], local_methods, dt, manager, Val(PLOT_DIM_MAP[T]))

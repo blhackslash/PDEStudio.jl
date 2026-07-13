@@ -530,7 +530,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         GLOBAL_UI_OVERWRITE[]  = Dict{String, Any}()
         GLOBAL_LAYOUT_OPTIONS[]= Dict{String, Any}()
         GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
-        apply_scene_options!(manager, get_base_scene_options())
         @info "Global defaults cleared! Basic scene options restored."
     end
 
@@ -835,7 +834,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         
         # --- Config Initialization Cleanup ---
         if manager.state["Config_Just_Loaded"][]
-            opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
+            opts = GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
             
             if !isempty(GLOBAL_UI_OVERWRITE[])
@@ -874,17 +873,22 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         # --- THE FIX: Read native D and adapt the menu dynamically ---
         D = length(l_data.xmins)
         
+        # --- THE FIX: Force the Y and Z menus dynamically based on D ---
+        update_menu_safe!(w["X-Axis"], ["x"]; fallbacks=["x"])
         if D == 1
             update_menu_safe!(w["Plot_Style"], ["1D", "Lines", "Colors"]; fallbacks=["1D"], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"])
+            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
         elseif D == 2
-            update_menu_safe!(w["Plot_Style"], ["2D"]; fallbacks=["2D"], force_notify=false)
+            # Added "2D (Surface)" here!
+            update_menu_safe!(w["Plot_Style"], ["2D", "2D (Surface)"]; fallbacks=["2D"], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], ["y"]; fallbacks=["y"])
+            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
         else
             update_menu_safe!(w["Plot_Style"], ["3D"]; fallbacks=["3D"], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], ["y"]; fallbacks=["y"])
+            update_menu_safe!(w["Z-Axis"], ["z"]; fallbacks=["z"])
         end
-        
-        update_menu_safe!(w["X-Axis"], ["x"]; fallbacks=["x"])
-        update_menu_safe!(w["Y-Axis"], ["y", "disabled"]; fallbacks=["y", "disabled"])
-        update_menu_safe!(w["Z-Axis"], ["z", "disabled"]; fallbacks=["z", "disabled"])
         
         # --- THE FIX: POPULATE U-AXIS ---
         valid_fields = ["u"]
@@ -982,7 +986,7 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         
         # Cleanup
         if manager.state["Config_Just_Loaded"][]
-            opts = isempty(GLOBAL_SCENE_OPTIONS[]) ? get_base_scene_options() : GLOBAL_SCENE_OPTIONS[]
+            opts = GLOBAL_SCENE_OPTIONS[]
             apply_scene_options!(manager, opts)
             manager.state["Config_Just_Loaded"].val = false
         end
