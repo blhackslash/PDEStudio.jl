@@ -29,7 +29,7 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
 end
 # Singleton Global Observables & State
 const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
-const ACTIVE_PLOT_MANAGER = Ref{PlotManager}()
+const ACTIVE_PLOT_MANAGER = Ref{Union{Nothing, PlotManager}}(nothing)
 #const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :ctrl_fig => nothing, :plot_layout => nothing))
 const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :master_fig => nothing))
 
@@ -196,10 +196,6 @@ Backend-agnostic Single Dashboard entry point.
 Initializes either the dense Eulerian or unstructured Lagrangian pipeline.
 """
 function launch_plotter()
-
-    on(PLOT_MODE) do _
-        reset_plotter!()
-    end
         
     if isnothing(ACTIVE_SIM_CONFIG[])
         ACTIVE_SIM_CONFIG[] = SimulationConfig(

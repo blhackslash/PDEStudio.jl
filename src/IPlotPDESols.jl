@@ -151,5 +151,11 @@ include("Controls.jl")
 include("InteractionController.jl")
 include("Render.jl")
 
+function __init__()
+    on(PLOT_MODE) do _
+        reset_plotter!()
+        ACTIVE_PLOT_MANAGER[] = nothing
+    end
+end
 
 end

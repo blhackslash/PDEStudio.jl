@@ -23,6 +23,7 @@ const PLOT_DIM_MAP = Dict(
 
 const EULERIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
     "Lines"   => ["1D", "2D", "3D"],
+    "Scatter" => ["1D", "Lines", "Colors"],
     "Contour" => ["Lines", "Colormap", "Filled", "3D"],
     "Heatmap" => ["Flat", "Surface"],
     "Volume"  => ["3D Cloud"]

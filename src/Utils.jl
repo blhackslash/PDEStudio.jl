@@ -449,12 +449,6 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     end
     
     new_config = csv_to_simulation_config(parsed, resolved_func)
-    
-    new_vars = [collect(keys(new_config.varied_params)); BaseVariables]
-    if manager.plot_vars != new_vars
-        @warn "CSV contains different spatial/varied parameters. Please restart plotter to rebuild UI."
-        return
-    end
 
     @info "CSV Loaded: Running all defined simulations for exact recreation..."
     runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
@@ -464,7 +458,7 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        scene_opts = get_base_scene_options()
+        scene_opts = Dict{String,Any}()
         for (k, v) in parsed["Scene"]["General"]
             scene_opts[k] = v
         end
