@@ -278,19 +278,32 @@ function runAllSimulations(
         function _post_task(params)
             sim_data = loadSimData(params)
             if !isnothing(sim_data)  
+                
+                # --- THE FIX: Skip Stats if already computed ---
                 if calculate_stats
-                    calculateAllStats!(
-                        sim_data, 
-                        sim_config.reference_func; 
-                        stats_to_calculate=stats_to_calculate, 
-                        data_key="sim_data_raw",
-                        force_overwrite=force_overwrite,
-                        ana_cache=ana_cache
-                    )
+                    # Check if the stats dictionary exists and already contains all requested keys
+                    stats_needed = force_overwrite || isnothing(sim_data.stats) || !all(haskey(sim_data.stats, String(s)) for s in stats_to_calculate)
+                    
+                    if stats_needed
+                        calculateAllStats!(
+                            sim_data, 
+                            sim_config.reference_func; 
+                            stats_to_calculate=stats_to_calculate, 
+                            data_key="sim_data_raw",
+                            force_overwrite=force_overwrite,
+                            ana_cache=ana_cache
+                        )
+                    end
                 end
+                
+                # --- THE FIX: Skip Eulerian conversion if file already exists ---
                 if convert_eulerian && (sim_data isa LSimData)
-                    conv_data = convert_to_eulerian(sim_data)
-                    saveSimData(conv_data; data_key="sim_data_plot_$(_N_GRID[])_$(_T_GRID[])", overwrite=true)
+                    plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
+                    
+                    if force_overwrite || !doesSimDataExist(params; data_key=plot_key)
+                        conv_data = convert_to_eulerian(sim_data)
+                        saveSimData(conv_data; data_key=plot_key, overwrite=true)
+                    end
                 end
             end
         end

@@ -435,13 +435,21 @@ function extract_scene_options(manager::PlotManager)
     end
     return opts
 end
-
 function load_and_apply_csv!(manager::PlotManager, filepath::String)
     @info "Loading configuration from CSV: $filepath"
     
     parsed = parse_csv_to_dict(filepath)
-    sim_func_str = parsed["Config"]["General"]["simulation_func"]
     
+    # Restore Grid Resolutions BEFORE running simulations
+    if haskey(parsed, "Config") && haskey(parsed["Config"], "Resolutions")
+        res = parsed["Config"]["Resolutions"]
+        haskey(res, "_N_GRID")   && (_N_GRID[]   = res["_N_GRID"])
+        haskey(res, "_T_GRID")   && (_T_GRID[]   = res["_T_GRID"])
+        haskey(res, "_REF_GRID") && (_REF_GRID[] = res["_REF_GRID"])
+        @info "Restored grid resolutions: N=$(_N_GRID[]), T=$(_T_GRID[]), REF=$(_REF_GRID[])"
+    end
+
+    sim_func_str = parsed["Config"]["General"]["simulation_func"]
     resolved_func = resolve_simulation_function(sim_func_str, nothing)
     if isnothing(resolved_func)
         @error "Aborting: Could not resolve simulation function '$sim_func_str'"
@@ -449,9 +457,14 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     end
     
     new_config = csv_to_simulation_config(parsed, resolved_func)
-
+    
     @info "CSV Loaded: Running all defined simulations for exact recreation..."
     runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
+    
+    empty!(manager.last_run_params)
+    for cache_dict in manager.caches
+        empty!(cache_dict)
+    end
     
     if haskey(parsed, "UI")
         GLOBAL_UI_OVERWRITE[] = parsed["UI"]
@@ -473,19 +486,31 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
         GLOBAL_LAYOUT_OPTIONS[] = layout_opts
     end
 
-    if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General")
+    # --- THE FIX (Part 2): Apply and Lock the Camera ---
+    if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
         GLOBAL_CAMERA_OPTIONS[] = parsed["Camera"]["General"]
-    else
-        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
-    end
-    if get(manager.state, "Camera_Locked", Observable(false))[]
-        manager.state["Camera_Locked"][] = false
+        
+        # Turn the lock ON so _enforce_camera_lock! actually applies these limits!
+        manager.state["Camera_Locked"][] = true
         if haskey(manager.widgets, "Lock_Camera_Button")
             btn = manager.widgets["Lock_Camera_Button"]
-            btn.label[] = "Lock Camera"
-            btn.buttoncolor[] = :lightgray
+            btn.label[] = "Unlock Camera"
+            btn.buttoncolor[] = :lightgreen # Match your "locked" UI color
+        end
+    else
+        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+        
+        # Turn the lock OFF if the CSV didn't have camera settings
+        if get(manager.state, "Camera_Locked", Observable(false))[]
+            manager.state["Camera_Locked"][] = false
+            if haskey(manager.widgets, "Lock_Camera_Button")
+                btn = manager.widgets["Lock_Camera_Button"]
+                btn.label[] = "Lock Camera"
+                btn.buttoncolor[] = :lightgray
+            end
         end
     end
+    
     ACTIVE_SIM_CONFIG[] = new_config
     @info "Successfully applied CSV config to UI!"
 end
@@ -788,6 +813,10 @@ function saveParametersToCSV(
         for (scope, dict) in manager.config
             for (k, v) in dict; add_row("Config", scope, k, v); end
         end
+
+        add_row("Config", "Resolutions", "_N_GRID", _N_GRID[])
+        add_row("Config", "Resolutions", "_T_GRID", _T_GRID[])
+        add_row("Config", "Resolutions", "_REF_GRID", _REF_GRID[])
 
         CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
         @info "Metadata and Parameters saved to $csv_filename"

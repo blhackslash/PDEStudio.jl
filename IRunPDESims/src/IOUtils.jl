@@ -173,32 +173,6 @@ function doesSimDataExist(params::ParamDict; data_key::String="sim_data_raw")
     end
 end
 
-function loadBestConversion(params::ParamDict, min_N::Int)
-    file_name = getFileName(params)
-    best_key = ""
-    best_N = typemax(Int)
-    
-    jldopen(file_name, "r") do file
-        for k in keys(file)
-            if startswith(k, "sim_data_plot_")
-                N_str = replace(k, "sim_data_plot_" => "")
-                N = tryparse(Int, N_str)
-                if !isnothing(N) && N >= min_N && N < best_N
-                    best_N = N
-                    best_key = k
-                end
-            end
-        end
-    end
-    
-    if isempty(best_key)
-        throw(SimFileNotFoundError("No conversion found with N >= $min_N"))
-    end
-    
-    @info "Found suitable high-res conversion: '$best_key' (Requested minimum: $min_N)"
-    return loadSimData(params; data_key=best_key)
-end
-
 function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
     clean_prefix = replace(hash_prefix, ".jld2" => "")
     save_data = joinpath(get_save_path(), "data")

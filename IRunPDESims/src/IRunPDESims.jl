@@ -13,7 +13,7 @@ export createParamDict, createMethodDict, createVariedDict, createSimData
 
 # Globals & Settings
 export _SAVE_ROOT_PATH, _N_GRID, _T_GRID, _REF_GRID, _SIM_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
-export set_save_path!, get_save_path, set_space_resolution!, set_time_resolution!, set_sim_path!, set_target_module!
+export set_save_path!, get_save_path, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
 
 # Simulation & Data Pipeline
 export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks

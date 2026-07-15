@@ -18,11 +18,19 @@ function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
         
         if !isempty(tasks)
             try
+                plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
+                
+                # THE FIX: Instantly load cached Eulerian template without touching raw data!
+                if PLOT_MODE[] == :eulerian && doesSimDataExist(tasks[1]; data_key=plot_key)
+                    return loadSimData(tasks[1]; data_key=plot_key)
+                end
+                
                 sim_data = loadSimData(tasks[1])
                 if !isnothing(sim_data)
-                    # THE FIX: Only force Eulerian conversion if requested!
                     if PLOT_MODE[] == :eulerian && sim_data isa LSimData
-                        return convert_to_eulerian(sim_data)
+                        sim_data = convert_to_eulerian(sim_data)
+                        saveSimData(sim_data; data_key=plot_key, overwrite=true)
+                        return sim_data
                     end
                     return sim_data
                 end
@@ -334,14 +342,16 @@ function create_eulerian_plot_data(
             # THE FIX: Reuse the high-res template for the first task to save time!
             sim_data = (k == 1) ? template_data : generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
-            sim_data = loadSimData(params)
+            plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
             
-            if sim_data isa LSimData
-                plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
-                plot_data = loadSimData(params; data_key=plot_key)
-                if !isnothing(plot_data)
-                    sim_data = plot_data
-                else
+            # THE FIX: Check if the exact Eulerian conversion exists BEFORE loading raw data!
+            if doesSimDataExist(params; data_key=plot_key)
+                sim_data = loadSimData(params; data_key=plot_key)
+            else
+                # Fallback: Load the raw Lagrangian data and convert it
+                sim_data = loadSimData(params)
+                
+                if sim_data isa LSimData
                     sim_data = convert_to_eulerian(sim_data)
                     saveSimData(sim_data; data_key=plot_key, overwrite=true)
                 end

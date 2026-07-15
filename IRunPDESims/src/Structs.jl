@@ -8,13 +8,13 @@ const FixedDict = ParamDict
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _SIM_ROOT_PATH = Ref{String}(pwd())
 const _N_GRID = Ref{Int}(100)
-const _T_GRID = Ref{Int}(100) # THE NEW FIX: Global Time Resolution
+const _T_GRID = Ref{Int}(25)
 const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
 set_space_resolution!(n::Int) = (_N_GRID[] = n)
 set_time_resolution!(n::Int) = (_T_GRID[] = n)
-set_reference_resolution!(n::Int) = (_REF_GRID[] = n)
+set_ref_resolution!(n::Int) = (_REF_GRID[] = n)
 set_sim_path!(path::String) = (_SIM_ROOT_PATH[] = path)
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 
