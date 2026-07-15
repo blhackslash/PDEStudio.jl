@@ -2,37 +2,47 @@
 # --- EULERIAN CONSTRUCTORS ---
 # ==============================================================================
 
-function createSimData(x::AbstractVector{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
-    u_expanded = reshape(u, 1, size(u, 1), size(u, 2))
+# 1D Eulerian Constructor
+function createSimData(
+    x::AbstractVector{<:Real}, 
+    u::AbstractMatrix{SVector{M, T}}, 
+    t::AbstractVector{<:Real}, 
+    params::ParamDict; 
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
+) where {M, T<:Real}
     
     _xmins = isnothing(xmins) ? (Float64(minimum(x)),) : Float64.(Tuple(xmins))
     _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x)),) : Float64.(Tuple(xmaxs))
     _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
     _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
     
-    return ESimData{1}(params, (Float64.(x),), Float64.(u_expanded), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
+    # Cast inner values to Float64 if they aren't already
+    u_float = u isa AbstractMatrix{SVector{M, Float64}} ? u : [SVector{M, Float64}(v) for v in u]
+    
+    return ESimData{1, M}(params, (Float64.(x),), u_float, Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
-function createSimData(x::AbstractVector{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
-    _xmins = isnothing(xmins) ? (Float64(minimum(x)),) : Float64.(Tuple(xmins))
-    _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x)),) : Float64.(Tuple(xmaxs))
-    _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
-    _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
-
-    return ESimData{1}(params, (Float64.(x),), Float64.(u), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
-end
-
-function createSimData(x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray{<:Real, 3}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
+# 2D Eulerian Constructor
+function createSimData(
+    x_grid::AbstractMatrix{<:Real}, 
+    y_grid::AbstractMatrix{<:Real}, 
+    u::AbstractArray{SVector{M, T}, 3}, 
+    t::AbstractVector{<:Real}, 
+    params::ParamDict; 
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
+) where {M, T<:Real}
+    
     x_axis = vec(x_grid[:, 1]) 
     y_axis = vec(y_grid[1, :]) 
-    u_expanded = reshape(u, 1, size(u, 1), size(u, 2), size(u, 3))
     
     _xmins = isnothing(xmins) ? (Float64(minimum(x_axis)), Float64(minimum(y_axis))) : Float64.(Tuple(xmins))
     _xmaxs = isnothing(xmaxs) ? (Float64(maximum(x_axis)), Float64(maximum(y_axis))) : Float64.(Tuple(xmaxs))
     _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
     _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
 
-    return ESimData{2}(params, (Float64.(x_axis), Float64.(y_axis)), Float64.(u_expanded), Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
+    u_float = u isa AbstractArray{SVector{M, Float64}, 3} ? u : [SVector{M, Float64}(v) for v in u]
+
+    return ESimData{2, M}(params, (Float64.(x_axis), Float64.(y_axis)), u_float, Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
 end
 
 # ==============================================================================
@@ -129,207 +139,167 @@ function resample_time(data::ESimData{D}, T_grid::Int) where {D}
         data.scalars, new_series, data.profiles, new_fields
     )
 end
-
-function convert_to_eulerian(ldata::LSimData{D, M}) where {D, M}
-    # THE FIX: Pull directly from the global state
-    N_grid = _N_GRID[]
-    T_grid = _T_GRID[]
+function convert_to_eulerian(ldata::LSimData{D, M}; N_grid=_N_GRID[], T_grid=_T_GRID[]) where {D, M}
     T_len = length(ldata.t)
-
-    mins = collect(ldata.xmins)
-    maxs = collect(ldata.xmaxs)
+    mins, maxs = collect(ldata.xmins), collect(ldata.xmaxs)
     
-    for d in 1:D
-        pad = 0. 
-        mins[d] -= pad; maxs[d] += pad
-    end
-
     grid_axes = ntuple(d -> collect(range(mins[d], maxs[d], length=N_grid)), Val(D))
     grid_shape = ntuple(d -> N_grid, Val(D))
     x_euler = ntuple(d -> grid_axes[d], Val(D))
 
-    # Preallocate Eulerian grids
-    u_euler = zeros(Float64, M, grid_shape..., T_len)
-    
-    e_fields = Dict{String, Array{Float64}}()
-    for (k, v) in ldata.fields
-        e_fields[k] = zeros(Float64, M, grid_shape..., T_len) 
-    end
-    
-    e_profiles = Dict{String, Array{Float64}}()
-    for (k, v) in ldata.profiles
-        e_profiles[k] = zeros(Float64, D, grid_shape...) 
-    end
-
-    cell_sizes = [(maxs[d] - mins[d]) / max(1, N_grid - 1) for d in 1:D]
-    
-    # --- THE FIX: Dynamic Particle-Aware Smoothing ---
-    # 1. Estimate average particle spacing based on the initial state
+    # --- Pre-calculate grid metrics ---
     N_p_initial = max(1, length(ldata.x[1]))
-    
-    # N_p^(1/D) correctly estimates the 1D count along a single axis for 1D, 2D, and 3D!
     pts_per_dim = max(1.0, N_p_initial^(1 / D) - 1.0)
+    
+    cell_sizes = [(maxs[d] - mins[d]) / max(1, N_grid - 1) for d in 1:D]
     particle_spacings = [(maxs[d] - mins[d]) / pts_per_dim for d in 1:D]
     
-    # 2. Use the larger of the two spacings to ensure we bridge particle gaps
     effective_spacing = max.(cell_sizes, particle_spacings)
-    
-    # 3. Calculate squared radius for fast distance checking
-    # 1.5x to 2.0x is usually the sweet spot to overlap the kernels
     radius = (norm(effective_spacing) * 1.5)^2
+    radius_1d = sqrt(radius) # For the bounding box
 
-    # --- Precompute SVector bounds for algebraic pos calculation ---
     s_mins = SVector{D, Float64}(mins)
     s_maxs = SVector{D, Float64}(maxs)
     s_dx = (s_maxs - s_mins) / max(1, N_grid - 1)
+    s_inv_dx = 1.0 ./ s_dx # Pre-compute inverse for fast division
 
+    # --- Preallocate SVector Eulerian grids ---
+    zero_vec = zero(SVector{M, Float64})
+    nan_vec = zero_vec .* NaN
+    
+    u_euler = fill(zero_vec, grid_shape..., T_len)
+    w_euler = zeros(Float64, grid_shape..., T_len)
+    
+    e_fields = Dict{String, Array{SVector{M, Float64}, D+1}}()
+    for k in keys(ldata.fields)
+        e_fields[k] = fill(zero_vec, grid_shape..., T_len)
+    end
+    
+    e_profiles = Dict{String, Array{SVector{M, Float64}, D}}()
+    for k in keys(ldata.profiles)
+        e_profiles[k] = fill(zero_vec, grid_shape...)
+    end
+    
+    # Pre-extract dictionaries for fast loop access
     field_keys = collect(keys(ldata.fields))
     field_vals = collect(values(ldata.fields))
-
     profile_keys = collect(keys(ldata.profiles))
     profile_vals = collect(values(ldata.profiles))
 
     # =========================================================================
-    # 1. SPATIAL BATCH LOOP (Dynamic, Time-Series Data)
+    # 1. TIME BATCH LOOP (Dynamic Scatter Algorithm)
     # =========================================================================
-    @batch for idx in CartesianIndices(grid_shape)
-        
-        # Pure SVector algebraic position calculation (Zero allocations, No branching)
-        s_idx = SVector{D, Float64}(Tuple(idx))
-        pos = s_mins + s_dx .* (s_idx .- 1.0)
-        
-        @inbounds for t_idx in 1:T_len
-            # Explicit type assertions
-            x_step = ldata.x[t_idx]
-            u_step = ldata.u[t_idx]
-            
-            N_p = length(x_step)
-            
-            if N_p == 0
-                for c in 1:M; u_euler[c, idx, t_idx] = NaN; end
-                for i in 1:length(field_keys)
-                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = NaN; end
-                end
-                continue
-            end
-
-            w_sum = 0.0
-            # Instance-based zero allocation (No GC dispatch)
-            u_sum = zero(u_step[1])
-            
-            # Zero out the target array positions for direct accumulation
-            for i in 1:length(field_keys)
-                for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = 0.0; end
-            end
-
-            @inbounds for p_idx in 1:N_p
-                # Squared distance calculation (No sqrt() overhead)
-                dist = sum(abs2, pos - x_step[p_idx])
-                
-                if dist < 1e-10 
-                    u_sum = u_step[p_idx]
-                    for i in 1:length(field_vals)
-                        for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = field_vals[i][t_idx][p_idx][c]; end
-                    end
-                    w_sum = 1.0; break
-                    
-                elseif dist <= radius
-                    # 1/r^4 falloff achieved by squaring the squared distance
-                    w = 1.0 / (dist^2)
-                    w_sum += w
-                    u_sum += u_step[p_idx] * w
-                    
-                    # Accumulate DIRECTLY into the output array
-                    for i in 1:length(field_vals)
-                        for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] += field_vals[i][t_idx][p_idx][c] * w; end
-                    end
-                end
-            end
-
-            # Finalize averages
-            if w_sum > 0.0
-                u_avg = u_sum / w_sum
-                for c in 1:M; u_euler[c, idx, t_idx] = u_avg[c]; end
-                
-                for i in 1:length(field_keys)
-                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] /= w_sum; end
-                end
-            else
-                for c in 1:M; u_euler[c, idx, t_idx] = NaN; end
-                for i in 1:length(field_keys)
-                    for c in 1:M; e_fields[field_keys[i]][c, idx, t_idx] = NaN; end
-                end
-            end
-        end
-    end
-
-    # =========================================================================
-    # 2. SPATIAL BATCH LOOP (Static Profile Data)
-    # =========================================================================
-    if !isempty(profile_keys)
-        # Explicit type assertion for the static positions
-        x_step = ldata.x[1]::Vector{SVector{D, Float64}}
+    @batch for t_idx in 1:T_len
+        x_step = ldata.x[t_idx]
+        u_step = ldata.u[t_idx]
         N_p = length(x_step)
         
-        @batch for idx in CartesianIndices(grid_shape)
+        # Pass 1: Scatter particles to local grid cells
+        @inbounds for p_idx in 1:N_p
+            pos = x_step[p_idx]
             
-            # Pure SVector algebraic position calculation
-            s_idx = SVector{D, Float64}(Tuple(idx))
-            pos = s_mins + s_dx .* (s_idx .- 1.0)
+            # 1. Calculate Grid Bounding Box for this particle
+            idx_float = (pos .- s_mins) .* s_inv_dx .+ 1.0
+            rad_idx = radius_1d .* s_inv_dx
             
-            w_sum = 0.0
+            min_idx = @. max(1, floor(Int, idx_float - rad_idx))
+            max_idx = @. min(N_grid, ceil(Int, idx_float + rad_idx))
             
-            # Zero out the target array positions
-            for i in 1:length(profile_keys)
-                for c in 1:D; e_profiles[profile_keys[i]][c, idx] = 0.0; end
-            end
-
-            @inbounds for p_idx in 1:N_p
-                # Squared distance calculation applied here too
-                dist = sum(abs2, pos - x_step[p_idx])
+            # 2. Scatter only to affected cells
+            for cell_idx in CartesianIndices(ntuple(d -> min_idx[d]:max_idx[d], Val(D)))
+                s_idx = SVector{D, Float64}(Tuple(cell_idx))
+                cell_pos = s_mins + s_dx .* (s_idx .- 1.0)
                 
-                if dist < 1e-10
-                    for i in 1:length(profile_vals)
-                        for c in 1:D; e_profiles[profile_keys[i]][c, idx] = profile_vals[i][1][p_idx][c]; end
-                    end
-                    w_sum = 1.0; break
+                dist2 = sum(abs2, cell_pos - pos)
+                if dist2 <= radius
+                    # Smooth 1/r^2 weight, clamped to avoid Inf at perfect overlap
+                    w = 1.0 / max(dist2, 1e-12) 
                     
-                elseif dist <= radius
-                    # 1/r^4 falloff from squared distance
-                    w = 1.0 / (dist^2)
-                    w_sum += w
-                    for i in 1:length(profile_vals)
-                        for c in 1:D; e_profiles[profile_keys[i]][c, idx] += profile_vals[i][1][p_idx][c] * w; end
+                    w_euler[cell_idx, t_idx] += w
+                    u_euler[cell_idx, t_idx] += u_step[p_idx] * w
+                    
+                    for i in 1:length(field_vals)
+                        e_fields[field_keys[i]][cell_idx, t_idx] += field_vals[i][t_idx][p_idx] * w
                     end
                 end
             end
-            
+        end
+        
+        # Pass 2: Finalize averages for this time step
+        @inbounds for cell_idx in CartesianIndices(grid_shape)
+            w_sum = w_euler[cell_idx, t_idx]
             if w_sum > 0.0
-                for i in 1:length(profile_keys)
-                    for c in 1:D; e_profiles[profile_keys[i]][c, idx] /= w_sum; end
+                u_euler[cell_idx, t_idx] /= w_sum
+                for k in field_keys
+                    e_fields[k][cell_idx, t_idx] /= w_sum
                 end
             else
-                for i in 1:length(profile_keys)
-                    for c in 1:D; e_profiles[profile_keys[i]][c, idx] = NaN; end
+                u_euler[cell_idx, t_idx] = nan_vec
+                for k in field_keys
+                    e_fields[k][cell_idx, t_idx] = nan_vec
                 end
             end
         end
     end
 
-    edata = ESimData(ldata.params, x_euler, u_euler, ldata.t, 
-                     ldata.xmins, ldata.xmaxs, ldata.tmin, ldata.tmax, 
-                     ldata.scalars, ldata.series, e_profiles, e_fields)
+    # =========================================================================
+    # 2. STATIC BATCH LOOP (Profile Scatter Algorithm)
+    # =========================================================================
+    if !isempty(profile_keys)
+        x_step = ldata.x[1]::Vector{SVector{D, Float64}}
+        N_p = length(x_step)
+        w_prof = zeros(Float64, grid_shape...)
+        
+        @inbounds for p_idx in 1:N_p
+            pos = x_step[p_idx]
+            idx_float = (pos .- s_mins) .* s_inv_dx .+ 1.0
+            rad_idx = radius_1d .* s_inv_dx
+            
+            min_idx = @. max(1, floor(Int, idx_float - rad_idx))
+            max_idx = @. min(N_grid, ceil(Int, idx_float + rad_idx))
+            
+            for cell_idx in CartesianIndices(ntuple(d -> min_idx[d]:max_idx[d], Val(D)))
+                s_idx = SVector{D, Float64}(Tuple(cell_idx))
+                cell_pos = s_mins + s_dx .* (s_idx .- 1.0)
+                
+                dist2 = sum(abs2, cell_pos - pos)
+                if dist2 <= radius
+                    w = 1.0 / max(dist2, 1e-12)
+                    w_prof[cell_idx] += w
+                    for i in 1:length(profile_vals)
+                        e_profiles[profile_keys[i]][cell_idx] += profile_vals[i][p_idx] * w
+                    end
+                end
+            end
+        end
+        
+        @inbounds for cell_idx in CartesianIndices(grid_shape)
+            w_sum = w_prof[cell_idx]
+            if w_sum > 0.0
+                for k in profile_keys
+                    e_profiles[k][cell_idx] /= w_sum
+                end
+            else
+                for k in profile_keys
+                    e_profiles[k][cell_idx] = nan_vec
+                end
+            end
+        end
+    end
+
+    edata = ESimData{D, M}(ldata.params, x_euler, u_euler, ldata.t, 
+                           ldata.xmins, ldata.xmaxs, ldata.tmin, ldata.tmax, 
+                           ldata.scalars, ldata.series, e_profiles, e_fields)
     
-    # Unconditionally push it through the uniform time resampler!
     return resample_time(edata, T_grid)
 end
 # ==============================================================================
 # Eulerian to Lagrangian Conversion (Grid Shattering)
 # ==============================================================================
-function convert_to_lagrangian(data::ESimData{D}) where {D}
+function convert_to_lagrangian(data::ESimData{D, M}) where {D, M}
     @info "Shattering Eulerian grid into unstructured Lagrangian particles..."
     T_len = length(data.t)
-    C = size(data.u,1)
+    
     # 1. Flatten the spatial meshgrid into 1D particle arrays
     if D == 1
         pts = [SVector{1, Float64}(x) for x in data.x[1]]
@@ -345,13 +315,11 @@ function convert_to_lagrangian(data::ESimData{D}) where {D}
     
     # 2. Fast Reshape Helper for Tensors
     function flatten_field(field_tensor)
-        C_dim = size(field_tensor, D + 1)
-        new_field = Vector{Vector{SVector{C_dim, Float64}}}(undef, T_len)
-        
+        new_field = Vector{Vector{SVector{M, Float64}}}(undef, T_len)
         for t in 1:T_len
             slice = selectdim(field_tensor, ndims(field_tensor), t)
-            flat_slice = reshape(slice, N_pts, C_dim)
-            new_field[t] = [SVector{C_dim, Float64}(flat_slice[p, :]...) for p in 1:N_pts]
+            # It is already an Array of SVectors! We just flatten the spatial dims.
+            new_field[t] = vec(slice)
         end
         return new_field
     end
@@ -359,17 +327,18 @@ function convert_to_lagrangian(data::ESimData{D}) where {D}
     # 3. Apply to all data
     new_u = flatten_field(data.u)
     
-    new_fields = Dict{String, Any}()
-    for (k, v) in data.fields; new_fields[k] = flatten_field(v); end
-    
-    new_profiles = Dict{String, Any}()
-    for (k, v) in data.profiles
-        C_dim = size(v, D + 1)
-        flat_slice = reshape(v, N_pts, C_dim)
-        new_profiles[k] = [[SVector{C_dim, Float64}(flat_slice[p, :]...) for p in 1:N_pts]]
+    new_fields = Dict{String, Vector{Vector{SVector{M, Float64}}}}()
+    for (k, v) in data.fields
+        new_fields[k] = flatten_field(v)
     end
     
-    return LSimData{D,C}(
+    new_profiles = Dict{String, Vector{SVector{M, Float64}}}()
+    for (k, v) in data.profiles
+        # Profiles have no time dimension, so we just vectorize them immediately
+        new_profiles[k] = vec(v)
+    end
+    
+    return LSimData{D, M}(
         data.params, new_x, new_u, data.t, 
         data.xmins, data.xmaxs, data.tmin, data.tmax,
         data.scalars, data.series, new_profiles, new_fields

@@ -276,7 +276,7 @@ function runAllSimulations(
         ana_cache = Dict{Float64, Array{Float64}}()
         
         function _post_task(params)
-            sim_data = loadSimData(params)
+            sim_data = loadSimData(params,Val(:raw))
             if !isnothing(sim_data)  
                 
                 # --- THE FIX: Skip Stats if already computed ---
@@ -298,11 +298,9 @@ function runAllSimulations(
                 
                 # --- THE FIX: Skip Eulerian conversion if file already exists ---
                 if convert_eulerian && (sim_data isa LSimData)
-                    plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
-                    
-                    if force_overwrite || !doesSimDataExist(params; data_key=plot_key)
+                    if force_overwrite || !doesSimDataExist(params, Val(:conv))
                         conv_data = convert_to_eulerian(sim_data)
-                        saveSimData(conv_data; data_key=plot_key, overwrite=true)
+                        saveSimData(conv_data; overwrite=force_overwrite)
                     end
                 end
             end

@@ -98,21 +98,41 @@ function getFileName(params::ParamDict)
     end
 
     all_files = readdir(save_data)
-    
-    # THE FIX: Support both new (timestamp_hash) and old (hash_timestamp) formats!
     candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2") || startswith(f, "$(hash_val)_")) && endswith(f, ".jld2"), all_files)
 
-    if !isempty(candidate_files)
-        # THE FIX: Sort by actual file modification time to guarantee the newest file is picked, 
-        # regardless of whether it uses the old or new naming convention!
-        sort!(candidate_files, by = f -> mtime(joinpath(save_data, f)), rev=true)
-        return joinpath(save_data, candidate_files[1])
+    if isempty(candidate_files)
+        throw(SimFileNotFoundError("File with matching parameters not found."))
     end
 
-    throw(SimFileNotFoundError("File with matching parameters not found."))
+    sort!(candidate_files, by = f -> mtime(joinpath(save_data, f)), rev=true)
+    
+    # --- THE FIX: Exact Parameter Match Resolution ---
+    for file in candidate_files
+        full_path = joinpath(save_data, file)
+        try
+            is_match = jldopen(full_path, "r") do f
+                # Grab the first available key to inspect its parameters
+                if !isempty(keys(f))
+                    first_key = first(keys(f))
+                    saved_params = f[first_key].params
+                    return saved_params == params
+                end
+                return false
+            end
+            
+            if is_match
+                return full_path
+            end
+        catch e
+            @warn "Could not read $file during hash collision check." exception=e
+            continue
+        end
+    end
+
+    throw(SimFileNotFoundError("Hash matched, but exact parameters did not match any file."))
 end
 
-function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw", overwrite::Bool = false)
+function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
     file_name = ""
     try
         file_name = getFileName(sim_data.params)
@@ -120,75 +140,147 @@ function saveSimData(sim_data::AbstractSimData; data_key::String = "sim_data_raw
         if !isa(e, SimFileNotFoundError); rethrow(e); end
     end
 
-    # 1. If the file doesn't exist, create it with a timestamp
+    # 1. New File Initialization
     if isempty(file_name)
         hash_val = calculateHash(sim_data.params)
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
         save_data = joinpath(get_save_path(), "data")
         if !isdir(save_data); mkpath(save_data); end
         
-        # THE FIX: Put the timestamp first so OS file explorers sort them chronologically!
         file_name = joinpath(save_data, "$(timestamp)_$(hash_val).jld2")
+        mode = "w"
+        target_key = "raw"
+    else
+        mode = "a+"
+        
+        # 2. Determine Key based on Base Type mapping
+        target_key = jldopen(file_name, "r") do file
+            if haskey(file, "raw")
+                raw_data = file["raw"]
+                
+                # If they are the exact same paradigm, we overwrite raw
+                is_same_base = (sim_data isa ESimData && raw_data isa ESimData) || 
+                               (sim_data isa LSimData && raw_data isa LSimData)
+                
+                if is_same_base
+                    return "raw"
+                elseif sim_data isa ESimData
+                    # Lagrangian -> Eulerian (needs grid resolution)
+                    return "conv_$(_N_GRID[])_$(_T_GRID[])"
+                else
+                    # Eulerian -> Lagrangian (unique representation, no grid needed)
+                    return "conv"
+                end
+            else
+                return "raw" # Fallback if file exists but is empty
+            end
+        end
     end
 
-    # 2. Open the file safely. Use "a+" to append/create, "r+" to update
-    # If the file is brand new, we must use "w" first to initialize it.
-    mode = isfile(file_name) ? "a+" : "w"
-    
+    # 3. Save the Data
     jldopen(file_name, mode) do file
-        if haskey(file, data_key)
+        if haskey(file, target_key)
             if overwrite
-                delete!(file, data_key)
-                file[data_key] = sim_data
-                @info "Overwrote existing '$data_key' in $(basename(file_name))"
+                delete!(file, target_key)
+                file[target_key] = sim_data
+                @info "Overwrote existing '$target_key' in $(basename(file_name))"
             else
-                @info "'$data_key' already exists in $(basename(file_name)). Skipping save."
+                @info "'$target_key' already exists in $(basename(file_name)). Skipping save."
             end
         else
-            file[data_key] = sim_data
-            @info "Saved '$data_key' to $(basename(file_name))"
+            file[target_key] = sim_data
+            @info "Saved '$target_key' to $(basename(file_name))"
         end
     end
 end
 
-function loadSimData(params::ParamDict; data_key::String="sim_data_raw")
+# Default fallback routes to :raw
+loadSimData(params::ParamDict) = loadSimData(params, Val(:raw))
+
+# --- Dispatch 1: Raw Data ---
+function loadSimData(params::ParamDict, ::Val{:raw})
     file_name = getFileName(params)
-    jldopen(file_name, "r") do file
-        if haskey(file, data_key)
-            return file[data_key]
-        else
-            throw(SimFileNotFoundError("Key '$data_key' not found in file."))
-        end
+    return jldopen(file_name, "r") do file
+        haskey(file, "raw") ? file["raw"] : throw(SimFileNotFoundError("Key 'raw' not found."))
     end
 end
 
-function doesSimDataExist(params::ParamDict; data_key::String="sim_data_raw")
+# --- Dispatch 2: Converted Data (Lazy Loader) ---
+function loadSimData(params::ParamDict, ::Val{:conv})
+    file_name = getFileName(params)
+    
+    # 1. Peek to find the exact target key needed
+    has_conv, target_key = false, ""
+    jldopen(file_name, "r") do file
+        if !haskey(file, "raw")
+            throw(SimFileNotFoundError("Base 'raw' data missing. Cannot load or generate conversion."))
+        end
+        
+        # Determine the expected key based on what the raw data type is
+        raw_is_lagrangian = typeof(file["raw"]) <: LSimData
+        target_key = raw_is_lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
+        has_conv = haskey(file, target_key)
+    end
+    
+    # 2. Return if exists
+    if has_conv
+        return jldopen(file_name, "r") do file; file[target_key]; end
+    end
+    
+    # 3. Generate on the fly if missing
+    @info "Converted format '$target_key' not found. Generating on the fly..."
+    raw_data = loadSimData(params, Val(:raw))
+    
+    conv_data = raw_data isa LSimData ? convert_to_eulerian(raw_data) : convert_to_lagrangian(raw_data)
+    
+    # saveSimData is now smart enough to automatically name it correctly!
+    saveSimData(conv_data; overwrite=true) 
+    
+    return conv_data
+end
+
+doesSimDataExist(params::ParamDict) = doesSimDataExist(params, Val(:raw))
+
+function doesSimDataExist(params::ParamDict, ::Val{:raw})
     try
         file_name = getFileName(params)
-        jldopen(file_name, "r") do file
-            return haskey(file, data_key)
-        end
+        return jldopen(file_name, "r") do file; haskey(file, "raw"); end
     catch e
-        if isa(e, SimFileNotFoundError); return false; else; rethrow(e); end
+        return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end
 end
 
-function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_data_raw")
+function doesSimDataExist(params::ParamDict, ::Val{:conv})
+    try
+        file_name = getFileName(params)
+        return jldopen(file_name, "r") do file
+            if !haskey(file, "raw"); return false; end
+            
+            raw_is_lagrangian = typeof(file["raw"]) <: LSimData
+            target_key = raw_is_lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
+            
+            return haskey(file, target_key)
+        end
+    catch e
+        return isa(e, SimFileNotFoundError) ? false : rethrow(e)
+    end
+end
+
+function loadSimData(hash_prefix::String; index::Int=1)
     clean_prefix = replace(hash_prefix, ".jld2" => "")
     save_data = joinpath(get_save_path(), "data")
     
-    if !isdir(save_data); throw(SimFileNotFoundError("Data directory does not exist.")); end
+    if !isdir(save_data)
+        throw(SimFileNotFoundError("Data directory does not exist."))
+    end
 
     all_files = readdir(save_data)
-    
-    # THE FIX: Use occursin instead of startswith so it finds the hash anywhere in the name
     candidates = filter(f -> occursin(clean_prefix, f) && endswith(f, ".jld2"), all_files)
     
     if isempty(candidates)
          throw(SimFileNotFoundError("No files found matching the hash prefix: $clean_prefix"))
     end
 
-    # THE FIX: Sort by modification time here as well for perfect chronological indexing
     sort!(candidates, by = f -> mtime(joinpath(save_data, f)), rev=true)
     
     if index > length(candidates) || index < 1
@@ -198,13 +290,9 @@ function loadSimData(hash_prefix::String; index::Int=1, data_key::String="sim_da
     file_name = joinpath(save_data, candidates[index])
     @info "Manual Load: Found $(length(candidates)) matching files. Loading index $index: $(candidates[index])"
     
-    jldopen(file_name, "r") do file
-        if haskey(file, data_key)
-            return file[data_key]
-        else
-            available_keys = join(keys(file), ", ")
-            throw(SimFileNotFoundError("Key '$data_key' not found in $(candidates[index]). Available keys are: $available_keys"))
-        end
+    # Pure passthrough load to the primary raw data
+    return jldopen(file_name, "r") do file
+        file["raw"]
     end
 end
 

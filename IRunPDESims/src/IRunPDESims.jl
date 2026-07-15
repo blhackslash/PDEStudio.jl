@@ -73,8 +73,8 @@ function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, M}) where {D, M
 end
 
 # You can do the exact same thing for ESimData!
-function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D}) where {D}
-    println(io, "🟦 ESimData{$D} (Eulerian Grid Data)")
+function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, M}) where {D,M}
+    println(io, "🟦 ESimData{$D, $M} (Eulerian Grid Data)")
     println(io, "==================================================")
     println(io, "  Time (T):    $(length(data.t)) steps")
     grid_size = join(size(data.u)[2:end-1], " × ")

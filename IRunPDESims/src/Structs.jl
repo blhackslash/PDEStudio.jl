@@ -60,10 +60,10 @@ Eulerian data where spatial grids are typically dense arrays.
 x: D-dimensional Array
 profiles: D-dimensional Matrix/Array per component
 """
-struct ESimData{D} <: AbstractSimData{D}
+struct ESimData{D, M} <: AbstractSimData{D}
     params::ParamDict
     x::NTuple{D, Vector{Float64}}  # ONLY stores the 1D coordinate axes!
-    u::Array{Float64}              # [Component, Space..., Time]
+    u::Array{SVector{M, Float64}, D+1}
     t::Vector{Float64}
     
     # --- THE FIX: Explicit Domain Boundaries ---
@@ -73,9 +73,9 @@ struct ESimData{D} <: AbstractSimData{D}
     tmax::Float64
 
     scalars::Dict{String, Float64} 
-    series::Dict{String, Matrix{Float64}} 
-    profiles::Dict{String, Array{Float64}} 
-    fields::Dict{String, Array{Float64}}   
+    series::Dict{String, Vector{SVector{M, Float64}}} 
+    profiles::Dict{String, Array{SVector{M, Float64}, D}} 
+    fields::Dict{String, Array{SVector{M, Float64}, D}}
 end
 
 """
@@ -98,8 +98,7 @@ struct LSimData{D, M} <: AbstractSimData{D}
 
     # The strongly typed stat dictionaries
     scalars::Dict{String, Float64} 
-    series::Dict{String, Matrix{Float64}} 
-    profiles::Dict{String, Vector{Vector{SVector{D, Float64}}}} 
+    series::Dict{String, Vector{SVector{M, Float64}}} 
     fields::Dict{String, Vector{Vector{SVector{M, Float64}}}}
 end
 
