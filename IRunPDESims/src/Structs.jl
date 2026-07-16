@@ -4,6 +4,7 @@ const MethodDict = Dict{String, ParamDict}
 const VariedDict = Dict{String, Vector}
 const FixedDict = ParamDict 
 
+const _GRID_LOCK = Ref{Bool}(false)
 
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _SIM_ROOT_PATH = Ref{String}(pwd())
@@ -12,9 +13,9 @@ const _T_GRID = Ref{Int}(25)
 const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
-set_space_resolution!(n::Int) = (_N_GRID[] = n)
-set_time_resolution!(n::Int) = (_T_GRID[] = n)
-set_ref_resolution!(n::Int) = (_REF_GRID[] = n)
+set_space_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_N_GRID[] = n)
+set_time_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_T_GRID[] = n)
+set_ref_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_REF_GRID[] = n)
 set_sim_path!(path::String) = (_SIM_ROOT_PATH[] = path)
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 
@@ -36,18 +37,17 @@ createVariedDict(kv) = VariedDict(kv)
 createVariedDict() = VariedDict()
 
 # --- 1. Abstract Hierarchy ---
-abstract type AbstractSimData{D} end
+abstract type AbstractSimData{D,M} end
 
 # Fix NoSimData recursion
-struct NoSimData{D} <: AbstractSimData{D} 
+struct NoSimData{D,M} <: AbstractSimData{D,M} 
     scalars::Dict
     series::Dict
-    profiles::Dict 
     fields::Dict
 end
 
-function NoSimData(D::Int=0)
-    return NoSimData{D}(Dict(), Dict(), Dict(), Dict())
+function NoSimData(D::Int=0,M::Int=0)
+    return NoSimData{D,M}(Dict(), Dict(), Dict())
 end
 
 # ==============================================================================
@@ -60,10 +60,10 @@ Eulerian data where spatial grids are typically dense arrays.
 x: D-dimensional Array
 profiles: D-dimensional Matrix/Array per component
 """
-struct ESimData{D, M} <: AbstractSimData{D}
+struct ESimData{D, M} <: AbstractSimData{D, M}
     params::ParamDict
     x::NTuple{D, Vector{Float64}}  # ONLY stores the 1D coordinate axes!
-    u::Array{SVector{M, Float64}, D+1}
+    u::Array{SVector{M, Float64}}
     t::Vector{Float64}
     
     # --- THE FIX: Explicit Domain Boundaries ---
@@ -75,7 +75,7 @@ struct ESimData{D, M} <: AbstractSimData{D}
     scalars::Dict{String, Float64} 
     series::Dict{String, Vector{SVector{M, Float64}}} 
     profiles::Dict{String, Array{SVector{M, Float64}, D}} 
-    fields::Dict{String, Array{SVector{M, Float64}, D}}
+    fields::Dict{String, Array{SVector{M, Float64}}}
 end
 
 """
@@ -84,7 +84,7 @@ Lagrangian data where:
 - D is the spatial dimension.
 - M is the number of physical components.
 """
-struct LSimData{D, M} <: AbstractSimData{D}
+struct LSimData{D, M} <: AbstractSimData{D, M}
     params::ParamDict
     x::Vector{Vector{SVector{D, Float64}}} # Time -> Particles -> Space
     u::Vector{Vector{SVector{M, Float64}}} # Time -> Particles -> Components

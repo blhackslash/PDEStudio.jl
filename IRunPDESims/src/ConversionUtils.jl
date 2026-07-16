@@ -71,7 +71,7 @@ function createSimData(x::AbstractMatrix{<:Real}, u::AbstractMatrix{<:Real}, t::
     _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
     _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
     
-    return LSimData{1, 1}(params, x_vec, u_vec, Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
+    return LSimData{1, 1}(params, x_vec, u_vec, Float64.(t), _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict())
 end
 
 function createSimData(
@@ -87,10 +87,10 @@ function createSimData(
     _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
     _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
 
-    return LSimData{D, M}(params, x, u, t, _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict(), Dict())
+    return LSimData{D, M}(params, x, u, t, _xmins, _xmaxs, _tmin, _tmax, Dict(), Dict(), Dict())
 end
 
-function resample_time(data::ESimData{D}, T_grid::Int) where {D}
+function resample_time(data::ESimData{D, M}, T_grid::Int) where {D, M}
     target_t = collect(range(data.tmin, data.tmax, length=T_grid))
     
     # If the time vectors perfectly match the uniform grid, skip the overhead
@@ -103,14 +103,20 @@ function resample_time(data::ESimData{D}, T_grid::Int) where {D}
     T_new = T_grid
     T_old = length(data.t)
     
-    # 1. Allocate new tensors
+    # 1. Allocate new SVector tensors dynamically
     new_u = similar(data.u, size(data.u)[1:end-1]..., T_new)
     
-    new_fields = Dict{String, Array{Float64}}()
-    for (k, v) in data.fields; new_fields[k] = similar(v, size(v)[1:end-1]..., T_new); end
+    # Use typeof() to perfectly match the dynamically dimensioned SVector tensor
+    new_fields = Dict{String, typeof(data.u)}()
+    for (k, v) in data.fields
+        new_fields[k] = similar(v, size(v)[1:end-1]..., T_new)
+    end
     
-    new_series = Dict{String, Matrix{Float64}}()
-    for (k, v) in data.series; new_series[k] = similar(v, size(v)[1:end-1]..., T_new); end
+    # Update Series to expect SVectors!
+    new_series = Dict{String, Vector{SVector{M, Float64}}}()
+    for (k, v) in data.series
+        new_series[k] = similar(v, T_new)
+    end
 
     # 2. Helper to find the absolute closest native frame
     function get_nearest_idx(t)
@@ -124,21 +130,29 @@ function resample_time(data::ESimData{D}, T_grid::Int) where {D}
         return abs(t - data.t[idx]) < abs(t - data.t[idx+1]) ? idx : idx+1
     end
 
-    # 3. Fast Broadcast Snapping Loop (No w1/w2 blending!)
+    # 3. Fast Broadcast Snapping Loop
     Threads.@threads for i in 1:T_new
         nearest = get_nearest_idx(target_t[i])
         
         selectdim(new_u, ndims(new_u), i) .= selectdim(data.u, ndims(data.u), nearest)
-        for (k, v) in data.fields; selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), nearest); end
-        for (k, v) in data.series; selectdim(new_series[k], ndims(v), i) .= selectdim(v, ndims(v), nearest); end
+        
+        for (k, v) in data.fields
+            selectdim(new_fields[k], ndims(v), i) .= selectdim(v, ndims(v), nearest)
+        end
+        
+        for (k, v) in data.series
+            # Series are just 1D vectors now, so we can index them directly!
+            new_series[k][i] = v[nearest]
+        end
     end
 
-    return ESimData(
+    return ESimData{D, M}(
         data.params, data.x, new_u, target_t, 
         data.xmins, data.xmaxs, data.tmin, data.tmax,
         data.scalars, new_series, data.profiles, new_fields
     )
 end
+
 function convert_to_eulerian(ldata::LSimData{D, M}; N_grid=_N_GRID[], T_grid=_T_GRID[]) where {D, M}
     T_len = length(ldata.t)
     mins, maxs = collect(ldata.xmins), collect(ldata.xmaxs)
@@ -175,16 +189,9 @@ function convert_to_eulerian(ldata::LSimData{D, M}; N_grid=_N_GRID[], T_grid=_T_
         e_fields[k] = fill(zero_vec, grid_shape..., T_len)
     end
     
-    e_profiles = Dict{String, Array{SVector{M, Float64}, D}}()
-    for k in keys(ldata.profiles)
-        e_profiles[k] = fill(zero_vec, grid_shape...)
-    end
-    
     # Pre-extract dictionaries for fast loop access
     field_keys = collect(keys(ldata.fields))
     field_vals = collect(values(ldata.fields))
-    profile_keys = collect(keys(ldata.profiles))
-    profile_vals = collect(values(ldata.profiles))
 
     # =========================================================================
     # 1. TIME BATCH LOOP (Dynamic Scatter Algorithm)
@@ -242,54 +249,9 @@ function convert_to_eulerian(ldata::LSimData{D, M}; N_grid=_N_GRID[], T_grid=_T_
         end
     end
 
-    # =========================================================================
-    # 2. STATIC BATCH LOOP (Profile Scatter Algorithm)
-    # =========================================================================
-    if !isempty(profile_keys)
-        x_step = ldata.x[1]::Vector{SVector{D, Float64}}
-        N_p = length(x_step)
-        w_prof = zeros(Float64, grid_shape...)
-        
-        @inbounds for p_idx in 1:N_p
-            pos = x_step[p_idx]
-            idx_float = (pos .- s_mins) .* s_inv_dx .+ 1.0
-            rad_idx = radius_1d .* s_inv_dx
-            
-            min_idx = @. max(1, floor(Int, idx_float - rad_idx))
-            max_idx = @. min(N_grid, ceil(Int, idx_float + rad_idx))
-            
-            for cell_idx in CartesianIndices(ntuple(d -> min_idx[d]:max_idx[d], Val(D)))
-                s_idx = SVector{D, Float64}(Tuple(cell_idx))
-                cell_pos = s_mins + s_dx .* (s_idx .- 1.0)
-                
-                dist2 = sum(abs2, cell_pos - pos)
-                if dist2 <= radius
-                    w = 1.0 / max(dist2, 1e-12)
-                    w_prof[cell_idx] += w
-                    for i in 1:length(profile_vals)
-                        e_profiles[profile_keys[i]][cell_idx] += profile_vals[i][p_idx] * w
-                    end
-                end
-            end
-        end
-        
-        @inbounds for cell_idx in CartesianIndices(grid_shape)
-            w_sum = w_prof[cell_idx]
-            if w_sum > 0.0
-                for k in profile_keys
-                    e_profiles[k][cell_idx] /= w_sum
-                end
-            else
-                for k in profile_keys
-                    e_profiles[k][cell_idx] = nan_vec
-                end
-            end
-        end
-    end
-
     edata = ESimData{D, M}(ldata.params, x_euler, u_euler, ldata.t, 
                            ldata.xmins, ldata.xmaxs, ldata.tmin, ldata.tmax, 
-                           ldata.scalars, ldata.series, e_profiles, e_fields)
+                           ldata.scalars, ldata.series, Dict{String, Array{SVector{M, Float64}, D}}(), e_fields)
     
     return resample_time(edata, T_grid)
 end
@@ -310,7 +272,7 @@ function convert_to_lagrangian(data::ESimData{D, M}) where {D, M}
     end
     N_pts = length(pts)
     
-    # Since Eulerian grids are static, particles don't move. Duplicate the positions.
+    # Since Eulerian grids are static, duplicate the positions over time.
     new_x = [copy(pts) for _ in 1:T_len]
     
     # 2. Fast Reshape Helper for Tensors
@@ -318,13 +280,12 @@ function convert_to_lagrangian(data::ESimData{D, M}) where {D, M}
         new_field = Vector{Vector{SVector{M, Float64}}}(undef, T_len)
         for t in 1:T_len
             slice = selectdim(field_tensor, ndims(field_tensor), t)
-            # It is already an Array of SVectors! We just flatten the spatial dims.
             new_field[t] = vec(slice)
         end
         return new_field
     end
     
-    # 3. Apply to all data
+    # 3. Apply to all dynamic data
     new_u = flatten_field(data.u)
     
     new_fields = Dict{String, Vector{Vector{SVector{M, Float64}}}}()
@@ -332,15 +293,11 @@ function convert_to_lagrangian(data::ESimData{D, M}) where {D, M}
         new_fields[k] = flatten_field(v)
     end
     
-    new_profiles = Dict{String, Vector{SVector{M, Float64}}}()
-    for (k, v) in data.profiles
-        # Profiles have no time dimension, so we just vectorize them immediately
-        new_profiles[k] = vec(v)
-    end
+    # Notice: new_profiles is completely removed here.
     
     return LSimData{D, M}(
         data.params, new_x, new_u, data.t, 
         data.xmins, data.xmaxs, data.tmin, data.tmax,
-        data.scalars, data.series, new_profiles, new_fields
+        data.scalars, data.series, new_fields # <-- No profiles passed!
     )
 end

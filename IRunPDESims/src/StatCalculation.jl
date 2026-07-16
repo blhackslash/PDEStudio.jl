@@ -8,174 +8,155 @@ include("StatFunctions.jl")
 # ==============================================================================
 # --- MAIN PIPELINE (Entry Points) ---
 # ==============================================================================
+# Converts runtime symbols into compile-time Val tuples for zero-allocation hot loops
+_build_stat_tuple(stats::Vector{Symbol}) = Tuple(Val(s) for s in stats)
 
-function calculateAllStats!(sim_data, ref_func; stats_to_calculate, kwargs...)
-    # 1. Initialize buckets for our different categories
-    series_stats  = Symbol[]
-    profile_stats = Symbol[]
-    field_stats   = Symbol[]
+# Extracts the string name back out of the compile-time Val type
+_get_stat_name(::Val{S}) where S = String(S)
+
+function calculateAllStats!(sim_data, ref_func; kwargs...)
+    series_stats, profile_stats, field_stats = Symbol[], Symbol[], Symbol[]
     
-    # 2. Sort the requested stats using the Trait
-    for stat in stats_to_calculate
-        cat = stat_category(Val(stat))
-        
-        if cat === Val(:series)
-            push!(series_stats, stat)
-        elseif cat === Val(:profile)
-            push!(profile_stats, stat)
-        elseif cat === Val(:field)
-            push!(field_stats, stat)
-        else
-            @warn "Statistic :$stat is not registered or has an unknown category. Skipping."
+    for stat in keys(STAT_REGISTRY)
+        cat = get(STAT_REGISTRY, stat, :unknown)
+        if cat === :series; push!(series_stats, stat)
+        elseif cat === :profile; push!(profile_stats, stat)
+        elseif cat === :field; push!(field_stats, stat)
         end
     end
     
-    # 3. Pre-allocate the master stats dictionary if it doesn't exist
-    if isnothing(sim_data.stats)
-        sim_data.stats = Dict{String, Any}()
+    # --- THE NEW LOGIC: Generate full analytical field upfront ---
+    u_ana = nothing
+    if !isnothing(ref_func)
+        @info "Pre-computing analytical reference field..."
+        u_ana = generate_analytical_reference(sim_data, ref_func)
     end
     
-    # 4. Dispatch to the specific loopers ONLY if they have work to do
     if !isempty(series_stats)
-        _calculate_category!(Val(:series), sim_data, ref_func; stats=series_stats, kwargs...)
+        _calculate_category!(Val(:series), sim_data, u_ana; stats=series_stats, kwargs...)
     end
-    
+    if !isempty(field_stats)
+        _calculate_category!(Val(:field), sim_data, u_ana; stats=field_stats, kwargs...)
+    end
     if !isempty(profile_stats)
-        _calculate_category!(Val(:profile), sim_data, ref_func; stats=profile_stats, kwargs...)
+        _calculate_category!(Val(:profile), sim_data, u_ana; stats=profile_stats, kwargs...)
     end
     
     saveSimData(sim_data; overwrite=true)
 end
 
-function _calculate_category!(::Val{:series}, sim_data, ref_func; stats, field_key="u", ana_cache=nothing, kwargs...)
-    D = Val(IRunPDESims._get_D(sim_data)) 
+function _calculate_category!(::Val{:series}, sim_data::AbstractSimData{D,M}, u_ana; stats, field_key="u", kwargs...) where {D,M}
     Nt = length(sim_data.t)
-    
-    # Dynamically infer M from the SVector element type of the main data array
-    M = length(eltype(sim_data.u)) 
-    
     stat_vals = _build_stat_tuple(stats)
     
-    # Pre-allocate SVector time-series locally
     res = Dict{String, Vector{SVector{M, Float64}}}()
     for stat in stats
         res[String(stat)] = Vector{SVector{M, Float64}}(undef, Nt)
     end
     
-    _compute_series_loop!(res, stat_vals, D, Val(M), Nt, sim_data, field_key, ref_func, ana_cache)
+    # Cleaned up call:
+    _compute_series_loop!(res, stat_vals, Nt, sim_data, field_key, u_ana)
     
-    merge!(sim_data.stats, res)
+    merge!(sim_data.series, res)
 end
-function _calculate_category!(::Val{:field}, sim_data, ref_func; stats, field_key="u", ana_cache=nothing, kwargs...)
-    D = Val(IRunPDESims._get_D(sim_data)) 
+
+function _calculate_category!(::Val{:field}, sim_data::AbstractSimData{D,M}, u_ana; stats, field_key="u", kwargs...) where {D,M}
     Nt = length(sim_data.t)
-    
     stat_vals = _build_stat_tuple(stats)
     
     res = Dict{String, typeof(sim_data.u)}()
-    for stat in stats
-        res[String(stat)] = similar(sim_data.u)
-    end
+    for stat in stats; res[String(stat)] = similar(sim_data.u); end
     
-    _compute_field_loop!(res, stat_vals, D, Nt, sim_data, field_key, ref_func, ana_cache)
-    
+    # Cleaned up call:
+    _compute_field_loop!(res, stat_vals, Nt, sim_data, field_key, u_ana)
     merge!(sim_data.fields, res)
 end
 
-function _compute_field_loop!(res, stat_vals::Tuple, D, Nt, sim_data, field_key, ref_func, ana_cache)
-    @batch for t_idx in 1:Nt
-        xs, u_raw, dV = extract_point_cloud(sim_data, field_key, t_idx)
-        t_current = sim_data.t[t_idx]
-        
-        ana_vals, err_vals = nothing, nothing
-        if !isnothing(ref_func)
-            ana_vals = _get_analytical_for_timestep(ref_func, sim_data, t_idx, ana_cache) 
-            if !isnothing(ana_vals)
-                err_vals = u_raw .- ana_vals
-            end
-        end
-        
-        for stat_val in stat_vals
-            stat_name = _get_stat_name(stat_val)
-            # For a field category, calc_stat returns an Array of SVectors representing this timestep
-            field_slice = calc_stat(stat_val, D, t_current, xs, u_raw, dV, ana_vals, err_vals)
-            
-            _insert_field_slice!(res[stat_name], field_slice, t_idx)
-        end
-    end
-end
-
-_insert_field_slice!(target::Array, slice, t_idx) = selectdim(target, ndims(target), t_idx) .= slice
-_insert_field_slice!(target::Vector{Vector}, slice, t_idx) = target[t_idx] = slice
-
-# 1. Lagrangian Interceptor
-function _calculate_category!(::Val{:profile}, ldata::LSimData{D, M}, ref_func; stats, kwargs...) where {D, M}
-    @info "Profile stats requested on Lagrangian data. Loading/generating Eulerian grid..."
-    plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
-    
-    # MAGIC: This triggers conversion automatically if it's missing!
-    edata = loadSimData(ldata.params; data_key=plot_key) 
-    
-    # Send it to the Eulerian profile calculator
-    _calculate_category!(Val(:profile), edata, ref_func; stats=stats, kwargs...)
-    
-    # Push the computed profiles back into the Lagrangian struct so the user has them
-    merge!(ldata.profiles, edata.profiles)
-end
-
-# 2. Eulerian Setup
-function _calculate_category!(::Val{:profile}, edata::ESimData{D, M}, ref_func; stats, field_key="u", ana_cache=nothing, kwargs...) where {D, M}
+function _calculate_category!(::Val{:profile}, edata::ESimData{D, M}, u_ana; stats, field_key="u", kwargs...) where {D, M}
     grid_shape = ntuple(d -> length(edata.x[d]), Val(D))
     stat_vals = _build_stat_tuple(stats)
     
     res = Dict{String, Array{SVector{M, Float64}, D}}()
-    for stat in stats
-        res[String(stat)] = fill(zero(SVector{M, Float64}), grid_shape)
-    end
+    for stat in stats; res[String(stat)] = fill(zero(SVector{M, Float64}), grid_shape); end
     
-    _compute_profile_loop!(res, stat_vals, edata, grid_shape, field_key)
+    # Cleaned up call:
+    _compute_profile_loop!(res, stat_vals, edata, grid_shape, field_key, u_ana)
     
     merge!(edata.profiles, res)
-    # Save the Eulerian data so the profiles persist on disk
-    saveSimData(edata; data_key="sim_data_plot_$(_N_GRID[])_$(_T_GRID[])", overwrite=true) 
+    saveSimData(edata; overwrite=true) 
 end
 
-# 3. Eulerian Worker Loop
-function _compute_profile_loop!(res, stat_vals::Tuple, edata::ESimData{D, M}, grid_shape, field_key) where {D, M}
+# ------------------------------------------------------------------------------
+# 1. SERIES LOOP
+# ------------------------------------------------------------------------------
+function _compute_series_loop!(res, stat_vals::Tuple, Nt, sim_data::AbstractSimData{D, M}, field_key, u_ana) where {D,M}
+    @batch for t_idx in 1:Nt
+        xs, u_raw, dV = extract_point_cloud(sim_data, field_key, t_idx)
+        t_current = sim_data.t[t_idx] 
+        
+        ana_vals = nothing
+        if !isnothing(u_ana)
+            _, ana_vals, _ = extract_point_cloud(sim_data, u_ana, t_idx) 
+        end
+        
+        for stat_val in stat_vals
+            stat_name = _get_stat_name(stat_val)
+            # Note the Val(D) injection here
+            res[stat_name][t_idx] = calc_stat(stat_val, Val(D), t_current, xs, u_raw, dV, ana_vals)
+        end
+    end
+end
+
+# ------------------------------------------------------------------------------
+# 2. FIELD LOOP
+# ------------------------------------------------------------------------------
+function _compute_field_loop!(res, stat_vals::Tuple, Nt, sim_data::AbstractSimData{D, M}, field_key, u_ana) where {D, M}
+    @batch for t_idx in 1:Nt
+        xs, u_raw, dV = extract_point_cloud(sim_data, field_key, t_idx)
+        t_current = sim_data.t[t_idx]
+        
+        ana_slice = nothing
+        if !isnothing(u_ana)
+            _, ana_slice, _ = extract_point_cloud(sim_data, u_ana, t_idx) 
+        end
+        
+        for stat_val in stat_vals
+            stat_name = _get_stat_name(stat_val)
+            
+            if sim_data isa ESimData
+                out_slice = selectdim(res[stat_name], ndims(res[stat_name]), t_idx)
+            else
+                out_slice = Vector{eltype(u_raw)}(undef, length(xs))
+                res[stat_name][t_idx] = out_slice
+            end
+            
+            for i in eachindex(xs)
+                x_i = xs[i]
+                u_i = u_raw[i]
+                ana_i = isnothing(ana_slice) ? nothing : ana_slice[i]
+                
+                # Note the Val(D) injection here
+                out_slice[i] = calc_stat(stat_val, Val(D), t_current, x_i, u_i, dV, ana_i)
+            end
+        end
+    end
+end
+
+# ------------------------------------------------------------------------------
+# 3. PROFILE LOOP 
+# ------------------------------------------------------------------------------
+function _compute_profile_loop!(res, stat_vals::Tuple, edata::ESimData{D, M}, grid_shape, field_key, u_ana) where {D, M}
     Nt = length(edata.t)
     u_tensor = field_key == "u" ? edata.u : edata.fields[field_key]
     
     @batch for idx in CartesianIndices(grid_shape)
-        # Extract the time-history for this exact spatial point
-        point_series = [u_tensor[idx, t] for t in 1:Nt] # USE VIEWS!!!!!!
+        point_series = @views [u_tensor[idx, t] for t in 1:Nt] 
+        ana_series   = isnothing(u_ana) ? nothing : @views [u_ana[idx, t] for t in 1:Nt]
         
         for stat_val in stat_vals
             stat_name = _get_stat_name(stat_val)
-            # For a profile category, calc_stat collapses the time vector into a single SVector
-            res[stat_name][idx] = calc_stat(stat_val, D, edata.t, point_series)
-        end
-    end
-end
-
-function _compute_series_loop!(res, stat_vals::Tuple, D, ::Val{M}, Nt, sim_data, field_key, ref_func, ana_cache) where M
-    @batch for t_idx in 1:Nt
-        # 1. Extract the full SVector array for this timestep
-        xs, u_raw, dV = extract_point_cloud(sim_data, field_key, t_idx)
-        
-        ana_vals, err_vals = nothing, nothing
-        if !isnothing(ref_func)
-            ana_vals = _get_analytical_for_timestep(ref_func, sim_data, t_idx, ana_cache) 
-            if !isnothing(ana_vals)
-                # Native array-of-SVectors broadcasting!
-                err_vals = u_raw .- ana_vals 
-            end
-        end
-        
-        t_current = sim_data.t[t_idx] # <-- Get the current time
-        
-        for stat_val in stat_vals
-            stat_name = _get_stat_name(stat_val)
-            res[stat_name][t_idx] = calc_stat(stat_val, D, t_current, xs, u_raw, dV, ana_vals, err_vals)
+            # Note the Val(D) injection here, and removed the trailing u_ana!
+            res[stat_name][idx] = calc_stat(stat_val, Val(D), edata.t, point_series, ana_series)
         end
     end
 end
@@ -183,47 +164,91 @@ end
 # --- DATA NORMALIZATION (Time-Aware Point Cloud Extractors) ---
 # ==============================================================================
 
-function extract_point_cloud(data::ESimData{N, M}, field_key, t_idx) where {N, M}
+# ------------------------------------------------------------------
+# Standard Extractors (Using field_key)
+# ------------------------------------------------------------------
+function extract_point_cloud(data::ESimData{N, M}, field_key::String, t_idx) where {N, M}
+    target_tensor = field_key == "u" ? data.u : data.fields[field_key]
+    return extract_point_cloud(data, target_tensor, t_idx)
+end
+
+function extract_point_cloud(data::LSimData{N, M}, field_key::String, t_idx) where {N, M}
+    target_tensor = field_key == "u" ? data.u : data.fields[field_key]
+    return extract_point_cloud(data, target_tensor, t_idx)
+end
+
+# ------------------------------------------------------------------
+# Direct Tensor Extractors (Used for both Sim Data AND Analytical Data!)
+# ------------------------------------------------------------------
+function extract_point_cloud(data::ESimData{N, M}, target_tensor::AbstractArray, t_idx) where {N, M}
     dx = ntuple(d -> length(data.x[d]) > 1 ? data.x[d][2] - data.x[d][1] : 1.0, Val(N))
     dV = prod(dx)
     
-    xs = vec([SVector{N, Float64}(Tuple(I.I)...) for I in CartesianIndices(ntuple(d -> length(data.x[d]), Val(N)))])
+    # BUG FIX: Map Cartesian index 'I' to the actual physical coordinates in data.x
+    xs = vec([SVector{N, Float64}(ntuple(dim -> data.x[dim][I[dim]], Val(N))) 
+              for I in CartesianIndices(ntuple(d -> length(data.x[d]), Val(N)))])
     
-    # Returns an array of SVector{M, Float64}
-    u_raw = field_key == "u" ? selectdim(data.u, N+1, t_idx) : selectdim(data.fields[field_key], N+1, t_idx)
-    
+    u_raw = selectdim(target_tensor, N+1, t_idx)
     return xs, u_raw, dV
 end
 
-function extract_point_cloud(data::LSimData{N, M}, field_key, t_idx) where {N, M}
+function extract_point_cloud(data::LSimData{N, M}, target_tensor::AbstractArray, t_idx) where {N, M}
     xs = data.x[t_idx] 
-    dV = data.dV[t_idx] 
     
-    # Returns an array of SVector{M, Float64}
-    u_raw = field_key == "u" ? data.u[t_idx] : data.fields[field_key][t_idx]
+    N_particles = length(xs)
+    if N_particles > 0
+        V_total = prod(ntuple(d -> data.xmaxs[d] - data.xmins[d], Val(N)))
+        dV = V_total / N_particles
+    else
+        dV = 0.0
+    end
     
+    u_raw = target_tensor[t_idx]
     return xs, u_raw, dV
 end
-
-
 # ==============================================================================
 # --- ANALYTICAL CACHE GENERATOR ---
 # ==============================================================================
 
-function _get_analytical_for_timestep(ref_func, sim_data, t_idx, ana_cache)
-    t_val = sim_data.t[t_idx]
+function generate_analytical_reference(ldata::LSimData{D, M}, ref_func) where {D, M}
+    Nt = length(ldata.t)
+    u_ana = Vector{Vector{SVector{M, Float64}}}(undef, Nt)
     
-    if !isnothing(ana_cache) && haskey(ana_cache, t_val)
-        return ana_cache[t_val]
+    # FIX: Alias the function to guarantee Polyester captures it safely
+    _ref = ref_func 
+    
+    @batch for t_idx in 1:Nt
+        t_val = ldata.t[t_idx]
+        xs = ldata.x[t_idx]
+        
+        # FIX: Use list comprehension instead of map() inside @batch
+        u_ana[t_idx] = [_ref(x, t_val) for x in xs]
     end
     
-    ana_vals = Base.invokelatest(ref_func, sim_data, t_idx)
+    return u_ana
+end
+
+function generate_analytical_reference(edata::ESimData{D, M}, ref_func) where {D, M}
+    Nt = length(edata.t)
+    grid_shape = ntuple(d -> length(edata.x[d]), Val(D))
+    u_ana = similar(edata.u)
     
-    if !isnothing(ana_cache) && !isnothing(ana_vals)
-        ana_cache[t_val] = ana_vals
+    xs = vec([SVector{D, Float64}(ntuple(dim -> edata.x[dim][I[dim]], Val(D))) 
+              for I in CartesianIndices(grid_shape)])
+              
+    # FIX: Alias the function
+    _ref = ref_func
+    
+    @batch for t_idx in 1:Nt
+        t_val = edata.t[t_idx]
+        
+        # FIX: Use list comprehension instead of map() inside @batch
+        ana_slice = [_ref(x, t_val) for x in xs]
+        
+        selectdim(u_ana, D+1, t_idx) .= reshape(ana_slice, grid_shape)
     end
     
-    return ana_vals
+    return u_ana
 end
 # ==============================================================================
 # --- SECTION 3: MAIN API & REFERENCE GENERATORS ---
@@ -241,7 +266,6 @@ function calculateAllStats!(
     active_methods::Vector{String} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
     fixed_params::ParamDict = ParamDict(),
-    stats_to_calculate::Vector{Symbol} = [:mass, :l2error, :l2norm], # Default stats if none provided
     kwargs...
 )
     active_keys = collect(keys(varied_params))
@@ -277,7 +301,6 @@ function calculateAllStats!(
             calculateAllStats!(
                 sim_data, 
                 ref_func; 
-                stats_to_calculate = stats_to_calculate, 
                 kwargs...
             )
         end

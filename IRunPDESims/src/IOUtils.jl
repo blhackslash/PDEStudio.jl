@@ -291,9 +291,7 @@ function loadSimData(hash_prefix::String; index::Int=1)
     @info "Manual Load: Found $(length(candidates)) matching files. Loading index $index: $(candidates[index])"
     
     # Pure passthrough load to the primary raw data
-    return jldopen(file_name, "r") do file
-        file["raw"]
-    end
+    return JLD2.load(file_name)
 end
 
 """
@@ -389,7 +387,7 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
         
         full_path = joinpath(save_data, file)
         try
-            sim_data = load(full_path, "sim_data")
+            sim_data = load(full_path, "raw")
             deletion = true
             for (i,key) in enumerate(keys)
                 # Check if key exists and matches value/type

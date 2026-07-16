@@ -12,12 +12,12 @@ export ParamDict, MethodDict, VariedDict, FixedDict
 export createParamDict, createMethodDict, createVariedDict, createSimData
 
 # Globals & Settings
-export _SAVE_ROOT_PATH, _N_GRID, _T_GRID, _REF_GRID, _SIM_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
+export _SAVE_ROOT_PATH, _SIM_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
 export set_save_path!, get_save_path, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
-
+export register_stat!, delete_stat!
 # Simulation & Data Pipeline
 export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
-export doesSimDataExist, deleteSimData, getAllSimData, getStats, changeStats, loadBestConversion
+export doesSimDataExist, deleteSimData
 export calculateAllStats!, process_existing_data, convert_to_eulerian, check_data
 
 # Utilities
@@ -40,23 +40,27 @@ function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, M}) where {D, M
     println(io, "==================================================")
     
     # Time Summary
-    t_len = length(data.t)
-    t_str = t_len > 0 ? "steps [$(round(data.t[1], digits=3)) ➔ $(round(data.t[end], digits=3))]" : "empty"
-    println(io, "  Time (T):    $t_len $t_str")
+    t_str = "steps [$(round(data.tmin, digits=3)) ➔ $(round(data.tmax, digits=3))]"
+    println(io, "  Time (T)   : $(length(data.t)) $t_str")
+    
+    # Domain Summary
+    domain_strs = ["$(round(data.xmins[d], digits=3)) ➔ $(round(data.xmaxs[d], digits=3))" for d in 1:D]
+    println(io, "  Domain     : [$(join(domain_strs, "] × ["))]")
     
     # Particle Summary (handles jagged arrays if particles merge/split)
     if !isempty(data.x)
         min_p, max_p = extrema(length.(data.x))
         p_str = min_p == max_p ? "$min_p" : "$min_p to $max_p (variable)"
-        println(io, "  Particles:   $p_str")
+        println(io, "  Particles  : $p_str")
     else
-        println(io, "  Particles:   0")
+        println(io, "  Particles  : 0")
     end
     
     # Parameter Summary
-    println(io, "  Parameters:  $(length(data.params)) keys")
+    println(io, "  Parameters : $(length(data.params)) keys")
+    println(io, "--------------------------------------------------")
     
-    # Helper to print dictionary keys without dumping their contents
+    # Helper to print dictionary keys
     function print_dict_summary(dict, label)
         if !isempty(dict)
             keys_str = join(sort(collect(keys(dict))), ", ")
@@ -66,23 +70,35 @@ function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, M}) where {D, M
         end
     end
     
-    print_dict_summary(data.scalars,  "Scalars   ")
-    print_dict_summary(data.series,   "Series    ")
-    print_dict_summary(data.profiles, "Profiles  ")
-    print_dict_summary(data.fields,   "Fields    ")
+    print_dict_summary(data.scalars,  "Scalars    ")
+    print_dict_summary(data.series,   "Series     ")
+    print_dict_summary(data.fields,   "Fields     ")
 end
 
-# You can do the exact same thing for ESimData!
+
+# Custom REPL print for Eulerian Data
 function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, M}) where {D,M}
     println(io, "🟦 ESimData{$D, $M} (Eulerian Grid Data)")
     println(io, "==================================================")
-    println(io, "  Time (T):    $(length(data.t)) steps")
-    grid_size = join(size(data.u)[2:end-1], " × ")
-    println(io, "  Grid Size:   $grid_size")
-    # Parameter Summary
-    println(io, "  Parameters:  $(length(data.params)) keys")
     
-    # Helper to print dictionary keys without dumping their contents
+    # Time Summary
+    t_str = "steps [$(round(data.tmin, digits=3)) ➔ $(round(data.tmax, digits=3))]"
+    println(io, "  Time (T)   : $(length(data.t)) $t_str")
+    
+    # Domain Summary
+    domain_strs = ["$(round(data.xmins[d], digits=3)) ➔ $(round(data.xmaxs[d], digits=3))" for d in 1:D]
+    println(io, "  Domain     : [$(join(domain_strs, "] × ["))]")
+    
+    # Grid Summary
+    grid_dims = join(length.(data.x), " × ")
+    total_pts = prod(length.(data.x))
+    println(io, "  Grid Size  : $grid_dims ($total_pts points)")
+    
+    # Parameter Summary
+    println(io, "  Parameters : $(length(data.params)) keys")
+    println(io, "--------------------------------------------------")
+    
+    # Helper to print dictionary keys
     function print_dict_summary(dict, label)
         if !isempty(dict)
             keys_str = join(sort(collect(keys(dict))), ", ")
@@ -92,10 +108,10 @@ function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, M}) where {D,M}
         end
     end
     
-    print_dict_summary(data.scalars,  "Scalars   ")
-    print_dict_summary(data.series,   "Series    ")
-    print_dict_summary(data.profiles, "Profiles  ")
-    print_dict_summary(data.fields,   "Fields    ")
+    print_dict_summary(data.scalars,  "Scalars    ")
+    print_dict_summary(data.series,   "Series     ")
+    print_dict_summary(data.profiles, "Profiles   ")
+    print_dict_summary(data.fields,   "Fields     ")
 end
 
 end

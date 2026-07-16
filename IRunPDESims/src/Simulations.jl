@@ -211,10 +211,11 @@ function runAllSimulations(
     fixed_params::ParamDict = ParamDict(),
     force_overwrite::Bool = false,
     convert_eulerian::Bool = false, 
-    calculate_stats::Bool = false,     
-    stats_to_calculate::Union{Symbol, Vector{Symbol}} = [:series],
+    calculate_stats::Bool = false,
     parallel::Bool = false
 )
+    _GRID_LOCK[] = true
+    @info "Started Simulation Pipeline. Grid Lock is enabled!"
     active_keys = collect(keys(varied_params))
     active_values = collect(values(varied_params))
     
@@ -265,15 +266,10 @@ function runAllSimulations(
         end
     end
     
-    # Determine the master time vector (the longest one from all successful runs)
-    valid_t_vecs = filter(!isempty, t_vectors)
-    target_t = isempty(valid_t_vecs) ? Float64[] : valid_t_vecs[argmax(length.(valid_t_vecs))]
-    
     if calculate_stats || convert_eulerian
         @info "Pass 2: Calculating Stats & Eulerian Conversions..."
         p2 = Progress(num_tasks; desc="Post-processing...")
         counter2 = Threads.Atomic{Int}(0)
-        ana_cache = Dict{Float64, Array{Float64}}()
         
         function _post_task(params)
             sim_data = loadSimData(params,Val(:raw))
@@ -281,19 +277,11 @@ function runAllSimulations(
                 
                 # --- THE FIX: Skip Stats if already computed ---
                 if calculate_stats
-                    # Check if the stats dictionary exists and already contains all requested keys
-                    stats_needed = force_overwrite || isnothing(sim_data.stats) || !all(haskey(sim_data.stats, String(s)) for s in stats_to_calculate)
-                    
-                    if stats_needed
                         calculateAllStats!(
                             sim_data, 
                             sim_config.reference_func; 
-                            stats_to_calculate=stats_to_calculate, 
-                            data_key="sim_data_raw",
                             force_overwrite=force_overwrite,
-                            ana_cache=ana_cache
                         )
-                    end
                 end
                 
                 # --- THE FIX: Skip Eulerian conversion if file already exists ---
@@ -305,22 +293,14 @@ function runAllSimulations(
                 end
             end
         end
-        
-        if parallel
-            Threads.@threads for i in 1:num_tasks
-                try _post_task(all_tasks[i]) catch e; @error "Post Thread Error" exception=(e, catch_backtrace()) end
-                Threads.atomic_add!(counter2, 1)
-                ProgressMeter.update!(p2, counter2[])
-            end
-        else
-            for i in 1:num_tasks
-                _post_task(all_tasks[i])
-                counter2[] += 1
-                ProgressMeter.update!(p2, counter2[])
-            end
+        for i in 1:num_tasks
+            _post_task(all_tasks[i])
+            counter2[] += 1
+            ProgressMeter.update!(p2, counter2[])
         end
     end
     
-    @info "Batch simulation run complete!"
-    return target_t
+    @info "Batch simulation run complete! Disabling Grid Lock!"
+    _GRID_LOCK[] = false
+    return 
 end
