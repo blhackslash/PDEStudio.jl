@@ -164,114 +164,6 @@ function generate_dynamic_title(
     # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
-function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::LSimData{D, M}) where {D, M}
-    N = _REF_GRID[]
-    T_len = _T_GRID[] # Use the global time resolution
-    
-    # 1. Extract physical bounds directly from the TEMPLATE DATA!
-    xmins = template_data.xmins
-    xmaxs = template_data.xmaxs
-    tmin = template_data.tmin
-    tmax = template_data.tmax
-    
-    # 2. Build the high-res time vector
-    t_vec = collect(range(tmin, tmax, length=T_len))
-    
-    # 3. Build the high-res spatial axes
-    axes_list = ntuple(d -> collect(range(xmins[d], xmaxs[d], length=N)), D)
-    grid_shape = ntuple(d -> N, D)
-    N_pts = prod(grid_shape)
-    
-    # 4. Generate the dense, structured particle positions ONCE
-    static_particles = Vector{SVector{D, Float64}}(undef, N_pts)
-    for (i, idx) in enumerate(CartesianIndices(grid_shape))
-        static_particles[i] = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
-    end
-    
-    # Since reference analytical grids are perfectly static, we just copy the 
-    # positions across all timesteps to act as Eulerian-style "particles"
-    x_ref = [copy(static_particles) for _ in 1:T_len]
-    u_ref = Vector{Vector{SVector{M, Float64}}}(undef, T_len)
-    
-    # 5. Evaluate the exact function on the fly using multithreading
-    Threads.@threads for t_idx in 1:T_len
-        t = t_vec[t_idx]
-        u_step = Vector{SVector{M, Float64}}(undef, N_pts)
-        
-        for p_idx in 1:N_pts
-            val = ref_func(static_particles[p_idx], t)
-            
-            # Safely handle single numbers vs iterables to cast into SVector
-            if val isa Number
-                u_step[p_idx] = SVector{M, Float64}(val)
-            else
-                u_step[p_idx] = SVector{M, Float64}(val...)
-            end
-        end
-        u_ref[t_idx] = u_step
-    end
-    
-    # 6. Return a pristine, high-resolution Lagrangian SimData container
-    return LSimData{D, M}(
-        params, x_ref, u_ref, t_vec,
-        xmins, xmaxs, tmin, tmax,
-        Dict(), Dict(), Dict(), Dict()
-    )
-end
-function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::ESimData{D}) where {D}
-    N = _REF_GRID[]
-    T = _T_GRID[] # Use the global time resolution!
-    
-    # 1. Extract physical bounds directly from the TEMPLATE DATA!
-    # This guarantees perfect alignment with the numerical simulation domains.
-    xmins = template_data.xmins
-    xmaxs = template_data.xmaxs
-    tmin = template_data.tmin
-    tmax = template_data.tmax
-    
-    # 2. Build the high-res spatial axes
-    axes_list = ntuple(D) do d
-        collect(range(xmins[d], xmaxs[d], length=N))
-    end
-    
-    # 3. Build the high-res time vector
-    t_vec = collect(range(tmin, tmax, length=T))
-    
-    # 4. Evaluate one point to find the number of components (C)
-    sample_pos = SVector{D, Float64}(ntuple(d -> axes_list[d][1], D))
-    sample_val = ref_func(sample_pos, t_vec[1])
-    C = length(sample_val)
-    
-    # 5. Allocate the dense tensor
-    grid_shape = ntuple(d -> N, D)
-    u_exact = zeros(Float64, C, grid_shape..., T)
-    
-    # 6. Evaluate the exact function on the fly
-    Threads.@threads for t_idx in 1:T
-        t = t_vec[t_idx]
-        for idx in CartesianIndices(grid_shape)
-            pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
-            exact_val = ref_func(pos, t)
-            
-            for c in 1:C
-                u_exact[c, Tuple(idx)..., t_idx] = exact_val[c]
-            end
-        end
-    end
-    
-    # 7. Create the lightweight ESimData that exists ONLY in RAM
-    # THE FIX: Add the xmins, xmaxs, tmin, tmax fields to match the new struct!
-    ram_data = ESimData{D}(
-        params, axes_list, u_exact, t_vec, 
-        xmins, xmaxs, tmin, tmax, 
-        Dict(), Dict(), Dict(), Dict()
-    )
-    
-    # Calculate baseline stats instantly without touching the hard drive!
-    IRunPDESims._calculate_stats!(Val(:series), ram_data, ram_data.x, ram_data.u, ref_func)
-    
-    return ram_data
-end
 
 # ==============================================================================
 # 1. TASK & CONFIGURATION ANALYSIS
@@ -443,10 +335,10 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     # Restore Grid Resolutions BEFORE running simulations
     if haskey(parsed, "Config") && haskey(parsed["Config"], "Resolutions")
         res = parsed["Config"]["Resolutions"]
-        haskey(res, "_N_GRID")   && (_N_GRID[]   = res["_N_GRID"])
-        haskey(res, "_T_GRID")   && (_T_GRID[]   = res["_T_GRID"])
-        haskey(res, "_REF_GRID") && (_REF_GRID[] = res["_REF_GRID"])
-        @info "Restored grid resolutions: N=$(_N_GRID[]), T=$(_T_GRID[]), REF=$(_REF_GRID[])"
+        haskey(res, "N")   && (set_space_resolution!(res["N"]))
+        haskey(res, "T")   && (set_time_resolution!(res["T"]))
+        haskey(res, "Ref")   && (set_ref_resolution!(res["Ref"]))
+        @info "Restored grid resolutions: N=$(res["N"]), T=$(res["T"]), REF=$(res["Ref"])"
     end
 
     sim_func_str = parsed["Config"]["General"]["simulation_func"]
@@ -814,9 +706,9 @@ function saveParametersToCSV(
             for (k, v) in dict; add_row("Config", scope, k, v); end
         end
 
-        add_row("Config", "Resolutions", "_N_GRID", _N_GRID[])
-        add_row("Config", "Resolutions", "_T_GRID", _T_GRID[])
-        add_row("Config", "Resolutions", "_REF_GRID", _REF_GRID[])
+        add_row("Config", "Resolutions", "N", get_space_resolution())
+        add_row("Config", "Resolutions", "T", get_time_resolution())
+        add_row("Config", "Resolutions", "Ref", get_ref_resolution())
 
         CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
         @info "Metadata and Parameters saved to $csv_filename"

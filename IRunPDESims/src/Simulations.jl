@@ -266,8 +266,8 @@ function runAllSimulations(
         end
     end
     
-    if calculate_stats || convert_eulerian
-        @info "Pass 2: Calculating Stats & Eulerian Conversions..."
+    if calculate_stats
+        @info "Pass 2: Calculating Stats"
         p2 = Progress(num_tasks; desc="Post-processing...")
         counter2 = Threads.Atomic{Int}(0)
         
@@ -282,14 +282,6 @@ function runAllSimulations(
                             sim_config.reference_func; 
                             force_overwrite=force_overwrite,
                         )
-                end
-                
-                # --- THE FIX: Skip Eulerian conversion if file already exists ---
-                if convert_eulerian && (sim_data isa LSimData)
-                    if force_overwrite || !doesSimDataExist(params, Val(:conv))
-                        conv_data = convert_to_eulerian(sim_data)
-                        saveSimData(conv_data; overwrite=force_overwrite)
-                    end
                 end
             end
         end

@@ -143,7 +143,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     state = Dict{String, Any}(
         "Config_Just_Loaded"      => Observable(false),
         "plot_window_initialized" => Observable(false),
-        "base_types"              => Observable{Vector{Any}}([[:menu]; [:slider for _ in 2:5]]),
+        "base_types"              => Observable{Vector{Any}}([:slider for _ in 1:4]),
         "Active_Axes"             => Observable{Vector{Int}}(Int[]),
         "Is_Activate_Mode"        => Observable(true),
         "Is_Animating"            => Observable(false),
@@ -278,7 +278,7 @@ function launch_plotter()
         
         manager.state["Param_Map"] = Observable(param_map)
         manager.state["Reverse_Map"] = Observable(reverse_map)
-        manager.plot_vars = [real_params; ["c", "x", "y", "z", "t"]]
+        manager.plot_vars = [real_params; ["x", "y", "z", "t"]]
         
         manager.config["Parameters"] = copy(new_config.varied_params)
         if !haskey(manager.config, "General"); manager.config["General"] = Dict{String, Any}(); end
@@ -452,11 +452,12 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # Read the data dimensions dynamically
     selector_obs = map(manager.plot_vars) do n
         w_key = haskey(rev_map, n) ? rev_map[n] : n
-        haskey(w, w_key) ? (w[w_key] isa Slider ? w[w_key].value : w[w_key].selection) : Observable("-")
+        w[w_key].value # No more `isa Slider` check needed!
     end
 
     x_sel, y_sel = w["X-Axis"].selection, w["Y-Axis"].selection
     z_sel, u_sel = w["Z-Axis"].selection, w["U-Axis"].selection
+    c_sel = w["c"].selection
     
     target = w["Compare_Target"].selection[]
     cols = parse(Int, w["Compare_Columns"].selection[])
@@ -471,9 +472,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             compare_labels = manager.methods[]
             num_plots = length(compare_labels)
         elseif target == "Component"
-            n_params = length(manager.plot_vars) - 5
             target_tensor = haskey(pd_first.data, u_sel[]) ? pd_first.data[u_sel[]] : pd_first.data["u"]
-            num_plots = size(target_tensor, n_params + 1) 
+            
+            # THE FIX: Number of components is now just the length of the SVector!
+            num_plots = length(eltype(target_tensor)) 
             
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
             compare_labels = String[]
@@ -532,8 +534,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         linkaxes!(axes...)
     end
     
-    target_idx = target == "Component" ? findfirst(isequal("c"), manager.plot_vars) :
-                 target == "Time"      ? findfirst(isequal("t"), manager.plot_vars) :
+    target_idx = target == "Time" ? findfirst(isequal("t"), manager.plot_vars) : 
                  findfirst(isequal(target), manager.plot_vars)
 
     function _mutate_compare_vals(current_sels, idx)
@@ -569,11 +570,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     manager.caches[i] = Dict{String, CT}()
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+                    
+                    # THE FIX: Dynamically override the Component UI string for this specific subplot!
+                    mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
+
                     if first(values(data)) isa LagrangianPlotData
-                        # THE FIX: Call extraction without the Val(PLOT_DIM_MAP[T]) helper
-                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[])
+                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, mutated_c_sel, u_sel[])
                     else
-                        dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                        dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, mutated_c_sel, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
                     end
                     
                     isempty(vl) && continue
@@ -608,7 +612,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     # TIER 3: DATA SYNC
     # =========================================================================
-    data_sync_obs = onany(selector_obs...) do sel_vals...
+    data_sync_obs = onany(c_sel,selector_obs...) do c,sel_vals...
         @with_lock manager "Data" begin
             
             
@@ -622,11 +626,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
             
             for i in 1:num_plots
+                
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
+                
+               mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
+
                 if first(values(data)) isa LagrangianPlotData
-                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, u_sel[])
+                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, mutated_c_sel, u_sel[])
                 else
-                    dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                    dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, mutated_c_sel, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
                 end
                 
                 local_methods = manager.methods[]

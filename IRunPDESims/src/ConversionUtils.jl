@@ -248,7 +248,7 @@ function convert_to_eulerian(ldata::LSimData{D, M}; N_grid=_N_GRID[], T_grid=_T_
             end
         end
     end
-
+    println(ldata.series)
     edata = ESimData{D, M}(ldata.params, x_euler, u_euler, ldata.t, 
                            ldata.xmins, ldata.xmaxs, ldata.tmin, ldata.tmax, 
                            ldata.scalars, ldata.series, Dict{String, Array{SVector{M, Float64}, D}}(), e_fields)
@@ -300,4 +300,76 @@ function convert_to_lagrangian(data::ESimData{D, M}) where {D, M}
         data.xmins, data.xmaxs, data.tmin, data.tmax,
         data.scalars, data.series, new_fields # <-- No profiles passed!
     )
+end
+function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::LSimData{D, M}) where {D, M}
+    N = _REF_GRID[]
+    T_len = _T_GRID[]
+    
+    # 1. Use existing template bounds
+    xmins, xmaxs = template_data.xmins, template_data.xmaxs
+    tmin, tmax = template_data.tmin, template_data.tmax
+    
+    # 2. Build vectors
+    t_vec = collect(range(tmin, tmax, length=T_len))
+    axes_list = ntuple(d -> collect(range(xmins[d], xmaxs[d], length=N)), D)
+    grid_shape = ntuple(d -> N, D)
+    N_pts = prod(grid_shape)
+    
+    # 3. Generate static particle positions
+    static_particles = [SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D)) 
+                        for idx in CartesianIndices(grid_shape)]
+    
+    x_ref = [copy(static_particles) for _ in 1:T_len]
+    u_ref = Vector{Vector{SVector{M, Float64}}}(undef, T_len)
+    
+    # 4. Evaluate using the analytical logic
+    Threads.@threads for t_idx in 1:T_len
+        t = t_vec[t_idx]
+        u_ref[t_idx] = [SVector{M, Float64}(ref_func(pos, t)) for pos in static_particles]
+    end
+    
+    return LSimData{D, M}(
+        params, x_ref, u_ref, t_vec,
+        xmins, xmaxs, tmin, tmax,
+        Dict(), Dict(), Dict()
+    )
+end
+function generate_reference_simdata(ref_func::Function, params::ParamDict, template_data::ESimData{D, M_orig}) where {D, M_orig}
+    N = _REF_GRID[]
+    T = _T_GRID[]
+    
+    xmins, xmaxs = template_data.xmins, template_data.xmaxs
+    tmin, tmax = template_data.tmin, template_data.tmax
+    
+    axes_list = ntuple(d -> collect(range(xmins[d], xmaxs[d], length=N)), D)
+    t_vec = collect(range(tmin, tmax, length=T))
+    
+    # 1. Determine M from the function output
+    sample_val = ref_func(SVector{D, Float64}(ntuple(d -> axes_list[d][1], D)), t_vec[1])
+    M = length(sample_val)
+    
+    # 2. Pre-allocate the SVector tensor layout
+    grid_shape = ntuple(d -> N, D)
+    u_exact = Array{SVector{M, Float64}, D+1}(undef, grid_shape..., T)
+    
+    # 3. Fill the tensor
+    Threads.@threads for t_idx in 1:T
+        t = t_vec[t_idx]
+        for idx in CartesianIndices(grid_shape)
+            pos = SVector{D, Float64}(ntuple(d -> axes_list[d][idx[d]], D))
+            u_exact[idx, t_idx] = SVector{M, Float64}(ref_func(pos, t))
+        end
+    end
+    
+    # 4. Construct the RAM-only container
+    ram_data = ESimData{D, M}(
+        params, axes_list, u_exact, t_vec, 
+        xmins, xmaxs, tmin, tmax, 
+        Dict(), Dict(), Dict(), Dict()
+    )
+    
+    # Calculate baseline stats immediately
+    calculateAllStats!(ram_data, ref_func)
+    
+    return ram_data
 end

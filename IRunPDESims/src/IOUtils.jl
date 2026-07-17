@@ -191,13 +191,36 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
             file[target_key] = sim_data
             @info "Saved '$target_key' to $(basename(file_name))"
         end
+        
+        # --- THE FIX: Save native metadata instantly ---
+        if target_key == "raw"
+            native_str = sim_data isa ESimData ? "eulerian" : "lagrangian"
+            if haskey(file, "native")
+                delete!(file, "native")
+            end
+            file["native"] = native_str
+        end
     end
 end
-
 # Default fallback routes to :raw
 loadSimData(params::ParamDict) = loadSimData(params, Val(:raw))
 
-# --- Dispatch 1: Raw Data ---
+# --- Fast Metadata Reader ---
+function _get_native_type(file_name::String)
+    return jldopen(file_name, "r") do file
+        if haskey(file, "native")
+            return file["native"]
+        else
+            # Backwards compatibility for older JLD2 files
+            return typeof(file["raw"]) <: ESimData ? "eulerian" : "lagrangian"
+        end
+    end
+end
+
+# ==============================================================================
+# --- LOAD ROUTERS ---
+# ==============================================================================
+
 function loadSimData(params::ParamDict, ::Val{:raw})
     file_name = getFileName(params)
     return jldopen(file_name, "r") do file
@@ -205,46 +228,44 @@ function loadSimData(params::ParamDict, ::Val{:raw})
     end
 end
 
-# --- Dispatch 2: Converted Data (Lazy Loader) ---
 function loadSimData(params::ParamDict, ::Val{:conv})
     file_name = getFileName(params)
+    native = _get_native_type(file_name)
+    target_key = native == "lagrangian" ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
     
-    # 1. Peek to find the exact target key needed
-    has_conv, target_key = false, ""
-    jldopen(file_name, "r") do file
-        if !haskey(file, "raw")
-            throw(SimFileNotFoundError("Base 'raw' data missing. Cannot load or generate conversion."))
-        end
-        
-        # Determine the expected key based on what the raw data type is
-        raw_is_lagrangian = typeof(file["raw"]) <: LSimData
-        target_key = raw_is_lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
-        has_conv = haskey(file, target_key)
-    end
-    
-    # 2. Return if exists
+    has_conv = jldopen(file_name, "r") do file; haskey(file, target_key); end
     if has_conv
         return jldopen(file_name, "r") do file; file[target_key]; end
     end
     
-    # 3. Generate on the fly if missing
     @info "Converted format '$target_key' not found. Generating on the fly..."
     raw_data = loadSimData(params, Val(:raw))
+    conv_data = native == "lagrangian" ? convert_to_eulerian(raw_data) : convert_to_lagrangian(raw_data)
     
-    conv_data = raw_data isa LSimData ? convert_to_eulerian(raw_data) : convert_to_lagrangian(raw_data)
-    
-    # saveSimData is now smart enough to automatically name it correctly!
     saveSimData(conv_data; overwrite=true) 
-    
     return conv_data
 end
+
+# The User's Brilliant 1-Line Semantic Routers!
+function loadSimData(params::ParamDict, ::Val{:eulerian})
+    native = _get_native_type(getFileName(params))
+    return native == "eulerian" ? loadSimData(params, Val(:raw)) : loadSimData(params, Val(:conv))
+end
+
+function loadSimData(params::ParamDict, ::Val{:lagrangian})
+    native = _get_native_type(getFileName(params))
+    return native == "lagrangian" ? loadSimData(params, Val(:raw)) : loadSimData(params, Val(:conv))
+end
+
+# ==============================================================================
+# --- EXISTENCE CHECKERS ---
+# ==============================================================================
 
 doesSimDataExist(params::ParamDict) = doesSimDataExist(params, Val(:raw))
 
 function doesSimDataExist(params::ParamDict, ::Val{:raw})
     try
-        file_name = getFileName(params)
-        return jldopen(file_name, "r") do file; haskey(file, "raw"); end
+        return jldopen(getFileName(params), "r") do file; haskey(file, "raw"); end
     catch e
         return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end
@@ -253,14 +274,27 @@ end
 function doesSimDataExist(params::ParamDict, ::Val{:conv})
     try
         file_name = getFileName(params)
-        return jldopen(file_name, "r") do file
-            if !haskey(file, "raw"); return false; end
-            
-            raw_is_lagrangian = typeof(file["raw"]) <: LSimData
-            target_key = raw_is_lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
-            
-            return haskey(file, target_key)
-        end
+        native = _get_native_type(file_name)
+        target_key = native == "lagrangian" ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
+        return jldopen(file_name, "r") do file; haskey(file, target_key); end
+    catch e
+        return isa(e, SimFileNotFoundError) ? false : rethrow(e)
+    end
+end
+
+function doesSimDataExist(params::ParamDict, ::Val{:eulerian})
+    try
+        native = _get_native_type(getFileName(params))
+        return native == "eulerian" ? doesSimDataExist(params, Val(:raw)) : doesSimDataExist(params, Val(:conv))
+    catch e
+        return isa(e, SimFileNotFoundError) ? false : rethrow(e)
+    end
+end
+
+function doesSimDataExist(params::ParamDict, ::Val{:lagrangian})
+    try
+        native = _get_native_type(getFileName(params))
+        return native == "lagrangian" ? doesSimDataExist(params, Val(:raw)) : doesSimDataExist(params, Val(:conv))
     catch e
         return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end

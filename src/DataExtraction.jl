@@ -2,7 +2,6 @@
 # DATA EXTRACTION PIPELINE (Dispatched by Val{D})
 # ==============================================================================
 
-
 """
     find_closest_index_for_dim(pd::EulerianPlotData, dim_idx::Int, target_val::Real)
 
@@ -15,29 +14,25 @@ function find_closest_index_for_dim(pd::EulerianPlotData{N}, dim_idx::Int, targe
         p_vals = pd.active_param_values[dim_idx]
         return findmin(v -> abs(v - target_val), p_vals)[2]
         
-    elseif dim_idx == n_params + 1 
-        return max(1, Int(target_val))
-        
-    elseif dim_idx > n_params + 1 && dim_idx <= n_params + 4 
-        tensor_key = dim_idx == n_params + 2 ? "x" : (dim_idx == n_params + 3 ? "y" : "z")
+    elseif dim_idx >= n_params + 1 && dim_idx <= n_params + 3 
+        # --- THE FIX: X, Y, Z are now exactly n_params + 1, 2, 3 ---
+        tensor_key = dim_idx == n_params + 1 ? "x" : (dim_idx == n_params + 2 ? "y" : "z")
         
         if haskey(pd.data, tensor_key)
-            # --- THE FIX: Isolate the 1D axis natively to prevent vec() from flattening the grid! ---
             slice_idx = ntuple(i -> i == dim_idx ? (:) : 1, ndims(pd.data[tensor_key]))
             coord_vec = pd.data[tensor_key][slice_idx...]
             
-            # Safely find the closest index while ignoring NaNs
             valid_pairs = filter(p -> isfinite(p[2]), collect(enumerate(coord_vec)))
             if isempty(valid_pairs)
                 return 1
             end
             
-            # Find the minimum difference, and extract the original index
             best_idx = findmin(p -> abs(p[2] - target_val), valid_pairs)[2]
             return valid_pairs[best_idx][1]
         end
         
-    elseif dim_idx == n_params + 5 
+    elseif dim_idx == n_params + 4 
+        # --- THE FIX: Time is now exactly n_params + 4 ---
         return findmin(v -> abs(v - target_val), pd.t_vals)[2]
     end
     
@@ -76,12 +71,19 @@ function get_base_dim_idx(pd::EulerianPlotData, key::Union{String, Nothing}, dim
         return isempty(varying) ? 1 : varying[1]
     end
 end
+
+# ==============================================================================
+# EULERIAN DATA EXTRACTION PIPELINE
+# ==============================================================================
+
 # --- 1D Data Extraction ---
-function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, z_key, u_key, ::Val{1})
+function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, target_c_str, x_key, y_key, z_key, u_key, ::Val{1})
     dim_names = manager.plot_vars
     pd_first = first(values(data))
     slice_dim_idx = get_base_dim_idx(pd_first, x_key, dim_names)
     xs, us, valid_labels = Vector{Float64}[], Vector{Float64}[], String[]
+    
+    target_c = target_c_str isa String ? parse(Int, target_c_str) : target_c_str
     
     for m_name in manager.methods[]
         !haskey(data, m_name) && continue
@@ -91,17 +93,27 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
         
         des_idx = _get_desired_indices(pd, (slice_dim_idx,), sel_vals)
         
-        # Simplified Slicing: Only extract the target dimension
         safe_x = map(i -> i == slice_dim_idx ? (:) : 1, 1:ndims(x_tensor))
         safe_u = map(i -> i == slice_dim_idx ? (:) : (des_idx[i] isa Colon ? 1 : min(des_idx[i], size(u_tensor, i))), 1:ndims(u_tensor))
         
         try
             x_vec = vec(x_tensor[safe_x...])
-            u_vec = vec(u_tensor[safe_u...])
+            u_raw = vec(u_tensor[safe_u...])
             
-            valid_idx = .!(isnan.(x_vec)) .& .!(isnan.(u_vec))
+            # --- THE LATE SLICE ---
+            u_flat = map(u_raw) do val
+                if val isa Number
+                    return Float64(val)
+                elseif target_c <= length(val)
+                    return Float64(val[target_c])
+                else
+                    return NaN
+                end
+            end
+            
+            valid_idx = .!(isnan.(x_vec)) .& .!(isnan.(u_flat))
             x_vec = x_vec[valid_idx]
-            u_vec = u_vec[valid_idx]
+            u_vec = u_flat[valid_idx]
             
             perm = sortperm(x_vec)
             push!(xs, x_vec[perm])
@@ -112,13 +124,16 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
     title_str = generate_dynamic_title(slice_dim_idx, dim_names, sel_vals)
     return (xs, us), valid_labels, title_str
 end
+
 # --- 2D Data Extraction ---
-function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, z_key, u_key, ::Val{2})
+function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, target_c_str, x_key, y_key, z_key, u_key, ::Val{2})
     dim_names = manager.plot_vars
     pd_first = first(values(data))
     dim1 = get_base_dim_idx(pd_first, x_key, dim_names)
     dim2 = get_base_dim_idx(pd_first, y_key, dim_names)
     xs, ys, us, valid_labels = Vector{Float64}[], Vector{Float64}[], Matrix{Float64}[], String[]
+    
+    target_c = target_c_str isa String ? parse(Int, target_c_str) : target_c_str
     
     for m_name in manager.methods[]
         !haskey(data, m_name) && continue
@@ -131,7 +146,6 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
         safe_x = map(i -> i == dim1 ? (:) : 1, 1:ndims(x_tensor))
         safe_y = map(i -> i == dim2 ? (:) : 1, 1:ndims(y_tensor))
         
-        # THE FIX: Use `idx:idx` to prevent Julia from dropping the dimension!
         safe_u = map(1:ndims(u_tensor)) do i
             if i == dim1 || i == dim2
                 return (:)
@@ -146,14 +160,25 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
             y_vec = vec(y_tensor[safe_y...])
             Nx, Ny = length(x_vec), length(y_vec)
             
-            u_raw = u_tensor[safe_u...] # Now guaranteed to have ndims(u_tensor) dimensions
+            u_raw = u_tensor[safe_u...] 
+            
+            # --- THE LATE SLICE ---
+            u_flat = map(u_raw) do val
+                if val isa Number
+                    return Float64(val)
+                elseif target_c <= length(val)
+                    return Float64(val[target_c])
+                else
+                    return NaN
+                end
+            end
             
             if dim1 == dim2
-                u_mat = repeat(vec(u_raw), 1, Ny)
+                u_mat = repeat(vec(u_flat), 1, Ny)
             else
                 other_dims = setdiff(1:ndims(u_tensor), [dim1, dim2])
                 perm = [dim1, dim2, other_dims...]
-                u_permuted = permutedims(u_raw, perm)
+                u_permuted = permutedims(u_flat, perm)
                 u_mat = reshape(u_permuted, Nx, Ny)
             end
             
@@ -165,13 +190,15 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
 end
 
 # --- 3D Data Extraction ---
-function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key, y_key, z_key, u_key, ::Val{3})
+function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, target_c_str, x_key, y_key, z_key, u_key, ::Val{3})
     dim_names = manager.plot_vars
     pd_first = first(values(data))
     dim1 = get_base_dim_idx(pd_first, x_key, dim_names)
     dim2 = get_base_dim_idx(pd_first, y_key, dim_names)
     dim3 = get_base_dim_idx(pd_first, z_key, dim_names)
     xs, ys, zs, us, valid_labels = Vector{Float64}[], Vector{Float64}[], Vector{Float64}[], Array{Float64, 3}[], String[]
+    
+    target_c = target_c_str isa String ? parse(Int, target_c_str) : target_c_str
     
     for m_name in manager.methods[]
         !haskey(data, m_name) && continue
@@ -185,7 +212,6 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
         safe_y = map(i -> i == dim2 ? (:) : 1, 1:ndims(y_tensor))
         safe_z = map(i -> i == dim3 ? (:) : 1, 1:ndims(z_tensor))
         
-        # THE FIX: Apply `idx:idx` here as well
         safe_u = map(1:ndims(u_tensor)) do i
             if i == dim1 || i == dim2 || i == dim3
                 return (:)
@@ -203,13 +229,24 @@ function extract_eulerian_data(data::Dict, manager::PlotManager, sel_vals, x_key
             
             u_raw = u_tensor[safe_u...]
             
+            # --- THE LATE SLICE ---
+            u_flat = map(u_raw) do val
+                if val isa Number
+                    return Float64(val)
+                elseif target_c <= length(val)
+                    return Float64(val[target_c])
+                else
+                    return NaN
+                end
+            end
+            
             unique_dims = unique([dim1, dim2, dim3])
             if length(unique_dims) < 3
                 u_mat = fill(NaN, Nx, Ny, Nz)
             else
                 other_dims = setdiff(1:ndims(u_tensor), [dim1, dim2, dim3])
                 perm = [dim1, dim2, dim3, other_dims...]
-                u_permuted = permutedims(u_raw, perm)
+                u_permuted = permutedims(u_flat, perm)
                 u_mat = reshape(u_permuted, Nx, Ny, Nz)
             end
             
@@ -224,17 +261,15 @@ end
 # ==============================================================================
 # LAGRANGIAN DATA EXTRACTION PIPELINE
 # ==============================================================================
-function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_key)
+
+function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, target_c_str, u_key)
     dim_names = manager.plot_vars
-    n_params = length(dim_names) - 5
-    comp_idx = n_params + 1
-    time_idx = n_params + 5
+    n_params = length(dim_names) - 4 # THE FIX: Explicitly updated to - 4
+    time_idx = n_params + 4
     
     target_t = sel_vals[time_idx]
-    target_c_str = sel_vals[comp_idx]
     target_c = target_c_str isa String ? parse(Int, target_c_str) : target_c_str
     
-    # THE FIX: Infer D natively from the actual simulation data!
     pd_first = first(values(data))
     l_data_first = pd_first.data[1]
     D = length(l_data_first.xmins)
@@ -265,6 +300,8 @@ function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_k
             u_step = l_data.fields[u_key][t_idx]
         elseif haskey(l_data.profiles, u_key)
             u_step = l_data.profiles[u_key][1]
+        elseif haskey(l_data.series, u_key) 
+            u_step = [l_data.series[u_key][t_idx]] # Natively handle 1D time-series extracts too!
         end
         isnothing(u_step) && continue
         
@@ -275,14 +312,32 @@ function extract_lagrangian_data(data::Dict, manager::PlotManager, sel_vals, u_k
             pts = zeros(Float64, N_p)
             @inbounds for p in 1:N_p
                 pts[p] = x_step[p][1]
-                us[p] = target_c <= length(u_step[p]) ? u_step[p][target_c] : NaN
+                
+                # --- THE LATE SLICE ---
+                val = u_step[p]
+                if val isa Number
+                    us[p] = Float64(val)
+                elseif target_c <= length(val)
+                    us[p] = Float64(val[target_c])
+                else
+                    us[p] = NaN
+                end
             end
             push!(pts_all, pts)
         else
             pts = Vector{Point{D, Float64}}(undef, N_p)
             @inbounds for p in 1:N_p
                 pts[p] = Point{D, Float64}(x_step[p]...)
-                us[p] = target_c <= length(u_step[p]) ? u_step[p][target_c] : NaN
+                
+                # --- THE LATE SLICE ---
+                val = u_step[p]
+                if val isa Number
+                    us[p] = Float64(val)
+                elseif target_c <= length(val)
+                    us[p] = Float64(val[target_c])
+                else
+                    us[p] = NaN
+                end
             end
             push!(pts_all, pts)
         end

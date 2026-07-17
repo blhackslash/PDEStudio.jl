@@ -1,8 +1,8 @@
 # Helper for nearest index lookup
 find_nearest_index(vals, target) = findmin(v -> abs(v - target), vals)[2]
 
-# Dynamic D extraction so we don't need to parameterize the whole file!
-_get_D(sim_data::ESimData) = ndims(sim_data.u) - 2
+# --- THE FIX: SVector array is (X,Y,Z,T), so ndims-1 = D ---
+_get_D(sim_data::ESimData) = ndims(sim_data.u) - 1  
 _get_D(sim_data::AbstractSimData) = length(sim_data.x[1][1])
 
 safe_reshape(data::AbstractArray, dims...) = reshape(data, dims...)
@@ -18,28 +18,14 @@ function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
         
         if !isempty(tasks)
             try
-                plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
-                
-                # THE FIX: Instantly load cached Eulerian template without touching raw data!
-                if PLOT_MODE[] == :eulerian && doesSimDataExist(tasks[1]; data_key=plot_key)
-                    return loadSimData(tasks[1]; data_key=plot_key)
-                end
-                
-                sim_data = loadSimData(tasks[1])
-                if !isnothing(sim_data)
-                    if PLOT_MODE[] == :eulerian && sim_data isa LSimData
-                        sim_data = convert_to_eulerian(sim_data)
-                        saveSimData(sim_data; data_key=plot_key, overwrite=true)
-                        return sim_data
-                    end
-                    return sim_data
-                end
+                return loadSimData(tasks[1],Val(PLOT_MODE[]))
             catch
             end
         end
     end
     return nothing
 end
+
 # ==============================================================================
 # 1. TASK & CONFIGURATION ANALYSIS
 # ==============================================================================
@@ -72,37 +58,32 @@ end
 function resolve_dimensions(sim_data::AbstractSimData, base_types::Vector)
     D = _get_D(sim_data)
     
-    # LSimData branches removed. Intercept converts everything to ESimData here!
-    raw_c = size(sim_data.u, 1)
-    raw_space_D = size(sim_data.u)[2:D+1]
-    raw_t = size(sim_data.u, D+2)
+    # --- THE FIX: Purged raw_c! Components are now internal to the SVector. ---
+    raw_space_D = size(sim_data.u)[1:D]
+    raw_t = size(sim_data.u, D+1)
 
     raw_space = ntuple(i -> i <= length(raw_space_D) ? raw_space_D[i] : 1, 3)
-    eff_c = base_types[1] isa Number ? 1 : raw_c
     
+    # --- THE FIX: base_types is now [x, y, z, t]. 1=X, 2=Y, 3=Z, 4=T ---
     eff_space = ntuple(3) do i
         if i <= D
-            return base_types[1+i] isa Number ? 1 : raw_space[i]
+            return base_types[i] isa Number ? 1 : raw_space[i]
         else
             return 1
         end
     end
 
-    eff_t = base_types[5] isa Number ? 1 : raw_t
+    eff_t = base_types[4] isa Number ? 1 : raw_t
     max_p = 0 
 
-    return eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t
+    return eff_space, eff_t, max_p, raw_space, raw_t
 end
 
-function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tuple, raw_t::Int, sim_data::AbstractSimData)
-    # 1. Component Axis
-    c_idx = base_types[1] isa Number ? Int(base_types[1]) : (1:raw_c)
-    if c_idx == 1:1; c_idx = 1; end
-    
-    # 2. Spatial Axes
+function get_source_slices(base_types::Vector, D::Int, raw_space::Tuple, raw_t::Int, sim_data::AbstractSimData)
+    # 1. Spatial Axes 
     space_idx = ntuple(3) do i
         if i <= D
-            val = base_types[1+i]
+            val = base_types[i] # 1 is X, 2 is Y, 3 is Z
             if val isa Integer
                 return clamp(Int(val), 1, raw_space[i])
             elseif val isa Real
@@ -116,41 +97,41 @@ function get_source_slices(base_types::Vector, D::Int, raw_c::Int, raw_space::Tu
         end
     end
     
-    # 3. Time Axis
-    t_idx = if base_types[5] isa Integer
-        clamp(Int(base_types[5]), 1, raw_t)
-    elseif base_types[5] isa Real
-        find_nearest_index(sim_data.t, base_types[5])
+    # 2. Time Axis (base_types[4] is Time)
+    val_t = base_types[4]
+    t_idx = if val_t isa Integer
+        clamp(Int(val_t), 1, raw_t)
+    elseif val_t isa Real
+        find_nearest_index(sim_data.t, val_t)
     else
         1:raw_t
     end
     
-    return c_idx, space_idx, t_idx
+    return space_idx, t_idx
 end
 
-function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, raw_c, raw_space, raw_t, category, sim_data)
-    c_src, space_src, t_src = get_source_slices(base_types, D, raw_c, raw_space, raw_t, sim_data)
-    
+function slice_and_fill_eulerian!(target, source, dest_prefix, base_types, D, raw_space, raw_t, category, sim_data)
+    space_src, t_src = get_source_slices(base_types, D, raw_space, raw_t, sim_data)
     valid_space_src = space_src[1:D]
 
-    len_c = c_src isa Int ? 1 : length(c_src)
     len_sx = space_src[1] isa Int ? 1 : length(space_src[1])
     len_sy = space_src[2] isa Int ? 1 : length(space_src[2])
     len_sz = space_src[3] isa Int ? 1 : length(space_src[3])
-    len_t = t_src isa Int ? 1 : length(t_src)
+    len_t  = t_src isa Int ? 1 : length(t_src)
 
+    # --- THE FIX: Array assignment cleanly maps SVectors without component dimensions ---
     if category == :field
-        data = source[c_src, valid_space_src..., t_src]
-        target[dest_prefix..., :, :, :, :, :] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, len_t)
+        data = source[valid_space_src..., t_src]
+        target[dest_prefix..., :, :, :, :] = safe_reshape(data, len_sx, len_sy, len_sz, len_t)
     elseif category == :scalar
         data = source
-        target[dest_prefix..., 1, 1, 1, 1, 1] = safe_reshape(data, 1, 1, 1, 1, 1)
+        target[dest_prefix..., 1, 1, 1, 1] = safe_reshape(data, 1, 1, 1, 1)
     elseif category == :series
-        data = source[c_src, t_src]
-        target[dest_prefix..., :, 1, 1, 1, :] = safe_reshape(data, len_c, 1, 1, 1, len_t)
+        data = source[t_src]
+        target[dest_prefix..., 1, 1, 1, :] = safe_reshape(data, 1, 1, 1, len_t)
     elseif category == :profile
-        data = source[c_src, valid_space_src...]
-        target[dest_prefix..., :, :, :, :, 1] = safe_reshape(data, len_c, len_sx, len_sy, len_sz, 1)
+        data = source[valid_space_src...]
+        target[dest_prefix..., :, :, :, 1] = safe_reshape(data, len_sx, len_sy, len_sz, 1)
     end
 end
 
@@ -163,20 +144,15 @@ function create_lagrangian_plot_data(
     sim_config::SimulationConfig, 
     fixed_params::FixedDict,
     base_types::Vector;
-    parallel=false
 )
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
-    
+    mode = Val(PLOT_MODE[])
     ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
     for task in tasks; _recombine_tuples!(task); end
-
-    # 1. Ensure Data Exists
-    runAllSimulations(sim_config; active_methods=[method_name], varied_params=sim_config.varied_params, fixed_params=sim_fixes, convert_eulerian=false, parallel=parallel)
     
-    # THE FIX: Request a natively Lagrangian template!
     base_template = _get_template_simdata(sim_config, sim_fixes)
     if isnothing(base_template)
         @warn "Cannot generate Lagrangian data: No valid simulation data found."
@@ -188,23 +164,12 @@ function create_lagrangian_plot_data(
     
     for (k, params) in enumerate(tasks)
         is_ref = contains(safe_string(method_name), "analytic") || contains(safe_string(method_name), "reference")
-        
-        if is_ref
-            sim_data = generate_reference_simdata(sim_config.reference_func, params, base_template)
-        else
-            sim_data = loadSimData(params)
-        end
-        
-        # THE ELEGANT FIX: Seamlessly convert dense grids to particles in RAM!
-        if sim_data isa ESimData
-            sim_data = convert_to_lagrangian(sim_data)
-        end
+        sim_data = is_ref ? IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template) : loadSimData(params,mode)
         
         dest_prefix = isempty(grid_indices[k]) ? (1,) : grid_indices[k]
         l_data_store[dest_prefix...] = sim_data
     end
 
-    # Return pristine, raw Lagrangian data!
     return LagrangianPlotData{ndims(l_data_store)}(
         l_data_store, active_keys, active_values, base_template.t, fixed_params
     )
@@ -219,9 +184,9 @@ function create_eulerian_plot_data(
     sim_config::SimulationConfig, 
     fixed_params::FixedDict,
     base_types::Vector;
-    parallel=false
 )
     active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
+    mode = Val(PLOT_MODE[])
     
     ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
@@ -232,162 +197,111 @@ function create_eulerian_plot_data(
     safe_method = safe_string(method_name)
     safe_ref = isnothing(sim_config.reference_name) ? nothing : safe_string(sim_config.reference_name)
     is_reference = !isnothing(safe_ref) && safe_method == safe_ref
-
-    # =========================================================================
-    # 1. ENSURE DATA EXISTS (Run simulations if this isn't the reference)
-    # =========================================================================
-    if !is_reference
-        runAllSimulations(
-            sim_config; 
-            active_methods=[method_name], 
-            varied_params=sim_config.varied_params, 
-            fixed_params=sim_fixes, 
-            convert_eulerian=true, 
-            parallel=parallel
-        )
-    end
     
-    # =========================================================================
-    # 2. GRAB THE UNIVERSAL TEMPLATE
-    # =========================================================================
     base_template = _get_template_simdata(sim_config, sim_fixes)
     if isnothing(base_template)
         @warn "Cannot generate plot data: No valid simulation data found to use as a domain template."
         return nothing
     end
 
-    # THE FIX: If this is the reference method, we must use a high-res template
-    # to allocate the arrays! Otherwise, we use the standard base_template.
     local template_data
     if is_reference
-        @info "Generating high-res Reference solution in-memory (N=$(_REF_GRID[]), T=$(_T_GRID[]))..."
-        template_data = generate_reference_simdata(sim_config.reference_func, tasks[1], base_template)
+        template_data = IRunPDESims.generate_reference_simdata(sim_config.reference_func, tasks[1], base_template)
     else
         template_data = base_template
     end
 
-    # =========================================================================
-    # 3. SETUP DIMENSIONS & ALLOCATE TENSORS
-    # =========================================================================
     D = _get_D(template_data)  
-    eff_c, eff_space, eff_t, max_p, raw_c, raw_space, raw_t = resolve_dimensions(template_data, base_types)
+    eff_space, eff_t, max_p, raw_space, raw_t = resolve_dimensions(template_data, base_types)
     grid_dims = length.(active_values)
     n_params = length(active_keys)
     
-    data_store = Dict{String, Array{Float64}}()
+    data_store = Dict{String, AbstractArray}()
     
-    function allocate_tensor(category)
+    # --- THE FIX: Tensors no longer allocate a component dimension ---
+    function allocate_tensor(category, T_type=Float64)
         if category == :field      
-            return fill(NaN, grid_dims..., eff_c, eff_space..., eff_t)
+            return Array{T_type}(undef, grid_dims..., eff_space..., eff_t)
         elseif category == :scalar 
-            return fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
+            return Array{T_type}(undef, grid_dims..., 1, 1, 1, 1)
         elseif category == :series 
-            return fill(NaN, grid_dims..., eff_c, 1, 1, 1, eff_t)
+            return Array{T_type}(undef, grid_dims..., 1, 1, 1, eff_t)
         elseif category == :profile
-            return fill(NaN, grid_dims..., eff_c, eff_space..., 1)
+            return Array{T_type}(undef, grid_dims..., eff_space..., 1)
         end
     end
 
-    # --- Construct Perfectly Independent Grids! ---
-    c_src_first, space_src_first, t_src_first = get_source_slices(base_types, D, raw_c, raw_space, raw_t, template_data)
+    space_src_first, t_src_first = get_source_slices(base_types, D, raw_space, raw_t, template_data)
     
     function make_independent_dims(target_dim_idx, eff_len)
-        return ntuple(i -> i == target_dim_idx ? eff_len : 1, n_params + 5)
+        return ntuple(i -> i == target_dim_idx ? eff_len : 1, n_params + 4)
     end
 
+    # --- THE FIX: Array wrapping `[data]` resolves the reshape MethodError! ---
     len_t = t_src_first isa Int ? 1 : length(t_src_first)
-    data_store["t"] = reshape(template_data.t[t_src_first], make_independent_dims(n_params + 5, len_t))
+    t_data = t_src_first isa Int ? [template_data.t[t_src_first]] : template_data.t[t_src_first]
+    data_store["t"] = reshape(t_data, make_independent_dims(n_params + 4, len_t))
 
     len_x = space_src_first[1] isa Int ? 1 : length(space_src_first[1])
-    data_store["x"] = reshape(template_data.x[1][space_src_first[1]], make_independent_dims(n_params + 2, len_x))
+    x_data = space_src_first[1] isa Int ? [template_data.x[1][space_src_first[1]]] : template_data.x[1][space_src_first[1]]
+    data_store["x"] = reshape(x_data, make_independent_dims(n_params + 1, len_x))
     
     if D >= 2
         len_y = space_src_first[2] isa Int ? 1 : length(space_src_first[2])
-        data_store["y"] = reshape(template_data.x[2][space_src_first[2]], make_independent_dims(n_params + 3, len_y))
+        y_data = space_src_first[2] isa Int ? [template_data.x[2][space_src_first[2]]] : template_data.x[2][space_src_first[2]]
+        data_store["y"] = reshape(y_data, make_independent_dims(n_params + 2, len_y))
     end
     if D == 3
         len_z = space_src_first[3] isa Int ? 1 : length(space_src_first[3])
-        data_store["z"] = reshape(template_data.x[3][space_src_first[3]], make_independent_dims(n_params + 4, len_z))
+        z_data = space_src_first[3] isa Int ? [template_data.x[3][space_src_first[3]]] : template_data.x[3][space_src_first[3]]
+        data_store["z"] = reshape(z_data, make_independent_dims(n_params + 3, len_z))
     end
 
-    # --- Inject Parameters as Tensors ---
     for (i, key) in enumerate(active_keys)
-        param_tensor = fill(NaN, grid_dims..., 1, 1, 1, 1, 1)
+        param_tensor = fill(NaN, grid_dims..., 1, 1, 1, 1)
         vals = Float64.(active_values[i])
         for (v_idx, val) in enumerate(vals)
             idx = ntuple(d -> d == i ? v_idx : (:), n_params)
             if Colon() in idx
-                param_tensor[idx..., 1, 1, 1, 1, 1] .= val
+                param_tensor[idx..., 1, 1, 1, 1] .= val
             else
-                param_tensor[idx..., 1, 1, 1, 1, 1] = val
+                param_tensor[idx..., 1, 1, 1, 1] = val
             end
         end
         data_store[key] = param_tensor
     end
 
-    # --- Allocate Results using Template Keys ---
-    data_store["u"] = allocate_tensor(:field)
-    for k in keys(template_data.scalars); data_store[k] = allocate_tensor(:scalar); end
-    for k in keys(template_data.series); data_store[k] = allocate_tensor(:series); end
-    for k in keys(template_data.profiles); data_store[k] = allocate_tensor(:profile); end
-    for k in keys(template_data.fields); data_store[k] = allocate_tensor(:field); end
+    # --- THE FIX: Dynamically allocate specific SVector types! ---
+    data_store["u"] = allocate_tensor(:field, eltype(template_data.u))
+    for (k, v) in template_data.scalars; data_store[k] = allocate_tensor(:scalar, eltype(v)); end
+    for (k, v) in template_data.series;  data_store[k] = allocate_tensor(:series, eltype(v)); end
+    for (k, v) in template_data.profiles; data_store[k] = allocate_tensor(:profile, eltype(v)); end
+    for (k, v) in template_data.fields;  data_store[k] = allocate_tensor(:field, eltype(v)); end
 
-    # =========================================================================
-    # 4. UNIFORM DATA FILLING LOOP (No more k==1 exceptions!)
-    # =========================================================================
     for (k, params) in enumerate(tasks)
         local sim_data
         
         if is_reference
-            # THE FIX: Reuse the high-res template for the first task to save time!
-            sim_data = (k == 1) ? template_data : generate_reference_simdata(sim_config.reference_func, params, base_template)
+            sim_data = (k == 1) ? template_data : IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
-            plot_key = "sim_data_plot_$(_N_GRID[])_$(_T_GRID[])"
-            
-            # THE FIX: Check if the exact Eulerian conversion exists BEFORE loading raw data!
-            if doesSimDataExist(params; data_key=plot_key)
-                sim_data = loadSimData(params; data_key=plot_key)
-            else
-                # Fallback: Load the raw Lagrangian data and convert it
-                sim_data = loadSimData(params)
-                
-                if sim_data isa LSimData
-                    sim_data = convert_to_eulerian(sim_data)
-                    saveSimData(sim_data; data_key=plot_key, overwrite=true)
-                end
-            end
-        end
-        
-        # --- Grid Consistency Check ---
-        if length(sim_data.t) != length(template_data.t)
-            @warn "Time steps mismatch for task $(k)! Expected $(length(template_data.t)), got $(length(sim_data.t))."
-        end
-        for d in 1:D
-            if length(sim_data.x[d]) != length(template_data.x[d])
-                @error "Spatial grid size mismatch on axis $d for task $(k)! Tensor assignment will fail."
-            end
+            sim_data = loadSimData(params,mode)
         end
         
         dest_prefix = grid_indices[k]
+
+        slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_space, raw_t, :field, sim_data)
         
-        if sim_data isa ESimData
-            slice_and_fill_eulerian!(data_store["u"], sim_data.u, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
-            
-            # THE FIX: Added `haskey(data_store, sk)` safety checks.
-            # If a specific simulation outputs a field that the global template didn't have, 
-            # it safely skips it instead of throwing a KeyError!
-            for (sk, sv) in sim_data.scalars
-                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :scalar, sim_data)
-            end
-            for (sk, sv) in sim_data.series
-                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :series, sim_data)
-            end
-            for (sk, sv) in sim_data.profiles
-                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :profile, sim_data)
-            end
-            for (sk, sv) in sim_data.fields
-                haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_c, raw_space, raw_t, :field, sim_data)
-            end
+        for (sk, sv) in sim_data.scalars
+            haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_space, raw_t, :scalar, sim_data)
+        end
+        for (sk, sv) in sim_data.series
+            haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_space, raw_t, :series, sim_data)
+        end
+        for (sk, sv) in sim_data.profiles
+            haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_space, raw_t, :profile, sim_data)
+        end
+        for (sk, sv) in sim_data.fields
+            haskey(data_store, sk) && slice_and_fill_eulerian!(data_store[sk], sv, dest_prefix, base_types, D, raw_space, raw_t, :field, sim_data)
         end
     end
 
@@ -396,29 +310,22 @@ function create_eulerian_plot_data(
     )
 end
 
-function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods, base_types;
-    force_reload=false, parallel=false)
-    
+function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods, base_types; force_reload=false)
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
-            # 1. Base math params from config
             base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
             if isempty(base_params); continue end
             
-            # 2. Extract UI observables
             shared_ui = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
             method_ui = haskey(manager.simulation, m_name) ? ParamDict(k => v[] for (k, v) in manager.simulation[m_name]) : ParamDict()
             
-            # 3. Merge overrides
             fixed_params = ParamDict()
             for (k, v) in shared_ui; k == "ignore" && continue; fixed_params[k] = v; end
             for (k, v) in method_ui; k == "ignore" && continue; fixed_params[k] = v; end
             
-            # THE FIX: Route the Builder based on the Data Mode!
             builder_func = PLOT_MODE[] == :lagrangian ? create_lagrangian_plot_data : create_eulerian_plot_data
-            
-            new_data = Base.invokelatest(builder_func, m_name, base_params, sim_config, fixed_params, base_types; parallel=parallel)
+            new_data = Base.invokelatest(builder_func, m_name, base_params, sim_config, fixed_params, base_types;)
             
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end

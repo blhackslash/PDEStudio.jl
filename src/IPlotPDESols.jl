@@ -11,9 +11,9 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!, reset_plotter!, set_mode!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
-const BaseVariables = ["c","x","y","z","t"]
-const VariableNames = ["Component","Space(X)","Space(Y)","Space(Z)","Time"]
-const VariableControls = [:menu,:slider,:slider,:slider,:slider]
+const BaseVariables = ["x","y","z","t"]
+const VariableNames = ["Space(X)","Space(Y)","Space(Z)","Time"]
+const VariableControls = [:slider,:slider,:slider,:slider]
 # Define the strict hierarchy of your dashboard (Highest priority first)
 const LOCK_HIERARCHY = ["Layout", "Scene", "Primitive", "Data", "UI"]
 const PLOT_MODE = Observable{Symbol}(:eulerian)
@@ -117,7 +117,8 @@ Stores dense, N-dimensional matrices representing perfectly orthogonal grids
 for heatmap, surface, and contour rendering.
 """
 struct EulerianPlotData{N} <: AbstractPlotData
-    data::Dict{String, Array{Float64, N}}
+    # THE FIX: Allow it to hold Arrays of SVectors, Floats, or anything else!
+    data::Dict{String, AbstractArray{<:Any, N}} 
     active_param_keys::Vector{String}
     active_param_values::Vector{Vector{Any}}
     t_vals::Vector{Float64}

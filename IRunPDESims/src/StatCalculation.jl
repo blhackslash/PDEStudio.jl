@@ -14,6 +14,19 @@ _build_stat_tuple(stats::Vector{Symbol}) = Tuple(Val(s) for s in stats)
 # Extracts the string name back out of the compile-time Val type
 _get_stat_name(::Val{S}) where S = String(S)
 
+function remove_nan_stats!(res::Dict)
+    for (name, val) in res
+        # Check if every single element in the stat result is NaN
+        # We use `any(!isnan, ...)` to find if there is at least one valid number
+        is_all_nan = all(svec -> any(isnan, svec), val)
+        
+        if is_all_nan
+            @info "Removing statistic :$name because all values are NaN (no reference data)."
+            delete!(res, name)
+        end
+    end
+end
+
 function calculateAllStats!(sim_data, ref_func; kwargs...)
     series_stats, profile_stats, field_stats = Symbol[], Symbol[], Symbol[]
     
@@ -30,6 +43,10 @@ function calculateAllStats!(sim_data, ref_func; kwargs...)
     if !isnothing(ref_func)
         @info "Pre-computing analytical reference field..."
         u_ana = generate_analytical_reference(sim_data, ref_func)
+    else
+        @info "No reference function provided. Initializing analytical cache with NaNs..."
+        # We generate a "NaN-tensor" that matches the shape of the simulation data
+        u_ana = generate_nan_reference(sim_data)
     end
     
     if !isempty(series_stats)
@@ -56,7 +73,9 @@ function _calculate_category!(::Val{:series}, sim_data::AbstractSimData{D,M}, u_
     
     # Cleaned up call:
     _compute_series_loop!(res, stat_vals, Nt, sim_data, field_key, u_ana)
-    
+
+    remove_nan_stats!(res)
+
     merge!(sim_data.series, res)
 end
 
@@ -69,6 +88,9 @@ function _calculate_category!(::Val{:field}, sim_data::AbstractSimData{D,M}, u_a
     
     # Cleaned up call:
     _compute_field_loop!(res, stat_vals, Nt, sim_data, field_key, u_ana)
+
+    remove_nan_stats!(res)
+
     merge!(sim_data.fields, res)
 end
 
@@ -81,9 +103,28 @@ function _calculate_category!(::Val{:profile}, edata::ESimData{D, M}, u_ana; sta
     
     # Cleaned up call:
     _compute_profile_loop!(res, stat_vals, edata, grid_shape, field_key, u_ana)
+
+    remove_nan_stats!(res)
+
+    merge!(edata.profiles, res)
+end
+
+function _calculate_category!(::Val{:profile}, ldata::LSimData{D, M}, u_ana; stats, field_key="u", kwargs...) where {D, M}
+    edata = loadSimData(ldata.params,Val(:conv))
+    grid_shape = ntuple(d -> length(edata.x[d]), Val(D))
+    stat_vals = _build_stat_tuple(stats)
+    
+    res = Dict{String, Array{SVector{M, Float64}, D}}()
+    for stat in stats; res[String(stat)] = fill(zero(SVector{M, Float64}), grid_shape); end
+    
+    # Cleaned up call:
+    _compute_profile_loop!(res, stat_vals, edata, grid_shape, field_key, u_ana)
+    
+    remove_nan_stats!(res)
     
     merge!(edata.profiles, res)
-    saveSimData(edata; overwrite=true) 
+
+    saveSimData(edata)
 end
 
 # ------------------------------------------------------------------------------
@@ -209,7 +250,15 @@ end
 # ==============================================================================
 # --- ANALYTICAL CACHE GENERATOR ---
 # ==============================================================================
+function generate_nan_reference(data::LSimData{D, M}) where {D, M}
+    # Create a vector of vectors filled with NaN SVectors
+    return [fill(SVector{M, Float64}(NaN), length(x)) for x in data.x]
+end
 
+function generate_nan_reference(data::ESimData{D, M}) where {D, M}
+    # Create an array of the same shape as data.u filled with NaN SVectors
+    return fill(SVector{M, Float64}(NaN), size(data.u))
+end
 function generate_analytical_reference(ldata::LSimData{D, M}, ref_func) where {D, M}
     Nt = length(ldata.t)
     u_ana = Vector{Vector{SVector{M, Float64}}}(undef, Nt)

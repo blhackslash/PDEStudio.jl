@@ -13,12 +13,13 @@ export createParamDict, createMethodDict, createVariedDict, createSimData
 
 # Globals & Settings
 export _SAVE_ROOT_PATH, _SIM_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
-export set_save_path!, get_save_path, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
+export set_save_path!, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
+export get_save_path, get_space_resolution, get_time_resolution, get_ref_resolution
 export register_stat!, delete_stat!
 # Simulation & Data Pipeline
 export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
 export doesSimDataExist, deleteSimData
-export calculateAllStats!, process_existing_data, convert_to_eulerian, check_data
+export calculateAllStats!, process_existing_data, convert_to_eulerian, check_data, generate_reference_simdata
 
 # Utilities
 export safe_string, nice_string, smart_parse_and_update!, get_ignore_keys

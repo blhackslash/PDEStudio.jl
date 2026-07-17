@@ -113,7 +113,7 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     onany(plot_data_obs, manager.methods) do plot_data_dict, active_methods
         isempty(plot_data_dict) && return
         
-        n_params = length(manager.plot_vars) - 5 
+        n_params = length(manager.plot_vars) - 4 
         valid_base_names = String[]
         
         for (i, name) in enumerate(VariableNames)
@@ -150,7 +150,7 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
         isnothing(idx) && return
         
         vt = copy(manager.state["base_types"][])
-        n_params = length(manager.plot_vars) - 5
+        n_params = length(manager.plot_vars) - 4
         abs_idx = n_params + idx
       
         if abs_idx in manager.state["Active_Axes"][]
@@ -611,20 +611,14 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             
             dim_names = manager.plot_vars
             total_dims = length(dim_names)
-            comp_idx = n_params + 1
             
             valid_axes = String[]
             axis_to_dim = Dict{String, Int}()
-            comp_max = 1
+            # THE FIX: Find comp_max securely via eltype of the SVector
+            comp_max = haskey(pd_first.data, "u") ? length(eltype(pd_first.data["u"])) : 1
             
-            # --- THE MAGIC RULE ---
-            # Any tensor that varies across EXACTLY ONE dimension (ignoring components) 
-            # is mathematically valid as an independent 1D Axis!
             for (key, tensor) in pd_first.data
-                if key == "u"; comp_max = max(comp_max, size(tensor, comp_idx)); end
-                
                 varying = findall(s -> s > 1, size(tensor))
-                filter!(d -> d != comp_idx, varying) # Ignore the component dimension
                 
                 if length(varying) == 1
                     push!(valid_axes, key)
@@ -635,7 +629,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             # Safety Fallback for 0D / static single-point simulations
             if isempty(valid_axes)
                 push!(valid_axes, "x")
-                axis_to_dim["x"] = n_params + 2
+                axis_to_dim["x"] = n_params + 1
             end
             
             unique!(valid_axes); sort!(valid_axes)
@@ -664,7 +658,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
                     push!(anim_options, (nice_string(p_name), p_name))
                 end
             end
-            for i in (n_params+2):total_dims
+            for i in (n_params+1):total_dims
                 ax_name = dim_names[i]
                 if haskey(axis_to_dim, ax_name)
                     nice_ax = ax_name == "x" ? "Space(X)" : ax_name == "y" ? "Space(Y)" :
@@ -721,7 +715,8 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
         p_dim = PLOT_DIM_MAP[ptype]
         pd_first = first(values(plot_data_dict))
-        comp_idx = length(pd_first.active_param_keys) + 1
+        
+        # THE FIX: Removed 'comp_idx = length(...) + 1' entirely!
         
         axes_set = Set{Int}()
         
@@ -732,13 +727,11 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             end
         end
         
-        # --- THE FIX: Subset Validation ---
-        # A tensor is mathematically valid for the U-Axis if it varies 
-        # across AT LEAST the underlying dimensions currently locked into X, Y, Z.
         valid_fields = String[]
         for (key, tensor) in pd_first.data
             varying = Set(findall(s -> s > 1, size(tensor)))
-            delete!(varying, comp_idx) 
+            
+            # THE FIX: Removed 'delete!(varying, comp_idx)'
             
             if issubset(axes_set, varying)
                 push!(valid_fields, key)
@@ -748,14 +741,12 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         sort!(valid_fields)
         update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"], force_notify=false)
         
-        # Update the internal state silently!
         active_axes_obs.val = collect(axes_set)
         
         if !manager.state["Config_Just_Loaded"][]
             notify(active_axes_obs)
         end
     end
-
     # =========================================================================
     # 3. Sync Slider Ranges (Data injection to UI & Config Load Finalization)
     # =========================================================================
@@ -764,12 +755,10 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
 
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
-        n_params = total_dims - 5
-        comp_idx = n_params + 1
+        n_params = total_dims - 4
         vt = manager.state["base_types"][]
 
         for i in 1:total_dims
-            if i == comp_idx; continue; end 
             is_basevar = i > n_params
             if is_basevar
                 base_idx = i - n_params
@@ -782,10 +771,8 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
                 vals = nothing
                 if i <= n_params 
                     vals = pd.active_param_values[i]
-                elseif i == n_params + 1 
-                    vals = [1.0, Float64(size(pd.data["u"], length(pd.active_param_keys) + 1))]
-                elseif i > n_params + 1 && i < total_dims 
-                    dim_idx = i - (n_params + 1)
+                elseif i < total_dims 
+                    dim_idx = i - n_params
                     tensor_key = dim_idx == 1 ? "x" : (dim_idx == 2 ? "y" : "z")
                     coord_tensor = get(pd.data, tensor_key, nothing)
                     
@@ -896,7 +883,7 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         if haskey(l_data.fields, "rho"); push!(valid_fields, "rho"); end
         if haskey(l_data.fields, "p"); push!(valid_fields, "p"); end
         append!(valid_fields, keys(l_data.fields))
-        append!(valid_fields, keys(l_data.profiles))
+        append!(valid_fields, keys(l_data.series))
         unique!(valid_fields); sort!(valid_fields)
         update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u"], force_notify=false)
         
@@ -912,9 +899,9 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
 
         # --- THE FIX: SYNC ACTIVE AXES STATE ---
         axes_set = Set{Int}()
-        push!(axes_set, n_params + 2) # X is always active
-        if w["Y-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 3); end
-        if w["Z-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 4); end
+        push!(axes_set, n_params + 1) # X is always active
+        if w["Y-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 2); end
+        if w["Z-Axis"].selection[] != "disabled"; push!(axes_set, n_params + 3); end
         
         active_axes_obs.val = collect(axes_set)
         if !manager.state["Config_Just_Loaded"][]
@@ -937,12 +924,11 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
 
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
-        n_params = total_dims - 5
+        n_params = total_dims - 4
         
         for i in 1:total_dims
-            if i == n_params + 1; continue end
             # Skip spatial axes
-            if i in (n_params + 2, n_params + 3, n_params + 4)
+            if i in (n_params + 1, n_params + 2, n_params + 3)
                 widget_key = dim_names[i]
                 if haskey(w, widget_key)
                     w[widget_key].range[] = [0.0]

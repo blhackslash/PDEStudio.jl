@@ -16,6 +16,9 @@ const _TARGET_MODULE = Ref{Module}(Main)
 set_space_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_N_GRID[] = n)
 set_time_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_T_GRID[] = n)
 set_ref_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_REF_GRID[] = n)
+get_space_resolution() = _N_GRID[]
+get_time_resolution() = _T_GRID[]
+get_ref_resolution() = _REF_GRID[]
 set_sim_path!(path::String) = (_SIM_ROOT_PATH[] = path)
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 

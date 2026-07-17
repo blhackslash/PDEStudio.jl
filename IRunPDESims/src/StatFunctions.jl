@@ -6,7 +6,7 @@ const STAT_REGISTRY = Dict{Symbol, Symbol}(
     :wave_height   => :series,
     :l1error       => :series,
     :l2error       => :series,
-    :relative_mass => :series
+    :relative_mass => :series,
 )
 
 """
@@ -35,7 +35,7 @@ end
 # ==============================================================================
 
 # 1. Ultimate Fallback (Safely returns an SVector of NaNs matching the component count!)
-calc_stat(stat::Val, D::Val, t::Float64, xs, u, args...) = zero(eltype(u)) .* NaN 
+calc_stat(stat, D, t, xs, u, args...) = zero(eltype(u)) .* NaN 
 
 # 2. The Router (7 Arguments!)
 # If the analytical slice is missing (::Nothing), drop it and call the 6-argument version
@@ -46,15 +46,15 @@ calc_stat(stat::Val, D::Val, t::Float64, xs, u, dV, ::Nothing) = calc_stat(stat,
 # --- NO-REFERENCE METRICS (6 Arguments) ---
 # ==============================================================================
 
-calc_stat(::Val{:mass}, ::Val, t::Float64, xs, u, dV) = sum(u .* dV)
+calc_stat(::Val{:mass}, ::Val, t::Float64, xs, u, dV, ana) = sum(u .* dV)
 
-calc_stat(::Val{:l1norm}, ::Val, t::Float64, xs, u, dV) = sum(map(v -> abs.(v), u) .* dV)
+calc_stat(::Val{:l1norm}, ::Val, t::Float64, xs, u, dV, ana) = sum(map(v -> abs.(v), u) .* dV)
 
-calc_stat(::Val{:l2norm}, ::Val, t::Float64, xs, u, dV) = sqrt.(sum(map(v -> abs2.(v), u) .* dV))
+calc_stat(::Val{:l2norm}, ::Val, t::Float64, xs, u, dV, ana) = sqrt.(sum(map(v -> abs2.(v), u) .* dV))
 
-calc_stat(::Val{:wave_height}, ::Val, t::Float64, xs, u, dV) = reduce((a, b) -> max.(a, b), u)
+calc_stat(::Val{:wave_height}, ::Val, t::Float64, xs, u, dV, ana) = reduce((a, b) -> max.(a, b), u)
 
-function calc_stat(::Val{:wave_position}, ::Val{1}, t::Float64, xs, u, dV)
+function calc_stat(::Val{:wave_position}, ::Val{1}, t::Float64, xs, u, dV, ana)
     M = length(eltype(u))
     return SVector{M, Float64}(ntuple(M) do c
         max_idx = argmax(map(v -> v[c], u))
@@ -83,3 +83,5 @@ function calc_stat(::Val{:relative_mass}, ::Val, t::Float64, xs, u, dV, ana)
         m_ana[c] < 1e-9 ? NaN : sum_u[c] / sum_ana[c]
     end)
 end
+
+
