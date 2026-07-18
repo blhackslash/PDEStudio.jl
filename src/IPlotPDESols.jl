@@ -11,9 +11,15 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 export launch_plotter, launch_csv_interface, set_plot_presets!, set_sim_config!, reset_plotter!, set_mode!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
-const BaseVariables = ["x","y","z","t"]
-const VariableNames = ["Space(X)","Space(Y)","Space(Z)","Time"]
+const BASE_TENSOR_KEYS = ["x", "y", "z", "t"]
+const BASE_VAR_LABELS = Dict(
+    "x" => "Space(X)", 
+    "y" => "Space(Y)", 
+    "z" => "Space(Z)", 
+    "t" => "Time"
+)
 const VariableControls = [:slider,:slider,:slider,:slider]
+const BaseD = length(BASE_TENSOR_KEYS)
 # Define the strict hierarchy of your dashboard (Highest priority first)
 const LOCK_HIERARCHY = ["Layout", "Scene", "Primitive", "Data", "UI"]
 const PLOT_MODE = Observable{Symbol}(:eulerian)

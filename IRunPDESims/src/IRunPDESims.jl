@@ -36,17 +36,21 @@ include("Simulations.jl")         # run_smart_simulation, runAllSimulations
 
 
 # Custom REPL print for Lagrangian Data
-function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, M}) where {D, M}
-    println(io, "🟢 LSimData{$D, $M} (Lagrangian Simulation Data)")
+function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, DS, M}) where {D, DS, M}
+    println(io, "🟢 LSimData{$D, $DS, $M} (Lagrangian Simulation Data)")
     println(io, "==================================================")
     
-    # Time Summary
-    t_str = "steps [$(round(data.tmin, digits=3)) ➔ $(round(data.tmax, digits=3))]"
-    println(io, "  Time (T)   : $(length(data.t)) $t_str")
+    # Time Summary (Supports Static vs Transient)
+    if D > DS && !isempty(data.t)
+        t_str = "steps [$(round(data.t[1], digits=3)) ➔ $(round(data.t[end], digits=3))]"
+        println(io, "  Time (T)   : $(length(data.t)) $t_str")
+    else
+        println(io, "  Time (T)   : Static (1 step)")
+    end
     
-    # Domain Summary
-    domain_strs = ["$(round(data.xmins[d], digits=3)) ➔ $(round(data.xmaxs[d], digits=3))" for d in 1:D]
-    println(io, "  Domain     : [$(join(domain_strs, "] × ["))]")
+    # Domain Summary (Using DomainInfo and dimension keys)
+    domain_strs = ["$(data.domain.dim_keys[d]): $(round(data.domain.mins[d], digits=3)) ➔ $(round(data.domain.maxs[d], digits=3))" for d in 1:DS]
+    println(io, "  Space      : [$(join(domain_strs, "] × ["))]")
     
     # Particle Summary (handles jagged arrays if particles merge/split)
     if !isempty(data.x)
@@ -59,60 +63,58 @@ function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, M}) where {D, M
     
     # Parameter Summary
     println(io, "  Parameters : $(length(data.params)) keys")
-    println(io, "--------------------------------------------------")
     
     # Helper to print dictionary keys
     function print_dict_summary(dict, label)
         if !isempty(dict)
-            keys_str = join(sort(collect(keys(dict))), ", ")
+            keys_str = join(sort(string.(collect(keys(dict)))), ", ")
             println(io, "  $label: $keys_str")
         else
             println(io, "  $label: (empty)")
         end
     end
     
-    print_dict_summary(data.scalars,  "Scalars    ")
-    print_dict_summary(data.series,   "Series     ")
-    print_dict_summary(data.fields,   "Fields     ")
+    print_dict_summary(data.stats,   "Statistics ")
 end
 
 
 # Custom REPL print for Eulerian Data
-function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, M}) where {D,M}
-    println(io, "🟦 ESimData{$D, $M} (Eulerian Grid Data)")
+function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, DS, M}) where {D, DS, M}
+    println(io, "🟦 ESimData{$D, $DS, $M} (Eulerian Grid Data)")
     println(io, "==================================================")
     
     # Time Summary
-    t_str = "steps [$(round(data.tmin, digits=3)) ➔ $(round(data.tmax, digits=3))]"
-    println(io, "  Time (T)   : $(length(data.t)) $t_str")
+    if D > DS
+        t_vec = data.axes[end]
+        t_str = "steps [$(round(t_vec[1], digits=3)) ➔ $(round(t_vec[end], digits=3))]"
+        println(io, "  Time (T)   : $(length(t_vec)) $t_str")
+    else
+        println(io, "  Time (T)   : Static (1 step)")
+    end
     
-    # Domain Summary
-    domain_strs = ["$(round(data.xmins[d], digits=3)) ➔ $(round(data.xmaxs[d], digits=3))" for d in 1:D]
-    println(io, "  Domain     : [$(join(domain_strs, "] × ["))]")
+    # Spatial Domain Summary
+    domain_strs = ["$(data.domain.dim_keys[d]): $(round(data.domain.mins[d], digits=3)) ➔ $(round(data.domain.maxs[d], digits=3))" for d in 1:DS]
+    println(io, "  Space      : [$(join(domain_strs, "] × ["))]")
     
-    # Grid Summary
-    grid_dims = join(length.(data.x), " × ")
-    total_pts = prod(length.(data.x))
-    println(io, "  Grid Size  : $grid_dims ($total_pts points)")
+    # Grid Summary (Spatial points only for clarity)
+    grid_dims = join(length.(data.axes[1:DS]), " × ")
+    total_pts = prod(length.(data.axes[1:DS]))
+    println(io, "  Grid Size  : $grid_dims ($total_pts spatial points)")
     
     # Parameter Summary
     println(io, "  Parameters : $(length(data.params)) keys")
-    println(io, "--------------------------------------------------")
     
     # Helper to print dictionary keys
     function print_dict_summary(dict, label)
         if !isempty(dict)
-            keys_str = join(sort(collect(keys(dict))), ", ")
+            keys_str = join(sort(string.(collect(keys(dict)))), ", ")
             println(io, "  $label: $keys_str")
         else
             println(io, "  $label: (empty)")
         end
     end
     
-    print_dict_summary(data.scalars,  "Scalars    ")
-    print_dict_summary(data.series,   "Series     ")
-    print_dict_summary(data.profiles, "Profiles   ")
-    print_dict_summary(data.fields,   "Fields     ")
+    print_dict_summary(data.stats,   "Statistics ")
 end
 
 end

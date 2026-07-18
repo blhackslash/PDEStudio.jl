@@ -94,10 +94,9 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     push!(gaps, 5); cr += 1
     
     # Dynamically build Compare Targets
-    compare_opts = String["None", "Methods"]
+    compare_opts = String["None", "Methods", "Component"]
     for p in manager.plot_vars
-        if p == "c"; push!(compare_opts, "Component")
-        elseif p == "t"; push!(compare_opts, "Time")
+        if p == "t"; push!(compare_opts, "Time")
         elseif !(p in ("x", "y", "z")); push!(compare_opts, p)
         end
     end

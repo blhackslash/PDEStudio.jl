@@ -39,70 +39,51 @@ createVariedDict(kv::Pair{String, <:Vector}...) = VariedDict(kv...)
 createVariedDict(kv) = VariedDict(kv)
 createVariedDict() = VariedDict()
 
-# --- 1. Abstract Hierarchy ---
-abstract type AbstractSimData{D,M} end
+# ==============================================================================
+# --- 1. Abstract Hierarchy & Metadata ---
+# ==============================================================================
 
-# Fix NoSimData recursion
-struct NoSimData{D,M} <: AbstractSimData{D,M} 
-    scalars::Dict
-    series::Dict
-    fields::Dict
+# D = Total Spacetime Dimensions, DS = Spatial Dimensions, M = Vector Components
+abstract type AbstractSimData{D, DS, M} end
+
+struct NoSimData{D, DS, M} <: AbstractSimData{D, DS, M} 
+    scalars::Dict{String, Any}
+    stats::Dict{String, Any}
 end
 
-function NoSimData(D::Int=0,M::Int=0)
-    return NoSimData{D,M}(Dict(), Dict(), Dict())
+function NoSimData(D::Int=0, DS::Int=0, M::Int=0)
+    return NoSimData{D, DS, M}(Dict{String, Any}(), Dict{String, Any}())
+end
+
+# DomainInfo strictly models the total D tensor shape.
+struct DomainInfo{D}
+    dim_keys::NTuple{D, Symbol}
+    mins::NTuple{D, Float64}
+    maxs::NTuple{D, Float64}
+    spacing::NTuple{D, Float64} # dx, dy, dt for Eulerian; avg particle distance & dt for Lagrangian
 end
 
 # ==============================================================================
 # --- 2. D-Dimensional Data Structures ---
 # ==============================================================================
 
-"""
-    ESimData{D}
-Eulerian data where spatial grids are typically dense arrays.
-x: D-dimensional Array
-profiles: D-dimensional Matrix/Array per component
-"""
-struct ESimData{D, M} <: AbstractSimData{D, M}
+mutable struct ESimData{D, DS, M} <: AbstractSimData{D, DS, M}
     params::ParamDict
-    x::NTuple{D, Vector{Float64}}  # ONLY stores the 1D coordinate axes!
-    u::Array{SVector{M, Float64}}
-    t::Vector{Float64}
-    
-    # --- THE FIX: Explicit Domain Boundaries ---
-    xmins::NTuple{D, Float64}
-    xmaxs::NTuple{D, Float64}
-    tmin::Float64
-    tmax::Float64
-
-    scalars::Dict{String, Float64} 
-    series::Dict{String, Vector{SVector{M, Float64}}} 
-    profiles::Dict{String, Array{SVector{M, Float64}, D}} 
-    fields::Dict{String, Array{SVector{M, Float64}}}
+    domain::DomainInfo{D}
+    axes::NTuple{D, Vector{Float64}}  # Unified axes for all dimensions
+    u::Array{SVector{M, Float64}, D}  # The generalized spacetime tensor
+    scalars::Dict{String, Any}
+    stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
 end
 
-"""
-    LSimData{D, M}
-Lagrangian data where:
-- D is the spatial dimension.
-- M is the number of physical components.
-"""
-struct LSimData{D, M} <: AbstractSimData{D, M}
+mutable struct LSimData{D, DS, M} <: AbstractSimData{D, DS, M}
     params::ParamDict
-    x::Vector{Vector{SVector{D, Float64}}} # Time -> Particles -> Space
-    u::Vector{Vector{SVector{M, Float64}}} # Time -> Particles -> Components
-    t::Vector{Float64}
-
-    # --- THE FIX: Explicit Domain Boundaries ---
-    xmins::NTuple{D, Float64}
-    xmaxs::NTuple{D, Float64}
-    tmin::Float64
-    tmax::Float64
-
-    # The strongly typed stat dictionaries
-    scalars::Dict{String, Float64} 
-    series::Dict{String, Vector{SVector{M, Float64}}} 
-    fields::Dict{String, Vector{Vector{SVector{M, Float64}}}}
+    domain::DomainInfo{D}
+    t::Vector{Float64}                # Time remains explicitly separated
+    x::Vector{Vector{SVector{DS, Float64}}} # Particles ONLY use the DS dimensions!
+    u::Vector{Vector{SVector{M, Float64}}}
+    scalars::Dict{String, Any}
+    stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
 end
 
 mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}

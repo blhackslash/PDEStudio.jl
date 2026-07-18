@@ -184,6 +184,17 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
                 delete!(file, target_key)
                 file[target_key] = sim_data
                 @info "Overwrote existing '$target_key' in $(basename(file_name))"
+                
+                # --- THE FIX: Clear outdated conversions if overwriting raw ---
+                if target_key == "raw"
+                    for k in keys(file)
+                        if startswith(k, "conv")
+                            delete!(file, k)
+                            @info "Cleared outdated conversion cache: '$k'"
+                        end
+                    end
+                end
+                
             else
                 @info "'$target_key' already exists in $(basename(file_name)). Skipping save."
             end
@@ -192,7 +203,7 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
             @info "Saved '$target_key' to $(basename(file_name))"
         end
         
-        # --- THE FIX: Save native metadata instantly ---
+        # --- Save native metadata instantly ---
         if target_key == "raw"
             native_str = sim_data isa ESimData ? "eulerian" : "lagrangian"
             if haskey(file, "native")
@@ -202,6 +213,7 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
         end
     end
 end
+
 # Default fallback routes to :raw
 loadSimData(params::ParamDict) = loadSimData(params, Val(:raw))
 

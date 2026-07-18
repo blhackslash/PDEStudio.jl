@@ -113,25 +113,23 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
     onany(plot_data_obs, manager.methods) do plot_data_dict, active_methods
         isempty(plot_data_dict) && return
         
-        n_params = length(manager.plot_vars) - 4 
+        n_params = length(manager.plot_vars) - BaseD 
         valid_base_names = String[]
         
-        for (i, name) in enumerate(VariableNames)
+        # Iterate only over the Base Variables (Space/Time)
+        for i in 1:BaseD
             tensor_dim = n_params + i
-            has_variation = false
-            for m in active_methods
-                if haskey(plot_data_dict, m)
-                    u_tensor = plot_data_dict[m].data["u"]
-                    if size(u_tensor, tensor_dim) > 1
-                        has_variation = true
-                        break
-                    end
-                end
+            base_key = BASE_TENSOR_KEYS[i]
+            
+            has_variation = any(active_methods) do m
+                haskey(plot_data_dict, m) && size(plot_data_dict[m].data["u"], tensor_dim) > 1
             end
             
             is_fixed_by_user = manager.state["base_types"][][i] isa Number
+            
             if has_variation || is_fixed_by_user
-                push!(valid_base_names, name)
+                # Safely map to the nice UI label
+                push!(valid_base_names, get(BASE_VAR_LABELS, base_key, base_key))
             end
         end
         update_menu_safe!(menu_var, valid_base_names)
@@ -146,12 +144,12 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             return
         end
 
-        idx = findfirst(isequal(var_name), VariableNames)
+        # Reverse lookup the index based on the label values
+        idx = findfirst(v -> get(BASE_VAR_LABELS, BASE_TENSOR_KEYS[v], "") == var_name, 1:BaseD)
         isnothing(idx) && return
         
         vt = copy(manager.state["base_types"][])
-        n_params = length(manager.plot_vars) - 4
-        abs_idx = n_params + idx
+        abs_idx = (length(manager.plot_vars) - BaseD) + idx
       
         if abs_idx in manager.state["Active_Axes"][]
             @warn "Cannot fix the value of an active Plot Axis!"
@@ -162,8 +160,7 @@ function _setup_overwrite_interactions!(manager::PlotManager, plot_data_obs::Obs
             vt[idx] = (idx == 1 ? :menu : :slider)
             @info "Restored default control for $var_name."
         else
-            val = tryparse(Int, input_str)
-            if isnothing(val); val = tryparse(Float64, input_str); end
+            val = tryparse(Float64, input_str)
             if isnothing(val); @warn "Invalid Input."; return; end
             vt[idx] = val
         end
@@ -571,11 +568,9 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     y_sel = w["Y-Axis"].selection
     z_sel = w["Z-Axis"].selection
     comp_tgt_obs = w["Compare_Target"].selection
-    
-    
-    # THE NEW MENU BRIDGE
     base_obs = w["Base_Plot"].selection
     style_obs = w["Plot_Style"].selection
+    
     update_menu_safe!(w["Base_Plot"], collect(keys(EULERIAN_PLOT_STYLE_OPTIONS)); fallbacks=["Lines"], force_notify=false)
 
     on(base_obs) do base_type
@@ -593,52 +588,57 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     end
 
     active_axes_obs = manager.state["Active_Axes"]
-    
-    # Local observables to carry valid axes and their dimensional mappings
     base_valid_axes = Observable{Vector{String}}(String[])
     base_axis_to_dim = Observable{Dict{String, Int}}(Dict())
 
     # =========================================================================
     # 1. Sync Base Dropdown Options (Dimensionality-Driven)
     # =========================================================================
-    onany(plot_data_obs, base_obs, style_obs, comp_tgt_obs) do plot_data_dict, base_sel, style_sel, comp_tgt
+    onany(plot_data_obs, base_obs, style_obs, comp_tgt_obs, w["U-Axis"].selection) do plot_data_dict, base_sel, style_sel, comp_tgt, u_sel
         @with_lock manager "Data" begin
             isempty(plot_data_dict) && return
             
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
-            if n_params > 0; manager.plot_vars[1:n_params] .= pd_first.active_param_keys; end
+            
+            if n_params > 0
+                manager.plot_vars[1:n_params] .= pd_first.active_param_keys
+            end
             
             dim_names = manager.plot_vars
             total_dims = length(dim_names)
             
             valid_axes = String[]
             axis_to_dim = Dict{String, Int}()
-            # THE FIX: Find comp_max securely via eltype of the SVector
-            comp_max = haskey(pd_first.data, "u") ? length(eltype(pd_first.data["u"])) : 1
             
+            target_field = (isnothing(u_sel) || u_sel == "-") ? "u" : u_sel
+            comp_max = haskey(pd_first.data, target_field) ? length(eltype(pd_first.data[target_field])) : 1
+            
+            # Identify varying axes
             for (key, tensor) in pd_first.data
                 varying = findall(s -> s > 1, size(tensor))
-                
                 if length(varying) == 1
                     push!(valid_axes, key)
                     axis_to_dim[key] = varying[1]
                 end
             end
             
-            # Safety Fallback for 0D / static single-point simulations
+            # Abstracted Safety Fallback
             if isempty(valid_axes)
-                push!(valid_axes, "x")
-                axis_to_dim["x"] = n_params + 1
+                base_space = BASE_TENSOR_KEYS[1] # "x"
+                push!(valid_axes, base_space)
+                axis_to_dim[base_space] = n_params + 1
             end
             
             unique!(valid_axes); sort!(valid_axes)
             
+            # Dynamic filtering based on comparison target
             if comp_tgt == "Time"; filter!(k -> k != "t", valid_axes)
             elseif comp_tgt == "Component"; filter!(k -> k != "c", valid_axes)
             elseif comp_tgt in dim_names; filter!(k -> k != comp_tgt, valid_axes)
             end
             
+            # Abstract Component UI population
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
             c_options = Any[]
             for i in 1:comp_max
@@ -646,29 +646,24 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
                 push!(c_options, (name, string(i)))
             end
             
-            # X gets EVERYTHING. Y and Z are handled dynamically below.
-            update_menu_safe!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
-            update_menu_safe!(w["c"], c_options; fallbacks=["1"])
-            
-            # --- Animation Targets (Only base sliders can be animated) ---
+            # Abstracted Animation Targets
             anim_options = Any[("None", "None")]
-            for i in 1:n_params
-                if length(pd_first.active_param_values[i]) > 1
-                    p_name = dim_names[i]
-                    push!(anim_options, (nice_string(p_name), p_name))
-                end
-            end
-            for i in (n_params+1):total_dims
+            for i in 1:total_dims
                 ax_name = dim_names[i]
-                if haskey(axis_to_dim, ax_name)
-                    nice_ax = ax_name == "x" ? "Space(X)" : ax_name == "y" ? "Space(Y)" :
-                              ax_name == "z" ? "Space(Z)" : ax_name == "t" ? "Time" : nice_string(ax_name)
+                is_param = i <= n_params
+                
+                if is_param && length(pd_first.active_param_values[i]) > 1
+                    push!(anim_options, (nice_string(ax_name), ax_name))
+                elseif !is_param && haskey(axis_to_dim, ax_name)
+                    nice_ax = get(BASE_VAR_LABELS, ax_name, nice_string(ax_name))
                     push!(anim_options, (nice_ax, ax_name))
                 end
             end
+            
+            update_menu_safe!(w["X-Axis"], valid_axes; fallbacks=["x", "t", "y", "z"])
+            update_menu_safe!(w["c"], c_options; fallbacks=["1"])
             update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
             
-            # Pass the structural mappings downstream
             base_axis_to_dim[] = axis_to_dim
             base_valid_axes[] = valid_axes
         end
@@ -750,12 +745,12 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     # =========================================================================
     # 3. Sync Slider Ranges (Data injection to UI & Config Load Finalization)
     # =========================================================================
-    onany(active_axes_obs, plot_data_obs) do active_axes, plot_data_dict
+    onany(active_axes_obs, plot_data_obs, w["U-Axis"].selection) do active_axes, plot_data_dict, u_val
         isempty(plot_data_dict) && return
 
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
-        n_params = total_dims - 4
+        n_params = total_dims - BaseD
         vt = manager.state["base_types"][]
 
         for i in 1:total_dims
@@ -765,16 +760,25 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
                 vt[base_idx] isa Number && continue 
             end
             
-            is_axis = (i in active_axes) 
+            is_used_by_u = true
+            if is_basevar && !isnothing(u_val) && u_val != "-"
+                is_used_by_u = any(values(plot_data_dict)) do pd
+                    haskey(pd.data, u_val) && size(pd.data[u_val], i) > 1
+                end
+            end
+            
+            is_axis = (i in active_axes) || !is_used_by_u
+            
             g_min, g_max = Inf, -Inf
             for pd in values(plot_data_dict)
                 vals = nothing
                 if i <= n_params 
                     vals = pd.active_param_values[i]
                 elseif i < total_dims 
+                    # THE FIX: Rely on the constant array instead of hardcoded ternary chains
                     dim_idx = i - n_params
-                    tensor_key = dim_idx == 1 ? "x" : (dim_idx == 2 ? "y" : "z")
-                    coord_tensor = get(pd.data, tensor_key, nothing)
+                    tensor_key = dim_idx <= length(BASE_TENSOR_KEYS) ? BASE_TENSOR_KEYS[dim_idx] : nothing
+                    coord_tensor = !isnothing(tensor_key) ? get(pd.data, tensor_key, nothing) : nothing
                     
                     if !isnothing(coord_tensor) && !all(isnan.(coord_tensor))
                         vals = filter(!isnan, coord_tensor)
@@ -788,18 +792,15 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
                
                 if !isnothing(vals) && !isempty(vals)
                     l, h = extrema(vals)
-                    if l < g_min; g_min = l; end
-                    if h > g_max; g_max = h; end
+                    g_min = min(l, g_min)
+                    g_max = max(h, g_max)
                 end
             end
             
             if isinf(g_min); g_min = 0.0; g_max = 1.0; end
             
             dim_name = dim_names[i]
-            widget_key = dim_name
-            if i <= n_params
-                widget_key = haskey(manager.state["Reverse_Map"][], dim_name) ? manager.state["Reverse_Map"][][dim_name] : "param_$i"
-            end
+            widget_key = is_basevar ? dim_name : get(manager.state["Reverse_Map"][], dim_name, "param_$i")
             
             if haskey(w, widget_key)
                 ctrl = w[widget_key]
@@ -924,7 +925,7 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
 
         dim_names = manager.plot_vars
         total_dims = length(dim_names)
-        n_params = total_dims - 4
+        n_params = total_dims - BaseD
         
         for i in 1:total_dims
             # Skip spatial axes
