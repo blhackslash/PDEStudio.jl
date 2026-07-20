@@ -2,6 +2,55 @@ function allMethodNames(config::SimulationConfig)
     return sort_methods_robust(collect(keys(config.methods_dict)))
 end
 
+# ==============================================================================
+# --- VALIDATION & SLIDER MAPPING ---
+# ==============================================================================
+
+"""
+    validate_plot_dimensions(sim_data::AbstractSimData)
+
+Checks if the dimension keys of the loaded simulation data are a subset of 
+the currently allowed UI dimensions.
+"""
+function validate_plot_dimensions(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+    
+    if !issubset(actual, allowed)
+        @warn "Incompatible data loaded. Data dimensions $actual are not a subset of the configured UI dimensions $allowed. Dropping data."
+        return false
+    end
+    return true
+end
+
+"""
+    get_active_slider_indices(sim_data::AbstractSimData)
+
+Returns a boolean array indicating which of the fixed UI sliders should be enabled 
+for the loaded data.
+"""
+function get_active_slider_indices(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+    
+    # Returns an array like [true, true, false, true] if data is (:x, :y, :t)
+    return [dim in actual for dim in allowed]
+end
+
+"""
+    map_sliders_to_tensor(sim_data::AbstractSimData)
+
+Maps the fixed UI slider indices to the dynamic dimension indices of the underlying tensor.
+Returns a Tuple of the same length as the tensor's dimensions, where each element 
+corresponds to the ID of the UI slider that controls it.
+"""
+function map_sliders_to_tensor(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+
+    return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
+end
+
 # =============================================================================
 # THE FIX: Robust Priority Sorting
 # =============================================================================
@@ -134,24 +183,25 @@ end
 
 
 """
-    generate_dynamic_title(x_key, y_key, dim_idx, manager, dim_names, sel_vals)
+    generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{String}, sel_vals)
 
 Constructs the plot title dynamically. It lists all fixed parameters and base variables,
-marks the actively plotted dimension, and allows for a user-defined override via `manager.ui`.
+marks the actively plotted dimensions (e.g., X and Y for a surface plot), and allows 
+for a user-defined override via `manager.ui`.
 """
 function generate_dynamic_title(
-    dim_idx::Int, 
+    plot_dims::Tuple, 
     dim_names::Vector{String}, 
     sel_vals
 )
-    # 2. Build the Default Dynamic Title
+    # Build the Default Dynamic Title
     title_parts = String[]
     
     for i in 1:length(dim_names)
         name = dim_names[i]
         
-        if i == dim_idx
-            # This is the axis we are currently plotting along (the colon ':' in the tensor slice)
+        if i in plot_dims
+            # This is an axis we are currently plotting along
             push!(title_parts, "$name = [Axis]")
         else
             val = sel_vals[i]

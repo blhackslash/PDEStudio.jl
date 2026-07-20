@@ -57,10 +57,13 @@ end
 
 # DomainInfo strictly models the total D tensor shape.
 struct DomainInfo{D}
-    dim_keys::NTuple{D, Symbol}
-    mins::NTuple{D, Float64}
-    maxs::NTuple{D, Float64}
-    spacing::NTuple{D, Float64} # dx, dy, dt for Eulerian; avg particle distance & dt for Lagrangian
+    dim_keys::Tuple{Vararg{Symbol, D}}
+    mins::Tuple{Vararg{Float64, D}}
+    maxs::Tuple{Vararg{Float64, D}}
+    spacing::Tuple{Vararg{Float64, D}}
+    
+    # --- NEW: Local Registry ---
+    stat_registry::Dict{Symbol, Union{Symbol, Vector{Symbol}}} 
 end
 
 # ==============================================================================

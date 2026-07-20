@@ -20,10 +20,15 @@ function createSimData(
         length(t) > 1 ? (_maxs[2] - _mins[2]) / (length(t) - 1) : 1.0
     )
     
-    domain = DomainInfo{D}((:x, :t), _mins, _maxs, spacing)
+    registry = deepcopy(STAT_REGISTRY)
+    registry[:Solution] = :all
+    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
+
+    # Add the alias to the stats dictionary immediately
     u_float = u isa AbstractMatrix{SVector{M, Float64}} ? u : [SVector{M, Float64}(v) for v in u]
-    
-    return ESimData{D, DS, M}(params, domain, axes, u_float, Dict{String, Any}(), Dict{String, Any}())
+    stats_dict = Dict{String, Any}("Solution" => u_float)
+
+    return ESimData{D, DS, M}(params, domain, axes, u, stats_dict, Dict{String, Any}())
 end
 
 # 2D Space + 1D Time = 3D Spacetime Tensor
@@ -46,10 +51,14 @@ function createSimData(
         length(t) > 1 ? (_maxs[3] - _mins[3]) / (length(t) - 1) : 1.0
     )
     
-    domain = DomainInfo{D}((:x, :y, :t), _mins, _maxs, spacing)
-    u_float = u isa AbstractArray{SVector{M, Float64}, 3} ? u : [SVector{M, Float64}(v) for v in u]
+    registry = deepcopy(STAT_REGISTRY)
+    registry[:Solution] = :all
+    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
 
-    return ESimData{D, DS, M}(params, domain, axes, u_float, Dict{String, Any}(), Dict{String, Any}())
+    u_float = u isa AbstractArray{SVector{M, Float64}, 3} ? u : [SVector{M, Float64}(v) for v in u]
+    stats_dict = Dict{String, Any}("Solution" => u_float)
+
+    return ESimData{D, DS, M}(params, domain, axes, u, stats_dict, Dict{String, Any}())
 end
 
 
@@ -96,9 +105,12 @@ function createSimData(
     maxs = (_xmaxs..., _tmax)
     spacing = (ntuple(d -> avg_dx, Val(DS))..., dt)
     
-    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing)
+    registry = deepcopy(STAT_REGISTRY)
+    registry[:Solution] = :all
+    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
+    stats_dict = Dict{String, Any}("Solution" => u)
 
-    return LSimData{D, DS, M}(params, domain, t, x, u, Dict{String, Any}(), Dict{String, Any}())
+    return LSimData{D, DS, M}(params, domain, t, x, u, stats_dict, Dict{String, Any}())
 end
 # ==============================================================================
 # --- CONVERSIONS ---
@@ -137,7 +149,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
         end
         
         # Query the registry for the dimensions kept by this specific stat
-        kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys)
+        kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys,data.domain.stat_registry)
         t_idx_in_stat = findfirst(==(:t), kept_dims)
         
         if !isnothing(t_idx_in_stat)
@@ -173,7 +185,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
         for (k, v) in data.stats
             if !(v isa AbstractArray); continue; end
             
-            kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys)
+            kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys,data.domain.stat_registry)
             t_idx_in_stat = findfirst(==(:t), kept_dims)
             
             if !isnothing(t_idx_in_stat)
@@ -191,7 +203,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
     new_axes[t_dim] = target_t
 
     return ESimData{D, DS, M}(
-        data.params, DomainInfo{D}(data.domain.dim_keys, data.domain.mins, data.domain.maxs, Tuple(new_spacing)), 
+        data.params, DomainInfo{D}(data.domain.dim_keys, data.domain.mins, data.domain.maxs, Tuple(new_spacing),data.domain.stat_registry), 
         Tuple(new_axes), new_u, copy(data.scalars), new_stats
     )
 end
@@ -214,7 +226,7 @@ function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid
     e_axes = ntuple(d -> d <= DS ? grid_axes[d] : ldata.t, Val(D))
     e_dim_keys = D > DS ? (ldata.domain.dim_keys[1:DS]..., :t) : ldata.domain.dim_keys
     e_spacing = ntuple(d -> d <= DS ? s_dx[d] : ldata.domain.spacing[d], Val(D))
-    e_domain = DomainInfo{D}(e_dim_keys, mins, maxs, e_spacing)
+    e_domain = DomainInfo{D}(e_dim_keys, mins, maxs, e_spacing, ldata.domain.stat_registry)
 
     # 3. Preallocate Main Tensors
     zero_vec = zero(SVector{M, Float64})
@@ -232,7 +244,7 @@ function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid
     e_fields = Dict{String, Array}()
     
     for (k, v) in ldata.stats
-        kept_dims = get_kept_dims(Symbol(k), ldata.domain.dim_keys)
+        kept_dims = get_kept_dims(Symbol(k), ldata.domain.dim_keys, ldata.domain.stat_registry)
         
         # If it's a Series (keeps only :t, or is static with no dims) -> Pass through!
         if kept_dims == [:t] || isempty(kept_dims)
@@ -407,7 +419,7 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     end
     
     spacing = ntuple(d -> (template.domain.maxs[d] - template.domain.mins[d]) / max(1, grid_shape[d] - 1), Val(D))
-    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing)
+    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
     
     ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, Dict{String, Any}(), Dict{String, Any}())
     
@@ -450,7 +462,7 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     t_spacing = D > DS ? ((template.domain.maxs[end] - template.domain.mins[end]) / max(1, T_len - 1),) : ()
     spacing = (s_spacing..., t_spacing...)
     
-    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing)
+    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
     
     return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, Dict{String, Any}(), Dict{String, Any}())
 end

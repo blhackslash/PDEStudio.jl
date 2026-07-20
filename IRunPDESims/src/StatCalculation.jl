@@ -57,7 +57,7 @@ end
 # ==============================================================================
 
 function _calc_stat!(sim_data::ESimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
-    kept_idx = get_kept_indices(stat_name, sim_data.domain.dim_keys)
+    kept_idx = get_kept_indices(stat_name, sim_data.domain.dim_keys, sim_data.domain.stat_registry)
     
     # Base Case: Pure Scalar (Integrates ALL dimensions out)
     if isempty(kept_idx)
@@ -90,7 +90,7 @@ end
 # ==============================================================================
 
 function _calc_stat!(sim_data::LSimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
-    kept_dims = kept_dims = get_kept_dims(stat_name, sim_data.domain.dim_keys)
+    kept_dims = kept_dims = get_kept_dims(stat_name, sim_data.domain.dim_keys, sim_data.domain.stat_registry)
     
     is_series = kept_dims == [:t] || (D == DS && isempty(kept_dims))
     is_field = length(kept_dims) == D

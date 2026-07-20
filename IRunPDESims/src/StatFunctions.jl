@@ -23,13 +23,13 @@ end
 
 # --- THE NEW TRANSLATOR HELPER ---
 """
-    get_kept_dims(stat::Symbol, dim_keys::Tuple)
+    get_kept_dims(stat::Symbol, dim_keys::Tuple, registry::Dict)
 
 Translates generic aliases (:all, :space, :time) into exact dimension symbols 
-for the current simulation tensor.
+using the provided registry.
 """
-function get_kept_dims(stat::Symbol, dim_keys::Tuple)
-    reg_val = get(STAT_REGISTRY, stat, Symbol[])
+function get_kept_dims(stat::Symbol, dim_keys::Tuple, registry::Dict)
+    reg_val = get(registry, stat, Symbol[])
     
     if reg_val === :all
         return collect(dim_keys)
@@ -44,9 +44,8 @@ function get_kept_dims(stat::Symbol, dim_keys::Tuple)
     end
 end
 
-function get_kept_indices(stat::Symbol, dim_keys::Tuple)
-    # Use the translator!
-    kept_dims = get_kept_dims(stat, dim_keys)
+function get_kept_indices(stat::Symbol, dim_keys::Tuple, registry::Dict)
+    kept_dims = get_kept_dims(stat, dim_keys, registry)
     
     indices = Int[]
     for dim in kept_dims
@@ -60,8 +59,8 @@ function get_kept_indices(stat::Symbol, dim_keys::Tuple)
 end
 
 function get_integration_measure(stat::Symbol, domain::DomainInfo{D}) where {D}
-    # Use the translator!
-    kept_dims = get_kept_dims(stat, domain.dim_keys)
+    # Uses the local registry directly from the DomainInfo!
+    kept_dims = get_kept_dims(stat, domain.dim_keys, domain.stat_registry)
     measure = 1.0
     for d in 1:D
         if !(domain.dim_keys[d] in kept_dims)
@@ -78,6 +77,22 @@ function delete_stat!(name::Symbol)
     catch
         @warn "Could not find statistic :$name to delete!"
     end
+end
+
+"""
+    add_stat!(sim_data::AbstractSimData, name::Union{String, Symbol}, value, kept_dims::Union{Symbol, Vector{Symbol}})
+
+Appends a fully custom statistic to a simulation dataset. 
+Registers the dimensions it keeps so the Plotter UI knows exactly how to slice and display it.
+"""
+function add_stat!(sim_data::AbstractSimData, name::Union{String, Symbol}, value, kept_dims::Union{Symbol, Vector{Symbol}})
+    sym_name = Symbol(name)
+    str_name = String(name)
+    
+    sim_data.stats[str_name] = value
+    sim_data.domain.stat_registry[sym_name] = kept_dims
+    
+    @info "Added custom stat '$str_name' keeping dimensions: $kept_dims"
 end
 
 # ==============================================================================
@@ -113,7 +128,7 @@ end
 
 function calc_stat(::Val{:wave_position}, fixed_coords, u, ana, domain::DomainInfo)
     # Find the primary dimension that was integrated out to serve as the physical "axis"
-    kept_dims = get_kept_dims(:wave_position, domain.dim_keys)
+    kept_dims = get_kept_dims(:wave_position, domain.dim_keys, domain.stat_registry)
     int_idx = findfirst(k -> k ∉ kept_dims, domain.dim_keys)
     
     # Fallback to index 1 if no integrated dimension is found

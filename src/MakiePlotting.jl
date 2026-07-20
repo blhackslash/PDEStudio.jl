@@ -2,7 +2,6 @@
 # --- GLOBAL UI STATE REFERENCES ---
 # ==============================================================================
 const GLOBAL_UI_OVERWRITE = Ref{Dict{String, Any}}(Dict{String, Any}())
-const GLOBAL_VAR_OVERWRITE = Ref{Vector{Any}}(Any[:menu, :slider, :slider, :slider, :slider])
 const GLOBAL_SCENE_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_LAYOUT_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
 const GLOBAL_CAMERA_OPTIONS = Ref{Dict{String, Any}}(Dict{String, Any}())
@@ -27,10 +26,10 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
     end
     GLOBAL_CAMERA_OPTIONS[] = cam_opts
 end
+
 # Singleton Global Observables & State
-const ACTIVE_SIM_CONFIG = Observable{Any}(nothing) # THE FIX: Reactive Config Pipeline
+const ACTIVE_SIM_CONFIG = Observable{Any}(nothing)
 const ACTIVE_PLOT_MANAGER = Ref{Union{Nothing, PlotManager}}(nothing)
-#const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :ctrl_fig => nothing, :plot_layout => nothing))
 const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :master_fig => nothing))
 
 function set_sim_config!(config::SimulationConfig)
@@ -81,7 +80,6 @@ function set_sim_config!(csv_name::String)
         return
     end
     
-    # Call the new helper!
     load_and_apply_csv!(manager, filepath)
 end
 
@@ -111,7 +109,9 @@ end
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
     vars = isempty(varied_dict) ? String[] : sort(collect(keys(varied_dict)))
-    append!(vars, BaseVariables)
+    
+    # THE FIX: Dynamically insert the allowed UI dimensions
+    append!(vars, get_base_variables())
 
     sim_obs = NestedObsDict()
     make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
@@ -123,7 +123,6 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     ui_obs = NestedObsDict()
     methods_obs = Observable(copy(sim_config.default_methods))
 
-    # --- THE FIX: Clean Semantic State ---
     triggers = Dict{String, Observable{Int}}(
         "Layout_Update"     => Observable(0),
         "Scene_Update"      => Observable(0),
@@ -135,7 +134,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     locks = Dict{String, Bool}(
         "Menu_Sync" => false, 
         "Layout"    => false, 
-        "Scene"     => false,  # <-- ADD THIS 
+        "Scene"     => false, 
         "Primitive" => false,
         "Data"      => false, 
         "UI"        => false   
@@ -143,7 +142,6 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
     state = Dict{String, Any}(
         "Config_Just_Loaded"      => Observable(false),
         "plot_window_initialized" => Observable(false),
-        "base_types"              => Observable{Vector{Any}}([:slider for _ in 1:4]),
         "Active_Axes"             => Observable{Vector{Int}}(Int[]),
         "Is_Activate_Mode"        => Observable(true),
         "Is_Animating"            => Observable(false),
@@ -152,7 +150,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         "Master_UI_Ref"           => Observable(master_ui),
         "Layout_Dict"             => Observable(Dict{String, Any}())
     )
-    # THE FIX: Restore the config_dict initialization!
+    
     config_dict = ParamDict(
         "Parameters" => copy(sim_config.varied_params),
         "General"    => Dict{String, Any}(
@@ -160,6 +158,7 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
             "reference_func"  => isnothing(sim_config.reference_name) ? "none" : sim_config.reference_name
         )
     )
+    
     manager = PlotManager(
         sim_obs, 
         ui_obs, 
@@ -167,16 +166,14 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         Dict{String, Any}(), 
         triggers, 
         state, 
-        locks,               # PASS IT DIRECTLY HERE
+        locks, 
         methods_obs, 
         vars, 
         copy(sim_config.shared_params),
         Dict{Int, Dict{String, AbstractPlotCache}}()
     )
 
-    # Notice we pass `state` directly here instead of using the old nested keys!
     manager.state["Master_UI_Ref"] = Observable(master_ui)
-
     switch_ui_plot_type!(manager, init_type)
     
     for (scope, keys_dict) in ui_overwrite
@@ -205,7 +202,9 @@ function launch_plotter()
 
     if PLOTTER_UI_STATE[][:is_open]
         old_manager = ACTIVE_PLOT_MANAGER[]
-        new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); BaseVariables]
+        
+        # THE FIX: Compare against dynamic base variables
+        new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); get_base_variables()]
         
         if old_manager.plot_vars == new_vars
             old_manager.triggers["Simulation_Update"][] += 1
@@ -217,15 +216,11 @@ function launch_plotter()
     end
 
     ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
-    var_overwrite = deepcopy(GLOBAL_VAR_OVERWRITE[])
     ui_obs = create_master_ui_observables()
     
-    # THE FIX: Route the initial layout dynamically
     init_type = PLOT_MODE[] == :eulerian ? :lines : :scatter1d
     manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, init_type)
-    manager.state["base_types"][] = var_overwrite
     
-    # --- 1. SET THE MODE STATE IMMEDIATELY ---
     ACTIVE_PLOT_MANAGER[] = manager
 
     master_fig = Figure()
@@ -233,11 +228,9 @@ function launch_plotter()
     plot_layout = master_fig[1, 2] = GridLayout() 
     plot_data_obs = Observable(Dict{String, AbstractPlotData}())
     
-    # --- 2. BUILD THE UI ---
     create_controls(ctrl_layout, manager)
-    
-    # --- 3. FORK THE INTERACTION PIPELINES ---
     setup_common_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    
     if PLOT_MODE[] == :eulerian
         setup_eulerian_interactions!(manager, plot_data_obs)
     else
@@ -278,7 +271,9 @@ function launch_plotter()
         
         manager.state["Param_Map"] = Observable(param_map)
         manager.state["Reverse_Map"] = Observable(reverse_map)
-        manager.plot_vars = [real_params; ["x", "y", "z", "t"]]
+        
+        # THE FIX: Bind to dynamic base variables
+        manager.plot_vars = [real_params; get_base_variables()]
         
         manager.config["Parameters"] = copy(new_config.varied_params)
         if !haskey(manager.config, "General"); manager.config["General"] = Dict{String, Any}(); end
@@ -323,9 +318,7 @@ function launch_plotter()
     on(manager.triggers["Simulation_Update"]) do _
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
-        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = true
-        )
+        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = true)
         
         notify(plot_data_obs)
         manager.triggers["Layout_Update"][] += 1
@@ -339,6 +332,7 @@ function launch_plotter()
 
     return master_fig, manager 
 end
+
 # ==============================================================================
 # --- 3. LAYOUT & RENDER HANDLERS ---
 # ==============================================================================
@@ -348,8 +342,10 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 
     render_observers = ObserverFunction[]
 
-    function rebuild_plot_layout!()
+    # Quick helper to extract a valid simulation for dimension checking
+    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
 
+    function rebuild_plot_layout!()
         if get(manager.state, "Camera_Locked", Observable(false))[] && !manager.state["Config_Just_Loaded"][]
             extract_and_store_camera_state!(plot_layout)
         end
@@ -359,15 +355,21 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         ptype_sym = PLOT_ROUTING_MATRIX[(base_sel, style_sel)]
 
         if PLOT_MODE[] == :lagrangian && !isempty(plot_data_obs[])
-            D = length(first(values(plot_data_obs[])).data[1].xmins)
-            if style_sel == "Lines" && D == 1
-                ptype_sym = :scatterlines
-            elseif style_sel == "Colors" && D == 1
-                ptype_sym = :scattercolors
-            elseif style_sel == "2D (Surface)" && D == 2
-                ptype_sym = :scatter2d_surface
-            else
-                ptype_sym = D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
+            pd = first(values(plot_data_obs[]))
+            sim_data = _get_first_valid(pd)
+            if !isnothing(sim_data)
+                # D represents the number of spatial dimensions in DomainInfo
+                D = length(sim_data.domain.dim_keys) - (get_time_dim(sim_data.domain) === nothing ? 0 : 1)
+                
+                if style_sel == "Lines" && D == 1
+                    ptype_sym = :scatterlines
+                elseif style_sel == "Colors" && D == 1
+                    ptype_sym = :scattercolors
+                elseif style_sel == "2D (Surface)" && D == 2
+                    ptype_sym = :scatter2d_surface
+                else
+                    ptype_sym = D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
+                end
             end
         end
 
@@ -390,9 +392,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Layout" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = false
-        )
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
             end
             rebuild_plot_layout!()
         end
@@ -404,9 +404,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Scene" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[], to_value(manager.state["base_types"]); 
-            force_reload = false
-        )
+                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
             end
         end
         manager.triggers["Primitive_Rebuild"][] += 1
@@ -452,7 +450,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # Read the data dimensions dynamically
     selector_obs = map(manager.plot_vars) do n
         w_key = haskey(rev_map, n) ? rev_map[n] : n
-        w[w_key].value # No more `isa Slider` check needed!
+        w[w_key].value
     end
 
     x_sel, y_sel = w["X-Axis"].selection, w["Y-Axis"].selection
@@ -465,38 +463,45 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     
     num_plots, compare_labels, compare_vals = 1, String[], Any[]
     
+    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+
     plot_data_dict = plot_data_obs[]
     if !isempty(plot_data_dict)
         pd_first = first(values(plot_data_dict))
-        if target == "Methods"
-            compare_labels = manager.methods[]
-            num_plots = length(compare_labels)
-        elseif target == "Component"
-            target_tensor = haskey(pd_first.data, u_sel[]) ? pd_first.data[u_sel[]] : pd_first.data["u"]
-            
-            # THE FIX: Number of components is now just the length of the SVector!
-            num_plots = length(eltype(target_tensor)) 
-            
-            comp_names_tuple = manager.ui["Labels"]["comp_names"][]
-            compare_labels = String[]
-            for i in 1:num_plots
-                if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
-                    push!(compare_labels, string(comp_names_tuple[i]))
-                else
-                    push!(compare_labels, "Component $i")
+        sim_data = _get_first_valid(pd_first)
+        
+        if !isnothing(sim_data)
+            if target == "Methods"
+                compare_labels = manager.methods[]
+                num_plots = length(compare_labels)
+            elseif target == "Component"
+                target_tensor = get(sim_data.stats, u_sel[], sim_data.u)
+                num_plots = length(eltype(target_tensor)) 
+                
+                comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+                compare_labels = String[]
+                for i in 1:num_plots
+                    if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
+                        push!(compare_labels, string(comp_names_tuple[i]))
+                    else
+                        push!(compare_labels, "Component $i")
+                    end
                 end
+                compare_vals = collect(1:num_plots)
+            elseif target == "Time"
+                t_dim = get_time_dim(sim_data.domain)
+                t_vals = PLOT_MODE[] == :lagrangian ? sim_data.t : (isnothing(t_dim) ? [0.0] : sim_data.axes[t_dim])
+                
+                num_plots = length(t_vals)
+                compare_labels = ["t = $(round(t, sigdigits=4))" for t in t_vals]
+                compare_vals = t_vals
+            elseif target in manager.plot_vars
+                idx = findfirst(isequal(target), manager.plot_vars)
+                vals = pd_first.active_param_values[idx]
+                num_plots = length(vals)
+                compare_labels = ["$target = $(round(v, sigdigits=4))" for v in vals]
+                compare_vals = vals
             end
-            compare_vals = collect(1:num_plots)
-        elseif target == "Time"
-            num_plots = length(pd_first.t_vals)
-            compare_labels = ["t = $(round(t, sigdigits=4))" for t in pd_first.t_vals]
-            compare_vals = pd_first.t_vals
-        elseif target in manager.plot_vars
-            idx = findfirst(isequal(target), manager.plot_vars)
-            vals = pd_first.active_param_values[idx]
-            num_plots = length(vals)
-            compare_labels = ["$target = $(round(v, sigdigits=4))" for v in vals]
-            compare_vals = vals
         end
     end
     
@@ -505,7 +510,6 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     is_compare = target != "None"
     is_det, halign, valign = _parse_legend_position(manager, is_compare)
     
-    # THE FIX: Query the centralized Source of Truth!
     has_legend = T in LEGEND_SUPPORTED_PLOTS && target != "Methods"
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
@@ -534,7 +538,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         linkaxes!(axes...)
     end
     
-    target_idx = target == "Time" ? findfirst(isequal("t"), manager.plot_vars) : 
+    target_idx = target == "Time" ? findfirst(isequal(string(LAGRANGIAN_TIME_DIM[])), manager.plot_vars) : 
                  findfirst(isequal(target), manager.plot_vars)
 
     function _mutate_compare_vals(current_sels, idx)
@@ -543,6 +547,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             mutated[target_idx] = compare_vals[idx]
         end
         return mutated
+    end
+
+    function _build_param_indices(pd, mutated_vals)
+        n_params = length(pd.active_param_keys)
+        return ntuple(d -> begin
+            val = mutated_vals[d]
+            vals = pd.active_param_values[d]
+            isempty(vals) ? 1 : findmin(v -> abs(v - val), vals)[2]
+        end, n_params)
     end
 
     # =========================================================================
@@ -570,38 +583,80 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     manager.caches[i] = Dict{String, CT}()
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                    
-                    # THE FIX: Dynamically override the Component UI string for this specific subplot!
                     mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
+                    target_c_int = tryparse(Int, string(mutated_c_sel)); target_c_int = isnothing(target_c_int) ? 1 : target_c_int
 
-                    if first(values(data)) isa LagrangianPlotData
-                        dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, mutated_c_sel, u_sel[])
+                    local_methods = is_compare && target == "Methods" ? [manager.methods[][i]] : manager.methods[]
+                    valid_methods = String[]
+                    local data_tuples
+                    
+                    # 1. Pipeline Routing
+                    if PLOT_MODE[] == :lagrangian
+                        pts_col, u_col = Any[], Any[]
+                        for m_name in local_methods
+                            !haskey(data, m_name) && continue
+                            pd = data[m_name]
+                            p_idx = _build_param_indices(pd, mutated_sel_vals)
+                            
+                            res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
+                            if !isnothing(res)
+                                push!(pts_col, res[1])
+                                push!(u_col, res[2])
+                                push!(valid_methods, m_name)
+                            end
+                        end
+                        data_tuples = (pts_col, u_col)
                     else
-                        dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, mutated_c_sel, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                        active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
+                        ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
+                        u_col = Any[]
+                        
+                        for m_name in local_methods
+                            !haskey(data, m_name) && continue
+                            pd = data[m_name]
+                            p_idx = _build_param_indices(pd, mutated_sel_vals)
+                            
+                            res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes, u_sel[], target_c_int)
+                            if !isnothing(res)
+                                p_axes, u_flat = res
+                                for d in 1:length(active_plot_axes)
+                                    push!(ax_cols[d], p_axes[d])
+                                end
+                                push!(u_col, u_flat)
+                                push!(valid_methods, m_name)
+                            end
+                        end
+                        data_tuples = Tuple([ax_cols..., u_col])
                     end
                     
-                    isempty(vl) && continue
+                    isempty(valid_methods) && continue
                     
-                    local_methods = manager.methods[]
-                    if target == "Methods" && i <= length(vl)
-                        vl = [vl[i]]
-                        dt = Tuple([slice[i]] for slice in dt)
-                        local_methods = [manager.methods[][i]]
+                    # 2. Title & Axis Label Generation
+                    active_title_indices = if PLOT_MODE[] == :eulerian
+                        active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
+                        [findfirst(isequal(ax), manager.plot_vars) for ax in active_plot_axes]
+                    else
+                        # For Lagrangian, spatial dimensions are the axes
+                        spatial_axes = [string(d) for d in ALLOWED_PLOT_DIMS[] if d != LAGRANGIAN_TIME_DIM[]]
+                        filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                     end
                     
-                    initialize_base_plot!(plot_layout, axes[i], vl, dt, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
+                    ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                     default_title = is_compare ? compare_labels[i] : ts
+                    
+                    # 3. Draw Primitive
+                    initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
                     axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+                    
                     if !is_3d_axis
-                        if first(values(data)) isa LagrangianPlotData && PLOT_DIM_MAP[T] == 2
-                            x_lims = [[p[1] for p in slice] for slice in dt[1]]
-                            y_lims = [[p[2] for p in slice] for slice in dt[1]]
+                        if PLOT_MODE[] == :lagrangian && PLOT_DIM_MAP[T] == 2
+                            x_lims = [[p[1] for p in slice] for slice in data_tuples[1]]
+                            y_lims = [[p[2] for p in slice] for slice in data_tuples[1]]
                             set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                         else
-                            set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
+                            set_axis_limits_manager!(axes[i], data_tuples[1], data_tuples[2], manager)
                         end
                     end
-
                     _enforce_camera_lock!(axes, manager)
                 end
             end
@@ -614,8 +669,6 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     data_sync_obs = onany(c_sel,selector_obs...) do c,sel_vals...
         @with_lock manager "Data" begin
-            
-            
             (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
             if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
             if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
@@ -626,53 +679,88 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
             
             for i in 1:num_plots
-                
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                
-               mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
+                mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
+                target_c_int = tryparse(Int, string(mutated_c_sel)); target_c_int = isnothing(target_c_int) ? 1 : target_c_int
 
-                if first(values(data)) isa LagrangianPlotData
-                    dt, vl, ts = extract_lagrangian_data(data, manager, mutated_sel_vals, mutated_c_sel, u_sel[])
+                local_methods = is_compare && target == "Methods" ? [manager.methods[][i]] : manager.methods[]
+                valid_methods = String[]
+                local data_tuples
+                
+                # 1. Pipeline Routing
+                if PLOT_MODE[] == :lagrangian
+                    pts_col, u_col = Any[], Any[]
+                    for m_name in local_methods
+                        !haskey(data, m_name) && continue
+                        pd = data[m_name]
+                        p_idx = _build_param_indices(pd, mutated_sel_vals)
+                        
+                        res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
+                        if !isnothing(res)
+                            push!(pts_col, res[1])
+                            push!(u_col, res[2])
+                            push!(valid_methods, m_name)
+                        end
+                    end
+                    data_tuples = (pts_col, u_col)
                 else
-                    dt, vl, ts = extract_eulerian_data(data, manager, mutated_sel_vals, mutated_c_sel, x_sel[], y_sel[], z_sel[], u_sel[], Val(PLOT_DIM_MAP[T]))
+                    active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
+                    ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
+                    u_col = Any[]
+                    
+                    for m_name in local_methods
+                        !haskey(data, m_name) && continue
+                        pd = data[m_name]
+                        p_idx = _build_param_indices(pd, mutated_sel_vals)
+                        
+                        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes, u_sel[], target_c_int)
+                        if !isnothing(res)
+                            p_axes, u_flat = res
+                            for d in 1:length(active_plot_axes)
+                                push!(ax_cols[d], p_axes[d])
+                            end
+                            push!(u_col, u_flat)
+                            push!(valid_methods, m_name)
+                        end
+                    end
+                    data_tuples = Tuple([ax_cols..., u_col])
                 end
                 
-                local_methods = manager.methods[]
-                if target == "Methods" && i <= length(vl)
-                    vl = [vl[i]]
-                    dt = Tuple([slice[i]] for slice in dt)
-                    local_methods = [manager.methods[][i]]
-                end
+                isempty(valid_methods) && continue
                 
+                # 2. Safe Limit Synchronization
                 if !is_3d_axis
-                    # THE FIX: Same coordinate stripping for real-time limit syncing
-                    x_lims, y_lims = if first(values(data)) isa LagrangianPlotData && PLOT_DIM_MAP[T] == 2
-                        [[p[1] for p in slice] for slice in dt[1]], [[p[2] for p in slice] for slice in dt[1]]
+                    x_lims, y_lims = if PLOT_MODE[] == :lagrangian && PLOT_DIM_MAP[T] == 2
+                        [[p[1] for p in slice] for slice in data_tuples[1]], [[p[2] for p in slice] for slice in data_tuples[1]]
                     else
-                        dt[1], dt[2]
+                        data_tuples[1], data_tuples[2]
                     end
                     
                     safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
                     if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
-                        @warn "Negative X data encountered. Disabling log_scale to prevent crash."
                         axes[i].xscale[] = identity
                     end
                     if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0
-                        @warn "Negative Y/U data encountered. Disabling log_scale to prevent crash."
                         axes[i].yscale[] = identity
                     end
                     
                     set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                 end
                 
-                sync_data_to_cache!(caches[i], local_methods, dt, manager, Val(PLOT_DIM_MAP[T]))
+                # 3. Synchronize WebGL Overlays
+                sync_data_to_cache!(caches[i], valid_methods, data_tuples, manager, Val(PLOT_DIM_MAP[T]))
                 
+                active_title_indices = if PLOT_MODE[] == :eulerian
+                    active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
+                    [findfirst(isequal(ax), manager.plot_vars) for ax in active_plot_axes]
+                else
+                    spatial_axes = [string(d) for d in ALLOWED_PLOT_DIMS[] if d != LAGRANGIAN_TIME_DIM[]]
+                    filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
+                end
+                
+                ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                 default_title = is_compare ? compare_labels[i] : ts
                 axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
-                
-                if !is_3d_axis
-                    set_axis_limits_manager!(axes[i], dt[1], dt[2], manager)
-                end
             end
             for ax in axes; apply_axis_limits_overrides!(ax, manager); end
         end
@@ -686,47 +774,38 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             ui_app = manager.ui["Plot-Style"]
             
             for (i, ax) in enumerate(axes)
-                # 1. Modular Axis Styles
                 _apply_axis_styles!(ax, manager, T)
                 apply_axis_limits_overrides!(ax, manager)
                 
-                # 2. Reference Lines
                 if !is_3d_axis && haskey(ui_app, "reference")
                     delete_plots_by_label!(ax, "Reference Lines")
                     ref_exp = ui_app["reference"][]
                     !isempty(ref_exp) && plot_reference_lines!(ax, ref_exp; label="Reference Lines")
                 end
                 
-                # 3. Cache-driven Primitive Updates
                 if haskey(manager.caches, i)
                     for (method_name, cache) in manager.caches[i]
-                        # THE FIX: Safely grab the method index to prevent async race conditions!
                         m_idx = findfirst(isequal(method_name), manager.methods[])
                         isnothing(m_idx) && continue 
                         
                         colors = get(ui_app, "colors", nothing)
                         c = !isnothing(colors) ? colors[][mod1(m_idx, length(colors[]))] : :black
                         
-                        # Apply to all modular primitives
                         for (key, prim) in cache.primitives
                             apply_ui_style!(key, prim, ui_app, c)
                         end
                     end
                     
-                    # 4. Colorbar update
                     if has_colorbar
                         plot_obj = _find_first_drawable_primitive(manager.caches[i])
                         if !isnothing(plot_obj)
-                            # THE FIX: Safely extract the dynamically calculated colorrange from the Makie Primitive!
                             cr_obs = haskey(plot_obj.attributes, :colorrange) ? plot_obj.colorrange : Observable((0.0, 1.0))
-                            
                             create_or_update_colorbar!(plot_layout, plot_obj, manager, cr_obs, w["U-Axis"].selection[], i)
                         end
                     end
                 end
             end
             
-            # 5. Legend Update
             if !is_3d_axis && T in LEGEND_SUPPORTED_PLOTS
                 create_or_update_legend!(plot_layout, _collect_legend_elements(manager, ui_app)..., manager)
             end
@@ -737,4 +816,3 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     end
     return ObserverFunction[prim_obs; data_sync_obs; ui_obs]
 end
-
