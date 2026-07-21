@@ -10,8 +10,8 @@ include("StatFunctions.jl")
 # --- MAIN PIPELINE (Entry Points) ---
 # ==============================================================================
 
-function remove_nan_stats!(stats_dict::Dict)
-    keys_to_remove = String[]
+function remove_nan_stats!(stats_dict::StatDict)
+    keys_to_remove = Symbol[]
     for (name, val) in stats_dict
         # Handle Nested Lagrangian Fields
         if val isa Vector{<:Vector} 
@@ -44,7 +44,8 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_func; kwargs...)
         if stat_name == :Solution; continue end
         res = _calc_stat!(sim_data, u_ana, stat_name)
         if !isnothing(res)
-            sim_data.stats[String(stat_name)] = res
+            # Assigning natively as a Symbol using the typed StatDict
+            sim_data.stats[stat_name] = res
         end
     end
     # 3. Cleanup and Save
@@ -57,7 +58,7 @@ end
 # ==============================================================================
 
 function _calc_stat!(sim_data::ESimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
-    kept_idx = get_kept_indices(stat_name, sim_data.domain.dim_keys, sim_data.domain.stat_registry)
+    kept_idx = get_kept_indices(stat_name, sim_data.domain)
     
     # Base Case: Pure Scalar (Integrates ALL dimensions out)
     if isempty(kept_idx)
@@ -90,9 +91,9 @@ end
 # ==============================================================================
 
 function _calc_stat!(sim_data::LSimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
-    kept_dims = kept_dims = get_kept_dims(stat_name, sim_data.domain.dim_keys, sim_data.domain.stat_registry)
+    kept_dims = get_kept_dims(stat_name, sim_data.domain)
     
-    is_series = kept_dims == [:t] || (D == DS && isempty(kept_dims))
+    is_series = kept_dims == [sim_data.domain.time_dim] || (D == DS && isempty(kept_dims))
     is_field = length(kept_dims) == D
     
     Nt = length(sim_data.t)
@@ -124,7 +125,7 @@ function _calc_stat!(sim_data::LSimData{D, DS, M}, u_ana, stat_name::Symbol) whe
         end
         return res
         
-    else
+    elseif !isempty(kept_dims)
         @warn "Statistic :$stat_name requires keeping $kept_dims. Partial spatial integrations are physically undefined for scattered Lagrangian data. Skipping."
         return nothing
     end

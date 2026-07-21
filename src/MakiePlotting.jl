@@ -108,9 +108,7 @@ end
 
 function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
     varied_dict = sim_config.varied_params
-    vars = isempty(varied_dict) ? String[] : sort(collect(keys(varied_dict)))
-    
-    # THE FIX: Dynamically insert the allowed UI dimensions
+    vars = isempty(varied_dict) ? Symbol[] : Symbol.(sort(collect(keys(varied_dict))))
     append!(vars, get_base_variables())
 
     sim_obs = NestedObsDict()
@@ -204,7 +202,7 @@ function launch_plotter()
         old_manager = ACTIVE_PLOT_MANAGER[]
         
         # THE FIX: Compare against dynamic base variables
-        new_vars = [collect(keys(ACTIVE_SIM_CONFIG[].varied_params)); get_base_variables()]
+        new_vars = [Symbol.(collect(keys(ACTIVE_SIM_CONFIG[].varied_params))); get_base_variables()]
         
         if old_manager.plot_vars == new_vars
             old_manager.triggers["Simulation_Update"][] += 1
@@ -245,29 +243,34 @@ function launch_plotter()
     on(ACTIVE_SIM_CONFIG) do new_config
         (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
         
-        real_params = sort(collect(keys(new_config.varied_params)))
-        param_map = Dict{String, String}()
-        reverse_map = Dict{String, String}()
+        # THE FIX: Cast the real parameters to Symbols immediately
+        real_params = Symbol.(sort(collect(keys(new_config.varied_params))))
         
-        for i in 1:3
+        param_map = Dict{String, Symbol}()
+        reverse_map = Dict{Symbol, String}()
+        
+        # THE FIX: Dynamically detect how many parameter sliders exist in the UI
+        i = 1
+        while haskey(manager.widgets, "param_$(i)_Label")
             p_key = "param_$i"
-            if haskey(manager.widgets, "$(p_key)_Label")
-                lbl_obs = manager.widgets["$(p_key)_Label"]
-                
-                if i <= length(real_params)
-                    real_name = real_params[i]
-                    param_map[p_key] = real_name
-                    reverse_map[real_name] = p_key
-                    lbl_obs[] = real_name * ":"  
-                else
-                    param_map[p_key] = "-"
-                    lbl_obs[] = "Unused:"
-                    if haskey(manager.widgets, p_key)
-                        manager.widgets[p_key].range[] = [0.0] 
-                    end
+            lbl_obs = manager.widgets["$(p_key)_Label"]
+            
+            if i <= length(real_params)
+                real_sym = real_params[i]
+                param_map[p_key] = real_sym
+                reverse_map[real_sym] = p_key
+                lbl_obs[] = string(real_sym) * ":"  
+            else
+                lbl_obs[] = "Unused:"
+                if haskey(manager.widgets, p_key)
+                    manager.widgets[p_key].range[] = [0.0] 
                 end
             end
+            i += 1
         end
+        
+        manager.state["Param_Map"] = Observable(param_map)
+        manager.state["Reverse_Map"] = Observable(reverse_map)
         
         manager.state["Param_Map"] = Observable(param_map)
         manager.state["Reverse_Map"] = Observable(reverse_map)
@@ -359,7 +362,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             sim_data = _get_first_valid(pd)
             if !isnothing(sim_data)
                 # D represents the number of spatial dimensions in DomainInfo
-                D = length(sim_data.domain.dim_keys) - (get_time_dim(sim_data.domain) === nothing ? 0 : 1)
+                D = length(sim_data.domain.dim_keys) - (isnothing(sim_data.domain.time_dim) ? 0 : 1)
                 
                 if style_sel == "Lines" && D == 1
                     ptype_sym = :scatterlines
@@ -445,16 +448,15 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 
     rebuild_plot_layout!()
 end
-
 function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface || T == :scatter2d_surface
     w = manager.widgets
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
     CT = PLOT_MODE[] == :eulerian ? EulerianPlotCache : LagrangianPlotCache
     
-    # Read the data dimensions dynamically
+    # Read the data dimensions dynamically (THE FIX: Fallback to string(n) for widget keys)
     selector_obs = map(manager.plot_vars) do n
-        w_key = haskey(rev_map, n) ? rev_map[n] : n
+        w_key = haskey(rev_map, n) ? rev_map[n] : string(n)
         w[w_key].value
     end
 
@@ -471,6 +473,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
 
     plot_data_dict = plot_data_obs[]
+    sim_data = nothing
     if !isempty(plot_data_dict)
         pd_first = first(values(plot_data_dict))
         sim_data = _get_first_valid(pd_first)
@@ -480,8 +483,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 compare_labels = manager.methods[]
                 num_plots = length(compare_labels)
             elseif target == "Component"
-                target_tensor = get(sim_data.stats, u_sel[], sim_data.u)
-                num_plots = length(eltype(target_tensor)) 
+                target_tensor = get(sim_data.stats, Symbol(u_sel[]), sim_data.stats[:Solution])
+                target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
+                num_plots = length(target_tensor_arr[1]) 
                 
                 comp_names_tuple = manager.ui["Labels"]["comp_names"][]
                 compare_labels = String[]
@@ -500,8 +504,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 num_plots = length(t_vals)
                 compare_labels = ["t = $(round(t, sigdigits=4))" for t in t_vals]
                 compare_vals = t_vals
-            elseif target in manager.plot_vars
-                idx = findfirst(isequal(target), manager.plot_vars)
+            elseif Symbol(target) in manager.plot_vars
+                idx = findfirst(isequal(Symbol(target)), manager.plot_vars)
                 vals = pd_first.active_param_values[idx]
                 num_plots = length(vals)
                 compare_labels = ["$target = $(round(v, sigdigits=4))" for v in vals]
@@ -543,8 +547,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         linkaxes!(axes...)
     end
     
-    target_idx = target == "Time" ? findfirst(isequal(string(LAGRANGIAN_TIME_DIM[])), manager.plot_vars) : 
-                 findfirst(isequal(target), manager.plot_vars)
+    # THE FIX: Cast comparison target correctly to Symbol
+    target_idx = target == "Time" ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : 
+                 findfirst(isequal(Symbol(target)), manager.plot_vars)
 
     function _mutate_compare_vals(current_sels, idx)
         mutated = collect(current_sels)
@@ -597,7 +602,18 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     
                     # 1. Pipeline Routing
                     if PLOT_MODE[] == :lagrangian
-                        pts_col, u_col = Any[], Any[]
+                        # Detect DS to preallocate ax_cols
+                        local DS = 1
+                        for m_name in local_methods
+                            if haskey(data, m_name)
+                                sim = _get_first_valid(data[m_name])
+                                if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
+                            end
+                        end
+                        
+                        ax_cols = [Any[] for _ in 1:DS]
+                        u_col = Any[]
+                        
                         for m_name in local_methods
                             !haskey(data, m_name) && continue
                             pd = data[m_name]
@@ -605,12 +621,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                             
                             res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
                             if !isnothing(res)
-                                push!(pts_col, res[1])
-                                push!(u_col, res[2])
+                                p_axes, u_flat = res
+                                for d in 1:DS
+                                    push!(ax_cols[d], p_axes[d])
+                                end
+                                push!(u_col, u_flat)
                                 push!(valid_methods, m_name)
                             end
                         end
-                        data_tuples = (pts_col, u_col)
+                        data_tuples = Tuple([ax_cols..., u_col])
                     else
                         active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
                         ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
@@ -636,31 +655,34 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     
                     isempty(valid_methods) && continue
                     
-                    # 2. Title & Axis Label Generation
+                    # THE FIX: Safely parse active plot axis strings and extract loop_dims to Symbolic indices
                     active_title_indices = if PLOT_MODE[] == :eulerian
                         active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                        [findfirst(isequal(ax), manager.plot_vars) for ax in active_plot_axes]
+                        [findfirst(isequal(Symbol(occursin("|", ax) ? split(ax, "|")[2] : ax)), manager.plot_vars) for ax in active_plot_axes]
                     else
-                        # For Lagrangian, spatial dimensions are the axes
-                        spatial_axes = [string(d) for d in ALLOWED_PLOT_DIMS[] if d != LAGRANGIAN_TIME_DIM[]]
-                        filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
+                        spatial_axes = string.(filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys))
+                        filter(!isnothing, [findfirst(isequal(Symbol(ax)), manager.plot_vars) for ax in spatial_axes])
                     end
                     
                     ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                     default_title = is_compare ? compare_labels[i] : ts
                     
-                    # 3. Draw Primitive
                     initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
                     axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
                     
+                    # 2. Safe Limit Synchronization (Unified for Eulerian & Lagrangian)
                     if !is_3d_axis
-                        if PLOT_MODE[] == :lagrangian && PLOT_DIM_MAP[T] == 2
-                            x_lims = [[p[1] for p in slice] for slice in data_tuples[1]]
-                            y_lims = [[p[2] for p in slice] for slice in data_tuples[1]]
-                            set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
-                        else
-                            set_axis_limits_manager!(axes[i], data_tuples[1], data_tuples[2], manager)
+                        x_lims, y_lims = data_tuples[1], data_tuples[2]
+                        
+                        safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
+                        if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
+                            axes[i].xscale[] = identity
                         end
+                        if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0
+                            axes[i].yscale[] = identity
+                        end
+                        
+                        set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                     end
                     _enforce_camera_lock!(axes, manager)
                 end
@@ -694,7 +716,18 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 
                 # 1. Pipeline Routing
                 if PLOT_MODE[] == :lagrangian
-                    pts_col, u_col = Any[], Any[]
+                    # Detect DS to preallocate ax_cols
+                    local DS = 1
+                    for m_name in local_methods
+                        if haskey(data, m_name)
+                            sim = _get_first_valid(data[m_name])
+                            if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
+                        end
+                    end
+                    
+                    ax_cols = [Any[] for _ in 1:DS]
+                    u_col = Any[]
+                    
                     for m_name in local_methods
                         !haskey(data, m_name) && continue
                         pd = data[m_name]
@@ -702,12 +735,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         
                         res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
                         if !isnothing(res)
-                            push!(pts_col, res[1])
-                            push!(u_col, res[2])
+                            p_axes, u_flat = res
+                            for d in 1:DS
+                                push!(ax_cols[d], p_axes[d])
+                            end
+                            push!(u_col, u_flat)
                             push!(valid_methods, m_name)
                         end
                     end
-                    data_tuples = (pts_col, u_col)
+                    data_tuples = Tuple([ax_cols..., u_col])
                 else
                     active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
                     ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
@@ -733,13 +769,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 
                 isempty(valid_methods) && continue
                 
-                # 2. Safe Limit Synchronization
+            # 2. Safe Limit Synchronization (Unified for Eulerian & Lagrangian)
                 if !is_3d_axis
-                    x_lims, y_lims = if PLOT_MODE[] == :lagrangian && PLOT_DIM_MAP[T] == 2
-                        [[p[1] for p in slice] for slice in data_tuples[1]], [[p[2] for p in slice] for slice in data_tuples[1]]
-                    else
-                        data_tuples[1], data_tuples[2]
-                    end
+                    x_lims, y_lims = data_tuples[1], data_tuples[2]
                     
                     safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
                     if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
@@ -752,15 +784,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                 end
                 
-                # 3. Synchronize WebGL Overlays
                 sync_data_to_cache!(caches[i], valid_methods, data_tuples, manager, Val(PLOT_DIM_MAP[T]))
                 
+                # THE FIX: Safely parse active plot axis strings and extract loop_dims to Symbolic indices
                 active_title_indices = if PLOT_MODE[] == :eulerian
                     active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                    [findfirst(isequal(ax), manager.plot_vars) for ax in active_plot_axes]
+                    [findfirst(isequal(Symbol(occursin("|", ax) ? split(ax, "|")[2] : ax)), manager.plot_vars) for ax in active_plot_axes]
                 else
-                    spatial_axes = [string(d) for d in ALLOWED_PLOT_DIMS[] if d != LAGRANGIAN_TIME_DIM[]]
-                    filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
+                    spatial_axes = string.(filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys))
+                    filter(!isnothing, [findfirst(isequal(Symbol(ax)), manager.plot_vars) for ax in spatial_axes])
                 end
                 
                 ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)

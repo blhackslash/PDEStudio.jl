@@ -75,11 +75,6 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     
     # Dynamically build Compare Targets
     compare_opts = String["None", "Methods", "Component"]
-    for p in manager.plot_vars
-        if p == "t"; push!(compare_opts, "Time")
-        elseif !(p in ("x", "y", "z")); push!(compare_opts, p)
-        end
-    end
     
     base_opts = PLOT_MODE[] == :eulerian ? ["Lines", "Scatter", "Contour", "Heatmap", "Volume"] : ["Scatter"]
     size_opts = [string(i) for i in 100:100:1000]

@@ -19,15 +19,13 @@ const NestedObsDict = Dict{String, Dict{String, Observable}}
 # The predefined dimensions the Makie UI will allocate sliders for.
 const ALLOWED_PLOT_DIMS = Ref{Tuple{Vararg{Symbol}}}((:x, :y, :z, :t))
 
-# The designated time identifier (used strictly by the Lagrangian plotter to isolate time)
-const LAGRANGIAN_TIME_DIM = Ref{Symbol}(:t)
 
 # Display labels for the generated UI sliders
 const DIM_LABELS = Ref{Dict{Symbol, String}}(Dict(
-    :x => "Space(X)",
-    :y => "Space(Y)",
-    :z => "Space(Z)",
-    :t => "Time"
+    :x => "Space (X)",
+    :y => "Space (Y)",
+    :z => "Space (Z)",
+    :t => "Time (T)"
 ))
 
 """
@@ -39,13 +37,10 @@ Example: set_allowed_dims!((:r, :theta, :phi, :t), Dict(:r => "Radius", ...))
 function set_allowed_dims!(dims::Tuple{Vararg{Symbol}}, labels::Dict{Symbol, String}; time_dim::Symbol=:t)
     ALLOWED_PLOT_DIMS[] = dims
     DIM_LABELS[] = labels
-    LAGRANGIAN_TIME_DIM[] = time_dim
     @info "Plotter UI configured for dimensions: $dims"
 end
 
-# Dynamic helpers to replace the deprecated hardcoded arrays
-get_base_variables() = [string(d) for d in ALLOWED_PLOT_DIMS[]]
-get_base_controls() = Any[:slider for _ in ALLOWED_PLOT_DIMS[]]
+get_base_variables() = collect(ALLOWED_PLOT_DIMS[])  # Returns Vector{Symbol}
 
 # ==============================================================================
 # --- GLOBAL DASHBOARD STATE ---
@@ -127,7 +122,7 @@ mutable struct PlotManager
     locks::Dict{String, Bool}               
     
     methods::Observable{Vector{String}}
-    plot_vars::Vector{String}
+    plot_vars::Vector{Symbol}
     last_run_params::ParamDict
     caches::Dict{Int, Dict{String, AbstractPlotCache}}
 end

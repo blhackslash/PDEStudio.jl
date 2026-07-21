@@ -13,6 +13,7 @@ const _T_GRID = Ref{Int}(25)
 const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
+
 set_space_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_N_GRID[] = n)
 set_time_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_T_GRID[] = n)
 set_ref_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_REF_GRID[] = n)
@@ -39,6 +40,16 @@ createVariedDict(kv::Pair{String, <:Vector}...) = VariedDict(kv...)
 createVariedDict(kv) = VariedDict(kv)
 createVariedDict() = VariedDict()
 
+# A strict union covering all possible geometries of your statistics
+const AbstractStatTensor{M, T} = Union{
+    SVector{M, T},
+    AbstractArray{SVector{M, T}},
+    Vector{Vector{SVector{M, T}}}
+}
+
+# The strictly typed dictionary for SimData
+const StatDict{M} = Dict{Symbol, AbstractStatTensor{M, Float64}}
+
 # ==============================================================================
 # --- 1. Abstract Hierarchy & Metadata ---
 # ==============================================================================
@@ -61,6 +72,7 @@ struct DomainInfo{D}
     mins::Tuple{Vararg{Float64, D}}
     maxs::Tuple{Vararg{Float64, D}}
     spacing::Tuple{Vararg{Float64, D}}
+    time_dim::Union{Nothing,Symbol}
     
     # --- NEW: Local Registry ---
     stat_registry::Dict{Symbol, Union{Symbol, Vector{Symbol}}} 
@@ -73,18 +85,18 @@ end
 mutable struct ESimData{D, DS, M} <: AbstractSimData{D, DS, M}
     params::ParamDict
     domain::DomainInfo{D}
-    axes::NTuple{D, Vector{Float64}}  # Unified axes for all dimensions
-    u::Array{SVector{M, Float64}, D}  # The generalized spacetime tensor
-    stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
+    axes::NTuple{D, Vector{Float64}}
+    u::Array{SVector{M, Float64}, D}
+    stats::StatDict{M}  # <-- Strictly typed and Symbolic!
 end
 
 mutable struct LSimData{D, DS, M} <: AbstractSimData{D, DS, M}
     params::ParamDict
     domain::DomainInfo{D}
-    t::Vector{Float64}                # Time remains explicitly separated
-    x::Vector{Vector{SVector{DS, Float64}}} # Particles ONLY use the DS dimensions!
+    t::Vector{Float64}
+    x::Vector{Vector{SVector{DS, Float64}}}
     u::Vector{Vector{SVector{M, Float64}}}
-    stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
+    stats::StatDict{M}  # <-- Strictly typed and Symbolic!
 end
 
 mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
@@ -97,6 +109,8 @@ mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     default_methods::Vector{String}
     varied_params::VariedDict
 end
+
+nice_string(s::Symbol) = nice_string(String(s))
 
 function safe_string(s::AbstractString)
     # Replace whitespace and hyphens with underscores, then lowercase

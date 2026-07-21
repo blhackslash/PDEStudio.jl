@@ -191,14 +191,14 @@ for a user-defined override via `manager.ui`.
 """
 function generate_dynamic_title(
     plot_dims::Tuple, 
-    dim_names::Vector{String}, 
+    dim_names::Vector{Symbol}, 
     sel_vals
 )
     # Build the Default Dynamic Title
     title_parts = String[]
     
     for i in 1:length(dim_names)
-        name = dim_names[i]
+        name = String(dim_names[i])
         
         if i in plot_dims
             # This is an axis we are currently plotting along

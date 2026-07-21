@@ -1,4 +1,11 @@
-get_time_dim(domain::DomainInfo) = findfirst(==(:t), domain.dim_keys)
+
+function _get_lsim_bounds(x::Vector{Vector{SVector{DS, Float64}}}) where DS
+    mins, maxs = fill(Inf, DS), fill(-Inf, DS)
+    for step in x; for p in step; for d in 1:DS
+        mins[d], maxs[d] = min(mins[d], p[d]), max(maxs[d], p[d])
+    end; end; end
+    return Tuple(mins), Tuple(maxs)
+end
 # ==============================================================================
 # --- EULERIAN CONSTRUCTORS (Spacetime Tensors) ---
 # ==============================================================================
@@ -6,10 +13,9 @@ get_time_dim(domain::DomainInfo) = findfirst(==(:t), domain.dim_keys)
 # 1D Space + 1D Time = 2D Spacetime Tensor
 function createSimData(
     x::AbstractVector{<:Real}, u::AbstractMatrix{SVector{M, T}}, t::AbstractVector{<:Real}, params::ParamDict; 
-    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing, time_dim::Union{Nothing,Symbol}=:t
 ) where {M, T<:Real}
-    DS = 1
-    D = 2
+    DS, D = 1, 2
     
     _mins = (isnothing(xmins) ? Float64(minimum(x)) : Float64(xmins[1]), isnothing(tmin) ? Float64(minimum(t)) : Float64(tmin))
     _maxs = (isnothing(xmaxs) ? Float64(maximum(x)) : Float64(xmaxs[1]), isnothing(tmax) ? Float64(maximum(t)) : Float64(tmax))
@@ -22,11 +28,13 @@ function createSimData(
     
     registry = deepcopy(STAT_REGISTRY)
     registry[:Solution] = :all
-    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
+    
+    # Define keys and construct domain with time_dim
+    dim_keys = (:x, time_dim)
+    domain = DomainInfo{D}(dim_keys, _mins, _maxs, spacing, time_dim, registry)
 
-    # Add the alias to the stats dictionary immediately
     u_float = u isa AbstractMatrix{SVector{M, Float64}} ? u : [SVector{M, Float64}(v) for v in u]
-    stats_dict = Dict{String, Any}("Solution" => u_float)
+    stats_dict = StatDict{M}(:Solution => u_float)
 
     return ESimData{D, DS, M}(params, domain, axes, u_float, stats_dict)
 end
@@ -34,10 +42,9 @@ end
 # 2D Space + 1D Time = 3D Spacetime Tensor
 function createSimData(
     x_grid::AbstractMatrix{<:Real}, y_grid::AbstractMatrix{<:Real}, u::AbstractArray{SVector{M, T}, 3}, t::AbstractVector{<:Real}, params::ParamDict; 
-    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing, time_dim::Union{Nothing,Symbol}=:t
 ) where {M, T<:Real}
-    DS = 2
-    D = 3
+    DS, D = 2, 3
     
     x_axis, y_axis = vec(x_grid[:, 1]), vec(y_grid[1, :])
     
@@ -53,41 +60,25 @@ function createSimData(
     
     registry = deepcopy(STAT_REGISTRY)
     registry[:Solution] = :all
-    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
+    
+    dim_keys = (:x, :y, time_dim)
+    domain = DomainInfo{D}(dim_keys, _mins, _maxs, spacing, time_dim, registry)
 
     u_float = u isa AbstractArray{SVector{M, Float64}, 3} ? u : [SVector{M, Float64}(v) for v in u]
-    stats_dict = Dict{String, Any}("Solution" => u_float)
+    stats_dict = StatDict{M}(:Solution => u_float)
 
     return ESimData{D, DS, M}(params, domain, axes, u_float, stats_dict)
 end
-
 
 # ==============================================================================
 # --- LAGRANGIAN CONSTRUCTORS ---
 # ==============================================================================
 
-function _get_lsim_bounds(x::Vector{Vector{SVector{DS, Float64}}}) where DS
-    mins, maxs = fill(Inf, DS), fill(-Inf, DS)
-    for step in x; for p in step; for d in 1:DS
-        mins[d], maxs[d] = min(mins[d], p[d]), max(maxs[d], p[d])
-    end; end; end
-    return Tuple(mins), Tuple(maxs)
-end
-
-# 1D Legacy Matrix redirect helper
-function createSimData(x::AbstractMatrix{<:Real}, u::AbstractMatrix{<:Real}, t::AbstractVector{<:Real}, params::ParamDict; xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing)
-    n_p, n_t = size(x)
-    x_vec = [[SVector{1, Float64}(x[p, m]) for p in 1:n_p] for m in 1:n_t]
-    u_vec = [[SVector{1, Float64}(u[p, m]) for p in 1:n_p] for m in 1:n_t]
-    
-    return createSimData(x_vec, u_vec, t, params; xmins=xmins, xmaxs=xmaxs, tmin=tmin, tmax=tmax)
-end
-
 function createSimData(
     x::Vector{Vector{SVector{DS, Float64}}}, u::Vector{Vector{SVector{M, Float64}}}, t::Vector{Float64}, params::ParamDict;
-    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing
+    xmins=nothing, xmaxs=nothing, tmin=nothing, tmax=nothing, time_dim::Union{Nothing,Symbol}=:t
 ) where {DS, M}
-    D = DS + 1 # Default assumption for transient tracking 
+    D = DS + 1 
     
     auto_mins, auto_maxs = _get_lsim_bounds(x)
     _xmins = isnothing(xmins) ? auto_mins : Float64.(Tuple(xmins))
@@ -95,23 +86,24 @@ function createSimData(
     _tmin  = isnothing(tmin)  ? Float64(minimum(t)) : Float64(tmin)
     _tmax  = isnothing(tmax)  ? Float64(maximum(t)) : Float64(tmax)
     
-    # Estimate average particle spacing based on total volume and max particle count
     N_p = max(1, maximum(length.(x)))
     avg_dx = (prod(_xmaxs .- _xmins) / N_p)^(1/DS)
     dt = length(t) > 1 ? (_tmax - _tmin) / (length(t) - 1) : 1.0
     
-    dim_keys = ((:x, :y, :z)[1:DS]..., :t)
+    dim_keys = ((:x, :y, :z)[1:DS]..., time_dim)
     mins = (_xmins..., _tmin)
     maxs = (_xmaxs..., _tmax)
     spacing = (ntuple(d -> avg_dx, Val(DS))..., dt)
     
     registry = deepcopy(STAT_REGISTRY)
     registry[:Solution] = :all
-    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
-    stats_dict = Dict{String, Any}("Solution" => u)
+    domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, time_dim, registry)
+    stats_dict = StatDict{M}(:Solution => u)
 
     return LSimData{D, DS, M}(params, domain, t, x, u, stats_dict)
 end
+get_time_dim(domain::DomainInfo) = findfirst(==(domain.time_dim), domain.dim_keys)
+
 # ==============================================================================
 # --- CONVERSIONS ---
 # ==============================================================================
@@ -120,7 +112,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
     
     # 1. Static PDE check
     if isnothing(t_dim)
-        @info "Static PDE detected (no :t in dim_keys). Skipping time resampling."
+        @info "Static PDE detected (no $(data.domain.time_dim) in dim_keys). Skipping time resampling."
         return data
     end
 
@@ -141,7 +133,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
     new_u = similar(data.u, Tuple(new_sz))
     
     # 3. Dynamically adapt the unified stats dictionary using the Registry
-    new_stats = Dict{String, Any}()
+    new_stats = StatDict{M}()
     for (k, v) in data.stats
         if !(v isa AbstractArray)
             new_stats[k] = copy(v)
@@ -149,8 +141,8 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
         end
         
         # Query the registry for the dimensions kept by this specific stat
-        kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys,data.domain.stat_registry)
-        t_idx_in_stat = findfirst(==(:t), kept_dims)
+        kept_dims = get_kept_dims(k, data.domain)
+        t_idx_in_stat = findfirst(==(data.domain.time_dim), kept_dims)
         
         if !isnothing(t_idx_in_stat)
             # This stat has a time dimension! Resample exactly that axis.
@@ -185,8 +177,8 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
         for (k, v) in data.stats
             if !(v isa AbstractArray); continue; end
             
-            kept_dims = get_kept_dims(Symbol(k), data.domain.dim_keys,data.domain.stat_registry)
-            t_idx_in_stat = findfirst(==(:t), kept_dims)
+            kept_dims = get_kept_dims(k, data.domain)
+            t_idx_in_stat = findfirst(==(data.domain.time_dim), kept_dims)
             
             if !isnothing(t_idx_in_stat)
                 # target ONLY the axis that represents time within this specific array
@@ -203,7 +195,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
     new_axes[t_dim] = target_t
 
     return ESimData{D, DS, M}(
-        data.params, DomainInfo{D}(data.domain.dim_keys, data.domain.mins, data.domain.maxs, Tuple(new_spacing),data.domain.stat_registry), 
+        data.params, DomainInfo{D}(data.domain.dim_keys, data.domain.mins, data.domain.maxs, Tuple(new_spacing), data.domain.time_dim, data.domain.stat_registry), 
         Tuple(new_axes), new_u, new_stats
     )
 end
@@ -211,6 +203,7 @@ end
 function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid=_T_GRID[]) where {D, DS, M}
     mins, maxs = ldata.domain.mins, ldata.domain.maxs
     T_len = length(ldata.t)
+    time_dim = ldata.domain.time_dim
     
     # 1. Build Spatial Grid config
     grid_axes = ntuple(d -> collect(range(mins[d], maxs[d], length=N_grid)), Val(DS))
@@ -224,9 +217,9 @@ function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid
     # 2. Target Eulerian Spacetime Shape
     e_shape = ntuple(d -> d <= DS ? N_grid : T_len, Val(D))
     e_axes = ntuple(d -> d <= DS ? grid_axes[d] : ldata.t, Val(D))
-    e_dim_keys = D > DS ? (ldata.domain.dim_keys[1:DS]..., :t) : ldata.domain.dim_keys
+    e_dim_keys = D > DS ? (ldata.domain.dim_keys[1:DS]..., time_dim) : ldata.domain.dim_keys
     e_spacing = ntuple(d -> d <= DS ? s_dx[d] : ldata.domain.spacing[d], Val(D))
-    e_domain = DomainInfo{D}(e_dim_keys, mins, maxs, e_spacing, ldata.domain.stat_registry)
+    e_domain = DomainInfo{D}(e_dim_keys, mins, maxs, e_spacing, time_dim, ldata.domain.stat_registry)
 
     # 3. Preallocate Main Tensors
     zero_vec = zero(SVector{M, Float64})
@@ -238,16 +231,16 @@ function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid
     # =========================================================================
     # --- STATS ROUTING & PREALLOCATION ---
     # =========================================================================
-    e_stats = Dict{String, Any}()
-    field_keys = String[]
+    e_stats = StatDict{M}()
+    field_keys = Symbol[]
     field_nan_vals = Any[]
-    e_fields = Dict{String, Array}()
+    e_fields = Dict{Symbol, Array}()
     
     for (k, v) in ldata.stats
-        kept_dims = get_kept_dims(Symbol(k), ldata.domain.dim_keys, ldata.domain.stat_registry)
+        kept_dims = get_kept_dims(k, ldata.domain)
         
         # If it's a Series (keeps only :t, or is static with no dims) -> Pass through!
-        if kept_dims == [:t] || isempty(kept_dims)
+        if kept_dims == [time_dim] || isempty(kept_dims)
             e_stats[k] = copy(v)
             
         # Otherwise, it must be a Field -> Prepare to scatter!
@@ -389,7 +382,7 @@ function convert_to_lagrangian(data::ESimData{D, DS, M}) where {D, DS, M}
     # Because DomainInfo inherently describes the total tensor D, we can reuse it!
     return LSimData{D, DS, M}(
         data.params, data.domain, t_vec, new_x, new_u, 
-        Dict{String, Any}(),
+        StatDict{M}(),
     )
 end
 
@@ -399,7 +392,7 @@ end
 
 function generate_reference_simdata(ref_func::Function, params::ParamDict, template::ESimData{D, DS}) where {D, DS}
     # Dynamically apply _T_GRID to time axes, and _REF_GRID to spatial axes
-    grid_shape = ntuple(d -> template.domain.dim_keys[d] == :t ? _T_GRID[] : _REF_GRID[], Val(D))
+    grid_shape = ntuple(d -> template.domain.dim_keys[d] == template.domain.time_dim ? _T_GRID[] : _REF_GRID[], Val(D))
     
     axes_list = ntuple(Val(D)) do d
         collect(range(template.domain.mins[d], template.domain.maxs[d], length=grid_shape[d]))
@@ -419,9 +412,9 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     end
     
     spacing = ntuple(d -> (template.domain.maxs[d] - template.domain.mins[d]) / max(1, grid_shape[d] - 1), Val(D))
-    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
+    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
     
-    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, Dict{String, Any}())
+    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, StatDict{M}())
     
     return ram_data
 end
@@ -462,7 +455,7 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     t_spacing = D > DS ? ((template.domain.maxs[end] - template.domain.mins[end]) / max(1, T_len - 1),) : ()
     spacing = (s_spacing..., t_spacing...)
     
-    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
+    ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
     
-    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, Dict{String, Any}())
+    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M}())
 end

@@ -151,27 +151,30 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         sim_data = pd.data[curr_param_idx...]
         isnothing(sim_data) && continue
         
-        tensor = u_key == "Solution" ? sim_data.u : get(sim_data.stats, u_key, nothing)
+        sym_u_key = Symbol(u_key)
+        
+        tensor = get(sim_data.stats, sym_u_key, nothing)
         isnothing(tensor) && continue
         
-        tensor_dim_syms = u_key == "Solution" ? sim_data.domain.dim_keys : Tuple(IRunPDESims.get_kept_dims(Symbol(u_key), sim_data.domain.dim_keys, sim_data.domain.stat_registry))
+        tensor_dim_syms = Tuple(IRunPDESims.get_kept_dims(sym_u_key, sim_data.domain))
         
         in_bounds = true
+        # Inside extract_eulerian_data:
         tensor_indices = ntuple(ndims(tensor)) do d
-            dim_str = string(tensor_dim_syms[d])
-            out_idx = findfirst(isequal(dim_str), active_loop_dims)
+            dim_sym = tensor_dim_syms[d]
+            out_idx = findfirst(isequal(String(dim_sym)), active_loop_dims) # active_loop_dims is String[]
             
             if !isnothing(out_idx)
                 idx = I[out_idx]
-                # THE FIX: Protect against crashed simulations with shorter arrays
                 if idx > size(tensor, d); in_bounds = false; return 1; end
                 return idx
             else
-                var_idx = findfirst(isequal(dim_str), plot_vars)
+                # --- THE FIX: Direct Symbol-to-Symbol lookup! ---
+                var_idx = findfirst(isequal(dim_sym), plot_vars) 
                 if isnothing(var_idx); in_bounds = false; return 1; end
                 
                 target_val = sel_vals[var_idx]
-                axis_idx = findfirst(==(tensor_dim_syms[d]), sim_data.domain.dim_keys)
+                axis_idx = findfirst(==(dim_sym), sim_data.domain.dim_keys)
                 idx = findmin(v -> abs(v - target_val), sim_data.axes[axis_idx])[2]
                 if idx > size(tensor, d); in_bounds = false; return 1; end
                 return idx
@@ -191,11 +194,13 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     sim_data = pd.data[param_indices...]
     isnothing(sim_data) && return nothing
     
-    tensor = get(sim_data.stats, u_key, nothing)
+    tensor = get(sim_data.stats, Symbol(u_key), nothing)
     isnothing(tensor) && return nothing
     
-    time_str = string(LAGRANGIAN_TIME_DIM[])
-    ui_time_idx = findfirst(isequal(time_str), plot_vars)
+    time_dim = sim_data.domain.time_dim
+    
+    # Direct Symbol-to-Symbol lookup
+    ui_time_idx = findfirst(isequal(time_dim), plot_vars) 
     
     if !isnothing(ui_time_idx) && !isempty(sim_data.t)
         target_t = sel_vals[ui_time_idx]
@@ -204,11 +209,23 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
         t_idx = 1
     end
     
-    x_step = sim_data.x[t_idx]
-    u_raw = tensor isa AbstractArray && ndims(tensor) == 1 ? tensor : tensor[t_idx]
+    # THE FIX: Differentiate Nested Transient vs Flat Static Arrays
+    if tensor isa AbstractVector && eltype(tensor) <: AbstractVector
+        u_raw = tensor[t_idx]
+    elseif tensor isa AbstractVector && eltype(tensor) <: SVector
+        u_raw = tensor
+    else
+        u_raw = tensor
+    end
+    
     u_flat = target_c isa Integer ? map(v -> Float64(v[target_c]), u_raw) : map(v -> Float64(v[1]), u_raw)
     
-    return x_step, u_flat
+    # THE FIX: Map SVector coordinates to a clean Tuple of Float64 Vectors
+    x_step = sim_data.x[t_idx]
+    DS = length(x_step[1])
+    p_axes = ntuple(d -> map(p -> Float64(p[d]), x_step), Val(DS))
+    
+    return p_axes, u_flat
 end
 
 function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods; force_reload=false)
