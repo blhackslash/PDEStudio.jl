@@ -28,7 +28,7 @@ function createSimData(
     u_float = u isa AbstractMatrix{SVector{M, Float64}} ? u : [SVector{M, Float64}(v) for v in u]
     stats_dict = Dict{String, Any}("Solution" => u_float)
 
-    return ESimData{D, DS, M}(params, domain, axes, u, stats_dict, Dict{String, Any}())
+    return ESimData{D, DS, M}(params, domain, axes, u_float, stats_dict)
 end
 
 # 2D Space + 1D Time = 3D Spacetime Tensor
@@ -58,7 +58,7 @@ function createSimData(
     u_float = u isa AbstractArray{SVector{M, Float64}, 3} ? u : [SVector{M, Float64}(v) for v in u]
     stats_dict = Dict{String, Any}("Solution" => u_float)
 
-    return ESimData{D, DS, M}(params, domain, axes, u, stats_dict, Dict{String, Any}())
+    return ESimData{D, DS, M}(params, domain, axes, u_float, stats_dict)
 end
 
 
@@ -110,7 +110,7 @@ function createSimData(
     domain = DomainInfo{D}(dim_keys, mins, maxs, spacing, registry)
     stats_dict = Dict{String, Any}("Solution" => u)
 
-    return LSimData{D, DS, M}(params, domain, t, x, u, stats_dict, Dict{String, Any}())
+    return LSimData{D, DS, M}(params, domain, t, x, u, stats_dict)
 end
 # ==============================================================================
 # --- CONVERSIONS ---
@@ -204,7 +204,7 @@ function resample_time(data::ESimData{D, DS, M}, T_grid::Int) where {D, DS, M}
 
     return ESimData{D, DS, M}(
         data.params, DomainInfo{D}(data.domain.dim_keys, data.domain.mins, data.domain.maxs, Tuple(new_spacing),data.domain.stat_registry), 
-        Tuple(new_axes), new_u, copy(data.scalars), new_stats
+        Tuple(new_axes), new_u, new_stats
     )
 end
 
@@ -355,7 +355,7 @@ function convert_to_eulerian(ldata::LSimData{D, DS, M}; N_grid=_N_GRID[], T_grid
         e_stats[k] = e_fields[k]
     end
 
-    edata = ESimData{D, DS, M}(ldata.params, e_domain, e_axes, u_euler, copy(ldata.scalars), e_stats)
+    edata = ESimData{D, DS, M}(ldata.params, e_domain, e_axes, u_euler, e_stats)
     
     return D > DS ? resample_time(edata, T_grid) : edata
 end
@@ -389,7 +389,7 @@ function convert_to_lagrangian(data::ESimData{D, DS, M}) where {D, DS, M}
     # Because DomainInfo inherently describes the total tensor D, we can reuse it!
     return LSimData{D, DS, M}(
         data.params, data.domain, t_vec, new_x, new_u, 
-        Dict{String, Any}(), Dict{String, Any}()
+        Dict{String, Any}(),
     )
 end
 
@@ -421,7 +421,7 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     spacing = ntuple(d -> (template.domain.maxs[d] - template.domain.mins[d]) / max(1, grid_shape[d] - 1), Val(D))
     ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
     
-    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, Dict{String, Any}(), Dict{String, Any}())
+    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, Dict{String, Any}())
     
     return ram_data
 end
@@ -464,5 +464,5 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     
     ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing,template.domain.stat_registry)
     
-    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, Dict{String, Any}(), Dict{String, Any}())
+    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, Dict{String, Any}())
 end

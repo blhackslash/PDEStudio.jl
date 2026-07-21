@@ -36,15 +36,6 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     method_layout = layout[current_row, 1] = GridLayout()
     create_method_controls!(method_layout, manager) 
     current_row += 1
-
-    # --- 4. OVERWRITES (Eulerian ONLY) ---
-    if PLOT_MODE[] == :eulerian
-        Label(layout[current_row, 1], "Dimension Overwrites", fontsize=16, font=:bold, color=:darkred)
-        current_row += 1
-        lock_layout = layout[current_row, 1] = GridLayout()
-        create_overwrite_controls!(lock_layout, manager) 
-        current_row += 1
-    end
     
     # --- 5. STATIC PLOT CONTROLS ---
     menu_area = layout[current_row, 1] = GridLayout()
@@ -61,17 +52,6 @@ function create_method_controls!(layout::GridLayout, manager::PlotManager)
     manager.widgets["Mode_Button"]     = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
     manager.widgets["Method_Toggle"]   = Menu(layout[1, 2:3], options = ["Methods..."], prompt = "Methods...")
     manager.widgets["Method_Apply"]    = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
-
-    colsize!(layout, 1, Relative(0.25))
-    colsize!(layout, 2, Relative(0.25))
-    colsize!(layout, 3, Relative(0.25))
-    colsize!(layout, 4, Relative(0.25))
-end
-
-function create_overwrite_controls!(layout::GridLayout, manager::PlotManager)
-    manager.widgets["Overwrite_Var"]   = Menu(layout[1, 1], options = ["-"], prompt = "Select...")
-    manager.widgets["Overwrite_Text"]  = Textbox(layout[1, 2:3], placeholder = "Val / 'default'", width = nothing) 
-    manager.widgets["Overwrite_Apply"] = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width = nothing)
 
     colsize!(layout, 1, Relative(0.25))
     colsize!(layout, 2, Relative(0.25))

@@ -75,7 +75,6 @@ mutable struct ESimData{D, DS, M} <: AbstractSimData{D, DS, M}
     domain::DomainInfo{D}
     axes::NTuple{D, Vector{Float64}}  # Unified axes for all dimensions
     u::Array{SVector{M, Float64}, D}  # The generalized spacetime tensor
-    scalars::Dict{String, Any}
     stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
 end
 
@@ -85,7 +84,6 @@ mutable struct LSimData{D, DS, M} <: AbstractSimData{D, DS, M}
     t::Vector{Float64}                # Time remains explicitly separated
     x::Vector{Vector{SVector{DS, Float64}}} # Particles ONLY use the DS dimensions!
     u::Vector{Vector{SVector{M, Float64}}}
-    scalars::Dict{String, Any}
     stats::Dict{String, Any}          # Unified storage for ALL reduced statistics
 end
 
@@ -222,5 +220,3 @@ function resolve_dynamic_function(
         return nothing
     end
 end
-
-

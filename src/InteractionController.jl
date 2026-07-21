@@ -482,7 +482,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     base_valid_axes = Observable{Vector{String}}(String[])
 
     # =========================================================================
-    # 1. Base Dropdown Options (Parameters & Spatial Dimensions)
+    # 1. Base Dropdown Options (Parameters, Physical Dimensions & Substitutes)
     # =========================================================================
     onany(plot_data_obs, base_obs, style_obs, comp_tgt_obs, w["U-Axis"].selection) do plot_data_dict, base_sel, style_sel, comp_tgt, u_sel
         @with_lock manager "Data" begin
@@ -490,41 +490,35 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
-            
-            if n_params > 0
-                manager.plot_vars[1:n_params] .= pd_first.active_param_keys
-            end
+            if n_params > 0; manager.plot_vars[1:n_params] .= pd_first.active_param_keys; end
             dim_names = manager.plot_vars
             
             _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             sim_data = _get_first_valid(pd_first)
             isnothing(sim_data) && return
             
-            # --- THE FIX: Strictly query the registry for kept dimensions ---
-            target_field = (isnothing(u_sel) || u_sel == "-" || u_sel == "disabled") ? "u" : u_sel
-            kept_syms = Tuple(IRunPDESims.get_kept_dims(Symbol(target_field), sim_data.domain.dim_keys,sim_data.domain.stat_registry))
-            
             valid_indep_axes = String[]
             for p in pd_first.active_param_keys; push!(valid_indep_axes, p); end
-            for k in kept_syms; push!(valid_indep_axes, string(k)); end
+            for k in sim_data.domain.dim_keys; push!(valid_indep_axes, string(k)); end
             
-            # --- THE FIX: Inject Substitute Stats ---
+            # --- Inject Valid Substitute Axes ---
             for k in keys(sim_data.stats)
                 stat_dims = IRunPDESims.get_kept_dims(Symbol(k), sim_data.domain.dim_keys, sim_data.domain.stat_registry)
-                
-                # 1. No params? Allow Series ([:t]) to substitute Time
-                if n_params == 0 && stat_dims == [LAGRANGIAN_TIME_DIM[]]
-                    push!(valid_indep_axes, string(k))
-                # 2. Params exist? Allow Static Stats (empty) to substitute the Parameter
-                elseif n_params > 0 && isempty(stat_dims)
-                    push!(valid_indep_axes, string(k))
+                if isempty(stat_dims)
+                    # 0D Stat -> Can substitute ANY varied parameter
+                    for p in pd_first.active_param_keys
+                        push!(valid_indep_axes, "$k|$p")
+                    end
+                elseif length(stat_dims) == 1
+                    # 1D Stat -> Can substitute its exact physical dimension (e.g. t)
+                    push!(valid_indep_axes, "$k|$(stat_dims[1])")
                 end
             end
             
             base_valid_axes[] = valid_indep_axes
             
-            # Populate Component Options
-            target_tensor = get(sim_data.stats, target_field, sim_data.u)
+            target_field = (isnothing(u_sel) || u_sel == "-" || u_sel == "disabled") ? "Solution" : u_sel
+            target_tensor = get(sim_data.stats, target_field, sim_data.stats["Solution"])
             comp_max = length(eltype(target_tensor))
             
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
@@ -537,13 +531,10 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             anim_options = Any[("None", "None")]
             for i in 1:length(dim_names)
                 ax_name = dim_names[i]
-                is_param = i <= n_params
-                
-                if is_param && length(pd_first.active_param_values[i]) > 1
+                if i <= n_params && length(pd_first.active_param_values[i]) > 1
                     push!(anim_options, (nice_string(ax_name), ax_name))
-                elseif !is_param && ax_name in valid_indep_axes
-                    nice_ax = get(DIM_LABELS[], Symbol(ax_name), nice_string(ax_name))
-                    push!(anim_options, (nice_ax, ax_name))
+                elseif i > n_params && ax_name in valid_indep_axes
+                    push!(anim_options, (get(DIM_LABELS[], Symbol(ax_name), nice_string(ax_name)), ax_name))
                 end
             end
             
@@ -553,19 +544,27 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     end
 
     # =========================================================================
-    # 1.5 Cascading Hierarchy: Dimension Enforcement (1D/2D Disabling)
+    # 1.5 Cascading Hierarchy: Dimension Enforcement
     # =========================================================================
     onany(base_valid_axes, x_sel, y_sel, base_obs, style_obs) do valid_axes, x_val, y_val, base_sel, style_sel
         (isempty(valid_axes) || isnothing(x_val)) && return
-        
         ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
         p_dim = PLOT_DIM_MAP[ptype]
         
-        function build_axis_opts(excluded)
+        function build_axis_opts(excluded_strs)
+            excluded_loops = [occursin("|", ex) ? String(split(ex, "|")[2]) : ex for ex in excluded_strs]
+            
             opts = Any[]
             for ax in valid_axes
-                ax in excluded && continue
-                if ax in manager.plot_vars && ax ∉ string.(ALLOWED_PLOT_DIMS[])
+                loop_dim = occursin("|", ax) ? String(split(ax, "|")[2]) : ax
+                # Prevent dimensional collision (e.g. plotting 'N' against 'Runtime|N')
+                loop_dim in excluded_loops && continue
+                
+                if occursin("|", ax)
+                    stat_name = String(split(ax, "|")[1])
+                    nice_name = "$(nice_string(stat_name)) (over $(nice_string(loop_dim)))"
+                    push!(opts, (nice_name, ax))
+                elseif ax in manager.plot_vars && ax ∉ string.(ALLOWED_PLOT_DIMS[])
                     push!(opts, (nice_string(ax), ax))
                 else
                     push!(opts, (get(DIM_LABELS[], Symbol(ax), nice_string(ax)), ax))
@@ -575,7 +574,6 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         end
         
         update_menu_safe!(w["X-Axis"], build_axis_opts([]), force_notify=false)
-        
         if p_dim >= 2
             update_menu_safe!(w["Y-Axis"], build_axis_opts([x_val]), force_notify=false)
         else
@@ -583,7 +581,6 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         end
         
         curr_y = w["Y-Axis"].selection[]
-        
         if p_dim >= 3
             update_menu_safe!(w["Z-Axis"], build_axis_opts([x_val, curr_y]), force_notify=false)
         else
@@ -603,33 +600,33 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         isnothing(sim_data) && return
         
         axes_set = Set{Int}()
-        for val in [x_val, y_val, z_val]
-            if !isnothing(val) && val != "-" && val != "disabled"
-                idx = findfirst(isequal(val), manager.plot_vars)
-                !isnothing(idx) && push!(axes_set, idx)
-            end
+        active_axes_strs = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_val, y_val, z_val])
+        active_loop_dims = String[]
+        
+        for val in active_axes_strs
+            loop_dim = occursin("|", val) ? String(split(val, "|")[2]) : val
+            push!(active_loop_dims, loop_dim)
+            
+            idx = findfirst(isequal(loop_dim), manager.plot_vars)
+            !isnothing(idx) && push!(axes_set, idx)
         end
         
-        # Determine which PHYSICAL dimensions are requested for plotting
-        active_axes_strs = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_val, y_val, z_val])
-        active_physical_axes = filter(a -> a in string.(sim_data.domain.dim_keys), active_axes_strs)
-        
+        active_physical_axes = filter(a -> a in string.(sim_data.domain.dim_keys), active_loop_dims)
         valid_fields = String[]
         
-        # A variable can only be plotted if it keeps ALL of the active physical dimensions
         if issubset(active_physical_axes, string.(sim_data.domain.dim_keys))
-            push!(valid_fields, "u")
+            push!(valid_fields, "Solution")
         end
         
         for k in keys(sim_data.stats)
-            kept_syms = IRunPDESims.get_kept_dims(Symbol(k), sim_data.domain.dim_keys,sim_data.domain.stat_registry)
+            kept_syms = IRunPDESims.get_kept_dims(Symbol(k), sim_data.domain.dim_keys, sim_data.domain.stat_registry)
             if issubset(active_physical_axes, string.(kept_syms))
                 push!(valid_fields, string(k))
             end
         end
         
         sort!(valid_fields)
-        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["u", "v", "rho", "p"], force_notify=false)
+        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["Solution"], force_notify=false)
         
         active_axes_obs.val = collect(axes_set)
         
@@ -639,6 +636,9 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     end
     
     # =========================================================================
+    # 3. Slider Range Adjustments & Disabling Active/Integrated Sliders
+    # =========================================================================
+# =========================================================================
     # 3. Slider Range Adjustments & Disabling Active/Integrated Sliders
     # =========================================================================
     onany(active_axes_obs, plot_data_obs, w["U-Axis"].selection) do active_axes, plot_data_dict, u_val
@@ -653,14 +653,20 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         sim_data = _get_first_valid(pd_first)
         isnothing(sim_data) && return
         
-        target_field = (isnothing(u_val) || u_val == "-" || u_val == "disabled") ? "u" : u_val
-        kept_syms = Tuple(IRunPDESims.get_kept_dims(Symbol(target_field), sim_data.domain.dim_keys,sim_data.domain.stat_registry))
+        # --- THE FIX: Deprecated "u" check removed. Defaults directly to "Solution" ---
+        target_field = (isnothing(u_val) || u_val == "-" || u_val == "disabled") ? "Solution" : u_val
+        
+        # Look up exactly what physical dimensions this field keeps
+        kept_syms = Tuple(IRunPDESims.get_kept_dims(Symbol(target_field), sim_data.domain.dim_keys, sim_data.domain.stat_registry))
 
         for i in 1:total_dims
             dim_name = dim_names[i]
+            
+            # `active_axes` natively holds the indices of the parsed Loop Dimensions!
+            # If this parameter/dimension is driving the iteration loop, it becomes an axis.
             is_axis = i in active_axes
             
-            # --- THE FIX: Disable slider if dimension was integrated out ---
+            # Check if a physical dimension was integrated out by the active statistic
             is_physically_disabled = false
             if i > n_params
                 sym = Symbol(dim_name)
@@ -673,12 +679,13 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             haskey(w, widget_key) || continue
             ctrl = w[widget_key]
             
-            # Collapse slider if it's plotted on an axis or integrated out
+            # Collapse slider to a single placeholder point if it's plotting or disabled
             if is_axis || is_physically_disabled
                 ctrl.range[] = [0.0] 
                 continue
             end
             
+            # Otherwise, gather the global range for this free variable across all methods
             g_min, g_max = Inf, -Inf
             for pd in values(plot_data_dict)
                 vals = nothing

@@ -418,8 +418,13 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         manager.triggers["Primitive_Rebuild"][] += 1
     end
     
+    onany(manager.widgets["Base_Plot"].selection,manager.widgets["Plot_Style"].selection) do _,_
+        manager.locks["Layout"] = true
+    end
+
     on(manager.widgets["Layout_Apply"].clicks) do _
         if manager.state["Config_Just_Loaded"][]; return; end
+        manager.locks["Layout"] = false
         manager.triggers["Layout_Update"][] += 1
     end
 

@@ -40,15 +40,15 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_func; kwargs...)
     u_ana = isnothing(ref_func) ? generate_nan_reference(sim_data) : generate_analytical_reference(sim_data, ref_func)
     
     # 2. Process all registered statistics dynamically
-    for (stat_name, kept_dims) in STAT_REGISTRY
+    for (stat_name, kept_dims) in sim_data.domain.stat_registry
+        if stat_name == :Solution; continue end
         res = _calc_stat!(sim_data, u_ana, stat_name)
         if !isnothing(res)
             sim_data.stats[String(stat_name)] = res
         end
     end
-    
     # 3. Cleanup and Save
-    remove_nan_stats!(sim_data.stats)
+    #remove_nan_stats!(sim_data.stats)
     saveSimData(sim_data; overwrite=true)
 end
 

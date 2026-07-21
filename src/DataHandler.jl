@@ -80,41 +80,69 @@ end
 # ==============================================================================
 # --- DATA EXTRACTION (On-The-Fly Cross-Plotting) ---
 # ==============================================================================
-
 function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, active_plot_axes, u_key, target_c)
     valid_sims = filter(!isnothing, pd.data)
     isempty(valid_sims) && return nothing
     ref_sim = first(valid_sims)
     
+    active_loop_dims = String[]
     plot_axes_data = Any[]
     ax_lengths = Int[]
     
-    # 1. Build Target Axes
+    # 1. Parse Substitutes and Build Target Axes
     for ax_str in active_plot_axes
-        p_idx = findfirst(isequal(ax_str), pd.active_param_keys)
-        if !isnothing(p_idx)
-            push!(plot_axes_data, pd.active_param_values[p_idx])
-            push!(ax_lengths, length(pd.active_param_values[p_idx]))
-        else
-            d_idx = findfirst(==(Symbol(ax_str)), ref_sim.domain.dim_keys)
-            if !isnothing(d_idx)
-                push!(plot_axes_data, ref_sim.axes[d_idx])
-                push!(ax_lengths, length(ref_sim.axes[d_idx]))
+        stat_name, loop_dim = occursin("|", ax_str) ? String.(split(ax_str, "|")) : (ax_str, ax_str)
+        push!(active_loop_dims, loop_dim)
+        
+        if stat_name == loop_dim
+            # Standard Parameter or Physical Dimension lookup
+            p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
+            if !isnothing(p_idx)
+                push!(plot_axes_data, pd.active_param_values[p_idx])
+                push!(ax_lengths, length(pd.active_param_values[p_idx]))
             else
-                push!(plot_axes_data, [0.0])
-                push!(ax_lengths, 1)
+                d_idx = findfirst(==(Symbol(loop_dim)), ref_sim.domain.dim_keys)
+                if !isnothing(d_idx)
+                    push!(plot_axes_data, ref_sim.axes[d_idx])
+                    push!(ax_lengths, length(ref_sim.axes[d_idx]))
+                else
+                    push!(plot_axes_data, [0.0]); push!(ax_lengths, 1)
+                end
             end
+        else
+            # Substitute Statistic Lookup (e.g. Runtime over N)
+            stat_vec = Float64[]
+            p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
+            
+            if !isnothing(p_idx)
+                for i in 1:length(pd.active_param_values[p_idx])
+                    curr_p = Any[param_indices...]
+                    curr_p[p_idx] = i
+                    sim = pd.data[curr_p...]
+                    val = isnothing(sim) || !haskey(sim.stats, stat_name) ? NaN : Float64(sim.stats[stat_name][1])
+                    push!(stat_vec, val)
+                end
+            else
+                sim = pd.data[param_indices...]
+                if isnothing(sim) || !haskey(sim.stats, stat_name)
+                    push!(stat_vec, NaN)
+                else
+                    append!(stat_vec, map(v -> Float64(v[1]), sim.stats[stat_name]))
+                end
+            end
+            push!(plot_axes_data, stat_vec)
+            push!(ax_lengths, length(stat_vec))
         end
     end
     
     u_out = Array{Float64}(undef, Tuple(ax_lengths)...)
     fill!(u_out, NaN)
     
-    # 2. Populate Point-by-Point
+    # 2. Populate Point-by-Point mapping against `active_loop_dims`
     for I in CartesianIndices(u_out)
         curr_param_idx = Any[param_indices...]
-        for (dim_out, ax_str) in enumerate(active_plot_axes)
-            p_idx = findfirst(isequal(ax_str), pd.active_param_keys)
+        for (dim_out, loop_dim) in enumerate(active_loop_dims)
+            p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
             if !isnothing(p_idx)
                 curr_param_idx[p_idx] = I[dim_out]
             end
@@ -123,30 +151,37 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         sim_data = pd.data[curr_param_idx...]
         isnothing(sim_data) && continue
         
-        target_tensor = get(sim_data.stats, u_key, nothing)
-        isnothing(target_tensor) && return nothing
-
-        # Look up native dimensions securely using the local registry!
-        tensor_dim_syms = Tuple(get_kept_dims(Symbol(u_key), sim_data.domain.dim_keys, sim_data.domain.stat_registry))
+        tensor = u_key == "Solution" ? sim_data.u : get(sim_data.stats, u_key, nothing)
+        isnothing(tensor) && continue
         
+        tensor_dim_syms = u_key == "Solution" ? sim_data.domain.dim_keys : Tuple(IRunPDESims.get_kept_dims(Symbol(u_key), sim_data.domain.dim_keys, sim_data.domain.stat_registry))
+        
+        in_bounds = true
         tensor_indices = ntuple(ndims(tensor)) do d
             dim_str = string(tensor_dim_syms[d])
-            out_idx = findfirst(isequal(dim_str), active_plot_axes)
+            out_idx = findfirst(isequal(dim_str), active_loop_dims)
             
             if !isnothing(out_idx)
-                return I[out_idx] # Dimension is actively plotted, use loop index
+                idx = I[out_idx]
+                # THE FIX: Protect against crashed simulations with shorter arrays
+                if idx > size(tensor, d); in_bounds = false; return 1; end
+                return idx
             else
                 var_idx = findfirst(isequal(dim_str), plot_vars)
-                if isnothing(var_idx); return 1; end
+                if isnothing(var_idx); in_bounds = false; return 1; end
                 
                 target_val = sel_vals[var_idx]
                 axis_idx = findfirst(==(tensor_dim_syms[d]), sim_data.domain.dim_keys)
-                return findmin(v -> abs(v - target_val), sim_data.axes[axis_idx])[2]
+                idx = findmin(v -> abs(v - target_val), sim_data.axes[axis_idx])[2]
+                if idx > size(tensor, d); in_bounds = false; return 1; end
+                return idx
             end
         end
         
-        u_raw = tensor[tensor_indices...]
-        u_out[I] = target_c isa Integer ? Float64(u_raw[target_c]) : Float64(u_raw[1])
+        if in_bounds
+            u_raw = tensor[tensor_indices...]
+            u_out[I] = target_c isa Integer ? Float64(u_raw[target_c]) : Float64(u_raw[1])
+        end
     end
     
     return Tuple(plot_axes_data), u_out

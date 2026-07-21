@@ -82,7 +82,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
+        cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         
         c  = ui_app["colors"][][mod1(m_idx, end)]
         ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
@@ -111,7 +111,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[m_idx]
         cache.obs_y.val = ys_slices[m_idx]
-        cache.obs_u[]   = us_slices[m_idx]
+        cache.obs_u.val   = us_slices[m_idx]
 
         color = ui_app["colors"][][mod1(m_idx, length(ui_app["colors"][]))]
         lw    = ui_app["line_width"][]
@@ -137,7 +137,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache.obs_x.val = xs[base_idx]
     cache.obs_y.val = ys[base_idx]
-    cache.obs_u[]   = us[base_idx]
+    cache.obs_u.val   = us[base_idx]
 
     valid_u = filter(isfinite, us[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -163,7 +163,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     X, Y, U = build_2d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
-    cache.obs_u[]   = U
+    cache.obs_u.val   = U
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -185,7 +185,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
-    cache.obs_u[]   = us_slices[base_idx]
+    cache.obs_u.val   = us_slices[base_idx]
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -218,7 +218,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     base_cache = EulerianPlotCache()
     base_cache.obs_x.val = xs_slices[base_idx]
     base_cache.obs_y.val = ys_slices[base_idx]
-    base_cache.obs_u[]   = us_slices[base_idx]
+    base_cache.obs_u.val   = us_slices[base_idx]
 
     cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"][], levels=lvl_range, rasterize=rast_val)
     base_cache.primitives[:contourf] = cf
@@ -233,7 +233,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[i]
         cache.obs_y.val = ys_slices[i]
-        cache.obs_u[]   = us_slices[i]
+        cache.obs_u.val   = us_slices[i]
         
         color = ui_app["colors"][][mod1(i, end)]
         lw = ui_app["line_width"][]
@@ -260,7 +260,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
-    cache.obs_u[]   = us_slices[base_idx]
+    cache.obs_u.val   = us_slices[base_idx]
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -280,7 +280,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = LagrangianPlotCache()
     cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u[]     = us_slices[base_idx]
+    cache.obs_u.val     = us_slices[base_idx]
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -313,7 +313,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.obs_x.val = extrema(x_data)
     cache.obs_y.val = extrema(y_data)
     cache.obs_z.val = extrema(z_data)
-    cache.obs_u[]   = u_data
+    cache.obs_u.val   = u_data
     
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -339,7 +339,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.obs_x.val = X
     cache.obs_y.val = Y
     cache.obs_z.val = Z
-    cache.obs_u[]   = U
+    cache.obs_u.val   = U
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -368,7 +368,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = LagrangianPlotCache()
     cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u[]     = us_slices[base_idx]
+    cache.obs_u.val     = us_slices[base_idx]
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -390,7 +390,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = LagrangianPlotCache()
     cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u[]     = us_slices[base_idx]
+    cache.obs_u.val     = us_slices[base_idx]
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
@@ -419,10 +419,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
     if is_eul
         cache.obs_x.val = _unwrap_1tuples(xs_slices[base_idx])
-        cache.obs_u[]   = _unwrap_1tuples(us_slices[base_idx])
+        cache.obs_u.val   = _unwrap_1tuples(us_slices[base_idx])
     else
         cache.obs_pts.val = _unwrap_1tuples(xs_slices[base_idx])
-        cache.obs_u[]     = _unwrap_1tuples(us_slices[base_idx])
+        cache.obs_u.val     = _unwrap_1tuples(us_slices[base_idx])
     end
 
     valid_u = filter(isfinite, cache.obs_u[])
@@ -447,10 +447,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
         if is_eul
             cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         else
             cache.obs_pts.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u[]     = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
         end
 
         c   = ui_app["colors"][][mod1(m_idx, end)]
@@ -479,10 +479,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
         if is_eul
             cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u[]   = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         else
             cache.obs_pts.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u[]     = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
         end
         
         c   = ui_app["colors"][][mod1(m_idx, end)]
@@ -519,8 +519,9 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::P
             
             # We no longer need (D == 1) checks here, DataExtraction handles it natively!
             cache.obs_pts.val = _unwrap_1tuples(pts_slices[m_idx])
-            cache.obs_u[]     = _unwrap_1tuples(us_slices[m_idx])
-        end
+            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
+            notify(cache.obs_u)
+        end        
     elseif first_cache isa EulerianPlotCache
         _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, Val(D))
     end
