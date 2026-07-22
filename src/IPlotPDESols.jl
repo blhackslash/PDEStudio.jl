@@ -7,8 +7,8 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using IRunPDESims 
 
-# Export UI specific methods
-export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!
+# Export the new configuration setter
+export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!
 
 const NestedObsDict = Dict{String, Dict{String, Observable}}
 
@@ -19,6 +19,16 @@ const NestedObsDict = Dict{String, Dict{String, Observable}}
 # The predefined dimensions the Makie UI will allocate sliders for.
 const ALLOWED_PLOT_DIMS = Ref{Tuple{Vararg{Symbol}}}((:x, :y, :z, :t))
 
+# NEW: The maximum number of varied parameter sliders to generate
+const MAX_SUPPORTED_PARAMS = Ref{Int}(2)
+
+
+"""
+    set_max_params!(n::Int)
+
+Configures the maximum number of varied parameter sliders generated in the UI.
+"""
+set_max_params!(n::Int) = (MAX_SUPPORTED_PARAMS[] = n)
 
 # Display labels for the generated UI sliders
 const DIM_LABELS = Ref{Dict{Symbol, String}}(Dict(

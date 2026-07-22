@@ -73,11 +73,10 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr, 1:3], "Layout Options", fontsize=16, font=:bold, color=:darkred)
     push!(gaps, 5); cr += 1
     
-    # Dynamically build Compare Targets
-    compare_opts = String["None", "Methods", "Component"]
+    compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
+    size_opts = Any[("$i", i) for i in 100:100:1000]
     
-    base_opts = PLOT_MODE[] == :eulerian ? ["Lines", "Scatter", "Contour", "Heatmap", "Volume"] : ["Scatter"]
-    size_opts = [string(i) for i in 100:100:1000]
+    base_opts = PLOT_MODE[] == :eulerian ? Any[("Lines", :lines), ("Scatter", :scatter), ("Contour", :contour), ("Heatmap", :heatmap), ("Volume", :volume)] : Any[("Scatter", :scatter)]
 
     # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
     Label(menu_layout[cr,1], "Base Plot", font=:bold, color=:teal)
@@ -87,7 +86,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 
     manager.widgets["Base_Plot"]   = Menu(menu_layout[cr,1], options = base_opts)
     manager.widgets["Plot_Width"]  = Menu(menu_layout[cr,2], options = size_opts)
-    manager.widgets["Legend_Base"] = Menu(menu_layout[cr,3], options = ["none", "center", "left", "right", "top", "bottom"])
+    manager.widgets["Legend_Base"] = Menu(menu_layout[cr,3], options = Any[("none", :none), ("center", :center), ("left", :left), ("right", :right), ("top", :top), ("bottom", :bottom)])
     push!(gaps, 10); cr += 1
 
     # --- ROW BLOCK 2: Plot, Size, and Legend (Modifiers) ---
@@ -96,9 +95,9 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = ["1D", "2D", "3D"])
+    manager.widgets["Plot_Style"]  = Menu(menu_layout[cr,1], options = Any[("1D", :one_d), ("2D", :two_d), ("3D", :three_d)])
     manager.widgets["Plot_Height"] = Menu(menu_layout[cr,2], options = size_opts)
-    manager.widgets["Legend_Add"]  = Menu(menu_layout[cr,3], options = ["none", "detached", "left", "right", "top", "bottom"])
+    manager.widgets["Legend_Add"]  = Menu(menu_layout[cr,3], options = Any[("none", :none), ("detached", :detached), ("left", :left), ("right", :right), ("top", :top), ("bottom", :bottom)])
     push!(gaps, 15); cr += 1
 
     # --- ROW BLOCK 3: Comparisons ---
@@ -108,8 +107,8 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     push!(gaps, 2); cr += 1
 
     manager.widgets["Compare_Target"]  = Menu(menu_layout[cr,1], options = compare_opts)
-    manager.widgets["Compare_Columns"] = Menu(menu_layout[cr,2], options = ["1", "2", "3", "4", "5"])
-    manager.widgets["Compare_Link"]    = Menu(menu_layout[cr,3], options = ["Fully Coupled", "Coupled Colorbar", "Decoupled"])
+    manager.widgets["Compare_Columns"] = Menu(menu_layout[cr,2], options = Any[("$i", i) for i in 1:5])
+    manager.widgets["Compare_Link"]    = Menu(menu_layout[cr,3], options = Any[("Fully Coupled", :fully_coupled), ("Coupled Colorbar", :coupled_colorbar), ("Decoupled", :decoupled)])
 
     push!(gaps, 25); cr += 1
 
@@ -125,9 +124,9 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Z-Axis", font=:bold)
     push!(gaps, 2); cr += 1
 
-    manager.widgets["X-Axis"] = Menu(menu_layout[cr,1], options = ["-"])
-    manager.widgets["Y-Axis"] = Menu(menu_layout[cr,2], options = ["disabled"])
-    manager.widgets["Z-Axis"] = Menu(menu_layout[cr,3], options = ["disabled"])
+    manager.widgets["X-Axis"] = Menu(menu_layout[cr,1], options = Any[("-", :None)])
+    manager.widgets["Y-Axis"] = Menu(menu_layout[cr,2], options = Any[("disabled", :None)])
+    manager.widgets["Z-Axis"] = Menu(menu_layout[cr,3], options = Any[("disabled", :None)])
     push!(gaps, 10); cr += 1
 
     # --- ROW BLOCK 6: Rest ---
@@ -136,9 +135,9 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Component", font=:bold)
     push!(gaps, 2); cr += 1
 
-    manager.widgets["U-Axis"]      = Menu(menu_layout[cr,1], options = ["-"])
-    manager.widgets["Anim_Target"] = Menu(menu_layout[cr,2], options = [("None", "None")])
-    manager.widgets["c"]           = Menu(menu_layout[cr,3], options = ["1"])
+    manager.widgets["U-Axis"]      = Menu(menu_layout[cr,1], options = Any[("-", :None)])
+    manager.widgets["Anim_Target"] = Menu(menu_layout[cr,2], options = Any[("None", :None)])
+    manager.widgets["c"]           = Menu(menu_layout[cr,3], options = Any[("1", 1)])
 
     # --- APPLY GAPS & SPACING ---
     for i in 1:3; colsize!(menu_layout, i, Relative(1/3)); end
@@ -151,7 +150,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     # =========================================================================
     slider_row = 0
     
-    for i in 1:3 
+    for i in 1:MAX_SUPPORTED_PARAMS[] 
         p_key = "param_$i"
         lbl_text = Observable("Param $i:")
         manager.widgets["$(p_key)_Label"] = lbl_text
@@ -164,10 +163,11 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
         slider_row += 1
     end
 
-    for p in ["x", "y", "z", "t"]
-        Label(slider_layout[slider_row, 1], "$p:", halign=:right)
+    for p_sym in get_base_variables()
+        p_str = string(p_sym)
+        Label(slider_layout[slider_row, 1], "$p_str:", halign=:right)
         sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
-        manager.widgets[p] = sl
+        manager.widgets[p_str] = sl
         
         Label(slider_layout[slider_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), sl.value), halign=:left)
         slider_row += 1

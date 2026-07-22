@@ -246,19 +246,20 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     animation_timer = manager.state["Animation_Timer"]
 
     function get_target_widget(target_name)
-        target_name == "None" && return nothing
-        rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
-        w_key = haskey(rev_map, target_name) ? rev_map[target_name] : target_name
+        target_name == :None && return nothing
+        target_str = string(target_name)
+        rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
+        w_key = haskey(rev_map, target_name) ? rev_map[target_name] : target_str
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
 
     function check_selection_validity(target_name)
-        if isnothing(target_name) || target_name == "None"
+        if isnothing(target_name) || target_name == :None
             @warn "Export Error: No target selected."
             return false 
         end
         
-        idx = findfirst(isequal(Symbol(target_name)), manager.plot_vars)
+        idx = findfirst(isequal(target_name), manager.plot_vars)
         if !isnothing(idx) && idx in manager.state["Active_Axes"][]
             @warn "Cannot animate an active plot axis."
             return false 
@@ -469,7 +470,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     on(base_obs) do base_type
         isnothing(base_type) && return
         active_dict = PLOT_MODE[] == :lagrangian ? LAGRANGIAN_PLOT_STYLE_OPTIONS : EULERIAN_PLOT_STYLE_OPTIONS
-        valid_styles = get(active_dict, base_type, ["1D"])
+        valid_styles = get(active_dict, base_type, [:one_d])
         update_menu_safe!(w["Plot_Style"], valid_styles)
         notify(manager.widgets["Editor_Scope"].selection)
     end
@@ -479,7 +480,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
     end
 
     active_axes_obs = manager.state["Active_Axes"]
-    base_valid_axes = Observable{Vector{String}}(String[])
+    base_valid_axes = Observable{Vector{Symbol}}(Symbol[])
 
     # =========================================================================
     # 1. Base Dropdown Options (Parameters, Physical Dimensions & Substitutes)
@@ -491,74 +492,64 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
             if n_params > 0; manager.plot_vars[1:n_params] .= Symbol.(pd_first.active_param_keys); end
-            dim_names = manager.plot_vars # Now a Vector{Symbol}
+            dim_names = manager.plot_vars
             
             _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             sim_data = _get_first_valid(pd_first)
             isnothing(sim_data) && return
             
-            valid_indep_axes = String[]
-            for p in pd_first.active_param_keys; push!(valid_indep_axes, p); end
-            for k in sim_data.domain.dim_keys; push!(valid_indep_axes, string(k)); end
+            valid_indep_axes = Symbol[]
+            for p in pd_first.active_param_keys; push!(valid_indep_axes, Symbol(p)); end
+            for k in sim_data.domain.dim_keys; push!(valid_indep_axes, k); end
             
             # --- Inject Valid Substitute Axes ---
             for k in keys(sim_data.stats)
                 k === :Solution && continue
                 stat_dims = IRunPDESims.get_kept_dims(k, sim_data.domain)
                 if isempty(stat_dims)
-                    # 0D Stat -> Can substitute ANY varied parameter
                     for p in pd_first.active_param_keys
-                        push!(valid_indep_axes, "$(String(k))|$p")
+                        push!(valid_indep_axes, Symbol("$(String(k))|$p"))
                     end
                 elseif length(stat_dims) == 1
-                    # 1D Stat -> Can substitute its exact physical dimension (e.g. t)
-                    push!(valid_indep_axes, "$(String(k))|$(stat_dims[1])")
+                    push!(valid_indep_axes, Symbol("$(String(k))|$(stat_dims[1])"))
                 end
             end
             
             base_valid_axes[] = valid_indep_axes
             
-            # THE FIX: Cast UI string to Symbol, fallback cleanly
-            target_field = (isnothing(u_sel) || u_sel == "-" || u_sel == "disabled") ? "Solution" : u_sel
-            target_tensor = get(sim_data.stats, Symbol(target_field), sim_data.stats[:Solution])
+            target_field = (isnothing(u_sel) || u_sel == :None) ? :Solution : u_sel
+            target_tensor = get(sim_data.stats, target_field, sim_data.stats[:Solution])
             comp_max = length(eltype(target_tensor))
             
             comp_names_tuple = manager.ui["Labels"]["comp_names"][]
             c_options = Any[]
             for i in 1:comp_max
                 name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
-                push!(c_options, (name, string(i)))
+                push!(c_options, (name, i)) # THE FIX: Values are pure Integers
             end
             
-            anim_options = Any[("None", "None")]
+            anim_options = Any[("None", :None)]
             for i in 1:length(dim_names)
                 ax_sym = dim_names[i]
-                ax_str = String(ax_sym) # Convert to string for UI logic
+                ax_str = String(ax_sym)
                 if i <= n_params && length(pd_first.active_param_values[i]) > 1
-                    push!(anim_options, (nice_string(ax_str), ax_str))
-                elseif i > n_params && ax_str in valid_indep_axes
-                    push!(anim_options, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_str))
+                    push!(anim_options, (nice_string(ax_str), ax_sym))
+                elseif i > n_params && ax_sym in valid_indep_axes
+                    push!(anim_options, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
                 end
             end
             
-            update_menu_safe!(w["c"], c_options; fallbacks=["1"])
-            update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
+            update_menu_safe!(w["c"], c_options; fallbacks=[1])
+            update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=[:None])
 
-            compare_opts = Any["None", "Methods", "Component"]
-        
-            # Check if time dimension exists in the domain
+            compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
             if !isnothing(sim_data.domain.time_dim)
-                push!(compare_opts, "Time")
+                push!(compare_opts, ("Time", :Time))
             end
-
-            # Add all active parameter keys
             for p_key in pd_first.active_param_keys
-                push!(compare_opts, p_key)
+                push!(compare_opts, (string(p_key), Symbol(p_key)))
             end
-
-            # Safely update the menu options without resetting the user's current choice if it's still valid
-            update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=["None"], force_notify=false)
-
+            update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=[:None], force_notify=false)
         end
     end
 
@@ -570,39 +561,43 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
         p_dim = PLOT_DIM_MAP[ptype]
         
-        function build_axis_opts(excluded_strs)
-            excluded_loops = [occursin("|", ex) ? String(split(ex, "|")[2]) : ex for ex in excluded_strs]
+        function build_axis_opts(excluded_syms)
+            excluded_loops = [occursin("|", string(ex)) ? Symbol(split(string(ex), "|")[2]) : ex for ex in excluded_syms]
             
             opts = Any[]
-            for ax in valid_axes
-                loop_dim = occursin("|", ax) ? String(split(ax, "|")[2]) : ax
+            for ax_sym in valid_axes
+                ax_str = string(ax_sym)
+                loop_dim = occursin("|", ax_str) ? Symbol(split(ax_str, "|")[2]) : ax_sym
+                
                 loop_dim in excluded_loops && continue
                 
-                if occursin("|", ax)
-                    stat_name = String(split(ax, "|")[1])
-                    nice_name = "$(nice_string(stat_name)) (over $(nice_string(loop_dim)))"
-                    push!(opts, (nice_name, ax))
-                elseif Symbol(ax) in manager.plot_vars && Symbol(ax) ∉ ALLOWED_PLOT_DIMS[]
-                    push!(opts, (nice_string(ax), ax))
+                if occursin("|", ax_str)
+                    stat_name = split(ax_str, "|")[1]
+                    nice_name = "$(nice_string(stat_name)) (over $(nice_string(string(loop_dim))))"
+                    push!(opts, (nice_name, ax_sym))
+                elseif ax_sym in manager.plot_vars && ax_sym ∉ ALLOWED_PLOT_DIMS[]
+                    push!(opts, (nice_string(ax_str), ax_sym))
                 else
-                    push!(opts, (get(DIM_LABELS[], Symbol(ax), nice_string(ax)), ax))
+                    push!(opts, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
                 end
             end
-            return isempty(opts) ? ["disabled"] : opts
+            return isempty(opts) ? Any[("disabled", :None)] : opts
         end
         
-        update_menu_safe!(w["X-Axis"], build_axis_opts([]), force_notify=false)
+        base_vars = get_base_variables()
+        
+        update_menu_safe!(w["X-Axis"], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
         if p_dim >= 2
-            update_menu_safe!(w["Y-Axis"], build_axis_opts([x_val]), force_notify=false)
+            update_menu_safe!(w["Y-Axis"], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
         else
-            update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
         end
         
         curr_y = w["Y-Axis"].selection[]
         if p_dim >= 3
-            update_menu_safe!(w["Z-Axis"], build_axis_opts([x_val, curr_y]), force_notify=false)
+            update_menu_safe!(w["Z-Axis"], build_axis_opts([x_val, curr_y]); fallbacks=base_vars, force_notify=false)
         else
-            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"], force_notify=false)
+            update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
         end
     end
 
@@ -618,126 +613,119 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         isnothing(sim_data) && return
         
         axes_set = Set{Int}()
-        active_axes_strs = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_val, y_val, z_val])
-        active_loop_dims = String[]
+        active_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_val, y_val, z_val])
+        active_loop_dims = Symbol[]
         
-        for val in active_axes_strs
-            loop_dim = occursin("|", val) ? String(split(val, "|")[2]) : val
+        for val in active_axes_syms
+            loop_dim = occursin("|", string(val)) ? Symbol(split(string(val), "|")[2]) : val
             push!(active_loop_dims, loop_dim)
-            
-            # Cast to Symbol!
-            idx = findfirst(isequal(Symbol(loop_dim)), manager.plot_vars)
+            idx = findfirst(isequal(loop_dim), manager.plot_vars)
             !isnothing(idx) && push!(axes_set, idx)
         end
         
-        active_physical_axes = filter(a -> a in string.(sim_data.domain.dim_keys), active_loop_dims)
-        valid_fields = String[]
+        active_physical_axes = filter(a -> a in sim_data.domain.dim_keys, active_loop_dims)
+        valid_fields = Any[]
         
-        # THE FIX: Safely check dimensions using strict strings
-        if issubset(active_physical_axes, string.(sim_data.domain.dim_keys))
-            push!(valid_fields, "Solution")
+        if issubset(active_physical_axes, sim_data.domain.dim_keys)
+            push!(valid_fields, ("Solution", :Solution))
         end
         
         for k in keys(sim_data.stats)
             k === :Solution && continue
             kept_syms = IRunPDESims.get_kept_dims(k, sim_data.domain)
-            if issubset(active_physical_axes, string.(kept_syms))
-                push!(valid_fields, string(k))
+            if issubset(active_physical_axes, kept_syms)
+                push!(valid_fields, (string(k), k))
             end
         end
         
-        sort!(valid_fields)
-        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["Solution"], force_notify=false)
+        sort!(valid_fields, by = x -> x[1])
+        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=[:Solution], force_notify=false)
         
-        active_axes_obs.val = collect(axes_set)
-        
-        if !manager.state["Config_Just_Loaded"][]
-            notify(active_axes_obs)
-        end
+        active_axes_obs[] = collect(axes_set)
     end
     
     # =========================================================================
     # 3. Slider Range Adjustments & Disabling Active/Integrated Sliders
     # =========================================================================
     onany(active_axes_obs, plot_data_obs, w["U-Axis"].selection) do active_axes, plot_data_dict, u_val
-        isempty(plot_data_dict) && return
+        @with_lock manager "Data" begin
+            isempty(plot_data_dict) && return
 
-        dim_names = manager.plot_vars
-        total_dims = length(dim_names)
-        n_params = total_dims - length(get_base_variables())
-        
-        pd_first = first(values(plot_data_dict))
-        _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
-        sim_data = _get_first_valid(pd_first)
-        isnothing(sim_data) && return
-        
-        target_field = (isnothing(u_val) || u_val == "-" || u_val == "disabled") ? "Solution" : u_val
-        kept_syms = Tuple(IRunPDESims.get_kept_dims(Symbol(target_field), sim_data.domain))
+            dim_names = manager.plot_vars
+            total_dims = length(dim_names)
+            n_params = total_dims - length(get_base_variables())
+            
+            pd_first = first(values(plot_data_dict))
+            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+            sim_data = _get_first_valid(pd_first)
+            isnothing(sim_data) && return
+            
+            target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
+            kept_syms = Tuple(IRunPDESims.get_kept_dims(target_field, sim_data.domain))
 
-        for i in 1:total_dims
-            dim_sym = dim_names[i]
-            dim_str = String(dim_sym)
-            is_axis = i in active_axes
-            
-            is_physically_disabled = false
-            if i > n_params
-                if !(dim_sym in kept_syms)
-                    is_physically_disabled = true
-                end
-            end
-            
-            # Fetch the widget using the String representation
-            widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"][], dim_str, "param_$i")
-            haskey(w, widget_key) || continue
-            ctrl = w[widget_key]
-            
-            if is_axis || is_physically_disabled
-                ctrl.range[] = [0.0] 
-                continue
-            end
-            
-            g_min, g_max = Inf, -Inf
-            for pd in values(plot_data_dict)
-                vals = nothing
-                if i <= n_params 
-                    vals = pd.active_param_values[i]
-                else
-                    for s_data in pd.data
-                        isnothing(s_data) && continue
-                        # Direct Symbol matching!
-                        idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
-                        if !isnothing(idx)
-                            vals = s_data.axes[idx]
-                            break
-                        end
+            for i in 1:total_dims
+                dim_sym = dim_names[i]
+                dim_str = String(dim_sym)
+                is_axis = i in active_axes
+                
+                is_physically_disabled = false
+                if i > n_params
+                    if !(dim_sym in kept_syms)
+                        is_physically_disabled = true
                     end
                 end
-               
-                if !isnothing(vals) && !isempty(vals)
-                    l, h = extrema(vals)
-                    g_min = min(l, g_min)
-                    g_max = max(h, g_max)
+                
+                widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"][], dim_sym, "param_$i")
+                haskey(w, widget_key) || continue
+                ctrl = w[widget_key]
+                
+                if is_axis || is_physically_disabled
+                    ctrl.range[] = [0.0] 
+                    continue
                 end
-            end
-            
-            if isinf(g_min); g_min = 0.0; g_max = 1.0; end
-            
-            if i <= n_params
-                all_vals = Float64[]
+                
+                g_min, g_max = Inf, -Inf
                 for pd in values(plot_data_dict)
-                    append!(all_vals, pd.active_param_values[i])
+                    vals = nothing
+                    if i <= n_params 
+                        vals = pd.active_param_values[i]
+                    else
+                        for s_data in pd.data
+                            isnothing(s_data) && continue
+                            idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
+                            if !isnothing(idx)
+                                vals = s_data.axes[idx]
+                                break
+                            end
+                        end
+                    end
+                
+                    if !isnothing(vals) && !isempty(vals)
+                        l, h = extrema(vals)
+                        g_min = min(l, g_min)
+                        g_max = max(h, g_max)
+                    end
                 end
-                ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
-            else
-                ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                
+                if isinf(g_min); g_min = 0.0; g_max = 1.0; end
+                
+                if i <= n_params
+                    all_vals = Float64[]
+                    for pd in values(plot_data_dict)
+                        append!(all_vals, pd.active_param_values[i])
+                    end
+                    ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
+                else
+                    ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                end
+                set_close_to!(ctrl, ctrl.value[])
             end
-            set_close_to!(ctrl, ctrl.value[])
-        end
-        
-        if manager.state["Config_Just_Loaded"][]
-            opts = GLOBAL_SCENE_OPTIONS[]
-            apply_scene_options!(manager, opts)
-            manager.state["Config_Just_Loaded"].val = false
+            
+            if manager.state["Config_Just_Loaded"][]
+                opts = GLOBAL_SCENE_OPTIONS[]
+                apply_scene_options!(manager, opts)
+                manager.state["Config_Just_Loaded"].val = false
+            end
         end
     end
 end
@@ -761,44 +749,41 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         n_params = length(pd_first.active_param_keys)
         dim_names = manager.plot_vars
         
-        # THE FIX: Use local domain.time_dim natively
         D = length(l_data.domain.mins) - (isnothing(l_data.domain.time_dim) ? 0 : 1)
-        spatial_keys = string.(filter(k -> k != l_data.domain.time_dim, l_data.domain.dim_keys))
+        spatial_keys = filter(k -> k != l_data.domain.time_dim, l_data.domain.dim_keys)
         
-        sx = D >= 1 ? spatial_keys[1] : "x"
-        sy = D >= 2 ? spatial_keys[2] : "y"
-        sz = D >= 3 ? spatial_keys[3] : "z"
+        sx = D >= 1 ? spatial_keys[1] : :x
+        sy = D >= 2 ? spatial_keys[2] : :y
+        sz = D >= 3 ? spatial_keys[3] : :z
         
-        update_menu_safe!(w["X-Axis"], [sx]; fallbacks=[sx])
+        update_menu_safe!(w["X-Axis"], Any[(string(sx), sx)]; fallbacks=[sx])
         if D == 1
-            update_menu_safe!(w["Plot_Style"], ["1D", "Lines", "Colors"]; fallbacks=["1D"], force_notify=false)
-            update_menu_safe!(w["Y-Axis"], ["disabled"]; fallbacks=["disabled"])
-            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
+            update_menu_safe!(w["Plot_Style"], Any[("1D", :one_d), ("Lines", :lines), ("Colors", :colors)]; fallbacks=[:one_d], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
+            update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
         elseif D == 2
-            update_menu_safe!(w["Plot_Style"], ["2D", "2D (Surface)"]; fallbacks=["2D"], force_notify=false)
-            update_menu_safe!(w["Y-Axis"], [sy]; fallbacks=[sy])
-            update_menu_safe!(w["Z-Axis"], ["disabled"]; fallbacks=["disabled"])
+            update_menu_safe!(w["Plot_Style"], Any[("2D", :two_d), ("2D (Surface)", :surface2D)]; fallbacks=[:two_d], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
+            update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
         else
-            update_menu_safe!(w["Plot_Style"], ["3D"]; fallbacks=["3D"], force_notify=false)
-            update_menu_safe!(w["Y-Axis"], [sy]; fallbacks=[sy])
-            update_menu_safe!(w["Z-Axis"], [sz]; fallbacks=[sz])
+            update_menu_safe!(w["Plot_Style"], Any[("3D", :three_d)]; fallbacks=[:three_d], force_notify=false)
+            update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
+            update_menu_safe!(w["Z-Axis"], Any[(string(sz), sz)]; fallbacks=[sz])
         end
         
-        # THE FIX: Valid string conversions without mixing Eulerian concepts
-        valid_fields = ["Solution"]
+        valid_fields = Any[("Solution", :Solution)]
         for k in keys(l_data.stats)
             k === :Solution && continue
             kept_syms = IRunPDESims.get_kept_dims(k, l_data.domain)
-            # Lagrangian stats MUST keep all spatial dimensions to map properly
-            if issubset(Symbol.(spatial_keys), kept_syms)
-                push!(valid_fields, string(k))
+            if issubset(spatial_keys, kept_syms)
+                push!(valid_fields, (string(k), k))
             end
         end
-        sort!(valid_fields)
-        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=["Solution"], force_notify=false)
+        sort!(valid_fields, by = x -> x[1])
+        update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=[:Solution], force_notify=false)
         
-        # Determine target tensor safely
-        u_sel_sym = Symbol(w["U-Axis"].selection[])
+        u_sel_sym = w["U-Axis"].selection[]
+        u_sel_sym = u_sel_sym == :None ? :Solution : u_sel_sym
         target_tensor = get(l_data.stats, u_sel_sym, l_data.stats[:Solution])
         
         target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
@@ -808,118 +793,127 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
         c_options = Any[]
         for i in 1:comp_max
             name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
-            push!(c_options, (name, string(i)))
+            push!(c_options, (name, i)) # Pure Integer
         end
-        update_menu_safe!(w["c"], c_options; fallbacks=["1"], force_notify=false)
+        update_menu_safe!(w["c"], c_options; fallbacks=[1], force_notify=false)
 
         axes_set = Set{Int}()
         idx_x = findfirst(isequal(sx), dim_names); !isnothing(idx_x) && push!(axes_set, idx_x)
-        if w["Y-Axis"].selection[] != "disabled"
+        if w["Y-Axis"].selection[] != :None
             idx_y = findfirst(isequal(sy), dim_names); !isnothing(idx_y) && push!(axes_set, idx_y)
         end
-        if w["Z-Axis"].selection[] != "disabled"
+        if w["Z-Axis"].selection[] != :None
             idx_z = findfirst(isequal(sz), dim_names); !isnothing(idx_z) && push!(axes_set, idx_z)
         end
         
-        active_axes_obs.val = collect(axes_set)
-        if !manager.state["Config_Just_Loaded"][]
-            notify(active_axes_obs)
-        end
 
-        anim_options = Any[("None", "None")]
+        anim_options = Any[("None", :None)]
         for i in 1:n_params
+            ax_sym = dim_names[i]
+            ax_str = String(ax_sym)
             if length(pd_first.active_param_values[i]) > 1
-                push!(anim_options, (nice_string(dim_names[i]), dim_names[i]))
+                push!(anim_options, (nice_string(ax_str), ax_sym))
             end
         end
-        update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=["None"])
+        update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=[:None])
+        
+        compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
+        if !isnothing(l_data.domain.time_dim)
+            push!(compare_opts, ("Time", :Time))
+        end
+        for p_key in pd_first.active_param_keys
+            push!(compare_opts, (string(p_key), Symbol(p_key)))
+        end
+        update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=[:None], force_notify=false)
+
+        active_axes_obs[] = collect(axes_set)
     end
     
     # =========================================================================
     # 3. Slider Range Adjustments & Disabling Active/Integrated Sliders (Lagrangian)
     # =========================================================================
     onany(active_axes_obs, plot_data_obs, w["U-Axis"].selection) do active_axes, plot_data_dict, u_val
-        isempty(plot_data_dict) && return
+        @with_lock manager "Data" begin
+            isempty(plot_data_dict) && return
 
-        dim_names = manager.plot_vars
-        total_dims = length(dim_names)
-        n_params = total_dims - length(get_base_variables())
-        
-        pd_first = first(values(plot_data_dict))
-        _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
-        l_data = _get_first_valid(pd_first)
-        isnothing(l_data) && return
-        
-        target_field = (isnothing(u_val) || u_val == "-" || u_val == "disabled") ? "Solution" : u_val
-        kept_syms = IRunPDESims.get_kept_dims(Symbol(target_field), l_data.domain)
-        
-        for i in 1:total_dims
-            dim_sym = dim_names[i]
-            dim_str = String(dim_sym) # UI Dictionary needs Strings!
-            is_axis = i in active_axes
+            dim_names = manager.plot_vars
+            total_dims = length(dim_names)
+            n_params = total_dims - length(get_base_variables())
             
-            is_spatial = false
-            if i > n_params
-                is_spatial = dim_sym != l_data.domain.time_dim
-            end
+            pd_first = first(values(plot_data_dict))
+            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+            l_data = _get_first_valid(pd_first)
+            isnothing(l_data) && return
             
-            is_physically_disabled = false
-            if i > n_params && !is_spatial
-                if !(dim_sym in kept_syms)
-                    is_physically_disabled = true
+            target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
+            kept_syms = IRunPDESims.get_kept_dims(target_field, l_data.domain)
+            
+            for i in 1:total_dims
+                dim_sym = dim_names[i]
+                dim_str = String(dim_sym)
+                is_axis = i in active_axes
+                
+                is_spatial = false
+                if i > n_params
+                    is_spatial = dim_sym != l_data.domain.time_dim
                 end
-            end
-            
-            # THE FIX: Reverse map takes Symbol, Widget dict takes String
-            widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"][], dim_sym, "param_$i")
-            haskey(w, widget_key) || continue
-            ctrl = w[widget_key]
-            
-            # THE FIX: Disable if it's on an axis, fixed spatially, or integrated out
-            if is_axis || is_spatial || is_physically_disabled
-                ctrl.range[] = [0.0]
-                continue
-            end
-            
-            g_min, g_max = Inf, -Inf
-            for pd in values(plot_data_dict)
-                vals = nothing
-                if i <= n_params 
-                    vals = pd.active_param_values[i]
-                else
-                    sim_data = _get_first_valid(pd)
-                    if !isnothing(sim_data)
-                        if dim_sym == sim_data.domain.time_dim
-                            vals = sim_data.t
-                        end
+                
+                is_physically_disabled = false
+                if i > n_params && !is_spatial
+                    if !(dim_sym in kept_syms)
+                        is_physically_disabled = true
                     end
                 end
-               
-                if !isnothing(vals) && !isempty(vals)
-                    l, h = extrema(vals)
-                    if l < g_min; g_min = l; end
-                    if h > g_max; g_max = h; end
+                
+                widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"][], dim_sym, "param_$i")
+                haskey(w, widget_key) || continue
+                ctrl = w[widget_key]
+                
+                if is_axis || is_spatial || is_physically_disabled
+                    ctrl.range[] = [0.0]
+                    continue
                 end
-            end
-            
-            if isinf(g_min); g_min = 0.0; g_max = 1.0; end
-            
-            if i <= n_params
-                all_vals = Float64[]
+                
+                g_min, g_max = Inf, -Inf
                 for pd in values(plot_data_dict)
-                    append!(all_vals, pd.active_param_values[i])
+                    vals = nothing
+                    if i <= n_params 
+                        vals = pd.active_param_values[i]
+                    else
+                        sim_data = _get_first_valid(pd)
+                        if !isnothing(sim_data)
+                            if dim_sym == sim_data.domain.time_dim
+                                vals = sim_data.t
+                            end
+                        end
+                    end
+                
+                    if !isnothing(vals) && !isempty(vals)
+                        l, h = extrema(vals)
+                        if l < g_min; g_min = l; end
+                        if h > g_max; g_max = h; end
+                    end
                 end
-                ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
-            else 
-                ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                
+                if isinf(g_min); g_min = 0.0; g_max = 1.0; end
+                
+                if i <= n_params
+                    all_vals = Float64[]
+                    for pd in values(plot_data_dict)
+                        append!(all_vals, pd.active_param_values[i])
+                    end
+                    ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
+                else 
+                    ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                end
+                set_close_to!(ctrl, ctrl.value[])
             end
-            set_close_to!(ctrl, ctrl.value[])
-        end
-        
-        if manager.state["Config_Just_Loaded"][]
-            opts = GLOBAL_SCENE_OPTIONS[]
-            apply_scene_options!(manager, opts)
-            manager.state["Config_Just_Loaded"].val = false
+            
+            if manager.state["Config_Just_Loaded"][]
+                opts = GLOBAL_SCENE_OPTIONS[]
+                apply_scene_options!(manager, opts)
+                manager.state["Config_Just_Loaded"].val = false
+            end
         end
     end
 end

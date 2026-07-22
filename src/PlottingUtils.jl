@@ -154,7 +154,7 @@ end
 # ==============================================================================
 # --- MASTER GRID CALCULATOR ---
 # ==============================================================================
-function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::String, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
+function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::Symbol, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
     
@@ -166,7 +166,7 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     row_offset = (has_legend && is_detached && valign == :top) ? 1 : 0
     col_offset = (has_legend && is_detached && halign == :left) ? 1 : 0
 
-    if link_mode in ("Decoupled", "Axes Only") && has_colorbar
+    if link_mode in (:decoupled, :axes_only) && has_colorbar
         for i in 1:num_plots
             r = (i - 1) ÷ cols + 1
             c = (i - 1) % cols + 1

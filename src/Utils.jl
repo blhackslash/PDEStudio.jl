@@ -87,47 +87,67 @@ function parseValue(s::String)
     end
 end
 """
-    update_menu_safe!(menu_widget, new_options; fallbacks=String[], force_notify=false)
+    update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
 
 Safely updates a Makie Menu's options, forces a WebGL buffer sync to prevent crashes,
 and preserves the current selection or falls back to a prioritized list.
 """
-function update_menu_safe!(menu_widget, new_options; fallbacks=String[], force_notify=false)
+function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
     curr = menu_widget.selection[]
+    
+    new_arr = isempty(new_options) ? Any[("-", :None)] : new_options
+    
+    # 1. Robust Equality Check (Bypasses Makie's internal MenuOption struct casting)
+    old_arr = menu_widget.options[]
     options_changed = false
     
-    # 1. Update Options & Sync WebGL Buffer
-    new_arr = isempty(new_options) ? ["-"] : new_options
-    if menu_widget.options[] != new_arr
+    is_eq = length(old_arr) == length(new_arr)
+    if is_eq
+        for (o, n) in zip(old_arr, new_arr)
+            # Depending on Makie version, elements are raw Tuples or MenuOption objects
+            o_val = hasproperty(o, :value) ? o.value : (o isa Tuple ? o[2] : o)
+            n_val = n isa Tuple ? n[2] : n
+            if o_val != n_val
+                is_eq = false
+                break
+            end
+        end
+    end
+    
+    if !is_eq
         menu_widget.options[] = new_arr
-        
         # Safely rebuild the WebGL buffer to prevent JS crashes
         menu_widget.is_open[] = true
         menu_widget.is_open[] = false
         options_changed = true
     end
 
-    # Extract clean values if the options are formatted Tuples like ("Label", "value")
     opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
 
     # 2. Maintain Selection or Apply Fallbacks
-    if curr == "-" || isnothing(curr) || curr ∉ opt_values
-        if isempty(new_options)
-            menu_widget.i_selected[] = 1 
-        else
+    target_idx = 1
+    if curr == "-" || curr == :None || isnothing(curr) || curr ∉ opt_values
+        if !isempty(new_options)
             idx = nothing
             for f in fallbacks
                 idx = findfirst(isequal(f), opt_values)
                 !isnothing(idx) && break
             end
-            menu_widget.i_selected[] = isnothing(idx) ? 1 : idx
+            target_idx = isnothing(idx) ? 1 : idx
         end
-        
-        # Ensure the pipeline registers the change if the string was mutated
-        if options_changed || force_notify; notify(menu_widget.selection); end
     else
-        menu_widget.i_selected[] = findfirst(isequal(curr), opt_values)
-        if options_changed || force_notify; notify(menu_widget.selection); end
+        target_idx = findfirst(isequal(curr), opt_values)
+    end
+    
+    # 3. Only assign if the index genuinely changed (prevents triggering redundant UI updates)
+    selection_changed = menu_widget.i_selected[] != target_idx
+    if selection_changed
+        menu_widget.i_selected[] = target_idx
+    end
+    
+    # Manually re-notify the pipeline if options shifted underneath a static selection
+    if (options_changed && !selection_changed) || force_notify
+        notify(menu_widget.selection)
     end
 end
 """

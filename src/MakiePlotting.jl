@@ -134,7 +134,8 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         "Layout"    => false, 
         "Scene"     => false, 
         "Primitive" => false,
-        "Data"      => false, 
+        "Data"      => false,
+        "Sliders"    => false,
         "UI"        => false   
     )
     state = Dict{String, Any}(
@@ -201,7 +202,6 @@ function launch_plotter()
     if PLOTTER_UI_STATE[][:is_open]
         old_manager = ACTIVE_PLOT_MANAGER[]
         
-        # THE FIX: Compare against dynamic base variables
         new_vars = [Symbol.(collect(keys(ACTIVE_SIM_CONFIG[].varied_params))); get_base_variables()]
         
         if old_manager.plot_vars == new_vars
@@ -243,13 +243,11 @@ function launch_plotter()
     on(ACTIVE_SIM_CONFIG) do new_config
         (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
         
-        # THE FIX: Cast the real parameters to Symbols immediately
         real_params = Symbol.(sort(collect(keys(new_config.varied_params))))
         
         param_map = Dict{String, Symbol}()
         reverse_map = Dict{Symbol, String}()
         
-        # THE FIX: Dynamically detect how many parameter sliders exist in the UI
         i = 1
         while haskey(manager.widgets, "param_$(i)_Label")
             p_key = "param_$i"
@@ -272,10 +270,6 @@ function launch_plotter()
         manager.state["Param_Map"] = Observable(param_map)
         manager.state["Reverse_Map"] = Observable(reverse_map)
         
-        manager.state["Param_Map"] = Observable(param_map)
-        manager.state["Reverse_Map"] = Observable(reverse_map)
-        
-        # THE FIX: Bind to dynamic base variables
         manager.plot_vars = [real_params; get_base_variables()]
         
         manager.config["Parameters"] = copy(new_config.varied_params)
@@ -434,7 +428,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
     prev_leg_struct = Ref((false, :none, :none))
     onany(manager.widgets["Legend_Base"].selection, manager.widgets["Legend_Add"].selection) do _...
         if manager.state["Config_Just_Loaded"][]; return; end
-        is_comp = manager.widgets["Compare_Target"].selection[] != "None"
+        is_comp = manager.widgets["Compare_Target"].selection[] != :None
         curr = _parse_legend_position(manager, is_comp)
         p = prev_leg_struct[]
         
@@ -454,7 +448,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
     CT = PLOT_MODE[] == :eulerian ? EulerianPlotCache : LagrangianPlotCache
     
-    # Read the data dimensions dynamically (THE FIX: Fallback to string(n) for widget keys)
+    # Read the data dimensions dynamically
     selector_obs = map(manager.plot_vars) do n
         w_key = haskey(rev_map, n) ? rev_map[n] : string(n)
         w[w_key].value
@@ -465,7 +459,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     c_sel = w["c"].selection
     
     target = w["Compare_Target"].selection[]
-    cols = parse(Int, w["Compare_Columns"].selection[])
+    cols = w["Compare_Columns"].selection[]
     link_mode = w["Compare_Link"].selection[]
     
     num_plots, compare_labels, compare_vals = 1, String[], Any[]
@@ -479,11 +473,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         sim_data = _get_first_valid(pd_first)
         
         if !isnothing(sim_data)
-            if target == "Methods"
+            if target == :Methods
                 compare_labels = manager.methods[]
                 num_plots = length(compare_labels)
-            elseif target == "Component"
-                target_tensor = get(sim_data.stats, Symbol(u_sel[]), sim_data.stats[:Solution])
+            elseif target == :Component
+                target_tensor = get(sim_data.stats, u_sel[], sim_data.stats[:Solution])
                 target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
                 num_plots = length(target_tensor_arr[1]) 
                 
@@ -497,29 +491,29 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     end
                 end
                 compare_vals = collect(1:num_plots)
-            elseif target == "Time"
+            elseif target == :Time
                 t_dim = get_time_dim(sim_data.domain)
                 t_vals = PLOT_MODE[] == :lagrangian ? sim_data.t : (isnothing(t_dim) ? [0.0] : sim_data.axes[t_dim])
                 
                 num_plots = length(t_vals)
                 compare_labels = ["t = $(round(t, sigdigits=4))" for t in t_vals]
                 compare_vals = t_vals
-            elseif Symbol(target) in manager.plot_vars
-                idx = findfirst(isequal(Symbol(target)), manager.plot_vars)
+            elseif target in manager.plot_vars
+                idx = findfirst(isequal(target), manager.plot_vars)
                 vals = pd_first.active_param_values[idx]
                 num_plots = length(vals)
-                compare_labels = ["$target = $(round(v, sigdigits=4))" for v in vals]
+                compare_labels = ["$(string(target)) = $(round(v, sigdigits=4))" for v in vals]
                 compare_vals = vals
             end
         end
     end
     
-    if target == "None" || num_plots == 0; num_plots = 1; target = "None"; end
+    if target == :None || num_plots == 0; num_plots = 1; target = :None; end
     
-    is_compare = target != "None"
+    is_compare = target != :None
     is_det, halign, valign = _parse_legend_position(manager, is_compare)
     
-    has_legend = T in LEGEND_SUPPORTED_PLOTS && target != "Methods"
+    has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :Methods
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
@@ -532,8 +526,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         push!(axes, ax)
     end
     
-    p_w = parse(Int, w["Plot_Width"].selection[])
-    p_h = parse(Int, w["Plot_Height"].selection[])
+    p_w = w["Plot_Width"].selection[]
+    p_h = w["Plot_Height"].selection[]
     for i in 1:plot_layout.size[1]; rowsize!(plot_layout, i, Auto()); end
     for i in 1:plot_layout.size[2]; colsize!(plot_layout, i, Auto()); end
     
@@ -543,13 +537,12 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
         colsize!(plot_layout, c_idx, Fixed(p_w))
     end
     
-    if !is_3d_axis && link_mode in ("Fully Coupled", "Axes Only")
+    if !is_3d_axis && link_mode in (:fully_coupled, :axes_only)
         linkaxes!(axes...)
     end
     
-    # THE FIX: Cast comparison target correctly to Symbol
-    target_idx = target == "Time" ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : 
-                 findfirst(isequal(Symbol(target)), manager.plot_vars)
+    target_idx = target == :Time ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : 
+                 findfirst(isequal(target), manager.plot_vars)
 
     function _mutate_compare_vals(current_sels, idx)
         mutated = collect(current_sels)
@@ -573,9 +566,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     prim_obs = on(manager.triggers["Primitive_Rebuild"]) do _
         @with_lock manager "Primitive" begin
-            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
-            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
-            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
+            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return
+            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return; end
+            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return; end
             
             data = plot_data_obs[]
             isempty(data) && return
@@ -593,16 +586,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     manager.caches[i] = Dict{String, CT}()
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                    mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
-                    target_c_int = tryparse(Int, string(mutated_c_sel)); target_c_int = isnothing(target_c_int) ? 1 : target_c_int
+                    target_c_int = (is_compare && target == :Component) ? i : c_sel[]
 
-                    local_methods = is_compare && target == "Methods" ? [manager.methods[][i]] : manager.methods[]
+                    local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
                     valid_methods = String[]
                     local data_tuples
                     
                     # 1. Pipeline Routing
                     if PLOT_MODE[] == :lagrangian
-                        # Detect DS to preallocate ax_cols
                         local DS = 1
                         for m_name in local_methods
                             if haskey(data, m_name)
@@ -631,19 +622,21 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         end
                         data_tuples = Tuple([ax_cols..., u_col])
                     else
-                        active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                        ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
+                        active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+                        ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
                         u_col = Any[]
                         
+                        active_plot_axes_strs = string.(active_plot_axes_syms) # Cast to String array purely for DataHandler
+
                         for m_name in local_methods
                             !haskey(data, m_name) && continue
                             pd = data[m_name]
                             p_idx = _build_param_indices(pd, mutated_sel_vals)
                             
-                            res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes, u_sel[], target_c_int)
+                            res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
                             if !isnothing(res)
                                 p_axes, u_flat = res
-                                for d in 1:length(active_plot_axes)
+                                for d in 1:length(active_plot_axes_syms)
                                     push!(ax_cols[d], p_axes[d])
                                 end
                                 push!(u_col, u_flat)
@@ -655,19 +648,24 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     
                     isempty(valid_methods) && continue
                     
-                    # THE FIX: Safely parse active plot axis strings and extract loop_dims to Symbolic indices
                     active_title_indices = if PLOT_MODE[] == :eulerian
-                        active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                        [findfirst(isequal(Symbol(occursin("|", ax) ? split(ax, "|")[2] : ax)), manager.plot_vars) for ax in active_plot_axes]
+                        active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+                        [findfirst(isequal(occursin("|", string(ax)) ? Symbol(split(string(ax), "|")[2]) : ax), manager.plot_vars) for ax in active_plot_axes_syms]
                     else
-                        spatial_axes = string.(filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys))
-                        filter(!isnothing, [findfirst(isequal(Symbol(ax)), manager.plot_vars) for ax in spatial_axes])
+                        spatial_axes = filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
+                        filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                     end
                     
                     ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                     default_title = is_compare ? compare_labels[i] : ts
                     
-                    initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_sel[], y_sel[], z_sel[], u_sel[], ts, Val(T), i)
+                    # Convert primary selected axes to Strings cleanly before initializing plot limits
+                    x_str = x_sel[] == :None ? "disabled" : string(x_sel[])
+                    y_str = y_sel[] == :None ? "disabled" : string(y_sel[])
+                    z_str = z_sel[] == :None ? "disabled" : string(z_sel[])
+                    u_str = string(u_sel[])
+
+                    initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_str, y_str, z_str, u_str, ts, Val(T), i)
                     axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
                     
                     # 2. Safe Limit Synchronization (Unified for Eulerian & Lagrangian)
@@ -696,9 +694,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     data_sync_obs = onany(c_sel,selector_obs...) do c,sel_vals...
         @with_lock manager "Data" begin
-            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == "-" || u_sel[] == "-") && return
-            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == "-" || y_sel[] == "disabled") && return; end
-            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == "-" || z_sel[] == "disabled") && return; end
+            (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return
+            if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return; end
+            if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return; end
             
             caches = manager.caches
             data = plot_data_obs[]
@@ -707,16 +705,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             
             for i in 1:num_plots
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-                mutated_c_sel = (is_compare && target == "Component") ? string(i) : c_sel[]
-                target_c_int = tryparse(Int, string(mutated_c_sel)); target_c_int = isnothing(target_c_int) ? 1 : target_c_int
+                target_c_int = (is_compare && target == :Component) ? i : c_sel[]
 
-                local_methods = is_compare && target == "Methods" ? [manager.methods[][i]] : manager.methods[]
+                local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
                 valid_methods = String[]
                 local data_tuples
                 
                 # 1. Pipeline Routing
                 if PLOT_MODE[] == :lagrangian
-                    # Detect DS to preallocate ax_cols
                     local DS = 1
                     for m_name in local_methods
                         if haskey(data, m_name)
@@ -745,19 +741,21 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     end
                     data_tuples = Tuple([ax_cols..., u_col])
                 else
-                    active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                    ax_cols = [Any[] for _ in 1:length(active_plot_axes)]
+                    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+                    ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
                     u_col = Any[]
                     
+                    active_plot_axes_strs = string.(active_plot_axes_syms)
+
                     for m_name in local_methods
                         !haskey(data, m_name) && continue
                         pd = data[m_name]
                         p_idx = _build_param_indices(pd, mutated_sel_vals)
                         
-                        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes, u_sel[], target_c_int)
+                        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
                         if !isnothing(res)
                             p_axes, u_flat = res
-                            for d in 1:length(active_plot_axes)
+                            for d in 1:length(active_plot_axes_syms)
                                 push!(ax_cols[d], p_axes[d])
                             end
                             push!(u_col, u_flat)
@@ -769,7 +767,6 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 
                 isempty(valid_methods) && continue
                 
-            # 2. Safe Limit Synchronization (Unified for Eulerian & Lagrangian)
                 if !is_3d_axis
                     x_lims, y_lims = data_tuples[1], data_tuples[2]
                     
@@ -786,13 +783,12 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 
                 sync_data_to_cache!(caches[i], valid_methods, data_tuples, manager, Val(PLOT_DIM_MAP[T]))
                 
-                # THE FIX: Safely parse active plot axis strings and extract loop_dims to Symbolic indices
                 active_title_indices = if PLOT_MODE[] == :eulerian
-                    active_plot_axes = filter(s -> !isnothing(s) && s != "-" && s != "disabled", [x_sel[], y_sel[], z_sel[]])
-                    [findfirst(isequal(Symbol(occursin("|", ax) ? split(ax, "|")[2] : ax)), manager.plot_vars) for ax in active_plot_axes]
+                    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+                    [findfirst(isequal(occursin("|", string(ax)) ? Symbol(split(string(ax), "|")[2]) : ax), manager.plot_vars) for ax in active_plot_axes_syms]
                 else
-                    spatial_axes = string.(filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys))
-                    filter(!isnothing, [findfirst(isequal(Symbol(ax)), manager.plot_vars) for ax in spatial_axes])
+                    spatial_axes = filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
+                    filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                 end
                 
                 ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
@@ -837,7 +833,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         plot_obj = _find_first_drawable_primitive(manager.caches[i])
                         if !isnothing(plot_obj)
                             cr_obs = haskey(plot_obj.attributes, :colorrange) ? plot_obj.colorrange : Observable((0.0, 1.0))
-                            create_or_update_colorbar!(plot_layout, plot_obj, manager, cr_obs, w["U-Axis"].selection[], i)
+                            create_or_update_colorbar!(plot_layout, plot_obj, manager, cr_obs, string(w["U-Axis"].selection[]), i)
                         end
                     end
                 end

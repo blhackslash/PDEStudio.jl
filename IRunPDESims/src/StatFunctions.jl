@@ -9,6 +9,8 @@ const STAT_REGISTRY = Dict{Symbol, Union{Symbol, Vector{Symbol}}}(
     :wave_height   => :time,
     :l1error       => :time,
     :l2error       => :time,
+    :relative_l2error => :time,
+    :relative_l1error => :time,
     :relative_mass => :time,
     :wave_position => :time,
     # Examples of your new D-agnostic aliases:
@@ -147,15 +149,28 @@ end
 # ==============================================================================
 # --- ERROR METRICS (Naturally propagates NaNs if analytical data is missing) ---
 # ==============================================================================
-
 function calc_stat(::Val{:l1error}, fixed_coords, u, ana, domain::DomainInfo)
     measure = get_integration_measure(:l1error, domain)
     return sum(map((v, a) -> abs.(v - a), u, ana) .* measure)
 end
 
+function calc_stat(::Val{:relative_l1error}, fixed_coords, u, ana, domain::DomainInfo)
+    measure = get_integration_measure(:relative_l1error, domain)
+    error_norm = sum(map((v, a) -> abs.(v - a), u, ana) .* measure)
+    ana_norm = sum(map(a -> abs.(a), ana) .* measure)
+    return error_norm ./ ana_norm
+end
+
 function calc_stat(::Val{:l2error}, fixed_coords, u, ana, domain::DomainInfo)
     measure = get_integration_measure(:l2error, domain)
     return sqrt.(sum(map((v, a) -> abs2.(v - a), u, ana) .* measure))
+end
+
+function calc_stat(::Val{:relative_l2error}, fixed_coords, u, ana, domain::DomainInfo)
+    measure = get_integration_measure(:relative_l2error, domain)
+    error_norm = sqrt.(sum(map((v, a) -> abs2.(v - a), u, ana) .* measure))
+    ana_norm = sqrt.(sum(map(a -> abs2.(a), ana) .* measure))
+    return error_norm ./ ana_norm
 end
 
 function calc_stat(::Val{:relative_mass}, fixed_coords, u, ana, domain::DomainInfo)

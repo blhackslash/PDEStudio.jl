@@ -1,6 +1,7 @@
 const UIType = Union{Symbol,MethodDict}
 const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour3d)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :scatter2d_surface, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
+
 # --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
     :lines        => 1,
@@ -21,38 +22,39 @@ const PLOT_DIM_MAP = Dict(
     :volume       => 3
 )
 
-const EULERIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
-    "Lines"   => ["1D", "2D", "3D"],
-    "Scatter" => ["1D", "Lines", "Colors"],
-    "Contour" => ["Lines", "Colormap", "Filled", "3D"],
-    "Heatmap" => ["Flat", "Surface"],
-    "Volume"  => ["3D Cloud"]
+# THE FIX: Menus strictly use Tuple{String, Symbol} for display vs internal logic
+const EULERIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
+    :lines   => Any[("1D", :one_d), ("2D", :two_d), ("3D", :three_d)],
+    :scatter => Any[("1D", :one_d), ("Lines", :lines), ("Colors", :colors)],
+    :contour => Any[("Lines", :lines), ("Colormap", :colormap), ("Filled", :filled), ("3D", :three_d)],
+    :heatmap => Any[("Flat", :flat), ("Surface", :surface)],
+    :volume  => Any[("3D Cloud", :cloud3D)]
 )
 
-const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{String, Vector{String}}(
-    "Scatter" => ["1D", "2D","2D (Surface)", "3D", "Lines", "Colors"] # Maps "Lines" to :scatterlines
+const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
+    :scatter => Any[("1D", :one_d), ("2D", :two_d), ("2D (Surface)", :surface2D), ("3D", :three_d), ("Lines", :lines), ("Colors", :colors)] 
 )
 
-const PLOT_ROUTING_MATRIX = Dict{Tuple{String, String}, Symbol}(
+const PLOT_ROUTING_MATRIX = Dict{Tuple{Symbol, Symbol}, Symbol}(
     # Eulerian
-    ("Lines", "1D")           => :lines,
-    ("Lines", "2D")           => :lines2d,
-    ("Scatter", "2D (Surface)") => :scatter2d_surface,
-    ("Lines", "3D")           => :lines3d,
-    ("Contour", "Lines")      => :contour,
-    ("Contour", "Colormap")   => :contour_cmap, 
-    ("Contour", "Filled")     => :contourf,
-    ("Contour", "3D")         => :contour3d,
-    ("Heatmap", "Flat")       => :heatmap,
-    ("Heatmap", "Surface")    => :surface,
-    ("Volume", "3D Cloud")    => :volume,
+    (:lines, :one_d)           => :lines,
+    (:lines, :two_d)           => :lines2d,
+    (:scatter, :surface2D)  => :scatter2d_surface,
+    (:lines, :three_d)           => :lines3d,
+    (:contour, :lines)      => :contour,
+    (:contour, :colormap)   => :contour_cmap, 
+    (:contour, :filled)     => :contourf,
+    (:contour, :three_d)         => :contour3d,
+    (:heatmap, :flat)       => :heatmap,
+    (:heatmap, :surface)    => :surface,
+    (:volume, :cloud3D)     => :volume,
     
     # Lagrangian
-    ("Scatter", "1D")         => :scatter1d,
-    ("Scatter", "2D")         => :scatter2d,
-    ("Scatter", "3D")         => :scatter3d,
-    ("Scatter", "Lines")      => :scatterlines,
-    ("Scatter", "Colors")     => :scattercolors,
+    (:scatter, :one_d)         => :scatter1d,
+    (:scatter, :two_d)         => :scatter2d,
+    (:scatter, :three_d)         => :scatter3d,
+    (:scatter, :lines)      => :scatterlines,
+    (:scatter, :colors)     => :scattercolors,
 )
 
 const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
@@ -80,16 +82,16 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
 # --- TIER 1: LAYOUT OPTIONS ---
 function get_base_layout_options()
     return Dict{String, Any}(
-        "Base_Plot_Selection"       => "Lines",  
-        "Plot_Style_Selection"      => "1D",
-        "Compare_Target_Selection"  => "None", 
-        "Compare_Columns_Selection" => "2",     
-        "Compare_Link_Selection"    => "Fully Coupled",
-        "Legend_Base_Selection"     => "right",
-        "Legend_Add_Selection"      => "detached",
-        "Plot_Width_Selection"      => "600",
-        "Plot_Height_Selection"     => "400",
-        "Anim_Target_Selection"     => "None"
+        "Base_Plot_Selection"       => :lines,
+        "Plot_Style_Selection"      => :one_d,
+        "Compare_Target_Selection"  => :None, 
+        "Compare_Columns_Selection" => 2,     
+        "Compare_Link_Selection"    => :fully_coupled,
+        "Legend_Base_Selection"     => :right,
+        "Legend_Add_Selection"      => :detached,
+        "Plot_Width_Selection"      => 600,
+        "Plot_Height_Selection"     => 400,
+        "Anim_Target_Selection"     => :None
     )
 end
 
@@ -166,7 +168,6 @@ function create_master_ui_observables()
     master["Y-Axis-ND"] = obs_dict(axis_dict(0.0, 15.0))
     master["Z-Axis-3D"] = obs_dict(axis_dict(0.05, 20.0)) 
     
-    # 3. THE FIX: The Single, Flat Plot-Style Dictionary!
     master["Plot-Style"] = obs_dict(Dict(
         "colors"          => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
         "color_map"       => :viridis,
@@ -203,8 +204,6 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     ui["Labels"]       = master["Labels"]
     ui["Various"]      = master["Various"]
     ui["HUD"]          = master["HUD"]
-    
-    # THE FIX: Always use the shared, flat Plot-Style!
     ui["Plot-Style"]   = master["Plot-Style"]
     
     if dim == 1
@@ -229,7 +228,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     ui_over = Dict{String, Any}()
     
     scene_opt = Dict{String, Any}()
-    layout_opt = get_base_layout_options() # THE FIX: Bring Layout options back!
+    layout_opt = get_base_layout_options()
 
     function set_ui!(scope, key, val)
         if !haskey(ui_over, scope); ui_over[scope] = Dict{String, Any}(); end
@@ -238,10 +237,10 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     for preset in preset_list
         if preset == :convergence
-            scene_opt["X-Axis_Selection"]      = "Ns__1"
-            scene_opt["U-Axis_Selection"]      = "relative_l2error"
-            layout_opt["Base_Plot_Selection"]  = "Lines"
-            layout_opt["Plot_Style_Selection"] = "1D"
+            scene_opt["X-Axis_Selection"]      = :Ns__1
+            scene_opt["U-Axis_Selection"]      = :relative_l2error
+            layout_opt["Base_Plot_Selection"]  = :lines
+            layout_opt["Plot_Style_Selection"] = :one_d
             scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "log_scale", true)
@@ -270,21 +269,21 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Y-Axis", "label_offset", 5.)
             set_ui!("Z-Axis", "label_offset", 5.)
 
-            layout_opt["Legend_Base_Selection"] = "top"      # THE FIX: Move to Layout
-            layout_opt["Legend_Add_Selection"]  = "detached" # THE FIX: Move to Layout
-            layout_opt["Plot_Width_Selection"]  = 500        # THE FIX: Move to Layout
-            layout_opt["Plot_Height_Selection"] = 400        # THE FIX: Move to Layout
+            layout_opt["Legend_Base_Selection"] = :top
+            layout_opt["Legend_Add_Selection"]  = :detached
+            layout_opt["Plot_Width_Selection"]  = 500
+            layout_opt["Plot_Height_Selection"] = 400
             
         elseif preset == :heatmap
-            layout_opt["Base_Plot_Selection"]  = "Heatmap"
-            layout_opt["Plot_Style_Selection"] = "Flat"
+            layout_opt["Base_Plot_Selection"]  = :heatmap
+            layout_opt["Plot_Style_Selection"] = :flat
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
         elseif preset == :component
-            layout_opt["Compare_Target_Selection"]  = "Component"
-            layout_opt["Compare_Columns_Selection"] = "1"
-            layout_opt["Compare_Link_Selection"]    = "Decoupled"
+            layout_opt["Compare_Target_Selection"]  = :Component
+            layout_opt["Compare_Columns_Selection"] = 1
+            layout_opt["Compare_Link_Selection"]    = :decoupled
             set_ui!("Labels", "title", "default")
             set_ui!("Labels", "y_label", "")
             
@@ -295,7 +294,6 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             set_ui!("Axis-General", "legend_pos", :td)
 
         elseif preset == :nolabels
-            # THE FIX: Safely pull the keys from the global master!
             for key in keys(MASTER_UI_DICT["Labels"])
                 set_ui!("Labels", key, "")
             end
@@ -308,8 +306,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
     GLOBAL_UI_OVERWRITE[] = ui_over
     GLOBAL_SCENE_OPTIONS[] = scene_opt
-    GLOBAL_LAYOUT_OPTIONS[] = layout_opt # THE FIX: Register layout to Global State
-    GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
+    GLOBAL_LAYOUT_OPTIONS[] = layout_opt
     @info "Successfully applied plot presets: $(join(preset_list, " + "))"
 end
 
@@ -318,7 +315,6 @@ function set_plot_presets!()
     GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
     GLOBAL_LAYOUT_OPTIONS[] = Dict{String, Any}()
     GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
-    GLOBAL_VAR_OVERWRITE[] = Any[:menu, :slider, :slider, :slider, :slider]
     @info "Plot presets cleared. Reverted to default settings."
     return
 end
