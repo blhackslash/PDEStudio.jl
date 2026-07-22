@@ -49,7 +49,7 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_func; kwargs...)
         end
     end
     # 3. Cleanup and Save
-    #remove_nan_stats!(sim_data.stats)
+    remove_nan_stats!(sim_data.stats)
     saveSimData(sim_data; overwrite=true)
 end
 
@@ -136,11 +136,11 @@ end
 # ==============================================================================
 
 function generate_nan_reference(data::LSimData{D, DS, M}) where {D, DS, M}
-    return [fill(SVector{M, Float64}(NaN), length(x)) for x in data.x]
+    return [fill(SVector{M, Float64}([NaN for _ = 1:M]), length(x)) for x in data.x]
 end
 
 function generate_nan_reference(data::ESimData{D, DS, M}) where {D, DS, M}
-    return fill(SVector{M, Float64}(NaN), size(data.u))
+    return fill(SVector{M, Float64}([NaN for _ = 1:M]), size(data.u))
 end
 
 function generate_analytical_reference(ldata::LSimData{D, DS, M}, ref_func) where {D, DS, M}

@@ -185,16 +185,3 @@ function calc_stat(::Val{:relative_mass}, fixed_coords, u, ana, domain::DomainIn
         m_ana[c] < 1e-9 ? NaN : sum_u[c] / sum_ana[c]
     end)
 end
-
-# Keep all dimensions (e.g., for a 1D Space + 1D Time simulation)
-register_stat!(:u_squared, :all) 
-
-function calc_stat(::Val{:u_squared}, fixed_coords, u, ana, domain::DomainInfo)
-    # Since this is a field, 'u' is effectively an array of 1 element.
-    # The measure evaluates to 1.0 automatically!
-    # map(v -> v.^2, u) squares the SVector components, and sum() extracts it safely.
-    measure = get_integration_measure(:u_squared, domain)
-    return sum(map(v -> v.^2, u) .* measure)
-end
-
-# (If testing a 2D transient simulation, use [:x, :y, :t])

@@ -136,7 +136,11 @@ function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, u
         "Primitive" => false,
         "Data"      => false,
         "Sliders"    => false,
-        "UI"        => false   
+        "UI"        => false,
+        "Menu_A"    => false,
+        "Menu_B"    => false, 
+        "Menu_C"    => false, 
+        "Menu_D"    => false, 
     )
     state = Dict{String, Any}(
         "Config_Just_Loaded"      => Observable(false),
@@ -216,7 +220,7 @@ function launch_plotter()
     ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
     ui_obs = create_master_ui_observables()
     
-    init_type = PLOT_MODE[] == :eulerian ? :lines : :scatter1d
+    init_type = PLOT_MODE[] == :eulerian ? :lines : :scattercolors
     manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, init_type)
     
     ACTIVE_PLOT_MANAGER[] = manager
@@ -318,6 +322,7 @@ function launch_plotter()
         Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = true)
         
         notify(plot_data_obs)
+        notify(manager.state["Active_Axes"])
         manager.triggers["Layout_Update"][] += 1
     end
 
@@ -355,14 +360,14 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             pd = first(values(plot_data_obs[]))
             sim_data = _get_first_valid(pd)
             if !isnothing(sim_data)
-                # D represents the number of spatial dimensions in DomainInfo
                 D = length(sim_data.domain.dim_keys) - (isnothing(sim_data.domain.time_dim) ? 0 : 1)
                 
-                if style_sel == "Lines" && D == 1
+                s_sym = Symbol(style_sel)
+                if (s_sym == :lines || s_sym == :Lines) && D == 1
                     ptype_sym = :scatterlines
-                elseif style_sel == "Colors" && D == 1
+                elseif (s_sym == :colors || s_sym == :Colors) && D == 1
                     ptype_sym = :scattercolors
-                elseif style_sel == "2D (Surface)" && D == 2
+                elseif (s_sym == :surface2D || style_sel == "2D (Surface)") && D == 2
                     ptype_sym = :scatter2d_surface
                 else
                     ptype_sym = D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
@@ -393,8 +398,10 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             end
             rebuild_plot_layout!()
         end
-        notify(plot_data_obs)
+        
         manager.triggers["Primitive_Rebuild"][] += 1
+
+        notify(plot_data_obs)
     end
 
     on(manager.triggers["Scene_Update"]) do _
@@ -411,12 +418,12 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         manager.widgets["X-Axis"].selection, manager.widgets["Y-Axis"].selection,
         manager.widgets["Z-Axis"].selection, manager.widgets["U-Axis"].selection, manager.widgets["c"].selection
     ) do _...
-        if manager.state["Config_Just_Loaded"][]; return; end
+        if manager.state["Config_Just_Loaded"][] || manager.locks["Layout"]; return; end
         manager.triggers["Primitive_Rebuild"][] += 1
     end
     
     onany(manager.widgets["Base_Plot"].selection,manager.widgets["Plot_Style"].selection) do _,_
-        manager.locks["Layout"] = true
+        #manager.locks["Layout"] = true
     end
 
     on(manager.widgets["Layout_Apply"].clicks) do _
@@ -439,9 +446,69 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
             manager.triggers["Layout_Update"][] += 1
         end
     end
-
     rebuild_plot_layout!()
 end
+
+# Helper: Eulerian Extraction Dispatch
+function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+    ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
+    u_col = Any[]
+    valid_methods = String[]
+    
+    active_plot_axes_strs = string.(active_plot_axes_syms)
+
+    for m_name in local_methods
+        !haskey(data, m_name) && continue
+        pd = data[m_name]
+        p_idx = _build_param_indices(pd, mutated_sel_vals)
+        
+        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
+        if !isnothing(res)
+            p_axes, u_flat = res
+            for d in 1:length(active_plot_axes_syms)
+                push!(ax_cols[d], p_axes[d])
+            end
+            push!(u_col, u_flat)
+            push!(valid_methods, m_name)
+        end
+    end
+    return Tuple([ax_cols..., u_col]), valid_methods
+end
+
+# Helper: Lagrangian Extraction Dispatch
+function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    local DS = 1
+    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+    for m_name in local_methods
+        if haskey(data, m_name)
+            sim = _get_first_valid(data[m_name])
+            if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
+        end
+    end
+    
+    ax_cols = [Any[] for _ in 1:DS]
+    u_col = Any[]
+    valid_methods = String[]
+    
+    for m_name in local_methods
+        !haskey(data, m_name) && continue
+        pd = data[m_name]
+        p_idx = _build_param_indices(pd, mutated_sel_vals)
+        
+        res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
+        if !isnothing(res)
+            p_axes, u_flat = res
+            for d in 1:DS
+                push!(ax_cols[d], p_axes[d])
+            end
+            push!(u_col, u_flat)
+            push!(valid_methods, m_name)
+        end
+    end
+    return Tuple([ax_cols..., u_col]), valid_methods
+end
+
 function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface || T == :scatter2d_surface
     w = manager.widgets
@@ -587,79 +654,23 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     
                     mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
                     target_c_int = (is_compare && target == :Component) ? i : c_sel[]
-
                     local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
-                    valid_methods = String[]
-                    local data_tuples
                     
-                    # 1. Pipeline Routing
-                    if PLOT_MODE[] == :lagrangian
-                        local DS = 1
-                        for m_name in local_methods
-                            if haskey(data, m_name)
-                                sim = _get_first_valid(data[m_name])
-                                if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
-                            end
-                        end
-                        
-                        ax_cols = [Any[] for _ in 1:DS]
-                        u_col = Any[]
-                        
-                        for m_name in local_methods
-                            !haskey(data, m_name) && continue
-                            pd = data[m_name]
-                            p_idx = _build_param_indices(pd, mutated_sel_vals)
-                            
-                            res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
-                            if !isnothing(res)
-                                p_axes, u_flat = res
-                                for d in 1:DS
-                                    push!(ax_cols[d], p_axes[d])
-                                end
-                                push!(u_col, u_flat)
-                                push!(valid_methods, m_name)
-                            end
-                        end
-                        data_tuples = Tuple([ax_cols..., u_col])
-                    else
-                        active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
-                        ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
-                        u_col = Any[]
-                        
-                        active_plot_axes_strs = string.(active_plot_axes_syms) # Cast to String array purely for DataHandler
-
-                        for m_name in local_methods
-                            !haskey(data, m_name) && continue
-                            pd = data[m_name]
-                            p_idx = _build_param_indices(pd, mutated_sel_vals)
-                            
-                            res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
-                            if !isnothing(res)
-                                p_axes, u_flat = res
-                                for d in 1:length(active_plot_axes_syms)
-                                    push!(ax_cols[d], p_axes[d])
-                                end
-                                push!(u_col, u_flat)
-                                push!(valid_methods, m_name)
-                            end
-                        end
-                        data_tuples = Tuple([ax_cols..., u_col])
-                    end
-                    
+                    # Clean Val Dispatch Helper Call
+                    data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
                     isempty(valid_methods) && continue
                     
                     active_title_indices = if PLOT_MODE[] == :eulerian
                         active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
                         [findfirst(isequal(occursin("|", string(ax)) ? Symbol(split(string(ax), "|")[2]) : ax), manager.plot_vars) for ax in active_plot_axes_syms]
                     else
-                        spatial_axes = filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
+                        spatial_axes = isnothing(sim_data) ? Symbol[] : filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
                         filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                     end
                     
                     ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                     default_title = is_compare ? compare_labels[i] : ts
                     
-                    # Convert primary selected axes to Strings cleanly before initializing plot limits
                     x_str = x_sel[] == :None ? "disabled" : string(x_sel[])
                     y_str = y_sel[] == :None ? "disabled" : string(y_sel[])
                     z_str = z_sel[] == :None ? "disabled" : string(z_sel[])
@@ -668,17 +679,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_str, y_str, z_str, u_str, ts, Val(T), i)
                     axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
                     
-                    # 2. Safe Limit Synchronization (Unified for Eulerian & Lagrangian)
                     if !is_3d_axis
                         x_lims, y_lims = data_tuples[1], data_tuples[2]
-                        
                         safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-                        if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
-                            axes[i].xscale[] = identity
-                        end
-                        if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0
-                            axes[i].yscale[] = identity
-                        end
+                        if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
+                        if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
                         
                         set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                     end
@@ -692,7 +697,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     # =========================================================================
     # TIER 3: DATA SYNC
     # =========================================================================
-    data_sync_obs = onany(c_sel,selector_obs...) do c,sel_vals...
+    widget_to_sync_obs = onany(c_sel, selector_obs...) do _...
+        if manager.state["Config_Just_Loaded"][]
+            return
+        end
+        manager.triggers["Data_Sync"][] += 1
+    end
+
+    # 2. Main Logic listens ONLY to the Data_Sync trigger
+    data_sync_obs = on(manager.triggers["Data_Sync"]) do _
         @with_lock manager "Data" begin
             (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return
             if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return; end
@@ -703,80 +716,22 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
 
             (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
             
+            # Re-extract the values inside the trigger scope
+            sel_vals = [to_value(obs) for obs in selector_obs]
+            
             for i in 1:num_plots
                 mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
                 target_c_int = (is_compare && target == :Component) ? i : c_sel[]
-
                 local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
-                valid_methods = String[]
-                local data_tuples
                 
-                # 1. Pipeline Routing
-                if PLOT_MODE[] == :lagrangian
-                    local DS = 1
-                    for m_name in local_methods
-                        if haskey(data, m_name)
-                            sim = _get_first_valid(data[m_name])
-                            if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
-                        end
-                    end
-                    
-                    ax_cols = [Any[] for _ in 1:DS]
-                    u_col = Any[]
-                    
-                    for m_name in local_methods
-                        !haskey(data, m_name) && continue
-                        pd = data[m_name]
-                        p_idx = _build_param_indices(pd, mutated_sel_vals)
-                        
-                        res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
-                        if !isnothing(res)
-                            p_axes, u_flat = res
-                            for d in 1:DS
-                                push!(ax_cols[d], p_axes[d])
-                            end
-                            push!(u_col, u_flat)
-                            push!(valid_methods, m_name)
-                        end
-                    end
-                    data_tuples = Tuple([ax_cols..., u_col])
-                else
-                    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
-                    ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
-                    u_col = Any[]
-                    
-                    active_plot_axes_strs = string.(active_plot_axes_syms)
-
-                    for m_name in local_methods
-                        !haskey(data, m_name) && continue
-                        pd = data[m_name]
-                        p_idx = _build_param_indices(pd, mutated_sel_vals)
-                        
-                        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
-                        if !isnothing(res)
-                            p_axes, u_flat = res
-                            for d in 1:length(active_plot_axes_syms)
-                                push!(ax_cols[d], p_axes[d])
-                            end
-                            push!(u_col, u_flat)
-                            push!(valid_methods, m_name)
-                        end
-                    end
-                    data_tuples = Tuple([ax_cols..., u_col])
-                end
-                
+                data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
                 isempty(valid_methods) && continue
                 
                 if !is_3d_axis
                     x_lims, y_lims = data_tuples[1], data_tuples[2]
-                    
                     safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-                    if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0
-                        axes[i].xscale[] = identity
-                    end
-                    if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0
-                        axes[i].yscale[] = identity
-                    end
+                    if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
+                    if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
                     
                     set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
                 end
@@ -787,7 +742,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
                     [findfirst(isequal(occursin("|", string(ax)) ? Symbol(split(string(ax), "|")[2]) : ax), manager.plot_vars) for ax in active_plot_axes_syms]
                 else
-                    spatial_axes = filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
+                    spatial_axes = isnothing(sim_data) ? Symbol[] : filter(k -> k != sim_data.domain.time_dim, sim_data.domain.dim_keys)
                     filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                 end
                 
@@ -847,5 +802,5 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             _enforce_camera_lock!(axes, manager)
         end
     end
-    return ObserverFunction[prim_obs; data_sync_obs; ui_obs]
+    return ObserverFunction[prim_obs; widget_to_sync_obs; data_sync_obs; ui_obs]
 end
