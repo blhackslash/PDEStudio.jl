@@ -10,7 +10,7 @@ function run_smart_simulation(sim_func::Function, params::ParamDict; force_overw
         return NoSimData()
     end
     # Run the actual simulation
-    sim_data = Base.invokelatest(sim_func, params)
+    sim_data = sim_func(params)
     
     if !isnothing(sim_data)
         saveSimData(sim_data; overwrite=true)

@@ -12,7 +12,7 @@ export ParamDict, MethodDict, VariedDict, FixedDict
 export createParamDict, createMethodDict, createVariedDict, createSimData
 
 # Globals & Settings
-export _SAVE_ROOT_PATH, _SIM_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
+export _SAVE_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
 export set_save_path!, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
 export get_save_path, get_space_resolution, get_time_resolution, get_ref_resolution
 export register_stat!, delete_stat!, add_stat!, get_kept_dims, get_kept_indices

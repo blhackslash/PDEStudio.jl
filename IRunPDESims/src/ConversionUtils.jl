@@ -414,7 +414,8 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     spacing = ntuple(d -> (template.domain.maxs[d] - template.domain.mins[d]) / max(1, grid_shape[d] - 1), Val(D))
     ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
     
-    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, StatDict{M}())
+    # THE FIX: Add the exact solution to the stats dictionary
+    ram_data = ESimData{D, DS, M}(params, ref_domain, axes_list, u_exact, StatDict{M}(:Solution => u_exact))
     
     return ram_data
 end
@@ -457,5 +458,6 @@ function generate_reference_simdata(ref_func::Function, params::ParamDict, templ
     
     ref_domain = DomainInfo{D}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
     
-    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M}())
+    # THE FIX: Add the exact solution to the stats dictionary
+    return LSimData{D, DS, M}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M}(:Solution => u_ref))
 end

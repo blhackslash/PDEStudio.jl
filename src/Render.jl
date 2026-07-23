@@ -297,6 +297,36 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
 end
 
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_surface}, plot_idx::Int)
+    xs_slices, ys_slices, us_slices = data_tuples
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+    plotted_objects, labels_for_legend = [], String[]
+    
+    for (m_idx, label) in enumerate(active_methods)
+        cache = EulerianPlotCache()
+        
+        # Unpack the 2D grid and the scalar field
+        cache.obs_x.val = xs_slices[m_idx]
+        cache.obs_y.val = ys_slices[m_idx]
+        cache.obs_u.val = us_slices[m_idx]
+
+        # Extract standard styling mapped for comparing multiple surface lines
+        color = ui_app["colors"][][mod1(m_idx, length(ui_app["colors"][]))]
+        lw    = ui_app["line_width"][]
+        
+        # Makie's contour3d! renderer expects X, Y, and Z (which is our U scalar field)
+        cs = contour3d!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
+                        levels=ui_app["levels"][], color=color, linewidth=lw)
+        
+        cache.primitives[:contour_surface] = cs
+        cache_dict[label] = cache
+
+        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
+        push!(labels_for_legend, label)
+    end
+end
+
 # -----------------------------------------------------------------------------
 # 3D PRIMITIVES
 # -----------------------------------------------------------------------------
@@ -350,30 +380,78 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     create_or_update_colorbar!(plot_layout, l3d, manager, cr_obs, label, plot_idx)
 end
 
-# =============================================================================
-# STRICT LAGRANGIAN PRIMITIVES (Scatters)
-# =============================================================================
+# -----------------------------------------------------------------------------
+# 3D PRIMITIVES
+# -----------------------------------------------------------------------------
 
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int)
+    xs_slices, ys_slices, zs_slices, us_slices = data_tuples
+    ui_app = manager.ui["Plot-Style"]
+    cache_dict = manager.caches[plot_idx]
+
+    # Use the base method since layering volumetric colormaps is visually chaotic
+    base_idx = get_base_method_index(ui_app, active_methods)
+    label = active_methods[base_idx]
+    
+    cache = EulerianPlotCache()
+    
+    # Use extrema() to define the bounding box for VolumeLike conversion
+    cache.obs_x.val = extrema(xs_slices[base_idx])
+    cache.obs_y.val = extrema(ys_slices[base_idx])
+    cache.obs_z.val = extrema(zs_slices[base_idx])
+    cache.obs_u.val = us_slices[base_idx]
+    
+    # Establish color range
+    valid_u = filter(isfinite, cache.obs_u[])
+    cr_obs = get_colorrange(ui_app, valid_u)
+
+    # True 3D volumetric contour uses Makie's contour! with 4 arguments
+    ct3d = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; 
+                    colormap=ui_app["color_map"][], colorrange=cr_obs, levels=ui_app["levels"][])
+    
+    cache.primitives[:contour3d] = ct3d
+    cache_dict[label] = cache
+    create_or_update_colorbar!(plot_layout, ct3d, manager, cr_obs, label, plot_idx)
+end
 # =============================================================================
-# STRICT LAGRANGIAN PRIMITIVES (2D / 3D Scatters)
+# HYBRID 2D/3D PRIMITIVES (Eulerian Grids and Lagrangian Particles)
 # =============================================================================
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
-    pts_slices, us_slices = data_tuples
+    is_eul = PLOT_MODE[] == :eulerian
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     
-    cache = LagrangianPlotCache()
-    cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u.val     = us_slices[base_idx]
+    cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
 
-    valid_u = filter(isfinite, cache.obs_u[])
+    # Conditionally unpack data and create observable hooks for point clouds
+    if is_eul
+        xs_slices, ys_slices, us_slices = data_tuples
+        cache.obs_x.val = xs_slices[base_idx]
+        cache.obs_y.val = ys_slices[base_idx]
+        cache.obs_u.val = us_slices[base_idx]
+        
+        # Flatten the Eulerian grid into 2D Points
+        pts_2d = lift(cache.obs_x, cache.obs_y) do xs, ys
+            vec([Point2f(xs[i], ys[j]) for i in eachindex(xs), j in eachindex(ys)])
+        end
+        vals_1d = lift(vec, cache.obs_u)
+    else
+        pts_slices, us_slices = data_tuples
+        cache.obs_pts.val = pts_slices[base_idx]
+        cache.obs_u.val   = us_slices[base_idx]
+        
+        pts_2d = cache.obs_pts
+        vals_1d = cache.obs_u
+    end
+
+    valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, cache.obs_pts; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
     
     cache.primitives[:scatter2d] = sc
     cache_dict[label] = cache
@@ -383,29 +461,44 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
-    pts_slices, us_slices = data_tuples
+    is_eul = PLOT_MODE[] == :eulerian
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     
-    cache = LagrangianPlotCache()
-    cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u.val     = us_slices[base_idx]
+    cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
 
-    valid_u = filter(isfinite, cache.obs_u[])
+    # Conditionally unpack data and create observable hooks for point clouds
+    if is_eul
+        xs_slices, ys_slices, zs_slices, us_slices = data_tuples
+        cache.obs_x.val = xs_slices[base_idx]
+        cache.obs_y.val = ys_slices[base_idx]
+        cache.obs_z.val = zs_slices[base_idx]
+        cache.obs_u.val = us_slices[base_idx]
+        
+        # Flatten the 3D Eulerian grid into 3D Points
+        pts_3d = lift(cache.obs_x, cache.obs_y, cache.obs_z) do xs, ys, zs
+            vec([Point3f(xs[i], ys[j], zs[k]) for i in eachindex(xs), j in eachindex(ys), k in eachindex(zs)])
+        end
+        vals_1d = lift(vec, cache.obs_u)
+    else
+        pts_slices, us_slices = data_tuples
+        cache.obs_pts.val = pts_slices[base_idx]
+        cache.obs_u.val   = us_slices[base_idx]
+        
+        pts_3d = cache.obs_pts
+        vals_1d = cache.obs_u
+    end
+
+    valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, cache.obs_pts; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
     
     cache.primitives[:scatter3d] = sc
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
 end
-
-
-# =============================================================================
-# HYBRID 1D PRIMITIVES (Supports both Eulerian Grids and Lagrangian Particles)
-# =============================================================================
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
     ui_app = manager.ui["Plot-Style"]

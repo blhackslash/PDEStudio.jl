@@ -2,6 +2,17 @@ function allMethodNames(config::SimulationConfig)
     return sort_methods_robust(collect(keys(config.methods_dict)))
 end
 
+function is_reference_method(m_name::String)
+    lm = lowercase(m_name)
+    return any(k -> occursin(k, lm), ["analytic", "reference", "exact", "baseline", "true"])
+end
+
+function _get_first_valid(pd)
+    isempty(pd.data) && return nothing
+    valid_data = filter(!isnothing, pd.data)
+    return isempty(valid_data) ? nothing : first(valid_data)
+end
+
 # ==============================================================================
 # --- VALIDATION & SLIDER MAPPING ---
 # ==============================================================================
@@ -515,7 +526,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 5. Extract Reference Name explicitly from Config
     ref_name = nothing
     if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
-        csv_ref = get(parsed_csv["Config"]["General"], "reference_func", "none")
+        csv_ref = String(get(parsed_csv["Config"]["General"], "reference_func", :none))
         if csv_ref != "none" && !isempty(csv_ref)
             ref_name = csv_ref
         end
@@ -524,7 +535,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 6. Resolve the Analytical Solution Factory
     ref_func = nothing
     if !isnothing(ref_name)
-        # Convert the UI string back to a safe function name
+        # Convert the UI string back to a safe function name string
         safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
         
         ref_factory = try
@@ -533,9 +544,9 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
             nothing
         end
         
-        # Instantiate the exact mathematical closure using the loaded shared parameters
         if !isnothing(ref_factory)
-            ref_func = Base.invokelatest(ref_factory, shared_params)
+            # THE FIX: Pure execution! The function is already known to the compiler.
+            ref_func = ref_factory(shared_params)
             
             # --- Auto-Inject the Reference Method! ---
             ns = nice_string(safe_ref_name)
@@ -544,29 +555,27 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
             end
             if !(ns in default_methods)
                 push!(default_methods, ns)
-                # THE FIX: Re-sort after injecting the reference!
                 default_methods = sort_methods_robust(default_methods)
             end
-            
         else
             @warn "Failed to resolve reference function: $safe_ref_name"
         end
     end
 
     # 7. Construct and return the SimulationConfig
-    sim_name_str = parsed_csv["Config"]["General"]["simulation_func"]
+    sim_func_str = String(parsed_csv["Config"]["General"]["simulation_func"])
     
+    # We pass strings here; the SimulationConfig constructor will cast them to Symbols natively.
     return SimulationConfig(
-        sim_func,
-        sim_name_str, # THE FIX
-        ref_func,
-        ref_name,
+        sim_func_str, # Passes the string name
+        ref_name,     # Passes the string name (or nothing)
         shared_params,
         methods_dict,
-        default_methods,
-        varied_params
+        default_methods;
+        varied_params = varied_params
     )
 end
+
 function smart_parse_csv_value(val_str::String)
     val_str = strip(val_str)
     

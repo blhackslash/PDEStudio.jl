@@ -164,9 +164,7 @@ function _setup_hierarchy_interactions!(manager::PlotManager)
         
         raw_keys = sort(collect(keys(data[scope])))
         if scope == "Plot-Style"
-            base_sel  = manager.widgets["Base_Plot"].selection[]
-            style_sel = manager.widgets["Plot_Style"].selection[]
-            ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+            ptype = manager.widgets["Plot_Style"].selection[]
             
             valid_keys = get(STYLE_DEPENDENCIES, ptype, raw_keys)
             filter!(k -> k in valid_keys, raw_keys)
@@ -284,9 +282,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
-        base_sel  = manager.widgets["Base_Plot"].selection[]
-        style_sel = manager.widgets["Plot_Style"].selection[]
-        ptype_sym = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+        ptype_sym = manager.widgets["Plot_Style"].selection[]
         
         local_data_obs = Observable(plot_data_obs[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, manager, Val(ptype_sym))
@@ -457,7 +453,6 @@ function _get_active_sim_data(plot_data_dict)
     isempty(plot_data_dict) && return nothing, nothing
     pd_first = first(values(plot_data_dict))
     
-    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
     sim_data = _get_first_valid(pd_first)
     
     return pd_first, sim_data
@@ -608,8 +603,8 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
         (isnothing(base_type) || base_type == :None) && return
         manager.locks["Layout"] = true 
         active_dict = PLOT_MODE[] == :lagrangian ? LAGRANGIAN_PLOT_STYLE_OPTIONS : EULERIAN_PLOT_STYLE_OPTIONS
-        valid_styles = get(active_dict, base_type, Any[("1D", :one_d)])
-        update_menu_safe!(w["Plot_Style"], valid_styles; fallbacks=[:one_d], force_notify=false)
+        valid_styles = get(active_dict, base_type, Any[("1D", :lines)])
+        update_menu_safe!(w["Plot_Style"], valid_styles; fallbacks=[:lines], force_notify=false)
         notify(manager.widgets["Editor_Scope"].selection)
     end
     
@@ -632,7 +627,6 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             if n_params > 0; manager.plot_vars[1:n_params] .= Symbol.(pd_first.active_param_keys); end
             dim_names = manager.plot_vars
             
-            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             sim_data = _get_first_valid(pd_first)
             isnothing(sim_data) && return
             
@@ -674,7 +668,7 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             end
             update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=[:None], force_notify=false)
 
-            ptype = get(PLOT_ROUTING_MATRIX, (base_sel, style_sel), :lines)
+            ptype = manager.widgets["Plot_Style"].selection[]
             p_dim = PLOT_DIM_MAP[ptype]
             
             function build_axis_opts(excluded_syms)
@@ -725,7 +719,6 @@ function _setup_eulerian_data_sync!(manager::PlotManager, plot_data_obs::Observa
             isempty(plot_data_dict) && return
 
             pd_first = first(values(plot_data_dict))
-            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             sim_data = _get_first_valid(pd_first)
             isnothing(sim_data) && return
             
@@ -784,7 +777,6 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
             isempty(plot_data_dict) && return
             
             pd_first = first(values(plot_data_dict))
-            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             l_data = _get_first_valid(pd_first)
             isnothing(l_data) && return
             
@@ -800,15 +792,15 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
             
             update_menu_safe!(w["X-Axis"], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
-                update_menu_safe!(w["Plot_Style"], Any[("1D", :one_d), ("Lines", :lines), ("Colors", :colors)]; fallbacks=[:one_d], force_notify=false)
+                update_menu_safe!(w["Plot_Style"], Any[("1D", :scatter1d), ("Lines", :scatterlines), ("Colors", :scattercolors)]; fallbacks=[:scatter1d], force_notify=false)
                 update_menu_safe!(w["Y-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
                 update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
             elseif D == 2
-                update_menu_safe!(w["Plot_Style"], Any[("2D", :two_d), ("2D (Surface)", :surface2D)]; fallbacks=[:two_d], force_notify=false)
+                update_menu_safe!(w["Plot_Style"], Any[("2D", :scatter2d), ("2D (Surface)", :scatter2d_surface)]; fallbacks=[:scatter2d], force_notify=false)
                 update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
                 update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
             else
-                update_menu_safe!(w["Plot_Style"], Any[("3D", :three_d)]; fallbacks=[:three_d], force_notify=false)
+                update_menu_safe!(w["Plot_Style"], Any[("3D", :scatter3d)]; fallbacks=[:scatter3d], force_notify=false)
                 update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
                 update_menu_safe!(w["Z-Axis"], Any[(string(sz), sz)]; fallbacks=[sz])
             end
@@ -842,7 +834,6 @@ function _setup_lagrangian_data_sync!(manager::PlotManager, plot_data_obs::Obser
             isempty(plot_data_dict) && return
             
             pd_first = first(values(plot_data_dict))
-            _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
             l_data = _get_first_valid(pd_first)
             isnothing(l_data) && return
             

@@ -199,7 +199,7 @@ function launch_plotter()
         
     if isnothing(ACTIVE_SIM_CONFIG[])
         ACTIVE_SIM_CONFIG[] = SimulationConfig(
-            dummy_simulation_function,"none", nothing, "none", ParamDict(), MethodDict(), String[], VariedDict()
+            dummy_simulation_function,:none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict()
         )
     end
 
@@ -319,7 +319,7 @@ function launch_plotter()
     on(manager.triggers["Simulation_Update"]) do _
         curr_config = ACTIVE_SIM_CONFIG[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
-        Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = true)
+        update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
         
         notify(plot_data_obs)
         notify(manager.state["Active_Axes"])
@@ -344,17 +344,13 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 
     render_observers = ObserverFunction[]
 
-    # Quick helper to extract a valid simulation for dimension checking
-    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
-
     function rebuild_plot_layout!()
         if get(manager.state, "Camera_Locked", Observable(false))[] && !manager.state["Config_Just_Loaded"][]
             extract_and_store_camera_state!(plot_layout)
         end
 
-        base_sel  = manager.widgets["Base_Plot"].selection[]
         style_sel = manager.widgets["Plot_Style"].selection[]
-        ptype_sym = PLOT_ROUTING_MATRIX[(base_sel, style_sel)]
+        ptype_sym = style_sel
 
         if PLOT_MODE[] == :lagrangian && !isempty(plot_data_obs[])
             pd = first(values(plot_data_obs[]))
@@ -394,7 +390,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Layout" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
+                update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
             end
             rebuild_plot_layout!()
         end
@@ -408,7 +404,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         @with_lock manager "Scene" begin
             curr_config = ACTIVE_SIM_CONFIG[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                Base.invokelatest(update_plot_data_collection!, plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
+                update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
             end
         end
         manager.triggers["Primitive_Rebuild"][] += 1
@@ -479,7 +475,6 @@ end
 # Helper: Lagrangian Extraction Dispatch
 function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
     local DS = 1
-    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
     for m_name in local_methods
         if haskey(data, m_name)
             sim = _get_first_valid(data[m_name])
@@ -510,7 +505,7 @@ function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_p
 end
 
 function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
-    is_3d_axis = PLOT_DIM_MAP[T] == 3 || T == :surface || T == :scatter2d_surface
+    is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     w = manager.widgets
     rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
     CT = PLOT_MODE[] == :eulerian ? EulerianPlotCache : LagrangianPlotCache
@@ -530,8 +525,6 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     link_mode = w["Compare_Link"].selection[]
     
     num_plots, compare_labels, compare_vals = 1, String[], Any[]
-    
-    _get_first_valid(pd) = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
 
     plot_data_dict = plot_data_obs[]
     sim_data = nothing

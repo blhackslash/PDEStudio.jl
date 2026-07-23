@@ -1,60 +1,39 @@
-const UIType = Union{Symbol,MethodDict}
-const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour3d)
-const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :scatter2d_surface, :contourf, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
+const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour_surface)
+const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :scatter2d_surface, :contourf, :contour3d, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
+
+is_surface(T::Symbol) = contains(String(T),"surface")
 
 # --- 1. ROUTING & DIMENSIONALITY ---
 const PLOT_DIM_MAP = Dict(
-    :lines        => 1,
-    :scatter1d    => 1,
-    :scatterlines => 1,
-    :scattercolors=> 1,
-    :lines2d      => 2,
-    :heatmap      => 2,
-    :contour      => 2,
-    :contour_cmap => 2, 
-    :contourf     => 2,
-    :scatter2d    => 2,
-    :scatter2d_surface => 2,
-    :surface      => 2,
-    :lines3d      => 3,
-    :contour3d    => 3,
-    :scatter3d    => 3,
-    :volume       => 3
+    :lines              => 1,
+    :scatter1d          => 1,
+    :scatterlines       => 1,
+    :scattercolors      => 1,
+    :lines2d            => 2,
+    :heatmap            => 2,
+    :contour            => 2,
+    :contour_cmap       => 2, 
+    :contourf           => 2,
+    :scatter2d          => 2,
+    :scatter2d_surface  => 2,
+    :surface            => 2,
+    :contour_surface    => 2,
+    :contour3d          => 3,
+    :lines3d            => 3,
+    :scatter3d          => 3,
+    :volume             => 3,
 )
 
-# THE FIX: Menus strictly use Tuple{String, Symbol} for display vs internal logic
 const EULERIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
-    :lines   => Any[("1D", :one_d), ("2D", :two_d), ("3D", :three_d)],
-    :scatter => Any[("1D", :one_d), ("Lines", :lines), ("Colors", :colors)],
-    :contour => Any[("Lines", :lines), ("Colormap", :colormap), ("Filled", :filled), ("3D", :three_d)],
-    :heatmap => Any[("Flat", :flat), ("Surface", :surface)],
-    :volume  => Any[("3D Cloud", :cloud3D)]
+    :lines   => Any[("1D", :lines), ("2D", :lines2d), ("3D", :lines3d)],
+    :scatter => Any[("1D", :scatter1d), ("Lines", :scatterlines), ("Colors", :scattercolors), ("2D", :scatter2d), ("3D", :scatter3d)],
+    :contour => Any[("Lines", :contour), ("Colormap", :contour_cmap), ("Filled", :contourf), ("Surface", :contour_surface), ("3D", :contour3d)],
+    :heatmap => Any[("Flat", :heatmap), ("Surface", :surface)],
+    :volume  => Any[("3D Cloud", :volume)]
 )
 
 const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
-    :scatter => Any[("1D", :one_d), ("2D", :two_d), ("2D (Surface)", :surface2D), ("3D", :three_d), ("Lines", :lines), ("Colors", :colors)] 
-)
-
-const PLOT_ROUTING_MATRIX = Dict{Tuple{Symbol, Symbol}, Symbol}(
-    # Eulerian
-    (:lines, :one_d)           => :lines,
-    (:lines, :two_d)           => :lines2d,
-    (:scatter, :surface2D)  => :scatter2d_surface,
-    (:lines, :three_d)           => :lines3d,
-    (:contour, :lines)      => :contour,
-    (:contour, :colormap)   => :contour_cmap, 
-    (:contour, :filled)     => :contourf,
-    (:contour, :three_d)         => :contour3d,
-    (:heatmap, :flat)       => :heatmap,
-    (:heatmap, :surface)    => :surface,
-    (:volume, :cloud3D)     => :volume,
-    
-    # Lagrangian
-    (:scatter, :one_d)         => :scatter1d,
-    (:scatter, :two_d)         => :scatter2d,
-    (:scatter, :three_d)         => :scatter3d,
-    (:scatter, :lines)      => :scatterlines,
-    (:scatter, :colors)     => :scattercolors,
+    :scatter => Any[("1D", :scatter1d), ("2D", :scatter2d), ("2D (Surface)", :scatter2d_surface), ("3D", :scatter3d), ("Lines", :scatterlines), ("Colors", :scattercolors)] 
 )
 
 const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
@@ -73,6 +52,7 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{String}}(
     :contour      => ["colors", "levels", "line_width", "labels"],
     :contour_cmap => ["color_map", "color_range", "levels", "line_width", "labels", "bottom_margin", "method_index"],
     :contourf     => ["color_map", "color_range", "levels", "method_index", "rasterize", "bottom_margin"],
+    :contour_surface => ["colors", "levels", "line_width", "labels"],
     :heatmap      => ["color_map", "color_range", "rasterize", "bottom_margin", "method_index"],
     :surface      => ["color_map", "color_range", "rasterize", "method_index"],
     :volume       => ["color_map", "color_range", "rasterize", "method_index"],
@@ -209,10 +189,10 @@ function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
     if dim == 1
         ui["X-Axis"] = master["X-Axis-1D"]
         ui["Y-Axis"] = master["Y-Axis-1D"]
-    elseif dim == 2 && !(plot_type==:surface || plot_type==:scatter2d_surface)
+    elseif dim == 2 && !is_surface(plot_type)
         ui["X-Axis"] = master["X-Axis-ND"]
         ui["Y-Axis"] = master["Y-Axis-ND"]
-    elseif dim == 3 || plot_type==:surface || plot_type==:scatter2d_surface
+    elseif dim == 3 || is_surface(plot_type)
         ui["X-Axis"] = master["X-Axis-ND"]
         ui["Y-Axis"] = master["Y-Axis-ND"]
         ui["Z-Axis"] = master["Z-Axis-3D"]
@@ -240,7 +220,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             scene_opt["X-Axis_Selection"]      = :Ns__1
             scene_opt["U-Axis_Selection"]      = :relative_l2error
             layout_opt["Base_Plot_Selection"]  = :lines
-            layout_opt["Plot_Style_Selection"] = :one_d
+            layout_opt["Plot_Style_Selection"] = :lines # Updated from :one_d
             scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "log_scale", true)
@@ -276,7 +256,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             
         elseif preset == :heatmap
             layout_opt["Base_Plot_Selection"]  = :heatmap
-            layout_opt["Plot_Style_Selection"] = :flat
+            layout_opt["Plot_Style_Selection"] = :heatmap # Updated from :flat
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)

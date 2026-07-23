@@ -1,6 +1,7 @@
 function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
     for (m_name, params) in sim_config.methods_dict
-        if contains(safe_string(m_name), "analytic") || contains(safe_string(m_name), "reference"); continue; end
+        # Replace the old 'contains' check with this:
+        if is_reference_method(m_name); continue; end
         
         base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
         ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
@@ -56,7 +57,7 @@ function create_plot_data(
     grid_dims = isempty(active_values) ? (1,) : Tuple(length.(active_values))
     data_store = Array{Union{Nothing, AbstractSimData}, length(grid_dims)}(nothing, grid_dims...)
 
-    is_reference = contains(safe_string(method_name), "analytic") || contains(safe_string(method_name), "reference")
+    is_reference = is_reference_method(method_name)
     base_template = _get_template_simdata(sim_config, sim_fixes)
 
     for (k, params) in enumerate(tasks)
@@ -65,7 +66,12 @@ function create_plot_data(
         sim_data = if is_reference && !isnothing(base_template)
             IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
-            try loadSimData(params, Val(PLOT_MODE[])) catch; nothing end
+            try 
+                loadSimData(params, Val(PLOT_MODE[])) 
+            catch e
+                @warn "Simulation failed for parameters: $params" exception=(e, catch_backtrace())
+                nothing 
+            end
         end
         
         if !isnothing(sim_data) && validate_plot_dimensions(sim_data)
@@ -234,7 +240,6 @@ function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotM
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
-            if isempty(base_params); continue end
             
             shared_ui = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
             method_ui = haskey(manager.simulation, m_name) ? ParamDict(k => v[] for (k, v) in manager.simulation[m_name]) : ParamDict()
@@ -243,7 +248,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotM
             for (k, v) in shared_ui; k == "ignore" && continue; fixed_params[k] = v; end
             for (k, v) in method_ui; k == "ignore" && continue; fixed_params[k] = v; end
             
-            new_data = Base.invokelatest(create_plot_data, m_name, base_params, sim_config, fixed_params)
+            new_data = create_plot_data(m_name, base_params, sim_config, fixed_params)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end

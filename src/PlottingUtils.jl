@@ -397,85 +397,66 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{
 end
 
 function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
-    ui_gen = manager.ui["Axis-General"]
-    ui_lbl = manager.ui["Labels"]
-    ui_x   = manager.ui["X-Axis"]
-    ui_y   = manager.ui["Y-Axis"]
+    gen = manager.ui["Axis-General"]
+    lbl = manager.ui["Labels"]
+    x_ui, y_ui = manager.ui["X-Axis"], manager.ui["Y-Axis"]
 
-    ax.xlabel = ui_lbl["x_label"][] == "default" ? def_x : ui_lbl["x_label"][]
-    ax.ylabel = ui_lbl["y_label"][] == "default" ? def_y : ui_lbl["y_label"][]
-    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+    # Labels and Titles
+    ax.xlabel = lbl["x_label"][] == "default" ? def_x : lbl["x_label"][]
+    ax.ylabel = lbl["y_label"][] == "default" ? def_y : lbl["y_label"][]
+    ax.title  = lbl["title"][]   == "default" ? def_title : lbl["title"][]
 
-    ax.titlesize = ui_gen["title_size"][]
-    ax.xlabelsize = ui_gen["label_size"][]
-    ax.ylabelsize = ui_gen["label_size"][]
-    ax.xticklabelsize = ui_gen["ticklabel_size"][]
-    ax.yticklabelsize = ui_gen["ticklabel_size"][]
+    # Fonts
+    ax.titlesize = gen["title_size"][]
+    ax.xlabelsize = ax.ylabelsize = gen["label_size"][]
+    ax.xticklabelsize = ax.yticklabelsize = gen["ticklabel_size"][]
 
-    if haskey(ui_x, "label_offset")
-        ax.xlabelpadding = ui_x["label_offset"][]
-    end
-    if haskey(ui_y, "label_offset")
-        ax.ylabelpadding = ui_y["label_offset"][]
-    end
+    # Visibility & Padding
+    haskey(x_ui, "label_offset") && (ax.xlabelpadding = x_ui["label_offset"][])
+    haskey(y_ui, "label_offset") && (ax.ylabelpadding = y_ui["label_offset"][])
     
-    ax.xgridvisible = ui_x["grid_visibility"][]
-    ax.ygridvisible = ui_y["grid_visibility"][]
-    ax.xticklabelsvisible = ui_x["tick_label_visibility"][]
-    ax.yticklabelsvisible = ui_y["tick_label_visibility"][]
+    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"][], x_ui["tick_label_visibility"][]
+    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"][], y_ui["tick_label_visibility"][]
 
-    if ui_x["tick_count"][] > 0
-        ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(ui_x["tick_count"][])) : LinearTicks(ui_x["tick_count"][])
-    end
-    if ui_y["tick_count"][] > 0
-        ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(ui_y["tick_count"][])) : LinearTicks(ui_y["tick_count"][])
-    end
+    # Ticks
+    x_ui["tick_count"][] > 0 && (ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(x_ui["tick_count"][])) : LinearTicks(x_ui["tick_count"][]))
+    y_ui["tick_count"][] > 0 && (ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(y_ui["tick_count"][])) : LinearTicks(y_ui["tick_count"][]))
 
-    x_offset = ui_x["scale_offset"][]
-    if x_offset != 0.0
-        ax.xtickformat = ticks -> map(x -> "$(round(x_offset, sigdigits=3)) + $(@sprintf("%.1e", x - x_offset))", ticks)
-    else
-        ax.xtickformat = ui_x["tick_format"][] == "default" ? Makie.automatic : ui_x["tick_format"][]
-    end
+    # X Tick Formats
+    x_off = x_ui["scale_offset"][]
+    ax.xtickformat = x_off != 0.0 ? (t -> map(v -> "$(round(x_off, sigdigits=3)) + $(@sprintf("%.1e", v - x_off))", t)) : (x_ui["tick_format"][] == "default" ? Makie.automatic : x_ui["tick_format"][])
 
-    y_offset = ui_y["scale_offset"][]
-    if y_offset != 0.0
-        ax.ytickformat = ticks -> map(ticks) do y
-            dev = y - y_offset
-            "$(round(y_offset, sigdigits=3)) $(dev < 0 ? "-" : "+") $(@sprintf("%.1e", abs(dev)))"
-        end
-    else
-        ax.ytickformat = ui_y["tick_format"][] == "default" ? Makie.automatic : ui_y["tick_format"][]
-    end
+    # Y Tick Formats
+    y_off = y_ui["scale_offset"][]
+    ax.ytickformat = y_off != 0.0 ? (t -> map(v -> "$(round(y_off, sigdigits=3)) $(v - y_off < 0 ? "-" : "+") $(@sprintf("%.1e", abs(v - y_off)))", t)) : (y_ui["tick_format"][] == "default" ? Makie.automatic : y_ui["tick_format"][])
 end
 
 function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y::String, def_z::String, def_title::String)
-    ui_gen = manager.ui["Axis-General"]
-    ui_lbl = manager.ui["Labels"]
-    ui_x, ui_y, ui_z = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
+    gen = manager.ui["Axis-General"]
+    lbl = manager.ui["Labels"]
+    x_ui, y_ui, z_ui = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
 
-    ax.xlabel = ui_lbl["x_label"][] == "default" ? def_x : ui_lbl["x_label"][]
-    ax.ylabel = ui_lbl["y_label"][] == "default" ? def_y : ui_lbl["y_label"][]
-    ax.zlabel = ui_lbl["z_label"][] == "default" ? def_z : ui_lbl["z_label"][]
-    ax.title  = ui_lbl["title"][] == "default" ? def_title : ui_lbl["title"][]
+    # Labels and Titles
+    ax.xlabel = lbl["x_label"][] == "default" ? def_x : lbl["x_label"][]
+    ax.ylabel = lbl["y_label"][] == "default" ? def_y : lbl["y_label"][]
+    ax.zlabel = lbl["z_label"][] == "default" ? def_z : lbl["z_label"][]
+    ax.title  = lbl["title"][]   == "default" ? def_title : lbl["title"][]
 
-    ax.titlesize = ui_gen["title_size"][]
-    ax.xlabelsize = ui_gen["label_size"][]; ax.ylabelsize = ui_gen["label_size"][]; ax.zlabelsize = ui_gen["label_size"][]
-    ax.xticklabelsize = ui_gen["ticklabel_size"][]; ax.yticklabelsize = ui_gen["ticklabel_size"][]; ax.zticklabelsize = ui_gen["ticklabel_size"][]
+    # Fonts
+    ax.titlesize = gen["title_size"][]
+    ax.xlabelsize = ax.ylabelsize = ax.zlabelsize = gen["label_size"][]
+    ax.xticklabelsize = ax.yticklabelsize = ax.zticklabelsize = gen["ticklabel_size"][]
 
-    ax.xgridvisible = ui_x["grid_visibility"][]; ax.ygridvisible = ui_y["grid_visibility"][]; ax.zgridvisible = ui_z["grid_visibility"][]
-    ax.xticklabelsvisible = ui_x["tick_label_visibility"][]; ax.yticklabelsvisible = ui_y["tick_label_visibility"][]; ax.zticklabelsvisible = ui_z["tick_label_visibility"][]
+    # Visibility & Offset
+    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"][], x_ui["tick_label_visibility"][]
+    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"][], y_ui["tick_label_visibility"][]
+    ax.zgridvisible, ax.zticklabelsvisible = z_ui["grid_visibility"][], z_ui["tick_label_visibility"][]
 
-    if haskey(ui_x, "label_offset")
-        ax.xlabeloffset = ui_x["label_offset"][]
-    end
-    if haskey(ui_y, "label_offset")
-        ax.ylabeloffset = ui_y["label_offset"][]
-    end
-    if haskey(ui_z, "label_offset")
-        ax.zlabeloffset = ui_z["label_offset"][]
-    end
+    haskey(x_ui, "label_offset") && (ax.xlabeloffset = x_ui["label_offset"][])
+    haskey(y_ui, "label_offset") && (ax.ylabeloffset = y_ui["label_offset"][])
+    haskey(z_ui, "label_offset") && (ax.zlabeloffset = z_ui["label_offset"][])
 
+    # Axis3 specifics
     ax.perspectiveness = 0.5
     if !get(manager.state, "Camera_Locked", Observable(false))[]
         ax.aspect = (1, 1, 0.6)
@@ -519,15 +500,21 @@ end
 
 plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
 
-function _apply_axis_styles!(ax, manager, T)
-    x, y, z = manager.widgets["X-Axis"].selection[], manager.widgets["Y-Axis"].selection[], manager.widgets["Z-Axis"].selection[]
-    t = ax.title[]
-    if T == :surface || T == :scatter2d_surface || PLOT_DIM_MAP[T] == 3
-        set_axis_styles!(ax, manager, string(x), string(y), string(z == "disabled" ? manager.widgets["U-Axis"].selection[] : z), t)
-    elseif PLOT_DIM_MAP[T] == 1
-        set_axis_styles!(ax, manager, string(x), string(manager.widgets["U-Axis"].selection[]), t)
-    else
-        set_axis_styles!(ax, manager, string(x), string(y), t)
+function _apply_axis_styles!(ax, manager::PlotManager, T::Symbol)
+    x = string(manager.widgets["X-Axis"].selection[])
+    y = string(manager.widgets["Y-Axis"].selection[])
+    z = string(manager.widgets["Z-Axis"].selection[])
+    u = string(manager.widgets["U-Axis"].selection[])
+    
+    dim = PLOT_DIM_MAP[T] # Gets the true mathematical dimension
+    def_title = ax.title[]
+    
+    if ax isa Axis
+        def_y = dim == 1 ? u : y
+        set_axis_styles!(ax, manager, x, def_y, def_title)
+    elseif ax isa Axis3
+        def_z = dim == 2 ? u : z
+        set_axis_styles!(ax, manager, x, y, def_z, def_title)
     end
 end
 
@@ -616,12 +603,12 @@ function _enforce_camera_lock!(axes::Vector, manager::PlotManager)
             for (i, ax) in enumerate(axes)
                 if ax isa Axis && haskey(cam_opts, "Axis_$(i)_Limits")
                     l = cam_opts["Axis_$(i)_Limits"]
-                    try limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4])) catch; end
+                    try limits!(ax, l[1], l[2], l[3], l[4]) catch; end
                 elseif ax isa Axis3
                     try
                         if haskey(cam_opts, "Axis_$(i)_Limits3D")
                             l = cam_opts["Axis_$(i)_Limits3D"]
-                            limits!(ax, Float32(l[1]), Float32(l[2]), Float32(l[3]), Float32(l[4]), Float32(l[5]), Float32(l[6]))
+                            limits!(ax, l[1], l[2], l[3], l[4], l[5], l[6])
                         end
                         if haskey(cam_opts, "Axis_$(i)_Azimuth")
                             ax.azimuth[] = Float32(cam_opts["Axis_$(i)_Azimuth"])
