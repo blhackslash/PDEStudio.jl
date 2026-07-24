@@ -1,11 +1,11 @@
-function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
+function _get_template_simdata(sim_config::SimulationConfig)
     for (m_name, params) in sim_config.methods_dict
-        # Replace the old 'contains' check with this:
         if is_reference_method(m_name); continue; end
-        
         base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
         ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
-        tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)), fixed_params; ignore_keys=ik)
+        
+        # Backend still requires an empty ParamDict for sim_fixes[cite: 18]
+        tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)), ParamDict(); ignore_keys=ik)
         
         if !isempty(tasks)
             try
@@ -17,48 +17,33 @@ function _get_template_simdata(sim_config::SimulationConfig, fixed_params::Dict)
     return nothing
 end
 
-function analyze_configuration(sim_config::SimulationConfig, fixed_params::FixedDict)
+function analyze_configuration(sim_config::SimulationConfig)
     all_varied = sim_config.varied_params
     active_keys = String[]
     active_values = Vector{Vector{Any}}()
-    sorted_keys = sort(collect(keys(all_varied)))
-    sim_fixes = FixedDict()
-
-    for key in sorted_keys
+    for key in sort(collect(keys(all_varied)))
         push!(active_keys, key)
         push!(active_values, all_varied[key])
     end
-
-    for (k, v) in fixed_params
-        if !(k in get_base_variables()) && !(k in sorted_keys)
-            sim_fixes[k] = v
-        end
-    end
-
-    return active_keys, active_values, sim_fixes
+    return active_keys, active_values
 end
 
 # ==============================================================================
 # --- MAIN TENSOR CREATION ROUTINE (Unified) ---
 # ==============================================================================
 
-function create_plot_data(
-    method_name::String, 
-    base_params::ParamDict,
-    sim_config::SimulationConfig, 
-    fixed_params::FixedDict
-)
-    active_keys, active_values, sim_fixes = analyze_configuration(sim_config, fixed_params)
-    
+function create_plot_data(method_name::String, base_params::ParamDict, sim_config::SimulationConfig)
+    active_keys, active_values = analyze_configuration(sim_config)
     ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
-    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys=ignore_keys)
+    
+    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, ParamDict(); ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
     grid_dims = isempty(active_values) ? (1,) : Tuple(length.(active_values))
     data_store = Array{Union{Nothing, AbstractSimData}, length(grid_dims)}(nothing, grid_dims...)
 
     is_reference = is_reference_method(method_name)
-    base_template = _get_template_simdata(sim_config, sim_fixes)
+    base_template = _get_template_simdata(sim_config)
 
     for (k, params) in enumerate(tasks)
         _recombine_tuples!(params)
@@ -66,12 +51,7 @@ function create_plot_data(
         sim_data = if is_reference && !isnothing(base_template)
             IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
-            try 
-                loadSimData(params, Val(PLOT_MODE[])) 
-            catch e
-                @warn "Simulation failed for parameters: $params" exception=(e, catch_backtrace())
-                nothing 
-            end
+            try loadSimData(params, Val(PLOT_MODE[])) catch e; nothing end
         end
         
         if !isnothing(sim_data) && validate_plot_dimensions(sim_data)
@@ -80,7 +60,8 @@ function create_plot_data(
         end
     end
 
-    return PlotSweepData{length(grid_dims)}(data_store, active_keys, active_values, fixed_params)
+    # Return PlotSweepData without fixed_params[cite: 18]
+    return PlotSweepData{length(grid_dims)}(data_store, active_keys, active_values)
 end
 
 # ==============================================================================
@@ -233,31 +214,17 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     
     return p_axes, u_flat
 end
-
 function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods; force_reload=false)
     if force_reload; empty!(plot_data_dict); end
-    
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
             base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
-            
-            shared_ui = ParamDict(k => v[] for (k, v) in manager.simulation["shared"])
-            method_ui = haskey(manager.simulation, m_name) ? ParamDict(k => v[] for (k, v) in manager.simulation[m_name]) : ParamDict()
-            
-            fixed_params = ParamDict()
-            for (k, v) in shared_ui; k == "ignore" && continue; fixed_params[k] = v; end
-            for (k, v) in method_ui; k == "ignore" && continue; fixed_params[k] = v; end
-            
-            new_data = create_plot_data(m_name, base_params, sim_config, fixed_params)
+            new_data = create_plot_data(m_name, base_params, sim_config)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end
-    
     for k in keys(plot_data_dict)
-        if !(k in active_methods)
-            delete!(plot_data_dict, k)
-        end
+        if !(k in active_methods); delete!(plot_data_dict, k); end
     end
-    
     return plot_data_dict
 end

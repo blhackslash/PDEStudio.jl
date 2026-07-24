@@ -1,3 +1,7 @@
+# ==============================================================================
+# --- PlottingUtils.jl ---
+# ==============================================================================
+
 function plot_reference_lines!(
     ax::Axis,
     exponents::Vector;
@@ -16,11 +20,6 @@ function plot_reference_lines!(
             xmin, xmax = lims.origin[1], lims.origin[1] + lims.widths[1]
             ymin, ymax = lims.origin[2], lims.origin[2] + lims.widths[2]
             
-            # =================================================================
-            # THE FIX: Absolute Domain Safety!
-            # Negative bases with float exponents crash Julia. Power-law reference 
-            # lines ONLY make sense in strictly positive quadrants anyway.
-            # =================================================================
             xmin = max(1e-12, xmin)
             xmax = max(1e-11, max(xmax, xmin + 1e-11))
             ymin = max(1e-12, ymin)
@@ -40,7 +39,6 @@ function plot_reference_lines!(
             return Point2f.(xs, ys)
         end
         
-        # THE FIX: Explicitly assign the label so the UI Manager can delete/redraw it!
         l = lines!(ax, pts; color=color, linestyle=line_style, label=label, kwargs...)
         push!(plotted_lines, l)
     end
@@ -51,10 +49,10 @@ end
     get_colorrange(ui_app::Dict, u_data::AbstractArray)
 
 Extracts the colorrange from the UI dict, or calculates it dynamically from the data 
-if set to "default". Always returns an Observable Tuple of Float64.
+if set to "default". Always returns an Observable Tuple of Float64 so it can bind to Makie.
 """
 function get_colorrange(ui_app::Dict, u_data::AbstractArray)
-    cr_val = ui_app["color_range"][]
+    cr_val = ui_app["color_range"] # Removed []
     
     if isempty(cr_val)
         valid_u = filter(isfinite, vec(u_data))
@@ -66,7 +64,8 @@ function get_colorrange(ui_app::Dict, u_data::AbstractArray)
     end
 end
 
-function apply_axis_limits_overrides!(ax, manager::PlotManager)
+function apply_axis_limits_overrides!(ax)
+    manager = GLOBAL_PLOT_MANAGER
     if get(manager.state, "Camera_Locked", Observable(false))[]
         return
     end
@@ -74,20 +73,20 @@ function apply_axis_limits_overrides!(ax, manager::PlotManager)
     ui_y = manager.ui["Y-Axis"]
     
     try
-        if haskey(ui_x, "lims") && length(ui_x["lims"][]) == 2
-            lx = Float64.(ui_x["lims"][])
+        if haskey(ui_x, "lims") && length(ui_x["lims"]) == 2 # Removed []
+            lx = Float64.(ui_x["lims"])
             if lx[1] < lx[2]; xlims!(ax, lx[1], lx[2]); end
         end
         
-        if haskey(ui_y, "lims") && length(ui_y["lims"][]) == 2
-            ly = Float64.(ui_y["lims"][])
+        if haskey(ui_y, "lims") && length(ui_y["lims"]) == 2 # Removed []
+            ly = Float64.(ui_y["lims"])
             if ly[1] < ly[2]; ylims!(ax, ly[1], ly[2]); end
         end
         
         if ax isa Axis3 && haskey(manager.ui, "Z-Axis")
             ui_z = manager.ui["Z-Axis"]
-            if haskey(ui_z, "lims") && length(ui_z["lims"][]) == 2
-                lz = Float64.(ui_z["lims"][])
+            if haskey(ui_z, "lims") && length(ui_z["lims"]) == 2 # Removed []
+                lz = Float64.(ui_z["lims"])
                 if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
             end
         end
@@ -96,11 +95,6 @@ function apply_axis_limits_overrides!(ax, manager::PlotManager)
     end
 end
 
-"""
-    delete_plots_by_label!(ax::Axis, label_to_delete::String)
-
-Finds all plot objects in a given axis that have a specific label and deletes them.
-"""
 function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     plots_to_delete = [p for p in ax.scene.plots if haskey(p,:label) && p.label[] == label_to_delete]
     
@@ -113,18 +107,17 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
-function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
-    # 1. Always extract UI state first
+function set_axis_limits_manager!(ax::Axis, xs, us)
+    manager = GLOBAL_PLOT_MANAGER
     ui_x = manager.ui["X-Axis"]
     ui_y = manager.ui["Y-Axis"]
     
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
 
-    use_log_x = ui_x["log_scale"][]
-    use_log_y = ui_y["log_scale"][]
+    use_log_x = ui_x["log_scale"] # Removed []
+    use_log_y = ui_y["log_scale"] # Removed []
 
-    # 2. Safety Check: Only disable log_scale temporarily for this render pass.
     if raw_xlims[1] <= 0 && use_log_x
         use_log_x = false
         @warn "X-Axis data contains non-positive values. log_scale temporarily disabled."
@@ -134,26 +127,18 @@ function set_axis_limits_manager!(ax::Axis, xs, us, manager::PlotManager)
         @warn "Y-Axis data contains non-positive values. log_scale temporarily disabled."
     end
 
-    # 3. Handle Auto-scaling (Only if Camera is NOT Locked)
     if !get(manager.state, "Camera_Locked", Observable(false))[]
-        final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"][], use_log_x)
-        final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"][], use_log_y)
+        final_xlims = calculate_padded_axis_range(raw_xlims, ui_x["padding"], use_log_x) # Removed []
+        final_ylims = calculate_padded_axis_range(raw_ylims, ui_y["padding"], use_log_y) # Removed []
 
-        # Apply limits BEFORE scales to prevent Makie DomainErrors
         try limits!(ax, final_xlims..., final_ylims...) catch; end
     end
 
-    # 4. ALWAYS apply the scales (This handles both Locking and Reverting)
-    # By using the ternary operator, we ensure it properly reverts to `identity` 
-    # when the user unchecks the log scale box!
     ax.xscale[] = use_log_x ? log10 : identity
     ax.yscale[] = use_log_y ? log10 : identity
     return
 end
 
-# ==============================================================================
-# --- MASTER GRID CALCULATOR ---
-# ==============================================================================
 function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::Symbol, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
@@ -218,11 +203,8 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     return layout_dict
 end
 
-# ==============================================================================
-# --- LEGEND & COLORBAR BUILDERS ---
-# ==============================================================================
-function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
-    # THE FIX: Read Directly from the native Makie Menu selections
+function _parse_legend_position(is_compare::Bool=false)
+    manager = GLOBAL_PLOT_MANAGER
     base_align = manager.widgets["Legend_Base"].selection[]
     add_align  = manager.widgets["Legend_Add"].selection[]
     
@@ -241,7 +223,8 @@ function _parse_legend_position(manager::PlotManager, is_compare::Bool=false)
     return (is_detached, halign, valign)
 end
 
-function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector, manager::PlotManager)
+function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector)
+    manager = GLOBAL_PLOT_MANAGER
     for c in copy(plot_layout.content)
         if c.content isa Makie.Legend; delete!(c.content); end
     end
@@ -252,13 +235,12 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     if !haskey(layout_dict, "Legend") || isnothing(layout_dict["Legend"]); return; end
     
     ui_style = manager.ui["Axis-General"]
-    title_str = manager.ui["Labels"]["legend"][]
+    title_str = manager.ui["Labels"]["legend"] # Removed []
     final_title = isempty(strip(title_str)) ? nothing : title_str
-    font_size = ui_style["font_size"][]
+    font_size = ui_style["font_size"] # Removed []
     
-    # THE FIX: Query the native Compare_Target menu selection cleanly
     is_compare = manager.widgets["Compare_Target"].selection[] != "None"
-    is_detached, halign, valign = _parse_legend_position(manager, is_compare)
+    is_detached, halign, valign = _parse_legend_position(is_compare)
 
     if halign==:none && valign==:none; return; end
     leg_pos = layout_dict["Legend"]
@@ -282,8 +264,9 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
         @error "Failed to create legend" exception=(e, catch_backtrace())
     end
 end
-function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manager::PlotManager, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
-    # Note: plot_object isn't even strictly needed anymore since we pass colors directly!
+
+function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
+    manager = GLOBAL_PLOT_MANAGER
     ui_stl = manager.ui["Plot-Style"]
     if !haskey(ui_stl, "color_map"); return; end 
     
@@ -305,16 +288,15 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, manage
     
     ui_lbl = manager.ui["Labels"]
     ui_gen = manager.ui["Axis-General"]
-    final_label = ui_lbl["colorbar_label"][] == "default" ? default_label : ui_lbl["colorbar_label"][]
+    final_label = ui_lbl["colorbar_label"] == "default" ? default_label : ui_lbl["colorbar_label"] # Removed []
     
     try
-        # THE FIX: Explicitly pass colormap and limits to bypass Makie's buggy auto-extraction!
         Colorbar(plot_layout[cb_pos...];
-            colormap = ui_stl["color_map"],
+            colormap = ui_stl["color_map"], # Removed []
             limits = color_range_obs,
             label = final_label,
-            labelsize = ui_gen["label_size"][],
-            ticklabelsize = ui_gen["ticklabel_size"][]
+            labelsize = ui_gen["label_size"], # Removed []
+            ticklabelsize = ui_gen["ticklabel_size"] # Removed []
         )
     catch e
         @error "Failed to create colorbar." exception=(e, catch_backtrace())
@@ -352,19 +334,20 @@ function _safe_extrema(data_slices)
     return (minimum(mins), maximum(maxs))
 end
 
-function plot_extrema_lines_manager!(ax, x_data, u_data, manager, plot_idx)
+function plot_extrema_lines_manager!(ax, x_data, u_data, plot_idx)
+    manager = GLOBAL_PLOT_MANAGER
     ui_var = manager.ui["Various"]
     ui_stl = manager.ui["Plot-Style"]
     
-    track_max = ui_var["track_max"][]
-    track_min = ui_var["track_min"][]
+    track_max = ui_var["track_max"] # Removed []
+    track_min = ui_var["track_min"] # Removed []
     (!track_max && !track_min) && return
 
     valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
     isempty(valid_pairs) && return
     
-    color = ui_stl["colors"][][mod1(plot_idx, end)]
-    lw = haskey(ui_stl, "line_width") ? (ui_stl["line_width"][] / 2) : 2.0
+    color = ui_stl["colors"][mod1(plot_idx, end)] # Removed []
+    lw = haskey(ui_stl, "line_width") ? (ui_stl["line_width"] / 2) : 2.0 # Removed []
 
     if track_max
         max_u, idx = findmax(p -> p[2], valid_pairs)
@@ -396,92 +379,85 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{
     return CartesianIndices(matrix)[linear_outlier_indices]
 end
 
-function set_axis_styles!(ax::Axis, manager::PlotManager, def_x::String, def_y::String, def_title::String)
+function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::String)
+    manager = GLOBAL_PLOT_MANAGER
     gen = manager.ui["Axis-General"]
     lbl = manager.ui["Labels"]
     x_ui, y_ui = manager.ui["X-Axis"], manager.ui["Y-Axis"]
 
-    # Labels and Titles
-    ax.xlabel = lbl["x_label"][] == "default" ? def_x : lbl["x_label"][]
-    ax.ylabel = lbl["y_label"][] == "default" ? def_y : lbl["y_label"][]
-    ax.title  = lbl["title"][]   == "default" ? def_title : lbl["title"][]
+    ax.xlabel = lbl["x_label"] == "default" ? def_x : lbl["x_label"] # Removed []
+    ax.ylabel = lbl["y_label"] == "default" ? def_y : lbl["y_label"] # Removed []
+    ax.title  = lbl["title"]   == "default" ? def_title : lbl["title"] # Removed []
 
-    # Fonts
-    ax.titlesize = gen["title_size"][]
-    ax.xlabelsize = ax.ylabelsize = gen["label_size"][]
-    ax.xticklabelsize = ax.yticklabelsize = gen["ticklabel_size"][]
+    ax.titlesize = gen["title_size"] # Removed []
+    ax.xlabelsize = ax.ylabelsize = gen["label_size"] # Removed []
+    ax.xticklabelsize = ax.yticklabelsize = gen["ticklabel_size"] # Removed []
 
-    # Visibility & Padding
-    haskey(x_ui, "label_offset") && (ax.xlabelpadding = x_ui["label_offset"][])
-    haskey(y_ui, "label_offset") && (ax.ylabelpadding = y_ui["label_offset"][])
+    haskey(x_ui, "label_offset") && (ax.xlabelpadding = x_ui["label_offset"]) # Removed []
+    haskey(y_ui, "label_offset") && (ax.ylabelpadding = y_ui["label_offset"]) # Removed []
     
-    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"][], x_ui["tick_label_visibility"][]
-    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"][], y_ui["tick_label_visibility"][]
+    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"], x_ui["tick_label_visibility"] # Removed []
+    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"], y_ui["tick_label_visibility"] # Removed []
 
-    # Ticks
-    x_ui["tick_count"][] > 0 && (ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(x_ui["tick_count"][])) : LinearTicks(x_ui["tick_count"][]))
-    y_ui["tick_count"][] > 0 && (ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(y_ui["tick_count"][])) : LinearTicks(y_ui["tick_count"][]))
+    x_ui["tick_count"] > 0 && (ax.xticks = ax.xscale[] == log10 ? LogTicks(LinearTicks(x_ui["tick_count"])) : LinearTicks(x_ui["tick_count"])) # Removed []
+    y_ui["tick_count"] > 0 && (ax.yticks = ax.yscale[] == log10 ? LogTicks(LinearTicks(y_ui["tick_count"])) : LinearTicks(y_ui["tick_count"])) # Removed []
 
-    # X Tick Formats
-    x_off = x_ui["scale_offset"][]
-    ax.xtickformat = x_off != 0.0 ? (t -> map(v -> "$(round(x_off, sigdigits=3)) + $(@sprintf("%.1e", v - x_off))", t)) : (x_ui["tick_format"][] == "default" ? Makie.automatic : x_ui["tick_format"][])
+    x_off = x_ui["scale_offset"] # Removed []
+    ax.xtickformat = x_off != 0.0 ? (t -> map(v -> "$(round(x_off, sigdigits=3)) + $(@sprintf("%.1e", v - x_off))", t)) : (x_ui["tick_format"] == "default" ? Makie.automatic : x_ui["tick_format"]) # Removed []
 
-    # Y Tick Formats
-    y_off = y_ui["scale_offset"][]
-    ax.ytickformat = y_off != 0.0 ? (t -> map(v -> "$(round(y_off, sigdigits=3)) $(v - y_off < 0 ? "-" : "+") $(@sprintf("%.1e", abs(v - y_off)))", t)) : (y_ui["tick_format"][] == "default" ? Makie.automatic : y_ui["tick_format"][])
+    y_off = y_ui["scale_offset"] # Removed []
+    ax.ytickformat = y_off != 0.0 ? (t -> map(v -> "$(round(y_off, sigdigits=3)) $(v - y_off < 0 ? "-" : "+") $(@sprintf("%.1e", abs(v - y_off)))", t)) : (y_ui["tick_format"] == "default" ? Makie.automatic : y_ui["tick_format"]) # Removed []
 end
 
-function set_axis_styles!(ax::Axis3, manager::PlotManager, def_x::String, def_y::String, def_z::String, def_title::String)
+function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String, def_title::String)
+    manager = GLOBAL_PLOT_MANAGER
     gen = manager.ui["Axis-General"]
     lbl = manager.ui["Labels"]
     x_ui, y_ui, z_ui = manager.ui["X-Axis"], manager.ui["Y-Axis"], manager.ui["Z-Axis"]
 
-    # Labels and Titles
-    ax.xlabel = lbl["x_label"][] == "default" ? def_x : lbl["x_label"][]
-    ax.ylabel = lbl["y_label"][] == "default" ? def_y : lbl["y_label"][]
-    ax.zlabel = lbl["z_label"][] == "default" ? def_z : lbl["z_label"][]
-    ax.title  = lbl["title"][]   == "default" ? def_title : lbl["title"][]
+    ax.xlabel = lbl["x_label"] == "default" ? def_x : lbl["x_label"] # Removed []
+    ax.ylabel = lbl["y_label"] == "default" ? def_y : lbl["y_label"] # Removed []
+    ax.zlabel = lbl["z_label"] == "default" ? def_z : lbl["z_label"] # Removed []
+    ax.title  = lbl["title"]   == "default" ? def_title : lbl["title"] # Removed []
 
-    # Fonts
-    ax.titlesize = gen["title_size"][]
-    ax.xlabelsize = ax.ylabelsize = ax.zlabelsize = gen["label_size"][]
-    ax.xticklabelsize = ax.yticklabelsize = ax.zticklabelsize = gen["ticklabel_size"][]
+    ax.titlesize = gen["title_size"] # Removed []
+    ax.xlabelsize = ax.ylabelsize = ax.zlabelsize = gen["label_size"] # Removed []
+    ax.xticklabelsize = ax.yticklabelsize = ax.zticklabelsize = gen["ticklabel_size"] # Removed []
 
-    # Visibility & Offset
-    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"][], x_ui["tick_label_visibility"][]
-    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"][], y_ui["tick_label_visibility"][]
-    ax.zgridvisible, ax.zticklabelsvisible = z_ui["grid_visibility"][], z_ui["tick_label_visibility"][]
+    ax.xgridvisible, ax.xticklabelsvisible = x_ui["grid_visibility"], x_ui["tick_label_visibility"] # Removed []
+    ax.ygridvisible, ax.yticklabelsvisible = y_ui["grid_visibility"], y_ui["tick_label_visibility"] # Removed []
+    ax.zgridvisible, ax.zticklabelsvisible = z_ui["grid_visibility"], z_ui["tick_label_visibility"] # Removed []
 
-    haskey(x_ui, "label_offset") && (ax.xlabeloffset = x_ui["label_offset"][])
-    haskey(y_ui, "label_offset") && (ax.ylabeloffset = y_ui["label_offset"][])
-    haskey(z_ui, "label_offset") && (ax.zlabeloffset = z_ui["label_offset"][])
+    haskey(x_ui, "label_offset") && (ax.xlabeloffset = x_ui["label_offset"]) # Removed []
+    haskey(y_ui, "label_offset") && (ax.ylabeloffset = y_ui["label_offset"]) # Removed []
+    haskey(z_ui, "label_offset") && (ax.zlabeloffset = z_ui["label_offset"]) # Removed []
 
-    # Axis3 specifics
     ax.perspectiveness = 0.5
     if !get(manager.state, "Camera_Locked", Observable(false))[]
         ax.aspect = (1, 1, 0.6)
     end
 end
 
-function plot_HUD!(ax::Axis, manager::PlotManager)
+function plot_HUD!(ax::Axis)
+    manager = GLOBAL_PLOT_MANAGER
     ui_hud = manager.ui["HUD"]
-    if !ui_hud["visible"][] || isempty(ui_hud["points"][])::Bool; return; end
+    if !ui_hud["visible"] || isempty(ui_hud["points"])::Bool; return; end # Removed []
     
-    pts = ui_hud["points"][]
+    pts = ui_hud["points"] # Removed []
     try
         x_pct = [Float64(p[1]) for p in pts]
         y_pct = [Float64(p[2]) for p in pts]
         
-        if ui_hud["close_loop"][] && length(x_pct) > 2
+        if ui_hud["close_loop"] && length(x_pct) > 2 # Removed []
             push!(x_pct, x_pct[1])
             push!(y_pct, y_pct[1])
         end
 
-        mode  = lowercase(strip(ui_hud["mode"][]))
-        color = ui_hud["color"][]
-        lw    = ui_hud["line_width"][]
-        ls    = ui_hud["line_style"][]
-        ms    = ui_hud["marker_size"][]
+        mode  = lowercase(strip(ui_hud["mode"])) # Removed []
+        color = ui_hud["color"] # Removed []
+        lw    = ui_hud["line_width"] # Removed []
+        ls    = ui_hud["line_style"] # Removed []
+        ms    = ui_hud["marker_size"] # Removed []
 
         if mode == "scatter"
             scatter!(ax, x_pct, y_pct; color=color, marker_size=ms, space=:relative)
@@ -498,23 +474,24 @@ function plot_HUD!(ax::Axis, manager::PlotManager)
     end
 end
 
-plot_HUD!(ax::Axis3, manager::PlotManager) = nothing
+plot_HUD!(ax::Axis3) = nothing
 
-function _apply_axis_styles!(ax, manager::PlotManager, T::Symbol)
+function _apply_axis_styles!(ax, T::Symbol)
+    manager = GLOBAL_PLOT_MANAGER
     x = string(manager.widgets["X-Axis"].selection[])
     y = string(manager.widgets["Y-Axis"].selection[])
     z = string(manager.widgets["Z-Axis"].selection[])
     u = string(manager.widgets["U-Axis"].selection[])
     
-    dim = PLOT_DIM_MAP[T] # Gets the true mathematical dimension
+    dim = PLOT_DIM_MAP[T] 
     def_title = ax.title[]
     
     if ax isa Axis
         def_y = dim == 1 ? u : y
-        set_axis_styles!(ax, manager, x, def_y, def_title)
+        set_axis_styles!(ax, x, def_y, def_title)
     elseif ax isa Axis3
         def_z = dim == 2 ? u : z
-        set_axis_styles!(ax, manager, x, y, def_z, def_title)
+        set_axis_styles!(ax, x, y, def_z, def_title)
     end
 end
 
@@ -529,13 +506,9 @@ function _find_first_drawable_primitive(cache_dict)
     end
     return nothing
 end
-"""
-    _collect_legend_elements(manager::PlotManager, ui_app::Dict)
 
-Iterates through the first plot's cache and constructs the appropriate Makie 
-legend elements based on the modular primitives registered for each method.
-"""
-function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
+function _collect_legend_elements(ui_app::Dict)
+    manager = GLOBAL_PLOT_MANAGER
     plotted_objects = []
     labels_for_legend = String[]
     
@@ -543,7 +516,7 @@ function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
         return [], []
     end
     
-    get_color(idx) = get(ui_app, "colors", nothing) !== nothing ? ui_app["colors"][][mod1(idx, end)] : :black
+    get_color(idx) = get(ui_app, "colors", nothing) !== nothing ? ui_app["colors"][mod1(idx, end)] : :black # Removed []
 
     for (m_idx, method_name) in enumerate(manager.methods[])
         if haskey(manager.caches[1], method_name)
@@ -553,31 +526,26 @@ function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
             group = []
             is_base = false
             
-            # --- THE FIX: Build legend elements dynamically via STYLE_DEPENDENCIES ---
             for (pkey, prim) in prims
                 deps = get(STYLE_DEPENDENCIES, pkey, String[])
                 
-                # Special Case: Poly elements for filled base contours
                 if pkey == :contourf
-                    push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"][])[end])])
+                    push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app["color_map"])[end])]) # Removed []
                     push!(labels_for_legend, "$(method_name) (Base)")
                     is_base = true
                 end
                 
-                # Check for Line Capabilities
                 if "line_width" in deps && "colors" in deps
-                    ls = (ui_app["dashed_lines"][] && "dashed_lines" in deps) ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-                    push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"][], linestyle=ls))
+                    ls = (ui_app["dashed_lines"] && "dashed_lines" in deps) ? ui_app["line_styles"][mod1(m_idx, end)] : nothing # Removed []
+                    push!(group, Makie.LineElement(color=color, linewidth=ui_app["line_width"], linestyle=ls)) # Removed []
                 end
                 
-                # Check for Marker Capabilities
                 if "markers" in deps && "colors" in deps
-                    mrk = ui_app["markers"][][mod1(m_idx, end)]
-                    push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"][]))
+                    mrk = ui_app["markers"][mod1(m_idx, end)] # Removed []
+                    push!(group, Makie.MarkerElement(color=color, marker=mrk, markersize=ui_app["marker_size"])) # Removed []
                 end
             end
             
-            # Registration
             if !isempty(group)
                 push!(plotted_objects, group)
                 if !is_base
@@ -590,13 +558,8 @@ function _collect_legend_elements(manager::PlotManager, ui_app::Dict)
     return plotted_objects, labels_for_legend
 end
 
-"""
-    _enforce_camera_lock!(axes::Vector, manager::PlotManager)
-
-Checks if the camera is globally locked and aggressively re-applies the saved 
-view to squash any secret auto-centering Makie performs during UI updates.
-"""
-function _enforce_camera_lock!(axes::Vector, manager::PlotManager)
+function _enforce_camera_lock!(axes::Vector)
+    manager = GLOBAL_PLOT_MANAGER
     if get(manager.state, "Camera_Locked", Observable(false))[]
         cam_opts = GLOBAL_CAMERA_OPTIONS[]
         if !isempty(cam_opts)

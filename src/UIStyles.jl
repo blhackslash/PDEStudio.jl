@@ -1,3 +1,7 @@
+# ==============================================================================
+# --- UIStyles.jl ---
+# ==============================================================================
+
 const LEGEND_SUPPORTED_PLOTS = (:lines, :scattercolors, :scatterlines, :contour, :contourf, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter1d, :scatter2d, :scatter2d_surface, :contourf, :contour3d, :scatter3d, :surface, :volume, :contour_cmap, :lines2d, :lines3d)
 
@@ -75,27 +79,26 @@ function get_base_layout_options()
     )
 end
 
-# --- 2. OBSERVABLE TEMPLATES ---
+# --- 2. MASTER UI TEMPLATES ---
 """
-    create_master_ui_observables()
+    create_master_ui_dict()
 
-Creates the definitive Master Dictionary containing EVERY possible UI option as Observables.
+Creates the definitive Master Dictionary containing EVERY possible UI option natively.
+(Renamed from create_master_ui_observables)
 """
-function create_master_ui_observables()
-    master = NestedObsDict()
-    make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
-    obs_dict(d) = Dict{String, Observable}(k => make_obs(v) for (k,v) in d)
+function create_master_ui_dict()
+    master = Dict{String, Dict{String, Any}}()
     
     # 1. Universal Scopes
-    master["Axis-General"] = obs_dict(Dict(
+    master["Axis-General"] = Dict{String, Any}(
         "font_size"      => 24, 
         "title_size"     => 26, 
         "label_size"     => 24, 
         "ticklabel_size" => 22,
         "sort_legend"    => true,
-    ))
+    )
     
-    master["Labels"] = obs_dict(Dict(
+    master["Labels"] = Dict{String, Any}(
         "title"          => "default", 
         "x_label"        => "default", 
         "y_label"        => "default", 
@@ -103,9 +106,9 @@ function create_master_ui_observables()
         "colorbar_label" => "default", 
         "legend"         => "Methods",
         "comp_names"     => ("default",)
-    ))
+    )
     
-    master["HUD"] = obs_dict(Dict(
+    master["HUD"] = Dict{String, Any}(
         "visible"     => false,
         "mode"        => "lines", 
         "close_loop"  => false,   
@@ -114,9 +117,9 @@ function create_master_ui_observables()
         "line_width"  => 3.0,
         "line_style"  => :dash,
         "marker_size" => 15.0
-    ))  
+    )  
     
-    master["Various"] = obs_dict(Dict(
+    master["Various"] = Dict{String, Any}(
         "save_formats"         => ["png"], 
         "create_savefolder"    => false,
         "animation_time"       => 10.0, 
@@ -126,7 +129,7 @@ function create_master_ui_observables()
         "outlier_threshold"    => 1.5, 
         "track_max"            => false, 
         "track_min"            => false,
-    ))
+    )
     
     # 2. Universal Axis Templates
     axis_dict(pad, default_offset=15.0) = Dict{String, Any}(
@@ -141,14 +144,14 @@ function create_master_ui_observables()
         "lims"              => Any[]
     )
 
-    master["X-Axis-1D"] = obs_dict(axis_dict(0.05, 15.0))
-    master["Y-Axis-1D"] = obs_dict(axis_dict(0.05, 15.0))
+    master["X-Axis-1D"] = axis_dict(0.05, 15.0)
+    master["Y-Axis-1D"] = axis_dict(0.05, 15.0)
     
-    master["X-Axis-ND"] = obs_dict(axis_dict(0.0, 15.0))
-    master["Y-Axis-ND"] = obs_dict(axis_dict(0.0, 15.0))
-    master["Z-Axis-3D"] = obs_dict(axis_dict(0.05, 20.0)) 
+    master["X-Axis-ND"] = axis_dict(0.0, 15.0)
+    master["Y-Axis-ND"] = axis_dict(0.0, 15.0)
+    master["Z-Axis-3D"] = axis_dict(0.05, 20.0) 
     
-    master["Plot-Style"] = obs_dict(Dict(
+    master["Plot-Style"] = Dict{String, Any}(
         "colors"          => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
         "color_map"       => :viridis,
         "color_range"     => Any[],
@@ -166,36 +169,38 @@ function create_master_ui_observables()
         "dashed_lines"    => false,
         "labels"          => false,
         "reference"       => Any[],
-    ))
+    )
     
     return master
 end
 
-const MASTER_UI_DICT = create_master_ui_observables()
+const MASTER_UI_DICT = create_master_ui_dict()
 
-function switch_ui_plot_type!(manager::PlotManager, plot_type::Symbol)
-    master = manager.state["Master_UI_Ref"][]
+function switch_ui_plot_type!(plot_type::Symbol)
+    manager = GLOBAL_PLOT_MANAGER
+    master = MASTER_UI_DICT
     ui = manager.ui
     empty!(ui)
     
     dim = PLOT_DIM_MAP[plot_type]
     
-    ui["Axis-General"] = master["Axis-General"]
-    ui["Labels"]       = master["Labels"]
-    ui["Various"]      = master["Various"]
-    ui["HUD"]          = master["HUD"]
-    ui["Plot-Style"]   = master["Plot-Style"]
+    # Deepcopy safely instantiates independent values into manager.ui
+    ui["Axis-General"] = deepcopy(master["Axis-General"])
+    ui["Labels"]       = deepcopy(master["Labels"])
+    ui["Various"]      = deepcopy(master["Various"])
+    ui["HUD"]          = deepcopy(master["HUD"])
+    ui["Plot-Style"]   = deepcopy(master["Plot-Style"])
     
     if dim == 1
-        ui["X-Axis"] = master["X-Axis-1D"]
-        ui["Y-Axis"] = master["Y-Axis-1D"]
+        ui["X-Axis"] = deepcopy(master["X-Axis-1D"])
+        ui["Y-Axis"] = deepcopy(master["Y-Axis-1D"])
     elseif dim == 2 && !is_surface(plot_type)
-        ui["X-Axis"] = master["X-Axis-ND"]
-        ui["Y-Axis"] = master["Y-Axis-ND"]
+        ui["X-Axis"] = deepcopy(master["X-Axis-ND"])
+        ui["Y-Axis"] = deepcopy(master["Y-Axis-ND"])
     elseif dim == 3 || is_surface(plot_type)
-        ui["X-Axis"] = master["X-Axis-ND"]
-        ui["Y-Axis"] = master["Y-Axis-ND"]
-        ui["Z-Axis"] = master["Z-Axis-3D"]
+        ui["X-Axis"] = deepcopy(master["X-Axis-ND"])
+        ui["Y-Axis"] = deepcopy(master["Y-Axis-ND"])
+        ui["Z-Axis"] = deepcopy(master["Z-Axis-3D"])
     end
     
     if haskey(manager.triggers, "UI_Update")
@@ -220,7 +225,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             scene_opt["X-Axis_Selection"]      = :Ns__1
             scene_opt["U-Axis_Selection"]      = :relative_l2error
             layout_opt["Base_Plot_Selection"]  = :lines
-            layout_opt["Plot_Style_Selection"] = :lines # Updated from :one_d
+            layout_opt["Plot_Style_Selection"] = :lines 
             scene_opt["t_Value"]              = 10.0^10
             
             set_ui!("X-Axis", "log_scale", true)
@@ -256,7 +261,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
             
         elseif preset == :heatmap
             layout_opt["Base_Plot_Selection"]  = :heatmap
-            layout_opt["Plot_Style_Selection"] = :heatmap # Updated from :flat
+            layout_opt["Plot_Style_Selection"] = :heatmap 
             set_ui!("X-Axis", "label_offset", 10.0)
             set_ui!("Y-Axis", "label_offset", 10.0)
             set_ui!("Plot-Style", "bottom_margin", 20)
@@ -310,15 +315,15 @@ function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_
     if "colors" in deps
         prim.color[] = color
     elseif "color_map" in deps
-        prim.colormap[] = ui_app["color_map"][]
+        prim.colormap[] = ui_app["color_map"]
     end
     
     # 2. Geometry Attributes
     if "line_width" in deps
-        prim.linewidth[] = ui_app["line_width"][]
+        prim.linewidth[] = ui_app["line_width"]
     end
     
     if "marker_size" in deps
-        prim.markersize[] = ui_app["marker_size"][]
+        prim.markersize[] = ui_app["marker_size"]
     end
 end

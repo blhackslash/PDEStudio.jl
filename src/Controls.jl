@@ -2,11 +2,12 @@
 # --- 1. MASTER CONTROL BUILDER ---
 # ==============================================================================
 """
-    create_controls(layout::GridLayout, manager::PlotManager)
+    create_controls(layout::GridLayout)
 
 Purely builds the UI widgets inside the provided sub-layout.
 """
-function create_controls(layout::GridLayout, manager::PlotManager)
+function create_controls(layout::GridLayout)
+    manager = GLOBAL_PLOT_MANAGER
     rowgap!(layout, 15) 
     current_row = 1
 
@@ -27,14 +28,14 @@ function create_controls(layout::GridLayout, manager::PlotManager)
 
     # --- 2. HIERARCHICAL EDITOR ---
     param_nav_layout = layout[current_row, 1] = GridLayout()
-    create_hierarchical_param_controls!(param_nav_layout, manager)
+    create_hierarchical_param_controls!(param_nav_layout)
     current_row += 1
     
     # --- 3. METHODS ---
     Label(layout[current_row, 1], "Active Methods", fontsize=16, font=:bold, color=:darkred)
     current_row += 1
     method_layout = layout[current_row, 1] = GridLayout()
-    create_method_controls!(method_layout, manager) 
+    create_method_controls!(method_layout) 
     current_row += 1
     
     # --- 5. STATIC PLOT CONTROLS ---
@@ -44,11 +45,12 @@ function create_controls(layout::GridLayout, manager::PlotManager)
     current_row += 1
     export_layout = layout[current_row, 1] = GridLayout()
 
-    build_static_plot_controls!(menu_area, slider_area, manager)
-    createExportOptions!(export_layout, manager)
+    build_static_plot_controls!(menu_area, slider_area)
+    createExportOptions!(export_layout)
 end
 
-function create_method_controls!(layout::GridLayout, manager::PlotManager)
+function create_method_controls!(layout::GridLayout)
+    manager = GLOBAL_PLOT_MANAGER
     manager.widgets["Mode_Button"]     = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
     manager.widgets["Method_Toggle"]   = Menu(layout[1, 2:3], options = ["Methods..."], prompt = "Methods...")
     manager.widgets["Method_Apply"]    = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
@@ -61,8 +63,8 @@ end
 # ==============================================================================
 # --- 2. STATIC PLOT CONTROLS BUILDER ---
 # ==============================================================================
-function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout, manager::PlotManager)
-    
+function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout)
+    manager = GLOBAL_PLOT_MANAGER
     # Track the row dynamically and collect gaps to apply safely at the end!
     cr = 1
     gaps = Int[]
@@ -182,8 +184,8 @@ end
 # ==============================================================================
 # --- 4. HIERARCHICAL EDITOR BUILDER ---
 # ==============================================================================
-function create_hierarchical_param_controls!(layout::GridLayout, manager::PlotManager)
-    
+function create_hierarchical_param_controls!(layout::GridLayout)
+    manager = GLOBAL_PLOT_MANAGER
     # Row 2: The Header (Positioned perfectly between the execution controls and the dropdowns)
     Label(layout[1, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     
@@ -201,7 +203,8 @@ end
 # ==============================================================================
 # --- 6. EXPORT OPTIONS BUILDER ---
 # ==============================================================================
-function createExportOptions!(layout::GridLayout, manager::PlotManager)
+function createExportOptions!(layout::GridLayout)
+    manager = GLOBAL_PLOT_MANAGER
     # Row 1: Configurations & Camera
     manager.widgets["Save_Defs_Button"]  = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral, width=nothing)
     manager.widgets["Clear_Defs_Button"] = Button(layout[1, 2], label="Clear Defs", buttoncolor=:mistyrose, width=nothing) 

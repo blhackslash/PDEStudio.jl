@@ -10,8 +10,6 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 # Export the new configuration setter
 export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!
 
-const NestedObsDict = Dict{String, Dict{String, Observable}}
-
 # ==============================================================================
 # --- UI DIMENSION REFERENCES (Dynamic Setup) ---
 # ==============================================================================
@@ -121,10 +119,12 @@ mutable struct LagrangianPlotCache <: AbstractPlotCache
 end
 LagrangianPlotCache() = LagrangianPlotCache(Observable{Any}([]), Observable{Any}(Float64[]), Dict{Symbol, Any}())
 
+# ==============================================================================
+# --- UNIFIED PLOT DATA STRUCTURE ---
+# ==============================================================================
+abstract type AbstractPlotData end
 mutable struct PlotManager 
-    simulation::NestedObsDict
-    ui::NestedObsDict
-    config::ParamDict
+    ui::Dict{String, Dict{String, Any}}     # Pure Julia Dict, no Observables!
     
     widgets::Dict{String, Any}              
     triggers::Dict{String, Observable{Int}} 
@@ -133,25 +133,67 @@ mutable struct PlotManager
     
     methods::Observable{Vector{String}}
     plot_vars::Vector{Symbol}
-    last_run_params::ParamDict
     caches::Dict{Int, Dict{String, AbstractPlotCache}}
+    
+    active_config::Observable{Any}
+    plot_data::Observable{Dict{String, AbstractPlotData}}
 end
 
-# ==============================================================================
-# --- UNIFIED PLOT DATA STRUCTURE ---
-# ==============================================================================
-abstract type AbstractPlotData end
+function PlotManager()
+    return PlotManager(
+        Dict{String, Dict{String, Any}}(),
+        Dict{String, Any}(), Dict{String, Observable{Int}}(),
+        Dict{String, Any}(), Dict{String, Bool}(),
+        Observable(String[]), Symbol[],
+        Dict{Int, Dict{String, AbstractPlotCache}}(),
+        Observable{Any}(nothing), Observable(Dict{String, AbstractPlotData}())
+    )
+end
 
-"""
-    PlotSweepData{N}
-Stores an N-dimensional grid of `AbstractSimData` objects, where `N` is the 
-number of varied parameters. The inner SimData handles all spatial/temporal logic natively.
-"""
+const GLOBAL_PLOT_MANAGER = PlotManager()
+
+function reset_manager!(mgr::PlotManager)
+    empty!(mgr.ui); empty!(mgr.widgets); empty!(mgr.state)
+    empty!(mgr.locks); empty!(mgr.plot_vars); empty!(mgr.caches)
+    
+    mgr.methods.val = String[]
+    mgr.active_config.val = nothing
+    mgr.plot_data.val = Dict{String, AbstractPlotData}()
+    
+    for k in ["Layout_Update", "Scene_Update", "Primitive_Rebuild", "Data_Sync", "UI_Update", "Simulation_Update"]
+        mgr.triggers[k] = Observable(0)
+    end
+    for k in ["Menu_Sync", "Layout", "Scene", "Primitive", "Data", "Sliders", "UI", "Menu_A", "Menu_B", "Menu_C", "Menu_D"]
+        mgr.locks[k] = false
+    end
+    
+    mgr.state["Config_Just_Loaded"] = Observable(false)
+    mgr.state["plot_window_initialized"] = Observable(false)
+    mgr.state["Active_Axes"] = Observable{Vector{Int}}(Int[])
+    mgr.state["Is_Activate_Mode"] = Observable(true)
+    mgr.state["Is_Animating"] = Observable(false)
+    mgr.state["Animation_Timer"] = Observable{Any}(nothing)
+    mgr.state["Active_Target_Obs"] = Observable{Any}(nothing)
+    mgr.state["Layout_Dict"] = Observable(Dict{String, Any}())
+end
+
+# Drop fixed_params from the data struct[cite: 20]
 struct PlotSweepData{N} <: AbstractPlotData
     data::Array{Union{Nothing, AbstractSimData}, N} 
     active_param_keys::Vector{String}
     active_param_values::Vector{Vector{Any}}
-    fixed_params::FixedDict
+end
+
+function __init__()
+    on(PLOT_MODE) do _
+        reset_plotter!()
+        reset_manager!()
+    end
+    
+    # Initialize the singleton with the dummy config immediately
+    dummy = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict())
+    reset_manager!(GLOBAL_PLOT_MANAGER)
+    GLOBAL_PLOT_MANAGER.active_config[] = dummy
 end
 
 # ==============================================================================
@@ -166,12 +208,5 @@ include("PlottingUtils.jl")
 include("Controls.jl")
 include("InteractionController.jl")
 include("Render.jl")
-
-function __init__()
-    on(PLOT_MODE) do _
-        reset_plotter!()
-        ACTIVE_PLOT_MANAGER[] = nothing
-    end
-end
 
 end

@@ -27,28 +27,24 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
     GLOBAL_CAMERA_OPTIONS[] = cam_opts
 end
 
-# Singleton Global Observables & State
-const ACTIVE_SIM_CONFIG = Observable{Any}(nothing)
-const ACTIVE_PLOT_MANAGER = Ref{Union{Nothing, PlotManager}}(nothing)
-const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :master_fig => nothing))
-
-function set_sim_config!(config::SimulationConfig)
-    ACTIVE_SIM_CONFIG[] = config
-    return
-end
-
 const LEGEND_REF = Ref{Symbol}(:none)
 function dummy_simulation_function(args...); return nothing; end
 
+const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :master_fig => nothing))
+
+# Your setter now cleanly mutates the encapsulated observable
+function set_sim_config!(config::SimulationConfig)
+    GLOBAL_PLOT_MANAGER.active_config[] = config
+end
+
 """
-    set_sim_config!(csv_name::String, manager)
+    set_sim_config!(csv_name::String)
 
 Searches for a CSV by name in the figures, animations, and Experiments folders.
 If found, it parses it, reconstructs the `SimulationConfig`, runs the simulations,
 and dynamically updates the active Plotter UI.
 """
 function set_sim_config!(csv_name::String)
-    manager = ACTIVE_PLOT_MANAGER[]
     filename = endswith(lowercase(csv_name), ".csv") ? csv_name : csv_name * ".csv"
     
     save_root = get_save_path()
@@ -80,7 +76,7 @@ function set_sim_config!(csv_name::String)
         return
     end
     
-    load_and_apply_csv!(manager, filepath)
+    load_and_apply_csv!(filepath)
 end
 
 """
@@ -101,92 +97,9 @@ function reset_plotter!()
     end
     PLOTTER_UI_STATE[][:is_open] = false
     PLOTTER_UI_STATE[][:master_fig] = nothing
-    empty!(ACTIVE_SIM_CONFIG.listeners)
-    ACTIVE_SIM_CONFIG.val = nothing
+    empty!(GLOBAL_PLOT_MANAGER.active_config.listeners)
+    GLOBAL_PLOT_MANAGER.active_config.val = nothing
     @info "Plotter state completely cleared!"
-end
-
-function create_plot_manager(sim_config::SimulationConfig{F}, master_ui::Dict, ui_overwrite::Dict, init_type::Symbol) where {F}
-    varied_dict = sim_config.varied_params
-    vars = isempty(varied_dict) ? Symbol[] : Symbol.(sort(collect(keys(varied_dict))))
-    append!(vars, get_base_variables())
-
-    sim_obs = NestedObsDict()
-    make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
-    sim_obs["shared"] = Dict(k => make_obs(v) for (k, v) in sim_config.shared_params)
-    for (m_name, m_params) in sim_config.methods_dict
-        sim_obs[m_name] = Dict(k => make_obs(v) for (k, v) in m_params)
-    end
-
-    ui_obs = NestedObsDict()
-    methods_obs = Observable(copy(sim_config.default_methods))
-
-    triggers = Dict{String, Observable{Int}}(
-        "Layout_Update"     => Observable(0),
-        "Scene_Update"      => Observable(0),
-        "Primitive_Rebuild" => Observable(0),
-        "Data_Sync"         => Observable(0),
-        "UI_Update"         => Observable(0),
-        "Simulation_Update" => Observable(0)
-    )
-    locks = Dict{String, Bool}(
-        "Menu_Sync" => false, 
-        "Layout"    => false, 
-        "Scene"     => false, 
-        "Primitive" => false,
-        "Data"      => false,
-        "Sliders"    => false,
-        "UI"        => false,
-        "Menu_A"    => false,
-        "Menu_B"    => false, 
-        "Menu_C"    => false, 
-        "Menu_D"    => false, 
-    )
-    state = Dict{String, Any}(
-        "Config_Just_Loaded"      => Observable(false),
-        "plot_window_initialized" => Observable(false),
-        "Active_Axes"             => Observable{Vector{Int}}(Int[]),
-        "Is_Activate_Mode"        => Observable(true),
-        "Is_Animating"            => Observable(false),
-        "Animation_Timer"         => Observable{Any}(nothing),
-        "Active_Target_Obs"       => Observable{Any}(nothing),
-        "Master_UI_Ref"           => Observable(master_ui),
-        "Layout_Dict"             => Observable(Dict{String, Any}())
-    )
-    
-    config_dict = ParamDict(
-        "Parameters" => copy(sim_config.varied_params),
-        "General"    => Dict{String, Any}(
-            "simulation_func" => sim_config.simulation_name,
-            "reference_func"  => isnothing(sim_config.reference_name) ? "none" : sim_config.reference_name
-        )
-    )
-    
-    manager = PlotManager(
-        sim_obs, 
-        ui_obs, 
-        config_dict, 
-        Dict{String, Any}(), 
-        triggers, 
-        state, 
-        locks, 
-        methods_obs, 
-        vars, 
-        copy(sim_config.shared_params),
-        Dict{Int, Dict{String, AbstractPlotCache}}()
-    )
-
-    manager.state["Master_UI_Ref"] = Observable(master_ui)
-    switch_ui_plot_type!(manager, init_type)
-    
-    for (scope, keys_dict) in ui_overwrite
-        if haskey(manager.ui, scope)
-            for (k, v) in keys_dict
-                if haskey(manager.ui[scope], k); manager.ui[scope][k][] = v; end
-            end
-        end
-    end
-    return manager
 end
 
 """
@@ -196,57 +109,36 @@ Backend-agnostic Single Dashboard entry point.
 Initializes either the dense Eulerian or unstructured Lagrangian pipeline.
 """
 function launch_plotter()
-        
-    if isnothing(ACTIVE_SIM_CONFIG[])
-        ACTIVE_SIM_CONFIG[] = SimulationConfig(
-            dummy_simulation_function,:none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict()
-        )
-    end
+    manager = GLOBAL_PLOT_MANAGER
 
     if PLOTTER_UI_STATE[][:is_open]
-        old_manager = ACTIVE_PLOT_MANAGER[]
-        
-        new_vars = [Symbol.(collect(keys(ACTIVE_SIM_CONFIG[].varied_params))); get_base_variables()]
-        
-        if old_manager.plot_vars == new_vars
-            old_manager.triggers["Simulation_Update"][] += 1
-            return PLOTTER_UI_STATE[][:master_fig], old_manager
-        else
-            @info "Configuration changed. Rebuilding UI..."
-            PLOTTER_UI_STATE[][:is_open] = false
-        end
+        @info "Plotter already open, bringing to front..."
+        return PLOTTER_UI_STATE[][:master_fig]
     end
-
-    ui_overwrite = deepcopy(GLOBAL_UI_OVERWRITE[])
-    ui_obs = create_master_ui_observables()
-    
-    init_type = PLOT_MODE[] == :eulerian ? :lines : :scattercolors
-    manager = create_plot_manager(ACTIVE_SIM_CONFIG[], ui_obs, ui_overwrite, init_type)
-    
-    ACTIVE_PLOT_MANAGER[] = manager
 
     master_fig = Figure()
     ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
     plot_layout = master_fig[1, 2] = GridLayout() 
-    plot_data_obs = Observable(Dict{String, AbstractPlotData}())
     
-    create_controls(ctrl_layout, manager)
-    setup_common_interactions!(master_fig, plot_layout, manager, plot_data_obs)
+    create_controls(ctrl_layout)
+    setup_common_interactions!(master_fig, plot_layout)
     
     if PLOT_MODE[] == :eulerian
-        setup_eulerian_interactions!(manager, plot_data_obs)
+        _setup_eulerian_data_sync!()
     else
-        setup_lagrangian_interactions!(manager, plot_data_obs)
+        _setup_lagrangian_data_sync!()
     end
 
     PLOTTER_UI_STATE[][:is_open] = true
     PLOTTER_UI_STATE[][:master_fig] = master_fig
 
-    empty!(ACTIVE_SIM_CONFIG.listeners)
+    empty!(manager.active_config.listeners)
 
-    on(ACTIVE_SIM_CONFIG) do new_config
+    on(manager.active_config) do new_config
         (isnothing(new_config) || new_config.simulation_func === dummy_simulation_function) && return
         
+        @info "New Simulation Config loaded! Map your variables and press 'Run Simulation' to compute data."
+
         real_params = Symbol.(sort(collect(keys(new_config.varied_params))))
         
         param_map = Dict{String, Symbol}()
@@ -271,23 +163,11 @@ function launch_plotter()
             i += 1
         end
         
-        manager.state["Param_Map"] = Observable(param_map)
-        manager.state["Reverse_Map"] = Observable(reverse_map)
+        manager.state["Param_Map"][] = param_map
+        manager.state["Reverse_Map"][] = reverse_map
         
         manager.plot_vars = [real_params; get_base_variables()]
         
-        manager.config["Parameters"] = copy(new_config.varied_params)
-        if !haskey(manager.config, "General"); manager.config["General"] = Dict{String, Any}(); end
-        manager.config["General"]["simulation_func"] = new_config.simulation_name
-        manager.config["General"]["reference_func"]  = isnothing(new_config.reference_name) ? "none" : new_config.reference_name
-        
-        make_obs(v) = (v isa Tuple || v isa AbstractVector) ? Observable{Any}(v) : Observable(v)
-        empty!(manager.simulation)
-        manager.simulation["shared"] = Dict(k => make_obs(v) for (k, v) in new_config.shared_params)
-        for (m, p) in new_config.methods_dict
-            manager.simulation[m] = Dict(k => make_obs(v) for (k, v) in p)
-        end
-
         if isempty(new_config.default_methods)
             manager.methods[] = filter(k -> k != "shared", collect(keys(new_config.methods_dict)))
         else
@@ -297,14 +177,14 @@ function launch_plotter()
         manager.state["Config_Just_Loaded"][] = true
         
         layout_opts = isempty(GLOBAL_LAYOUT_OPTIONS[]) ? get_base_layout_options() : GLOBAL_LAYOUT_OPTIONS[]
-        apply_layout_options!(manager, layout_opts)
+        apply_layout_options!(layout_opts)
         
         if !isempty(GLOBAL_UI_OVERWRITE[])
             for (scope, keys_dict) in GLOBAL_UI_OVERWRITE[]
                 if haskey(manager.ui, scope)
                     for (k, v) in keys_dict
                         if haskey(manager.ui[scope], k)
-                            manager.ui[scope][k].val = v 
+                            manager.ui[scope][k] = v 
                         end
                     end
                 end
@@ -317,28 +197,26 @@ function launch_plotter()
     end
 
     on(manager.triggers["Simulation_Update"]) do _
-        curr_config = ACTIVE_SIM_CONFIG[]
+        curr_config = manager.active_config[]
         if curr_config.simulation_func === dummy_simulation_function; return; end
-        update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
         
-        notify(plot_data_obs)
+        # NOTE: force_reload=true is critical here to load data generated by the Run Button!
+        update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
+        
+        notify(manager.plot_data)
         notify(manager.state["Active_Axes"])
         manager.triggers["Layout_Update"][] += 1
     end
 
-    setup_plot_window!(master_fig, plot_layout, manager, plot_data_obs)
-
-    if ACTIVE_SIM_CONFIG[].simulation_func !== dummy_simulation_function
-        manager.triggers["Simulation_Update"][] += 1
-    end
-
-    return master_fig, manager 
+    setup_plot_window!(master_fig, plot_layout, manager.plot_data)
+    return master_fig 
 end
 
 # ==============================================================================
 # --- 3. LAYOUT & RENDER HANDLERS ---
 # ==============================================================================
-function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager::PlotManager, plot_data_obs::Observable)
+function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable)
+    manager = GLOBAL_PLOT_MANAGER
     if manager.state["plot_window_initialized"][]; return; end
     manager.state["plot_window_initialized"][] = true
 
@@ -380,17 +258,17 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
         end
         trim!(plot_layout)
         
-        switch_ui_plot_type!(manager, ptype_sym)
+        switch_ui_plot_type!(ptype_sym)
         
-        new_obs = setup_render_lift!(master_fig, plot_layout, plot_data_obs, manager, Val(ptype_sym))
+        new_obs = setup_render_lift!(master_fig, plot_layout, plot_data_obs, Val(ptype_sym))
         if !isnothing(new_obs); append!(render_observers, new_obs); end
     end
 
     on(manager.triggers["Layout_Update"]) do _
         @with_lock manager "Layout" begin
-            curr_config = ACTIVE_SIM_CONFIG[]
+            curr_config = manager.active_config[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
+                update_plot_data_collection!(plot_data_obs[], curr_config, manager.methods[]; force_reload = false)
             end
             rebuild_plot_layout!()
         end
@@ -402,9 +280,9 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 
     on(manager.triggers["Scene_Update"]) do _
         @with_lock manager "Scene" begin
-            curr_config = ACTIVE_SIM_CONFIG[]
+            curr_config = manager.active_config[]
             if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
-                update_plot_data_collection!(plot_data_obs[], curr_config, manager, manager.methods[]; force_reload = false)
+                update_plot_data_collection!(plot_data_obs[], curr_config, manager.methods[]; force_reload = false)
             end
         end
         manager.triggers["Primitive_Rebuild"][] += 1
@@ -432,7 +310,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
     onany(manager.widgets["Legend_Base"].selection, manager.widgets["Legend_Add"].selection) do _...
         if manager.state["Config_Just_Loaded"][]; return; end
         is_comp = manager.widgets["Compare_Target"].selection[] != :None
-        curr = _parse_legend_position(manager, is_comp)
+        curr = _parse_legend_position(is_comp)
         p = prev_leg_struct[]
         
         if (!curr[1] && !p[1])
@@ -446,7 +324,8 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, manager
 end
 
 # Helper: Eulerian Extraction Dispatch
-function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    manager = GLOBAL_PLOT_MANAGER
     active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
     ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
     u_col = Any[]
@@ -473,7 +352,8 @@ function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_par
 end
 
 # Helper: Lagrangian Extraction Dispatch
-function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    manager = GLOBAL_PLOT_MANAGER
     local DS = 1
     for m_name in local_methods
         if haskey(data, m_name)
@@ -504,7 +384,8 @@ function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_p
     return Tuple([ax_cols..., u_col]), valid_methods
 end
 
-function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, manager::PlotManager, ::Val{T}) where T
+function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_data_obs::Observable, ::Val{T}) where T
+    manager = GLOBAL_PLOT_MANAGER
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     w = manager.widgets
     rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
@@ -541,7 +422,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
                 num_plots = length(target_tensor_arr[1]) 
                 
-                comp_names_tuple = manager.ui["Labels"]["comp_names"][]
+                comp_names_tuple = manager.ui["Labels"]["comp_names"]
                 compare_labels = String[]
                 for i in 1:num_plots
                     if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
@@ -571,13 +452,13 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     if target == :None || num_plots == 0; num_plots = 1; target = :None; end
     
     is_compare = target != :None
-    is_det, halign, valign = _parse_legend_position(manager, is_compare)
+    is_det, halign, valign = _parse_legend_position(is_compare)
     
     has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :Methods
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
-    manager.state["Layout_Dict"] = Observable(layout_dict)
+    manager.state["Layout_Dict"][] = layout_dict
     
     axes = []
     for i in 1:num_plots
@@ -650,7 +531,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
                     
                     # Clean Val Dispatch Helper Call
-                    data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+                    data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
                     isempty(valid_methods) && continue
                     
                     active_title_indices = if PLOT_MODE[] == :eulerian
@@ -669,8 +550,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     z_str = z_sel[] == :None ? "disabled" : string(z_sel[])
                     u_str = string(u_sel[])
 
-                    initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, manager, x_str, y_str, z_str, u_str, ts, Val(T), i)
-                    axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+                    initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, x_str, y_str, z_str, u_str, ts, Val(T), i)
+                    axes[i].title[] = manager.ui["Labels"]["title"] == "default" ? default_title : manager.ui["Labels"]["title"]
                     
                     if !is_3d_axis
                         x_lims, y_lims = data_tuples[1], data_tuples[2]
@@ -678,9 +559,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
                         if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
                         
-                        set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
+                        set_axis_limits_manager!(axes[i], x_lims, y_lims)
                     end
-                    _enforce_camera_lock!(axes, manager)
+                    _enforce_camera_lock!(axes)
                 end
             end
         end
@@ -717,7 +598,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 target_c_int = (is_compare && target == :Component) ? i : c_sel[]
                 local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
                 
-                data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, manager, x_sel, y_sel, z_sel, u_sel, target_c_int)
+                data_tuples, valid_methods = fetch_pipeline_tuples(Val(PLOT_MODE[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
                 isempty(valid_methods) && continue
                 
                 if !is_3d_axis
@@ -726,10 +607,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                     if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
                     if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
                     
-                    set_axis_limits_manager!(axes[i], x_lims, y_lims, manager)
+                    set_axis_limits_manager!(axes[i], x_lims, y_lims)
                 end
                 
-                sync_data_to_cache!(caches[i], valid_methods, data_tuples, manager, Val(PLOT_DIM_MAP[T]))
+                sync_data_to_cache!(caches[i], valid_methods, data_tuples, Val(PLOT_DIM_MAP[T]))
                 
                 active_title_indices = if PLOT_MODE[] == :eulerian
                     active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
@@ -741,9 +622,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 
                 ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
                 default_title = is_compare ? compare_labels[i] : ts
-                axes[i].title[] = manager.ui["Labels"]["title"][] == "default" ? default_title : manager.ui["Labels"]["title"][]
+                axes[i].title[] = manager.ui["Labels"]["title"] == "default" ? default_title : manager.ui["Labels"]["title"]
             end
-            for ax in axes; apply_axis_limits_overrides!(ax, manager); end
+            for ax in axes; apply_axis_limits_overrides!(ax); end
         end
     end
 
@@ -755,12 +636,12 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             ui_app = manager.ui["Plot-Style"]
             
             for (i, ax) in enumerate(axes)
-                _apply_axis_styles!(ax, manager, T)
-                apply_axis_limits_overrides!(ax, manager)
+                _apply_axis_styles!(ax, T)
+                apply_axis_limits_overrides!(ax)
                 
                 if !is_3d_axis && haskey(ui_app, "reference")
                     delete_plots_by_label!(ax, "Reference Lines")
-                    ref_exp = ui_app["reference"][]
+                    ref_exp = ui_app["reference"]
                     !isempty(ref_exp) && plot_reference_lines!(ax, ref_exp; label="Reference Lines")
                 end
                 
@@ -770,7 +651,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         isnothing(m_idx) && continue 
                         
                         colors = get(ui_app, "colors", nothing)
-                        c = !isnothing(colors) ? colors[][mod1(m_idx, length(colors[]))] : :black
+                        c = !isnothing(colors) ? colors[mod1(m_idx, length(colors))] : :black
                         
                         for (key, prim) in cache.primitives
                             apply_ui_style!(key, prim, ui_app, c)
@@ -781,18 +662,18 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         plot_obj = _find_first_drawable_primitive(manager.caches[i])
                         if !isnothing(plot_obj)
                             cr_obs = haskey(plot_obj.attributes, :colorrange) ? plot_obj.colorrange : Observable((0.0, 1.0))
-                            create_or_update_colorbar!(plot_layout, plot_obj, manager, cr_obs, string(w["U-Axis"].selection[]), i)
+                            create_or_update_colorbar!(plot_layout, plot_obj, cr_obs, string(w["U-Axis"].selection[]), i)
                         end
                     end
                 end
             end
             
             if !is_3d_axis && T in LEGEND_SUPPORTED_PLOTS
-                create_or_update_legend!(plot_layout, _collect_legend_elements(manager, ui_app)..., manager)
+                create_or_update_legend!(plot_layout, _collect_legend_elements(ui_app)...)
             end
             
             resize_to_layout!(master_fig)
-            _enforce_camera_lock!(axes, manager)
+            _enforce_camera_lock!(axes)
         end
     end
     return ObserverFunction[prim_obs; widget_to_sync_obs; data_sync_obs; ui_obs]

@@ -1,3 +1,7 @@
+# ==============================================================================
+# --- Utils.jl ---
+# ==============================================================================
+
 function allMethodNames(config::SimulationConfig)
     return sort_methods_robust(collect(keys(config.methods_dict)))
 end
@@ -43,8 +47,6 @@ for the loaded data.
 function get_active_slider_indices(sim_data::AbstractSimData)
     allowed = ALLOWED_PLOT_DIMS[]
     actual = sim_data.domain.dim_keys
-    
-    # Returns an array like [true, true, false, true] if data is (:x, :y, :t)
     return [dim in actual for dim in allowed]
 end
 
@@ -52,13 +54,10 @@ end
     map_sliders_to_tensor(sim_data::AbstractSimData)
 
 Maps the fixed UI slider indices to the dynamic dimension indices of the underlying tensor.
-Returns a Tuple of the same length as the tensor's dimensions, where each element 
-corresponds to the ID of the UI slider that controls it.
 """
 function map_sliders_to_tensor(sim_data::AbstractSimData)
     allowed = ALLOWED_PLOT_DIMS[]
     actual = sim_data.domain.dim_keys
-
     return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
 end
 
@@ -70,7 +69,6 @@ function sort_methods_robust(methods::Vector{String})
     
     function method_rank(m::String)
         lm = lowercase(m)
-        # Rank 0 if it contains a priority keyword (forces it to the top), Rank 1 otherwise.
         rank = any(k -> occursin(k, lm), priority_keys) ? 0 : 1
         return (rank, m)
     end
@@ -88,15 +86,12 @@ end
 
 function parseValue(s::String)
     try
-        # Meta.parse turns a string into a Julia expression.
-        # `eval` executes that expression.
         return eval(Meta.parse(s))
     catch e
-        # If parsing fails, it's probably just a plain string.
-        # We also strip quotes that CSV readers sometimes add.
         return s == "<empty>" ? "" : string(strip(s, '\"'))
     end
 end
+
 """
     update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
 
@@ -105,17 +100,14 @@ and preserves the current selection or falls back to a prioritized list.
 """
 function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
     curr = menu_widget.selection[]
-    
     new_arr = isempty(new_options) ? Any[("-", :None)] : new_options
     
-    # 1. Robust Equality Check (Bypasses Makie's internal MenuOption struct casting)
     old_arr = menu_widget.options[]
     options_changed = false
     
     is_eq = length(old_arr) == length(new_arr)
     if is_eq
         for (o, n) in zip(old_arr, new_arr)
-            # Depending on Makie version, elements are raw Tuples or MenuOption objects
             o_val = hasproperty(o, :value) ? o.value : (o isa Tuple ? o[2] : o)
             n_val = n isa Tuple ? n[2] : n
             if o_val != n_val
@@ -127,7 +119,6 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
     
     if !is_eq
         menu_widget.options[] = new_arr
-        # Safely rebuild the WebGL buffer to prevent JS crashes
         menu_widget.is_open[] = true
         menu_widget.is_open[] = false
         options_changed = true
@@ -135,7 +126,6 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
 
     opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
 
-    # 2. Maintain Selection or Apply Fallbacks
     target_idx = 1
     if curr == "-" || curr == :None || isnothing(curr) || curr ∉ opt_values
         if !isempty(new_options)
@@ -150,26 +140,22 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
         target_idx = findfirst(isequal(curr), opt_values)
     end
     
-    # 3. Only assign if the index genuinely changed (prevents triggering redundant UI updates)
     selection_changed = menu_widget.i_selected[] != target_idx
     if selection_changed
         menu_widget.i_selected[] = target_idx
     end
     
-    # Manually re-notify the pipeline if options shifted underneath a static selection
     if (options_changed && !selection_changed) || force_notify
         notify(menu_widget.selection)
     end
 end
+
 """
     smart_parse_and_update!(obs::Observable, input_str::String)
 
 Attempts to parse `input_str` into the same type as the current value of `obs`.
-If parsing fails or types are incompatible, it prints a warning and leaves the 
-observable unchanged.
 """
 function smart_parse_and_update!(obs::Observable, input_str::String)
-    # Ignore empty inputs (usually handled by the placeholder logic)
     isempty(input_str) && return
     
     current_val = to_value(obs)
@@ -181,7 +167,6 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
         elseif T == Symbol
             obs[] = Symbol(input_str)
         elseif T == Bool
-            # Handle true/false, 1/0, yes/no
             s = lowercase(strip(input_str))
             obs[] = (s == "true" || s == "1" || s == "yes")
         elseif T <: Int
@@ -191,18 +176,16 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
         elseif T <: Tuple || T <: Vector
             parsed = parseValue(input_str) 
             
-            # THE FIX: Only check if the base structure (Tuple or Vector) matches!
             if (T <: Tuple && parsed isa Tuple) || (T <: Vector && parsed isa Vector)
                 try
                     obs[] = parsed
                 catch e
-                    @warn "Failed to apply value. The parameter strictly expects $T, but you provided $(typeof(parsed)). If you want to change the length of this tuple dynamically, initialize it as Observable{Any}."
+                    @warn "Failed to apply value. The parameter strictly expects $T, but you provided $(typeof(parsed))."
                 end
             else
                 @warn "Type mismatch for complex input. Expected a $(T <: Tuple ? "Tuple" : "Vector"), but got $(typeof(parsed))."
             end
         else
-            # Fallback for any other types
             obs[] = parse(T, input_str)
         end
     catch e
@@ -210,39 +193,28 @@ function smart_parse_and_update!(obs::Observable, input_str::String)
     end
 end
 
-
-
-
 """
     generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{String}, sel_vals)
-
-Constructs the plot title dynamically. It lists all fixed parameters and base variables,
-marks the actively plotted dimensions (e.g., X and Y for a surface plot), and allows 
-for a user-defined override via `manager.ui`.
 """
 function generate_dynamic_title(
     plot_dims::Tuple, 
     dim_names::Vector{Symbol}, 
     sel_vals
 )
-    # Build the Default Dynamic Title
     title_parts = String[]
     
     for i in 1:length(dim_names)
         name = String(dim_names[i])
         
         if i in plot_dims
-            # This is an axis we are currently plotting along
             push!(title_parts, "$name = [Axis]")
         else
             val = sel_vals[i]
-            # Format floats neatly to 3 decimal places to prevent title bloat
             val_str = val isa AbstractFloat ? @sprintf("%.3f", val) : string(val)
             push!(title_parts, "$name = $val_str")
         end
     end
     
-    # Join all the parts together with a separator
     return join(title_parts, " | ")
 end
 
@@ -281,7 +253,9 @@ function _recombine_tuples!(params::Dict)
     end
     return params
 end
-function apply_layout_options!(manager::PlotManager, layout_options::Dict)
+
+function apply_layout_options!(layout_options::Dict)
+    manager = GLOBAL_PLOT_MANAGER
     isempty(layout_options) && return
 
     for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
@@ -310,7 +284,8 @@ function apply_layout_options!(manager::PlotManager, layout_options::Dict)
     end
 end
 
-function apply_scene_options!(manager::PlotManager, scene_options::Dict)
+function apply_scene_options!(scene_options::Dict)
+    manager = GLOBAL_PLOT_MANAGER
     isempty(scene_options) && return
 
     # 1. Apply Axis Dropdowns
@@ -334,7 +309,6 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
                 widget.i_selected[] = idx
                 notify(widget.selection)
             else
-                # THE FIX: Force inject the option so it survives the reactive cascade!
                 if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
                     new_opts = copy(opts)
                     push!(new_opts, (string(val), val))
@@ -377,7 +351,8 @@ function apply_scene_options!(manager::PlotManager, scene_options::Dict)
     end
 end
 
-function extract_layout_options(manager::PlotManager)
+function extract_layout_options()
+    manager = GLOBAL_PLOT_MANAGER
     opts = Dict{String, Any}()
     for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
         if haskey(manager.widgets, k)
@@ -387,7 +362,8 @@ function extract_layout_options(manager::PlotManager)
     return opts
 end
 
-function extract_scene_options(manager::PlotManager)
+function extract_scene_options()
+    manager = GLOBAL_PLOT_MANAGER
     opts = Dict{String, Any}()
     for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
         if haskey(manager.widgets, k)
@@ -400,7 +376,6 @@ function extract_scene_options(manager::PlotManager)
         w_key = haskey(rev_map, k) ? rev_map[k] : k
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
-            # THE FIX: Explicitly check for Makie.Slider!
             if widget isa Makie.Slider
                 opts["$(k)_Value"] = widget.value[]
             end
@@ -408,17 +383,19 @@ function extract_scene_options(manager::PlotManager)
     end
     return opts
 end
-function load_and_apply_csv!(manager::PlotManager, filepath::String)
+
+function load_and_apply_csv!(filepath::String)
+    manager = GLOBAL_PLOT_MANAGER
     @info "Loading configuration from CSV: $filepath"
     
     parsed = parse_csv_to_dict(filepath)
     
-    # Restore Grid Resolutions BEFORE running simulations
+    # Restore Grid Resolutions BEFORE loading config
     if haskey(parsed, "Config") && haskey(parsed["Config"], "Resolutions")
         res = parsed["Config"]["Resolutions"]
         haskey(res, "N")   && (set_space_resolution!(res["N"]))
         haskey(res, "T")   && (set_time_resolution!(res["T"]))
-        haskey(res, "Ref")   && (set_ref_resolution!(res["Ref"]))
+        haskey(res, "Ref") && (set_ref_resolution!(res["Ref"]))
         @info "Restored grid resolutions: N=$(res["N"]), T=$(res["T"]), REF=$(res["Ref"])"
     end
 
@@ -431,49 +408,51 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
     
     new_config = csv_to_simulation_config(parsed, resolved_func)
     
-    @info "CSV Loaded: Running all defined simulations for exact recreation..."
-    runAllSimulations(new_config; calculate_stats=true, convert_eulerian=true)
-    
-    empty!(manager.last_run_params)
+    # Empty existing caches 
     for cache_dict in manager.caches
         empty!(cache_dict)
     end
     
+    # THE FIX: Simply overwrite the config and methods, DO NOT run simulations automatically
+    manager.active_config[] = new_config
+    manager.methods[] = new_config.default_methods
+    
     if haskey(parsed, "UI")
-        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
+        for (scope, dict) in parsed["UI"]
+            if haskey(manager.ui, scope)
+                for (k, v) in dict
+                    if haskey(manager.ui[scope], k)
+                        if manager.ui[scope][k] isa Observable
+                            manager.ui[scope][k][] = v
+                        else
+                            manager.ui[scope][k] = v
+                        end
+                    end
+                end
+            end
+        end
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        scene_opts = Dict{String,Any}()
-        for (k, v) in parsed["Scene"]["General"]
-            scene_opts[k] = v
-        end
-        GLOBAL_SCENE_OPTIONS[] = scene_opts
+        apply_scene_options!(parsed["Scene"]["General"])
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
-        layout_opts = get_base_layout_options()
-        for (k, v) in parsed["Layout"]["General"]
-            layout_opts[k] = v
-        end
-        GLOBAL_LAYOUT_OPTIONS[] = layout_opts
+        apply_layout_options!(parsed["Layout"]["General"])
     end
 
-    # --- THE FIX (Part 2): Apply and Lock the Camera ---
     if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
         GLOBAL_CAMERA_OPTIONS[] = parsed["Camera"]["General"]
         
-        # Turn the lock ON so _enforce_camera_lock! actually applies these limits!
         manager.state["Camera_Locked"][] = true
         if haskey(manager.widgets, "Lock_Camera_Button")
             btn = manager.widgets["Lock_Camera_Button"]
             btn.label[] = "Unlock Camera"
-            btn.buttoncolor[] = :lightgreen # Match your "locked" UI color
+            btn.buttoncolor[] = :lightgreen
         end
     else
         GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
         
-        # Turn the lock OFF if the CSV didn't have camera settings
         if get(manager.state, "Camera_Locked", Observable(false))[]
             manager.state["Camera_Locked"][] = false
             if haskey(manager.widgets, "Lock_Camera_Button")
@@ -484,8 +463,9 @@ function load_and_apply_csv!(manager::PlotManager, filepath::String)
         end
     end
     
-    ACTIVE_SIM_CONFIG[] = new_config
-    @info "Successfully applied CSV config to UI!"
+    @info "Successfully applied CSV config to UI! Press 'Run Simulation' to compute data."
+    # Trigger UI cascades, but not calculation updates
+    manager.triggers["UI_Update"][] += 1
 end
 
 """
@@ -500,7 +480,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         shared_params = parsed_csv["Simulation"]["shared"]
     end
 
-    # 2. Extract Methods (No longer hijacks "analytical" methods!)
+    # 2. Extract Methods 
     methods_dict = Dict{String, Dict{String, Any}}()
     if haskey(parsed_csv, "Simulation")
         for (scope, params) in parsed_csv["Simulation"]
@@ -535,7 +515,6 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 6. Resolve the Analytical Solution Factory
     ref_func = nothing
     if !isnothing(ref_name)
-        # Convert the UI string back to a safe function name string
         safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
         
         ref_factory = try
@@ -545,10 +524,8 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         end
         
         if !isnothing(ref_factory)
-            # THE FIX: Pure execution! The function is already known to the compiler.
             ref_func = ref_factory(shared_params)
             
-            # --- Auto-Inject the Reference Method! ---
             ns = nice_string(safe_ref_name)
             if !haskey(methods_dict, ns)
                 methods_dict[ns] = ParamDict()
@@ -565,10 +542,9 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 7. Construct and return the SimulationConfig
     sim_func_str = String(parsed_csv["Config"]["General"]["simulation_func"])
     
-    # We pass strings here; the SimulationConfig constructor will cast them to Symbols natively.
     return SimulationConfig(
-        sim_func_str, # Passes the string name
-        ref_name,     # Passes the string name (or nothing)
+        sim_func_str, 
+        ref_name,     
         shared_params,
         methods_dict,
         default_methods;
@@ -579,19 +555,15 @@ end
 function smart_parse_csv_value(val_str::String)
     val_str = strip(val_str)
     
-    # 1. Handle Keywords
     if val_str == "true"; return true; end
     if val_str == "false"; return false; end
     if val_str == "<empty>"; return ""; end
     
-    # 2. Handle Numbers
     v_int = tryparse(Int, val_str)
     if !isnothing(v_int); return v_int; end
     v_float = tryparse(Float64, val_str)
     if !isnothing(v_float); return v_float; end
     
-    # 3. Handle Julia Expressions (Symbols, Arrays, Tuples)
-    # Since we stripped prefixes, everything starts with ':', '[', or '('
     if startswith(val_str, ":") || startswith(val_str, "[") || startswith(val_str, "(")
         try
             return eval(Meta.parse(val_str))
@@ -600,7 +572,6 @@ function smart_parse_csv_value(val_str::String)
         end
     end
     
-    # 4. Fallback to clean string
     return replace(val_str, r"^\"|\"$" => "")
 end
 
@@ -628,30 +599,24 @@ Explicitly strips type prefixes (like 'Any' or 'Vector{Float64}') from
 containers to ensure they are saved as clean, parsable Julia expressions.
 """
 function _value_to_string_for_csv(v)
-    # 1. Handle Symbols (Prepend colon so they parse back as Symbols)
     if isa(v, Symbol)
         return ":" * string(v)
     end
 
-    # 2. Handle empty strings
     if v == ""
         return "<empty>"
     end
 
-    # 3. Handle Arrays/Vectors (Strip type prefix: Any[...] -> [...])
     if isa(v, AbstractArray)
         s = string(v)
-        # Replaces any alphanumeric + curly brace prefix before the first '['
         return replace(s, r"^[a-zA-Z0-9_{}, ]*\[" => "[")
     end
     
-    # 4. Handle Tuples (Strip type prefix: NamedTuple(...) -> (...))
     if isa(v, Tuple)
         s = string(v)
         return replace(s, r"^[a-zA-Z0-9_{}, ]*\(" => "(")
     end
 
-    # 5. Fallback for Numbers and basic Strings
     return string(v)
 end
 
@@ -671,11 +636,9 @@ function get_all_git_infos(start_path::String = ".")
                     "git_commit_count" => try parse(Int, readchomp(`git -C $root rev-list --count HEAD`)) catch; -1 end
                 )
             catch e
-                # Ignore invalid or empty repositories silently
             end
         end
         
-        # Prune the walk algorithm to prevent freezing!
         filter!(d -> !(d in [".git", "build", "node_modules", ".vscode", "docs"]), dirs)
     end
     
@@ -688,7 +651,6 @@ function get_julia_info(git_repo_names::Vector{String})
     
     deps = Pkg.dependencies()
     
-    # 1. Main Project Direct Dependencies
     top_deps = Dict{String, Any}()
     for (uuid, pkg) in deps
         if pkg.is_direct_dep
@@ -697,7 +659,6 @@ function get_julia_info(git_repo_names::Vector{String})
     end
     info["Main_Project"] = top_deps
     
-    # 2. Local Sub-Packages (Match git repo names)
     for (uuid, pkg) in deps
         if pkg.name in git_repo_names
             sub_deps = Dict{String, Any}()
@@ -714,13 +675,12 @@ function get_julia_info(git_repo_names::Vector{String})
     return info
 end
 
-
 function saveParametersToCSV(
     base_filename::String,
     save_dir::String,
-    manager::PlotManager,
     metadata_general::Dict
 )::Bool
+    manager = GLOBAL_PLOT_MANAGER
     csv_filename = joinpath(save_dir, base_filename * ".csv")
     
     try
@@ -749,13 +709,12 @@ function saveParametersToCSV(
             for (k, v) in info; add_row("Julia", scope, k, v); end
         end
 
-        # --- 2. CATEGORY: Scene (THE FIX) ---
-        # Safely uses your existing extraction function instead of digging through nested controls
-        scene_opts = extract_scene_options(manager)
+        # --- 2. CATEGORY: Scene ---
+        scene_opts = extract_scene_options()
         for (k, v) in scene_opts
             add_row("Scene", "General", k, v)
         end
-        layout_opts = extract_layout_options(manager)
+        layout_opts = extract_layout_options()
         for (k, v) in layout_opts
             add_row("Layout", "General", k, v)
         end
@@ -763,28 +722,32 @@ function saveParametersToCSV(
             add_row("Camera", "General", k, v)
         end
 
-        # --- 3. CATEGORY: Simulation ---
-        for (k, v) in manager.simulation["shared"]
+        # --- 3. CATEGORY: UI ---
+        for (scope, dict) in manager.ui
+            for (k, v) in dict; add_row("UI", scope, k, v); end
+        end
+
+        # --- 4. CATEGORY: Simulation & Config (THE FIX) ---
+        config = manager.active_config[]
+
+        for (k, v) in config.shared_params
             add_row("Simulation", "shared", k, v)
         end
         for m_name in manager.methods[]
-            if haskey(manager.simulation, m_name)
-                for (k, v) in manager.simulation[m_name]
+            if haskey(config.methods_dict, m_name)
+                for (k, v) in config.methods_dict[m_name]
                     add_row("Simulation", m_name, k, v)
                 end
             end
         end
 
-        # --- 4. CATEGORY: UI ---
-        for (scope, dict) in manager.ui
-            for (k, v) in dict; add_row("UI", scope, k, v); end
+        for (k, v) in config.varied_params
+            add_row("Config", "Parameters", k, v)
         end
-
-        # --- 5. CATEGORY: Config ---
-        for (scope, dict) in manager.config
-            for (k, v) in dict; add_row("Config", scope, k, v); end
-        end
-
+        
+        add_row("Config", "General", "simulation_func", string(config.simulation_name))
+        add_row("Config", "General", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
+        
         add_row("Config", "Resolutions", "N", get_space_resolution())
         add_row("Config", "Resolutions", "T", get_time_resolution())
         add_row("Config", "Resolutions", "Ref", get_ref_resolution())

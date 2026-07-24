@@ -1,15 +1,13 @@
 # =============================================================================
-# MODULAR HELPERS
+# --- Render.jl ---
 # =============================================================================
+
 function get_base_method_index(ui_app::Dict, active_methods::Vector{String})
-    # Mathematically protect against empty arrays
     isempty(active_methods) && return 1
-    
-    raw_idx = get(ui_app, "base_method_idx", Ref(1))[]
+    raw_idx = get(ui_app, "base_method_idx", 1) # Removed []
     return clamp(raw_idx, 1, length(active_methods))
 end
 
-# THE FIX: Flattens Vectors of 1-Tuples or 1-SVectors into Float arrays
 function _unwrap_1tuples(data)
     if !isempty(data) && (first(data) isa Tuple || first(data) isa AbstractVector) && length(first(data)) == 1
         return Float64[d[1] for d in data]
@@ -29,7 +27,7 @@ function build_2d_lines_grid(xs, ys, us, dir::String)
             append!(Y, ys); push!(Y, NaN)
             append!(U, us[i, :]); push!(U, NaN)
         end
-    else # Default Horizontal
+    else 
         for j in 1:Ny
             append!(X, xs); push!(X, NaN)
             append!(Y, fill(ys[j], Nx)); push!(Y, NaN)
@@ -58,7 +56,7 @@ function build_3d_lines_grid(xs, ys, zs, us, dir::String)
             append!(Z, zs); push!(Z, NaN)
             append!(U, us[i, j, :]); push!(U, NaN)
         end
-    else # Default Horizontal / Along X
+    else 
         for j in 1:Ny, k in 1:Nz
             append!(X, xs); push!(X, NaN)
             append!(Y, fill(ys[j], Nx)); push!(Y, NaN)
@@ -73,7 +71,8 @@ end
 # 1D PRIMITIVES
 # -----------------------------------------------------------------------------
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -82,11 +81,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
+        cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         
-        c  = ui_app["colors"][][mod1(m_idx, end)]
-        ls = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-        lw = ui_app["line_width"][]
+        c  = ui_app["colors"][mod1(m_idx, end)] # Removed []
+        ls = ui_app["dashed_lines"] ? ui_app["line_styles"][mod1(m_idx, end)] : nothing # Removed []
+        lw = ui_app["line_width"] # Removed []
         
         l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls)
         cache.primitives[:lines] = l
@@ -101,7 +100,8 @@ end
 # 2D PRIMITIVES
 # -----------------------------------------------------------------------------
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -111,12 +111,12 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[m_idx]
         cache.obs_y.val = ys_slices[m_idx]
-        cache.obs_u.val   = us_slices[m_idx]
+        cache.obs_u.val = us_slices[m_idx]
 
-        color = ui_app["colors"][][mod1(m_idx, length(ui_app["colors"][]))]
-        lw    = ui_app["line_width"][]
+        color = ui_app["colors"][mod1(m_idx, length(ui_app["colors"]))] # Removed []
+        lw    = ui_app["line_width"] # Removed []
         
-        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"][], color=color, linewidth=lw, labels=ui_app["labels"][])
+        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"], color=color, linewidth=lw, labels=ui_app["labels"]) # Removed []
         
         cache.primitives[:contour] = ct
         cache_dict[label] = cache
@@ -126,7 +126,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     end
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs, ys, us = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -137,20 +138,21 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache.obs_x.val = xs[base_idx]
     cache.obs_y.val = ys[base_idx]
-    cache.obs_u.val   = us[base_idx]
+    cache.obs_u.val = us[base_idx]
 
     valid_u = filter(isfinite, us[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
+    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
 
-    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
+    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs, rasterize=rast_val) # Removed []
 
     cache.primitives[:heatmap] = hm
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, hm, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, hm, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines2d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines2d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -159,22 +161,23 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     label = active_methods[base_idx]
     cache = EulerianPlotCache()
     
-    dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
+    dir = get(ui_app, "line_direction", "Horizontal") # Removed []
     X, Y, U = build_2d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
-    cache.obs_u.val   = U
+    cache.obs_u.val = U
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, linewidth=ui_app["line_width"][])
+    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, linewidth=ui_app["line_width"]) # Removed []
     cache.primitives[:lines2d] = l2d
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, l2d, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, l2d, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -185,22 +188,23 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
-    cache.obs_u.val   = us_slices[base_idx]
+    cache.obs_u.val = us_slices[base_idx]
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
     ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
-        colormap=ui_app["color_map"][], colorrange=cr_obs, 
-        levels=ui_app["levels"][], linewidth=ui_app["line_width"][], labels=ui_app["labels"][]
+        colormap=ui_app["color_map"], colorrange=cr_obs, # Removed []
+        levels=ui_app["levels"], linewidth=ui_app["line_width"], labels=ui_app["labels"] # Removed []
     )
     
     cache.primitives[:contour_cmap] = ct
     cache_dict[base_label] = cache
-    create_or_update_colorbar!(plot_layout, ct, manager, cr_obs, base_label, plot_idx)
+    create_or_update_colorbar!(plot_layout, ct, cr_obs, base_label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -210,21 +214,21 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app["levels"][])
-    rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
+    lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app["levels"]) # Removed []
+    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
 
     plotted_objects, labels_for_legend = [], String[]
     
     base_cache = EulerianPlotCache()
     base_cache.obs_x.val = xs_slices[base_idx]
     base_cache.obs_y.val = ys_slices[base_idx]
-    base_cache.obs_u.val   = us_slices[base_idx]
+    base_cache.obs_u.val = us_slices[base_idx]
 
-    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"][], levels=lvl_range, rasterize=rast_val)
+    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"], levels=lvl_range, rasterize=rast_val) # Removed []
     base_cache.primitives[:contourf] = cf
     cache_dict[base_label] = base_cache
 
-    base_color = Makie.to_colormap(ui_app["color_map"][])[end]
+    base_color = Makie.to_colormap(ui_app["color_map"])[end] # Removed []
     push!(plotted_objects, [Makie.PolyElement(color=base_color)])
     push!(labels_for_legend, "$base_label (Base)")
 
@@ -233,10 +237,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = EulerianPlotCache()
         cache.obs_x.val = xs_slices[i]
         cache.obs_y.val = ys_slices[i]
-        cache.obs_u.val   = us_slices[i]
+        cache.obs_u.val = us_slices[i]
         
-        color = ui_app["colors"][][mod1(i, end)]
-        lw = ui_app["line_width"][]
+        color = ui_app["colors"][mod1(i, end)] # Removed []
+        lw = ui_app["line_width"] # Removed []
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; color=color, linewidth=lw, labels=true)
         cache.primitives[:contour] = ct
@@ -246,10 +250,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         push!(labels_for_legend, label)
     end
 
-    create_or_update_colorbar!(plot_layout, cf, manager, cr_obs, base_label, plot_idx)
+    create_or_update_colorbar!(plot_layout, cf, cr_obs, base_label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples 
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -260,17 +265,19 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
-    cache.obs_u.val   = us_slices[base_idx]
+    cache.obs_u.val = us_slices[base_idx]
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app["rasterize"][] == 0 ? false : ui_app["rasterize"][]
+    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
 
-    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs, rasterize=rast_val)
+    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs, rasterize=rast_val) # Removed []
     cache.primitives[:surface] = sf
     cache_dict[label] = cache
 end
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d_surface}, plot_idx::Int)
+
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d_surface}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     pts_slices, us_slices = data_tuples
@@ -280,24 +287,24 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = LagrangianPlotCache()
     cache.obs_pts.val = pts_slices[base_idx]
-    cache.obs_u.val     = us_slices[base_idx]
+    cache.obs_u.val   = us_slices[base_idx]
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    # Lift the 2D Points and 1D Scalars into native 3D space!
     pts_3d = lift(cache.obs_pts, cache.obs_u) do pts, us
         [Point3f(p[1], p[2], u) for (p, u) in zip(pts, us)]
     end
 
-    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
     
     cache.primitives[:scatter2d_surface] = sc
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_surface}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_surface}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -306,18 +313,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
         
-        # Unpack the 2D grid and the scalar field
         cache.obs_x.val = xs_slices[m_idx]
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u.val = us_slices[m_idx]
 
-        # Extract standard styling mapped for comparing multiple surface lines
-        color = ui_app["colors"][][mod1(m_idx, length(ui_app["colors"][]))]
-        lw    = ui_app["line_width"][]
+        color = ui_app["colors"][mod1(m_idx, length(ui_app["colors"]))] # Removed []
+        lw    = ui_app["line_width"] # Removed []
         
-        # Makie's contour3d! renderer expects X, Y, and Z (which is our U scalar field)
         cs = contour3d!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
-                        levels=ui_app["levels"][], color=color, linewidth=lw)
+                        levels=ui_app["levels"], color=color, linewidth=lw) # Removed []
         
         cache.primitives[:contour_surface] = cs
         cache_dict[label] = cache
@@ -330,7 +334,8 @@ end
 # -----------------------------------------------------------------------------
 # 3D PRIMITIVES
 # -----------------------------------------------------------------------------
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -343,19 +348,20 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.obs_x.val = extrema(x_data)
     cache.obs_y.val = extrema(y_data)
     cache.obs_z.val = extrema(z_data)
-    cache.obs_u.val   = u_data
+    cache.obs_u.val = u_data
     
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["color_map"][], colorrange=cr_obs)
+    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs) # Removed []
     
     cache.primitives[:volume] = vol
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, vol, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, vol, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:lines3d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines3d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
@@ -364,60 +370,55 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     label = active_methods[base_idx]
     cache = EulerianPlotCache()
     
-    dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
+    dir = get(ui_app, "line_direction", "Horizontal") # Removed []
     X, Y, Z, U = build_3d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
     cache.obs_z.val = Z
-    cache.obs_u.val   = U
+    cache.obs_u.val = U
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, linewidth=ui_app["line_width"][])
+    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, linewidth=ui_app["line_width"]) # Removed []
     cache.primitives[:lines3d] = l3d
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, l3d, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, l3d, cr_obs, label, plot_idx)
 end
 
-# -----------------------------------------------------------------------------
-# 3D PRIMITIVES
-# -----------------------------------------------------------------------------
-
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
 
-    # Use the base method since layering volumetric colormaps is visually chaotic
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     
     cache = EulerianPlotCache()
     
-    # Use extrema() to define the bounding box for VolumeLike conversion
     cache.obs_x.val = extrema(xs_slices[base_idx])
     cache.obs_y.val = extrema(ys_slices[base_idx])
     cache.obs_z.val = extrema(zs_slices[base_idx])
     cache.obs_u.val = us_slices[base_idx]
     
-    # Establish color range
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    # True 3D volumetric contour uses Makie's contour! with 4 arguments
     ct3d = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; 
-                    colormap=ui_app["color_map"][], colorrange=cr_obs, levels=ui_app["levels"][])
+                    colormap=ui_app["color_map"], colorrange=cr_obs, levels=ui_app["levels"]) # Removed []
     
     cache.primitives[:contour3d] = ct3d
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, ct3d, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, ct3d, cr_obs, label, plot_idx)
 end
+
 # =============================================================================
 # HYBRID 2D/3D PRIMITIVES (Eulerian Grids and Lagrangian Particles)
 # =============================================================================
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     is_eul = PLOT_MODE[] == :eulerian
@@ -427,14 +428,12 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
 
-    # Conditionally unpack data and create observable hooks for point clouds
     if is_eul
         xs_slices, ys_slices, us_slices = data_tuples
         cache.obs_x.val = xs_slices[base_idx]
         cache.obs_y.val = ys_slices[base_idx]
         cache.obs_u.val = us_slices[base_idx]
         
-        # Flatten the Eulerian grid into 2D Points
         pts_2d = lift(cache.obs_x, cache.obs_y) do xs, ys
             vec([Point2f(xs[i], ys[j]) for i in eachindex(xs), j in eachindex(ys)])
         end
@@ -451,14 +450,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
     
     cache.primitives[:scatter2d] = sc
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     is_eul = PLOT_MODE[] == :eulerian
@@ -468,7 +468,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
 
-    # Conditionally unpack data and create observable hooks for point clouds
     if is_eul
         xs_slices, ys_slices, zs_slices, us_slices = data_tuples
         cache.obs_x.val = xs_slices[base_idx]
@@ -476,7 +475,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_z.val = zs_slices[base_idx]
         cache.obs_u.val = us_slices[base_idx]
         
-        # Flatten the 3D Eulerian grid into 3D Points
         pts_3d = lift(cache.obs_x, cache.obs_y, cache.obs_z) do xs, ys, zs
             vec([Point3f(xs[i], ys[j], zs[k]) for i in eachindex(xs), j in eachindex(ys), k in eachindex(zs)])
         end
@@ -493,14 +491,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
     
     cache.primitives[:scatter3d] = sc
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
@@ -512,24 +511,25 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
     if is_eul
         cache.obs_x.val = _unwrap_1tuples(xs_slices[base_idx])
-        cache.obs_u.val   = _unwrap_1tuples(us_slices[base_idx])
+        cache.obs_u.val = _unwrap_1tuples(us_slices[base_idx])
     else
         cache.obs_pts.val = _unwrap_1tuples(xs_slices[base_idx])
-        cache.obs_u.val     = _unwrap_1tuples(us_slices[base_idx])
+        cache.obs_u.val   = _unwrap_1tuples(us_slices[base_idx])
     end
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
     obs_coord = is_eul ? cache.obs_x : cache.obs_pts
-    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app["color_map"][], colorrange=cr_obs, markersize=ui_app["marker_size"][], marker=ui_app["markers"][][1])
+    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
     
     cache.primitives[:scatter1d] = sc
     cache_dict[label] = cache
-    create_or_update_colorbar!(plot_layout, sc, manager, cr_obs, label, plot_idx)
+    create_or_update_colorbar!(plot_layout, sc, cr_obs, label, plot_idx)
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scattercolors}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scattercolors}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
@@ -540,15 +540,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
         if is_eul
             cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         else
             cache.obs_pts.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
 
-        c   = ui_app["colors"][][mod1(m_idx, end)]
-        mrk = ui_app["markers"][][mod1(m_idx, end)]
-        ms  = ui_app["marker_size"][]
+        c   = ui_app["colors"][mod1(m_idx, end)] # Removed []
+        mrk = ui_app["markers"][mod1(m_idx, end)] # Removed []
+        ms  = ui_app["marker_size"] # Removed []
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk)
@@ -561,7 +561,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     end
 end
 
-function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, manager, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
+function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
+    manager = GLOBAL_PLOT_MANAGER
     ui_app = manager.ui["Plot-Style"]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
@@ -572,17 +573,17 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
         if is_eul
             cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         else
             cache.obs_pts.val = _unwrap_1tuples(xs_slices[m_idx])
-            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
         
-        c   = ui_app["colors"][][mod1(m_idx, end)]
-        ls  = ui_app["dashed_lines"][] ? ui_app["line_styles"][][mod1(m_idx, end)] : nothing
-        lw  = ui_app["line_width"][]
-        mrk = ui_app["markers"][][mod1(m_idx, end)]
-        ms  = ui_app["marker_size"][]
+        c   = ui_app["colors"][mod1(m_idx, end)] # Removed []
+        ls  = ui_app["dashed_lines"] ? ui_app["line_styles"][mod1(m_idx, end)] : nothing # Removed []
+        lw  = ui_app["line_width"] # Removed []
+        mrk = ui_app["markers"][mod1(m_idx, end)] # Removed []
+        ms  = ui_app["marker_size"] # Removed []
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         sl = scatterlines!(ax, obs_coord, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk)
@@ -594,44 +595,44 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         push!(labels_for_legend, label)
     end
 end
+
 initialize_base_plot!(kwargs...) = @warn "Could not find requested Plotting Style!"
+
 # =============================================================================
 # TIER 3 DATA INJECTION HELPERS (Perfectly Forked)
 # =============================================================================
 
-function sync_data_to_cache!(cache_dict, active_methods, data_tuples, manager::PlotManager, ::Val{D}) where D
-    # Safely grab the first available cache to check its actual physical type
+function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D}) where D
     first_cache = isempty(cache_dict) ? nothing : first(values(cache_dict))
     
-    # THE FIX: Sync based on the cache in memory, NOT the global state!
     if first_cache isa LagrangianPlotCache
         pts_slices, us_slices = data_tuples
         for (m_idx, label) in enumerate(active_methods)
             haskey(cache_dict, label) || continue
             cache = cache_dict[label]
             
-            # We no longer need (D == 1) checks here, DataExtraction handles it natively!
             cache.obs_pts.val = _unwrap_1tuples(pts_slices[m_idx])
-            cache.obs_u.val     = _unwrap_1tuples(us_slices[m_idx])
+            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
             notify(cache.obs_u)
         end        
     elseif first_cache isa EulerianPlotCache
-        _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, Val(D))
+        _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, Val(D))
     end
 end
 
-function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{1})
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{1})
     xs_slices, us_slices = data_tuples
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
-        cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
+        cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         notify(cache.obs_u)
     end
 end
 
-function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{2})
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
     for (m_idx, label) in enumerate(active_methods)
@@ -639,7 +640,7 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
         cache = cache_dict[label]
         
         if haskey(cache.primitives, :lines2d)
-            dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
+            dir = get(ui_app, "line_direction", "Horizontal") # Removed []
             X, Y, U = build_2d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
             cache.obs_y.val = Y
@@ -653,7 +654,8 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
     end
 end
 
-function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, manager, ::Val{3})
+function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
+    manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui["Plot-Style"]
 
@@ -662,17 +664,17 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
         cache = cache_dict[label]
         
         if haskey(cache.primitives, :lines3d)
-            dir = get(ui_app, "line_direction", Observable("Horizontal"))[]
+            dir = get(ui_app, "line_direction", "Horizontal") # Removed []
             X, Y, Z, U = build_3d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], zs_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
             cache.obs_y.val = Y
             cache.obs_z.val = Z
-            cache.obs_u.val   = U
+            cache.obs_u.val = U
         else
             cache.obs_x.val = extrema(xs_slices[m_idx])
             cache.obs_y.val = extrema(ys_slices[m_idx])
             cache.obs_z.val = extrema(zs_slices[m_idx])
-            cache.obs_u.val   = us_slices[m_idx]
+            cache.obs_u.val = us_slices[m_idx]
         end
         notify(cache.obs_u)
     end
