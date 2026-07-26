@@ -214,7 +214,7 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     
     return p_axes, u_flat
 end
-function update_plot_data_collection!(plot_data_dict, sim_config, manager::PlotManager, active_methods; force_reload=false)
+function update_plot_data_collection!(plot_data_dict, sim_config, active_methods; force_reload=false)
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)

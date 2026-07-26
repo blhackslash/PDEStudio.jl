@@ -279,9 +279,6 @@ function apply_layout_options!(layout_options::Dict)
             end
         end
     end
-    if !manager.state["Config_Just_Loaded"][]
-        manager.triggers["Layout_Update"][] += 1
-    end
 end
 
 function apply_scene_options!(scene_options::Dict)
@@ -325,7 +322,7 @@ function apply_scene_options!(scene_options::Dict)
     end
 
     # 2. Apply Slider Values
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{String, String}()
     for (key, desired_val) in scene_options
         if endswith(key, "_Value")
             base_name = replace(key, "_Value" => "")
@@ -345,9 +342,6 @@ function apply_scene_options!(scene_options::Dict)
                 end
             end
         end
-    end
-    if !manager.state["Config_Just_Loaded"][]
-        manager.triggers["Primitive_Rebuild"][] += 1
     end
 end
 
@@ -371,7 +365,7 @@ function extract_scene_options()
         end
     end
     
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{String, String}()
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{String, String}()
     for k in manager.plot_vars
         w_key = haskey(rev_map, k) ? rev_map[k] : k
         if haskey(manager.widgets, w_key)
@@ -409,63 +403,34 @@ function load_and_apply_csv!(filepath::String)
     new_config = csv_to_simulation_config(parsed, resolved_func)
     
     # Empty existing caches 
-    for cache_dict in manager.caches
+    for (key,cache_dict) in manager.caches
         empty!(cache_dict)
     end
     
-    # THE FIX: Simply overwrite the config and methods, DO NOT run simulations automatically
-    manager.active_config[] = new_config
+    # 1. Update the Data Source (No longer an Observable, so no [])
+    manager.active_config = new_config
     manager.methods[] = new_config.default_methods
     
+    # 2. Buffer the Overwrites for the cascade to consume later
     if haskey(parsed, "UI")
-        for (scope, dict) in parsed["UI"]
-            if haskey(manager.ui, scope)
-                for (k, v) in dict
-                    if haskey(manager.ui[scope], k)
-                        if manager.ui[scope][k] isa Observable
-                            manager.ui[scope][k][] = v
-                        else
-                            manager.ui[scope][k] = v
-                        end
-                    end
-                end
-            end
-        end
+        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        apply_scene_options!(parsed["Scene"]["General"])
+        GLOBAL_SCENE_OPTIONS[] = parsed["Scene"]["General"]
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
-        apply_layout_options!(parsed["Layout"]["General"])
+        GLOBAL_LAYOUT_OPTIONS[] = parsed["Layout"]["General"]
     end
 
     if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
         GLOBAL_CAMERA_OPTIONS[] = parsed["Camera"]["General"]
-        
-        manager.state["Camera_Locked"][] = true
-        if haskey(manager.widgets, "Lock_Camera_Button")
-            btn = manager.widgets["Lock_Camera_Button"]
-            btn.label[] = "Unlock Camera"
-            btn.buttoncolor[] = :lightgreen
-        end
     else
         GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
-        
-        if get(manager.state, "Camera_Locked", Observable(false))[]
-            manager.state["Camera_Locked"][] = false
-            if haskey(manager.widgets, "Lock_Camera_Button")
-                btn = manager.widgets["Lock_Camera_Button"]
-                btn.label[] = "Lock Camera"
-                btn.buttoncolor[] = :lightgray
-            end
-        end
     end
     
-    @info "Successfully applied CSV config to UI! Press 'Run Simulation' to compute data."
-    # Trigger UI cascades, but not calculation updates
-    manager.triggers["UI_Update"][] += 1
+    @info "Config buffered! Press 'Run Simulation' to compute and apply."
 end
 
 """
@@ -728,7 +693,7 @@ function saveParametersToCSV(
         end
 
         # --- 4. CATEGORY: Simulation & Config (THE FIX) ---
-        config = manager.active_config[]
+        config = manager.active_config
 
         for (k, v) in config.shared_params
             add_row("Simulation", "shared", k, v)

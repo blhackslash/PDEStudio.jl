@@ -14,6 +14,16 @@ function setup_common_interactions!(master_fig::Figure, plot_layout::GridLayout)
     notify(manager.methods)
 end
 
+function setup_eulerian_interactions!()
+    @info "Initializing Eulerian Interaction Pipeline..."
+    _setup_eulerian_data_sync!()
+end
+
+function setup_lagrangian_interactions!()
+    @info "Initializing Lagrangian Interaction Pipeline..."
+    _setup_lagrangian_data_sync!()
+end
+
 function _setup_run_and_drop_interactions!(master_fig::Figure)
     manager = GLOBAL_PLOT_MANAGER
     drop_label = manager.widgets["Drop_Label"]
@@ -28,12 +38,12 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
             drop_box.color[] = RGBAf(0.8, 1.0, 0.8, 1.0)
             run_btn.buttoncolor[] = :lightgreen
             
-            load_and_apply_csv!(path) # No longer needs manager passed
+            load_and_apply_csv!(path) 
         end
     end
 
     on(run_btn.clicks) do _
-        curr_config = manager.active_config[]
+        curr_config = manager.active_config
         (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
 
         @info "Running dynamic calculations directly from active config..."
@@ -61,8 +71,9 @@ function _setup_method_interactions!()
 
     onany(staged_methods, is_activate_mode) do staged, activate_mode
         @with_lock manager "Menu_Sync" begin
-
-            config = manager.active_config[]
+            config = manager.active_config
+            isnothing(config) && return # SAFETY CHECK
+            
             raw_method_names = filter(k -> k != "shared", collect(keys(config.methods_dict)))
             all_method_names = sort_methods_robust(raw_method_names)
             opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
@@ -121,10 +132,12 @@ function _setup_hierarchy_interactions!()
         
         cat = menu_cat.selection[]
         scope = menu_scope.selection[]
+        (isnothing(cat) || isnothing(scope) || scope == "-") && return
         
         target_dict = nothing
         if cat == "Simulation"
-            config = manager.active_config[]
+            config = manager.active_config
+            isnothing(config) && return # SAFETY CHECK
             target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, nothing)
         elseif cat == "UI"
             target_dict = get(manager.ui, scope, nothing)
@@ -138,12 +151,15 @@ function _setup_hierarchy_interactions!()
     end
 
     onany(menu_cat.selection, manager.methods) do cat, active_methods
+        isnothing(cat) && return
         new_scopes = String[]
         if cat == "Simulation"
-            config = manager.active_config[]
-            push!(new_scopes, "shared")
-            for m in sort_methods_robust(active_methods)
-                haskey(config.methods_dict, m) && push!(new_scopes, m)
+            config = manager.active_config
+            if !isnothing(config) # SAFETY CHECK
+                push!(new_scopes, "shared")
+                for m in sort_methods_robust(active_methods)
+                    haskey(config.methods_dict, m) && push!(new_scopes, m)
+                end
             end
         elseif cat == "UI"
             new_scopes = sort(collect(keys(manager.ui)))
@@ -153,12 +169,15 @@ function _setup_hierarchy_interactions!()
     end
 
     on(menu_scope.selection) do scope
+        (isnothing(scope) || scope == "-") && return # SAFETY CHECK
         cat = menu_cat.selection[]
         raw_keys = String[]
         if cat == "Simulation"
-            config = manager.active_config[]
-            target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, Dict())
-            raw_keys = sort(collect(keys(target_dict)))
+            config = manager.active_config
+            if !isnothing(config) # SAFETY CHECK
+                target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, Dict())
+                raw_keys = sort(collect(keys(target_dict)))
+            end
         elseif cat == "UI"
             raw_keys = sort(collect(keys(get(manager.ui, scope, Dict()))))
         end
@@ -245,7 +264,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     function get_target_widget(target_name)
         target_name == :None && return nothing
         target_str = string(target_name)
-        rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"][] : Dict{Symbol, String}()
+        rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{Symbol, String}()
         w_key = haskey(rev_map, target_name) ? rev_map[target_name] : target_str
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
@@ -283,7 +302,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         ptype_sym = manager.widgets["Plot_Style"].selection[]
         
-        # We pass a disconnected local copy to the export builder
         local_data_obs = Observable(manager.plot_data[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, Val(ptype_sym))
         
@@ -521,7 +539,7 @@ function _setup_common_chain_d!(mode::Symbol)
                     end
                 end
                 
-                widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"][], dim_sym, "param_$i")
+                widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"], dim_sym, "param_$i")
                 haskey(w, widget_key) || continue
                 ctrl = w[widget_key]
                 
@@ -572,11 +590,6 @@ function _setup_common_chain_d!(mode::Symbol)
                 set_close_to!(ctrl, ctrl.value[])
             end
             
-            if manager.state["Config_Just_Loaded"][]
-                opts = GLOBAL_SCENE_OPTIONS[]
-                apply_scene_options!(opts)
-                manager.state["Config_Just_Loaded"].val = false
-            end
         end
     end
 end
@@ -621,6 +634,7 @@ function _setup_eulerian_data_sync!()
     onany(manager.plot_data, base_obs, style_obs) do plot_data_dict, base_sel, style_sel
         @with_lock manager "Menu_A" begin
             isempty(plot_data_dict) && return
+            (isnothing(style_sel) || style_sel == :None || isnothing(base_sel) || base_sel == :None) && return
             
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
@@ -751,9 +765,7 @@ function _setup_eulerian_data_sync!()
             update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=[:Solution], force_notify=false)
             
             active_axes_obs.val = collect(axes_set)
-            if !manager.state["Config_Just_Loaded"][]
-                notify(active_axes_obs)
-            end
+            notify(active_axes_obs)
         end
     end
 
@@ -860,9 +872,7 @@ function _setup_lagrangian_data_sync!()
             end
             
             active_axes_obs.val = collect(axes_set)
-            if !manager.state["Config_Just_Loaded"][]
-                notify(active_axes_obs)
-            end
+            notify(active_axes_obs)
         end
     end
 

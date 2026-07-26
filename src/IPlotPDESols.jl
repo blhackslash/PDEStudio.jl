@@ -10,6 +10,10 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 # Export the new configuration setter
 export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!
 
+
+function dummy_simulation_function(args...); return nothing; end
+
+const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict())
 # ==============================================================================
 # --- UI DIMENSION REFERENCES (Dynamic Setup) ---
 # ==============================================================================
@@ -135,29 +139,31 @@ mutable struct PlotManager
     plot_vars::Vector{Symbol}
     caches::Dict{Int, Dict{String, AbstractPlotCache}}
     
-    active_config::Observable{Any}
+    active_config::SimulationConfig
     plot_data::Observable{Dict{String, AbstractPlotData}}
 end
 
 function PlotManager()
+    
     return PlotManager(
         Dict{String, Dict{String, Any}}(),
         Dict{String, Any}(), Dict{String, Observable{Int}}(),
         Dict{String, Any}(), Dict{String, Bool}(),
         Observable(String[]), Symbol[],
         Dict{Int, Dict{String, AbstractPlotCache}}(),
-        Observable{Any}(nothing), Observable(Dict{String, AbstractPlotData}())
+        DUMMY_CONFIG, Observable(Dict{String, AbstractPlotData}())
     )
 end
 
 const GLOBAL_PLOT_MANAGER = PlotManager()
 
-function reset_manager!(mgr::PlotManager)
+function reset_manager!()
+    mgr = GLOBAL_PLOT_MANAGER
     empty!(mgr.ui); empty!(mgr.widgets); empty!(mgr.state)
     empty!(mgr.locks); empty!(mgr.plot_vars); empty!(mgr.caches)
     
     mgr.methods.val = String[]
-    mgr.active_config.val = nothing
+    mgr.active_config = DUMMY_CONFIG
     mgr.plot_data.val = Dict{String, AbstractPlotData}()
     
     for k in ["Layout_Update", "Scene_Update", "Primitive_Rebuild", "Data_Sync", "UI_Update", "Simulation_Update"]
@@ -189,11 +195,9 @@ function __init__()
         reset_plotter!()
         reset_manager!()
     end
-    
     # Initialize the singleton with the dummy config immediately
-    dummy = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict())
-    reset_manager!(GLOBAL_PLOT_MANAGER)
-    GLOBAL_PLOT_MANAGER.active_config[] = dummy
+    reset_manager!()
+    GLOBAL_PLOT_MANAGER.active_config = DUMMY_CONFIG
 end
 
 # ==============================================================================
