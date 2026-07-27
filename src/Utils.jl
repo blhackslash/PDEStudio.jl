@@ -322,11 +322,14 @@ function apply_scene_options!(scene_options::Dict)
     end
 
     # 2. Apply Slider Values
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{String, String}()
+    # THE FIX: Dict signature updated to handle Symbol keys
+    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{Symbol, String}()
     for (key, desired_val) in scene_options
         if endswith(key, "_Value")
             base_name = replace(key, "_Value" => "")
-            w_key = haskey(rev_map, base_name) ? rev_map[base_name] : base_name
+            # THE FIX: Cast string to Symbol for dictionary lookup
+            base_sym = Symbol(base_name)
+            w_key = haskey(rev_map, base_sym) ? rev_map[base_sym] : base_name
             
             if haskey(manager.widgets, w_key)
                 widget = manager.widgets[w_key]
@@ -408,8 +411,7 @@ function load_and_apply_csv!(filepath::String)
     end
     
     # 1. Update the Data Source (No longer an Observable, so no [])
-    manager.active_config = new_config
-    manager.methods[] = new_config.default_methods
+    set_sim_config!(new_config)
     
     # 2. Buffer the Overwrites for the cascade to consume later
     if haskey(parsed, "UI")

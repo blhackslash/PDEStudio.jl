@@ -43,13 +43,7 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 
     on(run_btn.clicks) do _
-        curr_config = manager.active_config
-        (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
-
-        @info "Running dynamic calculations directly from active config..."
-        
-        runAllSimulations(curr_config; active_methods = manager.methods[], calculate_stats = true, force_overwrite = false)
-        
+        # 4. Trigger the downstream rendering cascade
         manager.triggers["Simulation_Update"][] += 1
     end
 end
@@ -65,9 +59,7 @@ function _setup_method_interactions!()
     end
     staged_methods = manager.state["Staged_Methods"]
 
-    on(manager.methods) do active_methods
-        staged_methods[] = copy(active_methods)
-    end
+    # (Removed the on(manager.methods) listener entirely!)
 
     onany(staged_methods, is_activate_mode) do staged, activate_mode
         @with_lock manager "Menu_Sync" begin
@@ -101,14 +93,12 @@ function _setup_method_interactions!()
         else
             filter!(x -> x != sel, new_staged)
         end
+        
+        # Mutate the buffer!
         staged_methods[] = new_staged
-    end
-
-    on(manager.widgets["Method_Apply"].clicks) do _
-        if sort(manager.methods[]) != sort(staged_methods[])
-            manager.methods[] = copy(staged_methods[])
-            manager.triggers["Simulation_Update"][] += 1
-        end
+        
+        # Instantly reset the dropdown so it acts like a command button, not a stateful select
+        menu_mth.i_selected[] = 1
     end
 end
 
@@ -578,6 +568,9 @@ function _setup_common_chain_d!(mode::Symbol)
                 
                 if isinf(g_min); g_min = 0.0; g_max = 1.0; end
                 
+                # THE FIX: Cache the value before Makie overwrites it!
+                old_val = ctrl.value[]
+                
                 if i <= n_params
                     all_vals = Float64[]
                     for pd in values(plot_data_dict)
@@ -587,7 +580,9 @@ function _setup_common_chain_d!(mode::Symbol)
                 else
                     ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
                 end
-                set_close_to!(ctrl, ctrl.value[])
+                
+                # Restore the cached value
+                set_close_to!(ctrl, old_val)
             end
             
         end
@@ -631,7 +626,7 @@ function _setup_eulerian_data_sync!()
     # =========================================================================
     # CHAIN A: Structural Setup (Data, Base Plot, Plot Style) -> Axes, Anim, Compare
     # =========================================================================
-    onany(manager.plot_data, base_obs, style_obs) do plot_data_dict, base_sel, style_sel
+    onany(manager.plot_data, base_obs, style_obs, w["X-Axis"].selection, w["Y-Axis"].selection) do plot_data_dict, base_sel, style_sel, _x, _y
         @with_lock manager "Menu_A" begin
             isempty(plot_data_dict) && return
             (isnothing(style_sel) || style_sel == :None || isnothing(base_sel) || base_sel == :None) && return

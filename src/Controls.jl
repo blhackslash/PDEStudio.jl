@@ -52,8 +52,7 @@ end
 function create_method_controls!(layout::GridLayout)
     manager = GLOBAL_PLOT_MANAGER
     manager.widgets["Mode_Button"]     = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
-    manager.widgets["Method_Toggle"]   = Menu(layout[1, 2:3], options = ["Methods..."], prompt = "Methods...")
-    manager.widgets["Method_Apply"]    = Button(layout[1, 4], label = "Apply", buttoncolor = :lightblue, width=nothing)
+    manager.widgets["Method_Toggle"]   = Menu(layout[1, 2:4], options = ["Methods..."], prompt = "Methods...")
 
     colsize!(layout, 1, Relative(0.25))
     colsize!(layout, 2, Relative(0.25))

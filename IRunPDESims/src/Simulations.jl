@@ -210,7 +210,6 @@ function runAllSimulations(
     varied_params::VariedDict = sim_config.varied_params,
     fixed_params::ParamDict = ParamDict(),
     force_overwrite::Bool = false,
-    convert_eulerian::Bool = false, 
     calculate_stats::Bool = false,
     parallel::Bool = false
 )
@@ -275,7 +274,6 @@ function runAllSimulations(
             sim_data = loadSimData(params,Val(:raw))
             if !isnothing(sim_data)  
                 
-                # --- THE FIX: Skip Stats if already computed ---
                 if calculate_stats
                         calculateAllStats!(
                             sim_data, 

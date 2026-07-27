@@ -101,20 +101,23 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
             stat_vec = Float64[]
             p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
             
+            # THE FIX: Cast the string to a Symbol for dictionary lookups
+            sym_stat = Symbol(stat_name)
+            
             if !isnothing(p_idx)
                 for i in 1:length(pd.active_param_values[p_idx])
                     curr_p = Any[param_indices...]
                     curr_p[p_idx] = i
                     sim = pd.data[curr_p...]
-                    val = isnothing(sim) || !haskey(sim.stats, stat_name) ? NaN : Float64(sim.stats[stat_name][1])
+                    val = isnothing(sim) || !haskey(sim.stats, sym_stat) ? NaN : Float64(sim.stats[sym_stat][1])
                     push!(stat_vec, val)
                 end
             else
                 sim = pd.data[param_indices...]
-                if isnothing(sim) || !haskey(sim.stats, stat_name)
+                if isnothing(sim) || !haskey(sim.stats, sym_stat)
                     push!(stat_vec, NaN)
                 else
-                    append!(stat_vec, map(v -> Float64(v[1]), sim.stats[stat_name]))
+                    append!(stat_vec, map(v -> Float64(v[1]), sim.stats[sym_stat]))
                 end
             end
             push!(plot_axes_data, stat_vec)

@@ -32,9 +32,17 @@ const LEGEND_REF = Ref{Symbol}(:none)
 
 const PLOTTER_UI_STATE = Ref{Dict{Symbol, Any}}(Dict(:is_open => false, :master_fig => nothing))
 
-# Your setter now cleanly mutates the encapsulated observable
+# Your setter now cleanly mutates the encapsulated observable and buffers the methods
 function set_sim_config!(config::SimulationConfig)
-    GLOBAL_PLOT_MANAGER.active_config = config
+    manager = GLOBAL_PLOT_MANAGER
+    manager.active_config = config
+    
+    if !haskey(manager.state, "Staged_Methods")
+        manager.state["Staged_Methods"] = Observable(String[])
+    end
+    
+    default_m = isempty(config.default_methods) ? filter(k -> k != "shared", collect(keys(config.methods_dict))) : filter(k -> k != "shared", copy(config.default_methods))
+    manager.state["Staged_Methods"][] = default_m
 end
 
 """
@@ -147,8 +155,27 @@ function launch_plotter()
     PLOTTER_UI_STATE[][:master_fig] = master_fig
 
     on(manager.triggers["Simulation_Update"]) do _
-        curr_config = manager.active_config # Removed []
+        curr_config = manager.active_config
         (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
+
+        # 1. Read the "wanted" methods from the buffer
+        wanted_methods = haskey(manager.state, "Staged_Methods") ? manager.state["Staged_Methods"][] : manager.methods[]
+        
+        if isempty(wanted_methods)
+            @warn "No methods staged! Please activate at least one method to run."
+            return
+        end
+
+        @info "Running dynamic calculations directly from active config..."
+        
+        # 2. Run calculations using the buffered methods
+        runAllSimulations(curr_config; active_methods = wanted_methods, calculate_stats = true, force_overwrite = false)
+        
+        # 3. Commit the buffer to the plotted methods pipeline
+        if sort(manager.methods[]) != sort(wanted_methods)
+            manager.methods[] = copy(wanted_methods)
+        end
+        
         
         @info "Running Simulation and Mapping UI..."
 
@@ -181,12 +208,6 @@ function launch_plotter()
         manager.state["Reverse_Map"] = reverse_map
         manager.plot_vars = [real_params; get_base_variables()]
         
-        # 2. Stage Default Methods
-        if isempty(curr_config.default_methods)
-            manager.methods[] = filter(k -> k != "shared", collect(keys(curr_config.methods_dict)))
-        else
-            manager.methods[] = filter(k -> k != "shared", copy(curr_config.default_methods))
-        end
         
         # 3. Generate the Data 
         manager.locks["Layout"] = true

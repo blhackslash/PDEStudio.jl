@@ -8,7 +8,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 @reexport using IRunPDESims 
 
 # Export the new configuration setter
-export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!
+export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation
 
 
 function dummy_simulation_function(args...); return nothing; end
@@ -156,6 +156,8 @@ function PlotManager()
 end
 
 const GLOBAL_PLOT_MANAGER = PlotManager()
+
+force_simulation() = notify(GLOBAL_PLOT_MANAGER.triggers["Simulation_Update"])
 
 function reset_manager!()
     mgr = GLOBAL_PLOT_MANAGER

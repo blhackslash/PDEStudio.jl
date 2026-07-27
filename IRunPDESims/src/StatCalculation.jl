@@ -35,22 +35,25 @@ function remove_nan_stats!(stats_dict::StatDict)
     for k in keys_to_remove; delete!(stats_dict, k); end
 end
 
-function calculateAllStats!(sim_data::AbstractSimData, ref_func; kwargs...)
+function calculateAllStats!(sim_data::AbstractSimData, ref_func; force_overwrite = false, kwargs...)
     # 1. Generate full analytical field upfront (NaNs or exact)
     u_ana = isnothing(ref_func) ? generate_nan_reference(sim_data) : generate_analytical_reference(sim_data, ref_func)
     
     # 2. Process all registered statistics dynamically
+    stat_change = false
     for (stat_name, kept_dims) in sim_data.domain.stat_registry
         if stat_name == :Solution; continue end
+        if haskey(sim_data.stats,stat_name) && !force_overwrite; continue end
         res = _calc_stat!(sim_data, u_ana, stat_name)
         if !isnothing(res)
             # Assigning natively as a Symbol using the typed StatDict
             sim_data.stats[stat_name] = res
         end
+        stat_change = true
     end
     # 3. Cleanup and Save
     remove_nan_stats!(sim_data.stats)
-    saveSimData(sim_data; overwrite=true)
+    saveSimData(sim_data; overwrite=stat_change)
 end
 
 # ==============================================================================
