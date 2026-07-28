@@ -4,7 +4,7 @@
 
 function get_base_method_index(ui_app::Dict, active_methods::Vector{String})
     isempty(active_methods) && return 1
-    raw_idx = get(ui_app, "base_method_idx", 1) # Removed []
+    raw_idx = get(ui_app, :base_method_idx, 1) 
     return clamp(raw_idx, 1, length(active_methods))
 end
 
@@ -74,7 +74,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     plotted_objects, labels_for_legend = [], String[]
     
@@ -83,9 +83,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
         cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         
-        c  = ui_app["colors"][mod1(m_idx, end)] # Removed []
-        ls = ui_app["dashed_lines"] ? ui_app["line_styles"][mod1(m_idx, end)] : nothing # Removed []
-        lw = ui_app["line_width"] # Removed []
+        c  = ui_app[:colors][mod1(m_idx, end)] 
+        ls = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
+        lw = ui_app[:line_width] 
         
         l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls)
         cache.primitives[:lines] = l
@@ -103,7 +103,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     plotted_objects, labels_for_legend = [], String[]
     
@@ -113,10 +113,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u.val = us_slices[m_idx]
 
-        color = ui_app["colors"][mod1(m_idx, length(ui_app["colors"]))] # Removed []
-        lw    = ui_app["line_width"] # Removed []
+        color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
+        lw    = ui_app[:line_width] 
         
-        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app["levels"], color=color, linewidth=lw, labels=ui_app["labels"]) # Removed []
+        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app[:levels], color=color, linewidth=lw, labels=ui_app[:labels]) 
         
         cache.primitives[:contour] = ct
         cache_dict[label] = cache
@@ -129,7 +129,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs, ys, us = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -142,9 +142,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, us[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
+    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
 
-    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs, rasterize=rast_val) # Removed []
+    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=rast_val) 
 
     cache.primitives[:heatmap] = hm
     cache_dict[label] = cache
@@ -154,14 +154,14 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines2d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     cache = EulerianPlotCache()
     
-    dir = get(ui_app, "line_direction", "Horizontal") # Removed []
+    dir = get(ui_app, :line_direction, "Horizontal") 
     X, Y, U = build_2d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
@@ -170,7 +170,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, linewidth=ui_app["line_width"]) # Removed []
+    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width]) 
     cache.primitives[:lines2d] = l2d
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, l2d, cr_obs, label, plot_idx)
@@ -179,7 +179,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -194,8 +194,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
 
     ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
-        colormap=ui_app["color_map"], colorrange=cr_obs, # Removed []
-        levels=ui_app["levels"], linewidth=ui_app["line_width"], labels=ui_app["labels"] # Removed []
+        colormap=ui_app[:color_map], colorrange=cr_obs, 
+        levels=ui_app[:levels], linewidth=ui_app[:line_width], labels=ui_app[:labels] 
     )
     
     cache.primitives[:contour_cmap] = ct
@@ -206,7 +206,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -214,8 +214,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app["levels"]) # Removed []
-    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
+    lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app[:levels]) 
+    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
 
     plotted_objects, labels_for_legend = [], String[]
     
@@ -224,11 +224,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     base_cache.obs_y.val = ys_slices[base_idx]
     base_cache.obs_u.val = us_slices[base_idx]
 
-    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app["color_map"], levels=lvl_range, rasterize=rast_val) # Removed []
+    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=rast_val) 
     base_cache.primitives[:contourf] = cf
     cache_dict[base_label] = base_cache
 
-    base_color = Makie.to_colormap(ui_app["color_map"])[end] # Removed []
+    base_color = Makie.to_colormap(ui_app[:color_map])[end] 
     push!(plotted_objects, [Makie.PolyElement(color=base_color)])
     push!(labels_for_legend, "$base_label (Base)")
 
@@ -239,8 +239,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[i]
         cache.obs_u.val = us_slices[i]
         
-        color = ui_app["colors"][mod1(i, end)] # Removed []
-        lw = ui_app["line_width"] # Removed []
+        color = ui_app[:colors][mod1(i, end)] 
+        lw = ui_app[:line_width] 
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; color=color, linewidth=lw, labels=true)
         cache.primitives[:contour] = ct
@@ -256,7 +256,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples 
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -269,16 +269,16 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app["rasterize"] == 0 ? false : ui_app["rasterize"] # Removed []
+    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
 
-    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs, rasterize=rast_val) # Removed []
+    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=rast_val) 
     cache.primitives[:surface] = sf
     cache_dict[label] = cache
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d_surface}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     pts_slices, us_slices = data_tuples
 
@@ -296,7 +296,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         [Point3f(p[1], p[2], u) for (p, u) in zip(pts, us)]
     end
 
-    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
+    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
     
     cache.primitives[:scatter2d_surface] = sc
     cache_dict[label] = cache
@@ -306,7 +306,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_surface}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     plotted_objects, labels_for_legend = [], String[]
     
@@ -317,11 +317,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u.val = us_slices[m_idx]
 
-        color = ui_app["colors"][mod1(m_idx, length(ui_app["colors"]))] # Removed []
-        lw    = ui_app["line_width"] # Removed []
+        color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
+        lw    = ui_app[:line_width] 
         
         cs = contour3d!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
-                        levels=ui_app["levels"], color=color, linewidth=lw) # Removed []
+                        levels=ui_app[:levels], color=color, linewidth=lw) 
         
         cache.primitives[:contour_surface] = cs
         cache_dict[label] = cache
@@ -337,7 +337,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -353,7 +353,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app["color_map"], colorrange=cr_obs) # Removed []
+    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs) 
     
     cache.primitives[:volume] = vol
     cache_dict[label] = cache
@@ -363,14 +363,14 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines3d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     cache = EulerianPlotCache()
     
-    dir = get(ui_app, "line_direction", "Horizontal") # Removed []
+    dir = get(ui_app, :line_direction, "Horizontal") 
     X, Y, Z, U = build_3d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
@@ -380,7 +380,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
 
-    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, linewidth=ui_app["line_width"]) # Removed []
+    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width]) 
     cache.primitives[:lines3d] = l3d
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, l3d, cr_obs, label, plot_idx)
@@ -389,7 +389,7 @@ end
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
@@ -406,7 +406,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
 
     ct3d = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; 
-                    colormap=ui_app["color_map"], colorrange=cr_obs, levels=ui_app["levels"]) # Removed []
+                    colormap=ui_app[:color_map], colorrange=cr_obs, levels=ui_app[:levels]) 
     
     cache.primitives[:contour3d] = ct3d
     cache_dict[label] = cache
@@ -419,7 +419,7 @@ end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     is_eul = PLOT_MODE[] == :eulerian
 
@@ -450,7 +450,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
+    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
     
     cache.primitives[:scatter2d] = sc
     cache_dict[label] = cache
@@ -459,7 +459,7 @@ end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     is_eul = PLOT_MODE[] == :eulerian
 
@@ -491,7 +491,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
     
-    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
+    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
     
     cache.primitives[:scatter3d] = sc
     cache_dict[label] = cache
@@ -500,7 +500,7 @@ end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
     is_eul = PLOT_MODE[] == :eulerian
@@ -521,7 +521,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cr_obs = get_colorrange(ui_app, valid_u)
     
     obs_coord = is_eul ? cache.obs_x : cache.obs_pts
-    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app["color_map"], colorrange=cr_obs, markersize=ui_app["marker_size"], marker=ui_app["markers"][1]) # Removed []
+    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
     
     cache.primitives[:scatter1d] = sc
     cache_dict[label] = cache
@@ -530,7 +530,7 @@ end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scattercolors}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
     plotted_objects, labels_for_legend = [], String[]
@@ -546,9 +546,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
             cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
 
-        c   = ui_app["colors"][mod1(m_idx, end)] # Removed []
-        mrk = ui_app["markers"][mod1(m_idx, end)] # Removed []
-        ms  = ui_app["marker_size"] # Removed []
+        c   = ui_app[:colors][mod1(m_idx, end)] 
+        mrk = ui_app[:markers][mod1(m_idx, end)] 
+        ms  = ui_app[:marker_size] 
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk)
@@ -563,7 +563,7 @@ end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
     manager = GLOBAL_PLOT_MANAGER
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
     plotted_objects, labels_for_legend = [], String[]
@@ -579,11 +579,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
             cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
         
-        c   = ui_app["colors"][mod1(m_idx, end)] # Removed []
-        ls  = ui_app["dashed_lines"] ? ui_app["line_styles"][mod1(m_idx, end)] : nothing # Removed []
-        lw  = ui_app["line_width"] # Removed []
-        mrk = ui_app["markers"][mod1(m_idx, end)] # Removed []
-        ms  = ui_app["marker_size"] # Removed []
+        c   = ui_app[:colors][mod1(m_idx, end)] 
+        ls  = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
+        lw  = ui_app[:line_width] 
+        mrk = ui_app[:markers][mod1(m_idx, end)] 
+        ms  = ui_app[:marker_size] 
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         sl = scatterlines!(ax, obs_coord, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk)
@@ -634,13 +634,13 @@ end
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
         if haskey(cache.primitives, :lines2d)
-            dir = get(ui_app, "line_direction", "Horizontal") # Removed []
+            dir = get(ui_app, :line_direction, "Horizontal") 
             X, Y, U = build_2d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
             cache.obs_y.val = Y
@@ -657,14 +657,14 @@ end
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
     manager = GLOBAL_PLOT_MANAGER
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
-    ui_app = manager.ui["Plot-Style"]
+    ui_app = manager.ui[:Plot_Style]
 
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
         
         if haskey(cache.primitives, :lines3d)
-            dir = get(ui_app, "line_direction", "Horizontal") # Removed []
+            dir = get(ui_app, :line_direction, "Horizontal") 
             X, Y, Z, U = build_3d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], zs_slices[m_idx], us_slices[m_idx], dir)
             cache.obs_x.val = X
             cache.obs_y.val = Y

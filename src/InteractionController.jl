@@ -8,9 +8,10 @@ function setup_common_interactions!(master_fig::Figure, plot_layout::GridLayout)
     _setup_method_interactions!()
     _setup_hierarchy_interactions!()
     _setup_export_interactions!(master_fig, plot_layout)
+    _setup_button_state_machine!() # <-- Boot up the centralized color hierarchy
     
-    manager.widgets["Editor_Cat"].i_selected[] = 1
-    notify(manager.widgets["Editor_Cat"].selection)
+    manager.widgets[:Editor_Cat].i_selected[] = 1
+    notify(manager.widgets[:Editor_Cat].selection)
     notify(manager.methods)
 end
 
@@ -24,13 +25,69 @@ function setup_lagrangian_interactions!()
     _setup_lagrangian_data_sync!()
 end
 
+function _setup_button_state_machine!()
+    manager = GLOBAL_PLOT_MANAGER
+    w = manager.widgets
+    
+    f_sim = manager.staged[:Flag_Sim]
+    f_lay = manager.staged[:Flag_Layout]
+    f_plot = manager.staged[:Flag_Plot]
+
+    # --- WATCHERS (Triggers flags when users adjust UI menus) ---
+    manager.listeners[:Watch_Layout] = onany(
+        w[:Base_Plot].selection, w[:Plot_Style].selection,
+        w[:Compare_Target].selection, w[:Compare_Columns].selection, w[:Compare_Link].selection,
+        w[:Legend_Base].selection, w[:Legend_Add].selection,
+        w[:Plot_Width].selection, w[:Plot_Height].selection
+    ) do _...
+        f_lay[] = true
+    end
+
+    manager.listeners[:Watch_Plot] = onany(
+        w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection, w[:U_Axis].selection
+    ) do _...
+        f_plot[] = true
+    end
+
+    # --- MASTER HIERARCHY RESOLVER (Evaluates Locked vs Needed vs Open visually) ---
+    manager.listeners[:Button_Hierarchy] = onany(f_sim, f_lay, f_plot) do sim_needed, lay_needed, plot_needed
+        c_sim = :lightgreen;  l_sim = "Run Simulation"
+        c_lay = :lightgreen;  l_lay = "Apply Layout"
+        c_plot = :lightgreen; l_plot = "Update Plot"
+
+        if sim_needed
+            c_sim = :lightyellow; l_sim = "Run Simulation *"
+            c_lay = :lightcoral;  l_lay = "Locked (Sim)"
+            c_plot = :lightcoral; l_plot = "Locked (Sim)"
+        elseif lay_needed
+            c_lay = :lightyellow; l_lay = "Apply Layout *"
+            c_plot = :lightcoral; l_plot = "Locked (Layout)"
+        elseif plot_needed
+            c_plot = :lightyellow; l_plot = "Update Plot *"
+        end
+
+        if haskey(w, :Run_Button)
+            w[:Run_Button].buttoncolor[] = c_sim
+            w[:Run_Button].label[] = l_sim
+        end
+        if haskey(w, :Layout_Apply)
+            w[:Layout_Apply].buttoncolor[] = c_lay
+            w[:Layout_Apply].label[] = l_lay
+        end
+        if haskey(w, :Plot_Button)
+            w[:Plot_Button].buttoncolor[] = c_plot
+            w[:Plot_Button].label[] = l_plot
+        end
+    end
+end
+
 function _setup_run_and_drop_interactions!(master_fig::Figure)
     manager = GLOBAL_PLOT_MANAGER
-    drop_label = manager.widgets["Drop_Label"]
-    drop_box   = manager.widgets["Drop_Box"]
-    run_btn    = manager.widgets["Run_Button"]
+    drop_label = manager.widgets[:Drop_Label]
+    drop_box   = manager.widgets[:Drop_Box]
+    run_btn    = manager.widgets[:Run_Button]
 
-    on(events(master_fig.scene).dropped_files) do files
+    manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
             drop_label.text[] = "Loaded:\n" * basename(path)
@@ -42,29 +99,29 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
         end
     end
 
-    on(run_btn.clicks) do _
-        # 4. Trigger the downstream rendering cascade
-        manager.triggers["Simulation_Update"][] += 1
+    manager.listeners[:Run_Click] = on(run_btn.clicks) do _
+        manager.staged[:Flag_Sim][] = false
+        manager.staged[:Flag_Layout][] = false
+        manager.staged[:Flag_Plot][] = false
+        manager.triggers[:Simulation][] += 1
     end
 end
 
 function _setup_method_interactions!()
     manager = GLOBAL_PLOT_MANAGER
-    mode_btn = manager.widgets["Mode_Button"]
-    menu_mth = manager.widgets["Method_Toggle"]
-    is_activate_mode = manager.state["Is_Activate_Mode"]
+    mode_btn = manager.widgets[:Mode_Button]
+    menu_mth = manager.widgets[:Method_Toggle]
+    is_activate_mode = manager.staged[:Is_Activate_Mode]
     
-    if !haskey(manager.state, "Staged_Methods")
-        manager.state["Staged_Methods"] = Observable(copy(manager.methods[]))
+    if !haskey(manager.staged, :Staged_Methods)
+        manager.staged[:Staged_Methods] = Observable(copy(manager.methods[]))
     end
-    staged_methods = manager.state["Staged_Methods"]
+    staged_methods = manager.staged[:Staged_Methods]
 
-    # (Removed the on(manager.methods) listener entirely!)
-
-    onany(staged_methods, is_activate_mode) do staged, activate_mode
-        @with_lock manager "Menu_Sync" begin
+    manager.listeners[:Menu_Sync] = onany(staged_methods, is_activate_mode) do staged, activate_mode
+        @with_lock :Menu_Sync begin
             config = manager.active_config
-            isnothing(config) && return # SAFETY CHECK
+            isnothing(config) && return 
             
             raw_method_names = filter(k -> k != "shared", collect(keys(config.methods_dict)))
             all_method_names = sort_methods_robust(raw_method_names)
@@ -75,13 +132,13 @@ function _setup_method_interactions!()
         end
     end
 
-    on(mode_btn.clicks) do _
+    manager.listeners[:Mode_Click] = on(mode_btn.clicks) do _
         is_activate_mode[] = !is_activate_mode[]
         mode_btn.label[] = is_activate_mode[] ? "Mode: Activate" : "Mode: Deact."
         mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
     end
 
-    on(menu_mth.selection) do sel
+    manager.listeners[:Method_Toggle] = on(menu_mth.selection) do sel
         (isnothing(sel) || sel == "-") && return
         
         new_staged = copy(staged_methods[])
@@ -94,22 +151,19 @@ function _setup_method_interactions!()
             filter!(x -> x != sel, new_staged)
         end
         
-        # Mutate the buffer!
         staged_methods[] = new_staged
-        
-        # Instantly reset the dropdown so it acts like a command button, not a stateful select
         menu_mth.i_selected[] = 1
     end
 end
 
 function _setup_hierarchy_interactions!()
     manager = GLOBAL_PLOT_MANAGER
-    menu_cat   = manager.widgets["Editor_Cat"]
-    menu_scope = manager.widgets["Editor_Scope"]
-    menu_key   = manager.widgets["Editor_Key"]
-    tb         = manager.widgets["Editor_Text"]
+    menu_cat   = manager.widgets[:Editor_Cat]
+    menu_scope = manager.widgets[:Editor_Scope]
+    menu_key   = manager.widgets[:Editor_Key]
+    tb         = manager.widgets[:Editor_Text]
     
-    active_target_ref = manager.state["Active_Target_Obs"]
+    active_target_ref = manager.staged[:Active_Target_Obs]
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
@@ -127,54 +181,54 @@ function _setup_hierarchy_interactions!()
         target_dict = nothing
         if cat == "Simulation"
             config = manager.active_config
-            isnothing(config) && return # SAFETY CHECK
+            isnothing(config) && return 
             target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, nothing)
         elseif cat == "UI"
-            target_dict = get(manager.ui, scope, nothing)
+            target_dict = get(manager.ui, Symbol(scope), nothing)
         end
 
-        if !isnothing(target_dict) && haskey(target_dict, key)
-            active_target_ref[] = (target_dict, key)
-            val_str = string(target_dict[key])
+        if !isnothing(target_dict) && haskey(target_dict, Symbol(key))
+            active_target_ref[] = (target_dict, Symbol(key))
+            val_str = string(target_dict[Symbol(key)])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
         end
     end
 
-    onany(menu_cat.selection, manager.methods) do cat, active_methods
+    manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, active_methods
         isnothing(cat) && return
         new_scopes = String[]
         if cat == "Simulation"
             config = manager.active_config
-            if !isnothing(config) # SAFETY CHECK
+            if !isnothing(config) 
                 push!(new_scopes, "shared")
                 for m in sort_methods_robust(active_methods)
                     haskey(config.methods_dict, m) && push!(new_scopes, m)
                 end
             end
         elseif cat == "UI"
-            new_scopes = sort(collect(keys(manager.ui)))
+            new_scopes = string.(sort(collect(keys(manager.ui))))
         end
         new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
         update_menu_safe!(menu_scope, new_scopes; force_notify=true)
     end
 
-    on(menu_scope.selection) do scope
-        (isnothing(scope) || scope == "-") && return # SAFETY CHECK
+    manager.listeners[:Hierarchy_Scope_Sync] = on(menu_scope.selection) do scope
+        (isnothing(scope) || scope == "-") && return 
         cat = menu_cat.selection[]
         raw_keys = String[]
         if cat == "Simulation"
             config = manager.active_config
-            if !isnothing(config) # SAFETY CHECK
+            if !isnothing(config) 
                 target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, Dict())
-                raw_keys = sort(collect(keys(target_dict)))
+                raw_keys = string.(sort(collect(keys(target_dict))))
             end
         elseif cat == "UI"
-            raw_keys = sort(collect(keys(get(manager.ui, scope, Dict()))))
+            raw_keys = string.(sort(collect(keys(get(manager.ui, Symbol(scope), Dict())))))
         end
 
-        if scope == "Plot-Style"
-            ptype = manager.widgets["Plot_Style"].selection[]
-            valid_keys = get(STYLE_DEPENDENCIES, ptype, raw_keys)
+        if scope == "Plot-Style" || scope == "Plot_Style"
+            ptype = manager.widgets[:Plot_Style].selection[]
+            valid_keys = string.(get(STYLE_DEPENDENCIES, ptype, Symbol[]))
             filter!(k -> k in valid_keys, raw_keys)
         end
 
@@ -183,55 +237,71 @@ function _setup_hierarchy_interactions!()
         sync_textbox_to_active_key()
     end
 
-    on(menu_key.selection) do _
+    manager.listeners[:Hierarchy_Key_Sync] = on(menu_key.selection) do _
         sync_textbox_to_active_key()
     end
 
-    on(tb.stored_string) do s
+    manager.listeners[:Hierarchy_Text_Sync] = on(tb.stored_string) do s
         target_info = active_target_ref[]
         isnothing(target_info) && return
         target_dict, key = target_info
         
-        target_dict[key] = smart_parse_csv_value(s)
-        
-        if menu_cat.selection[] == "UI"
-            if menu_key.selection[] in ("use_color_map", "line_direction", "base_method_idx","log_scale","dashed_lines")
-                manager.triggers["Primitive_Rebuild"][] += 1
-            else
-                manager.triggers["UI_Update"][] += 1
+        try
+            target_dict[key] = smart_parse_csv_value(s)
+            
+            if menu_cat.selection[] == "Simulation"
+                manager.staged[:Flag_Sim][] = true 
+            elseif menu_cat.selection[] == "UI"
+                if key in REPLOT_OPTIONS
+                    manager.staged[:Flag_Plot][] = true
+                else
+                    manager.triggers[:UI][] += 1
+                end
             end
+        catch e
+            @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
         end
     end
     
-    on(manager.widgets["Editor_Toggle"].clicks) do _
+    manager.listeners[:Hierarchy_Toggle_Sync] = on(manager.widgets[:Editor_Toggle].clicks) do _
         target_info = active_target_ref[]
         isnothing(target_info) && return
         target_dict, key = target_info
         
-        if target_dict[key] isa Bool
-            target_dict[key] = !target_dict[key]
-            tb.displayed_string[] = string(target_dict[key])
-            
-            if menu_cat.selection[] == "UI"
-                manager.triggers["UI_Update"][] += 1
+        try
+            if target_dict[key] isa Bool
+                target_dict[key] = !target_dict[key]
+                tb.displayed_string[] = string(target_dict[key])
+                
+                if menu_cat.selection[] == "Simulation"
+                    manager.staged[:Flag_Sim][] = true 
+                elseif menu_cat.selection[] == "UI"
+                    if key in REPLOT_OPTIONS
+                        manager.staged[:Flag_Plot][] = true
+                    else
+                        manager.triggers[:UI][] += 1
+                    end
+                end
             end
+        catch e
+            @warn "Failed to toggle parameter '$key'." exception=(e, catch_backtrace())
         end
     end
 end
 
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout)
     manager = GLOBAL_PLOT_MANAGER
-    saveBox = manager.widgets["Export_Text"]
-    btn_play = manager.widgets["Play_Anim_Button"]
-    btn_lock = manager.widgets["Lock_Camera_Button"] 
+    saveBox = manager.widgets[:Export_Text]
+    btn_play = manager.widgets[:Play_Anim_Button]
+    btn_lock = manager.widgets[:Lock_Camera_Button] 
     
-    if !haskey(manager.state, "Camera_Locked")
-        manager.state["Camera_Locked"] = Observable(false)
+    if !haskey(manager.staged, :Camera_Locked)
+        manager.staged[:Camera_Locked] = Observable(false)
     end
 
-    on(btn_lock.clicks) do _
-        is_locked = !manager.state["Camera_Locked"][]
-        manager.state["Camera_Locked"][] = is_locked
+    manager.listeners[:Camera_Lock_Click] = on(btn_lock.clicks) do _
+        is_locked = !manager.staged[:Camera_Locked][]
+        manager.staged[:Camera_Locked][] = is_locked
         extract_and_store_camera_state!(plot_layout)
         
         if is_locked
@@ -240,22 +310,21 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             btn_lock.buttoncolor[] = :lightgreen
             @info "Camera locked to current view."
         else
-            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            manager.staged[:Camera] = Dict{Symbol, Any}()
             btn_lock.label[] = "Lock Camera"
             btn_lock.buttoncolor[] = :lightgray
             @info "Camera unlocked. Will auto-scale on next data update."
         end
     end
 
-    anim_target_obs = manager.widgets["Anim_Target"].selection
-    is_animating = manager.state["Is_Animating"]
-    animation_timer = manager.state["Animation_Timer"]
+    anim_target_obs = manager.widgets[:Anim_Target].selection
+    is_animating = manager.staged[:Is_Animating]
+    animation_timer = manager.staged[:Animation_Timer]
 
     function get_target_widget(target_name)
         target_name == :None && return nothing
-        target_str = string(target_name)
-        rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{Symbol, String}()
-        w_key = haskey(rev_map, target_name) ? rev_map[target_name] : target_str
+        rev_map = haskey(manager.staged, :Reverse_Map) ? manager.staged[:Reverse_Map] : Dict{Symbol, Symbol}()
+        w_key = haskey(rev_map, target_name) ? rev_map[target_name] : Symbol(target_name)
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
 
@@ -266,7 +335,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         
         idx = findfirst(isequal(target_name), manager.plot_vars)
-        if !isnothing(idx) && idx in manager.state["Active_Axes"][]
+        if !isnothing(idx) && idx in manager.staged[:Active_Axes][]
             @warn "Cannot animate an active plot axis."
             return false 
         end
@@ -290,14 +359,14 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
-        ptype_sym = manager.widgets["Plot_Style"].selection[]
+        ptype_sym = manager.widgets[:Plot_Style].selection[]
         
         local_data_obs = Observable(manager.plot_data[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, Val(ptype_sym))
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
-        manager.triggers["Primitive_Rebuild"][] += 1
+        manager.triggers[:Primitive][] += 1
         for (c_ax, e_ax) in zip(current_axes, export_axes)
             if c_ax isa Axis3
                 e_ax.azimuth[] = c_ax.azimuth[]
@@ -319,23 +388,23 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return export_fig, export_obs
     end
 
-    on(manager.widgets["Save_Image_Button"].clicks) do _
-        was_locked = manager.state["Camera_Locked"][]
-        manager.state["Camera_Locked"][] = true 
+    manager.listeners[:Save_Image_Click] = on(manager.widgets[:Save_Image_Button].clicks) do _
+        was_locked = manager.staged[:Camera_Locked][]
+        manager.staged[:Camera_Locked][] = true 
         
         extract_and_store_camera_state!(plot_layout)
-        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
+        cam_cache = deepcopy(manager.staged[:Camera])
         
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "plot_export"; end
 
         save_dir = joinpath(get_save_path(), "figures")
-        if manager.ui["Various"]["create_savefolder"]; save_dir = joinpath(save_dir, base_name); end
+        if manager.ui[:Various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
         mkpath(save_dir)
 
         export_fig, export_obs = build_pristine_export_figure()
 
-        for fmt in manager.ui["Various"]["save_formats"]
+        for fmt in manager.ui[:Various][:save_formats]
             ext = lowercase(strip(fmt))
             full_path = joinpath(save_dir, base_name * ".$ext")
             save(full_path, export_fig; backend=CairoMakie)
@@ -348,23 +417,23 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         saveParametersToCSV(base_name, save_dir, metadata)
         
         if !was_locked
-            manager.state["Camera_Locked"][] = false
-            GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+            manager.staged[:Camera_Locked][] = false
+            manager.staged[:Camera] = Dict{Symbol, Any}()
         end
-        manager.triggers["Primitive_Rebuild"][] += 1
+        manager.triggers[:Primitive][] += 1
     end
 
-    on(manager.widgets["Save_GIF_Button"].clicks) do _
-        notify(manager.widgets["Save_Defs_Button"].clicks)
+    manager.listeners[:Save_GIF_Click] = on(manager.widgets[:Save_GIF_Button].clicks) do _
+        notify(manager.widgets[:Save_Defs_Button].clicks)
         target_name = anim_target_obs[]
         !check_selection_validity(target_name) && return
         target_widget = get_target_widget(target_name)
         
-        was_locked = manager.state["Camera_Locked"][]
-        manager.state["Camera_Locked"][] = true 
+        was_locked = manager.staged[:Camera_Locked][]
+        manager.staged[:Camera_Locked][] = true 
         
         extract_and_store_camera_state!(plot_layout)
-        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
+        cam_cache = deepcopy(manager.staged[:Camera])
         
         base_name = string(strip(saveBox.stored_string[]))
         if isempty(base_name); base_name = "anim_export"; end
@@ -373,8 +442,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         mkpath(save_path)
         fname = joinpath(save_path, base_name * ".gif")
         
-        duration = manager.ui["Various"]["animation_time"]
-        fps = manager.ui["Various"]["animation_FPS"]
+        duration = manager.ui[:Various][:animation_time]
+        fps = manager.ui[:Various][:animation_FPS]
         rng = target_widget.range[]
         n_frames = Int(duration * fps)
         
@@ -397,39 +466,49 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             if !isnothing(export_obs_ref[]); for obs in export_obs_ref[]; off(obs); end; end
             
             if !was_locked
-                manager.state["Camera_Locked"][] = false
-                GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+                manager.staged[:Camera_Locked][] = false
+                manager.staged[:Camera] = Dict{Symbol, Any}()
             end
-            manager.triggers["Primitive_Rebuild"][] += 1
+            manager.triggers[:Primitive][] += 1
         end
     end
 
-    on(manager.widgets["Save_Defs_Button"].clicks) do _
-        extract_and_store_camera_state!(plot_layout)
-        cam_cache = deepcopy(GLOBAL_CAMERA_OPTIONS[])
-        GLOBAL_SCENE_OPTIONS[]  = extract_scene_options()
-        GLOBAL_LAYOUT_OPTIONS[] = extract_layout_options() 
-        new_ui = Dict{String, Any}()
+    manager.listeners[:Save_Defs_Click] = on(manager.widgets[:Save_Defs_Button].clicks) do _
+        if manager.staged[:Camera_Locked][]
+            extract_and_store_camera_state!(plot_layout)
+        else
+            manager.staged[:Camera] = Dict{Symbol, Any}()
+        end
+        
+        manager.staged[:Scene]  = extract_scene_options()
+        manager.staged[:Layout] = extract_layout_options() 
+        
+        new_ui = Dict{Symbol, Any}()
         for (scope, subdict) in manager.ui
-            new_ui[scope] = Dict{String, Any}()
+            new_ui[scope] = Dict{Symbol, Any}()
             for (k, v) in subdict; new_ui[scope][k] = v; end
         end
-        GLOBAL_UI_OVERWRITE[] = new_ui
+        manager.staged[:UI] = new_ui
         @info "Current UI, Layout, and Scene options successfully saved to global defaults!"
     end
     
-    on(manager.widgets["Clear_Defs_Button"].clicks) do _
-        GLOBAL_SCENE_OPTIONS[] = Dict{String, Any}()
-        GLOBAL_UI_OVERWRITE[]  = Dict{String, Any}()
-        GLOBAL_LAYOUT_OPTIONS[]= Dict{String, Any}()
+    manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:Clear_Defs_Button].clicks) do _
+        manager.staged[:Scene]  = Dict{Symbol, Any}()
+        manager.staged[:UI]     = Dict{Symbol, Any}()
+        manager.staged[:Layout] = Dict{Symbol, Any}()
+        
+        if haskey(manager.staged, :Slider_Cache)
+            empty!(manager.staged[:Slider_Cache])
+        end
+        
         @info "Global defaults cleared! Basic scene options restored."
     end
 
-    on(is_animating) do animating
+    manager.listeners[:Anim_State_Change] = on(is_animating) do animating
         btn_play.label[] = animating ? "Stop Anim" : "Play Anim"
     end
 
-    on(btn_play.clicks) do _
+    manager.listeners[:Play_Anim_Click] = on(btn_play.clicks) do _
         if is_animating[]
             is_animating[] = false
             !isnothing(animation_timer[]) && close(animation_timer[])
@@ -441,8 +520,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             target_widget = get_target_widget(target_name)
             is_animating[] = true
             
-            duration = manager.ui["Various"]["animation_time"]
-            fps = manager.ui["Various"]["animation_FPS"]
+            duration = manager.ui[:Various][:animation_time]
+            fps = manager.ui[:Various][:animation_FPS]
             rng = target_widget.range[]
             start_time = time()
             
@@ -469,8 +548,8 @@ end
 function _setup_common_chain_c!(mode::Symbol)
     manager = GLOBAL_PLOT_MANAGER
     w = manager.widgets
-    onany(w["U-Axis"].selection, manager.plot_data) do u_val, plot_data_dict
-        @with_lock manager "Menu_C" begin
+    manager.listeners[:Chain_C] = onany(w[:U_Axis].selection, manager.plot_data) do u_val, plot_data_dict
+        @with_lock :Menu_C begin
             pd_first, sim_data = _get_active_sim_data(plot_data_dict)
             isnothing(sim_data) && return
             
@@ -484,13 +563,13 @@ function _setup_common_chain_c!(mode::Symbol)
                 comp_max = length(eltype(target_tensor))
             end
             
-            comp_names_tuple = manager.ui["Labels"]["comp_names"]
+            comp_names_tuple = manager.ui[:Labels][:comp_names]
             c_options = Any[]
             for i in 1:comp_max
                 name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
                 push!(c_options, (name, i))
             end
-            update_menu_safe!(w["c"], c_options; fallbacks=[1])
+            update_menu_safe!(w[:c], c_options; fallbacks=[1])
         end
     end
 end
@@ -498,10 +577,15 @@ end
 function _setup_common_chain_d!(mode::Symbol)
     manager = GLOBAL_PLOT_MANAGER
     w = manager.widgets
-    active_axes_obs = manager.state["Active_Axes"]
     
-    onany(active_axes_obs, w["U-Axis"].selection, manager.plot_data) do active_axes, u_val, plot_data_dict
-        @with_lock manager "Menu_D" begin
+    manager.listeners[:Chain_D] = on(manager.triggers[:Slider]) do _
+        @with_lock :Slider begin
+            active_axes = manager.staged[:Active_Axes][]
+            u_val = w[:U_Axis].selection[]
+            comp_val = w[:Compare_Target].selection[]
+            anim_val = w[:Anim_Target].selection[]
+            plot_data_dict = manager.plot_data[]
+
             pd_first, sim_data = _get_active_sim_data(plot_data_dict)
             isnothing(sim_data) && return
 
@@ -510,82 +594,105 @@ function _setup_common_chain_d!(mode::Symbol)
             n_params = total_dims - length(get_base_variables())
             
             target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
-            kept_syms = Tuple(IRunPDESims.get_kept_dims(target_field, sim_data.domain))
+            
+            base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
+            kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
 
-            for i in 1:total_dims
-                dim_sym = dim_names[i]
-                dim_str = String(dim_sym)
-                is_axis = i in active_axes
-                
-                is_spatial = false
-                is_physically_disabled = false
-                
-                if i > n_params
-                    if mode == :lagrangian
-                        is_spatial = dim_sym != sim_data.domain.time_dim
-                        is_physically_disabled = !is_spatial && !(dim_sym in kept_syms)
-                    else
-                        is_physically_disabled = !(dim_sym in kept_syms)
-                    end
-                end
-                
-                widget_key = i > n_params ? dim_str : get(manager.state["Reverse_Map"], dim_sym, "param_$i")
-                haskey(w, widget_key) || continue
-                ctrl = w[widget_key]
-                
-                if is_axis || is_spatial || is_physically_disabled
-                    ctrl.range[] = [0.0] 
-                    continue
-                end
-                
-                g_min, g_max = Inf, -Inf
-                for pd in values(plot_data_dict)
-                    vals = nothing
-                    if i <= n_params 
-                        vals = pd.active_param_values[i]
-                    else
-                        s_data = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
-                        isnothing(s_data) && continue
-                        
+            manager.locks[:Data] = true
+            try
+                for i in 1:total_dims
+                    dim_sym = dim_names[i]
+                    dim_str = String(dim_sym)
+                    
+                    is_axis = i in active_axes
+                    is_compare = dim_sym == comp_val
+                    is_anim = dim_sym == anim_val
+                    
+                    is_spatial = false
+                    is_physically_disabled = false
+                    
+                    if i > n_params
                         if mode == :lagrangian
-                            if dim_sym == s_data.domain.time_dim
-                                vals = s_data.t
-                            end
+                            is_spatial = dim_sym != sim_data.domain.time_dim
+                            is_physically_disabled = !is_spatial && !(dim_sym in kept_syms)
                         else
-                            idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
-                            if !isnothing(idx)
-                                vals = s_data.axes[idx]
-                            end
+                            is_physically_disabled = !(dim_sym in kept_syms)
                         end
                     end
-                
-                    if !isnothing(vals) && !isempty(vals)
-                        l, h = extrema(vals)
-                        g_min = min(l, g_min)  
-                        g_max = max(h, g_max)
+                    
+                    widget_key = i > n_params ? Symbol(dim_str) : get(manager.staged[:Reverse_Map], dim_sym, Symbol("param_$i"))
+                    haskey(w, widget_key) || continue
+                    ctrl = w[widget_key]
+                    
+                    if !haskey(manager.staged, :Slider_Cache)
+                        manager.staged[:Slider_Cache] = Dict{Symbol, Float64}()
                     end
-                end
-                
-                if isinf(g_min); g_min = 0.0; g_max = 1.0; end
-                
-                # THE FIX: Cache the value before Makie overwrites it!
-                old_val = ctrl.value[]
-                
-                if i <= n_params
-                    all_vals = Float64[]
+                    slider_cache = manager.staged[:Slider_Cache]
+
+                    if length(ctrl.range[]) > 1
+                        slider_cache[widget_key] = Float64(ctrl.value[])
+                    end
+                    
+                    if is_axis || is_spatial || is_physically_disabled || is_compare || is_anim
+                        if ctrl.range[] != [0.0]
+                            ctrl.range[] = [0.0] 
+                        end
+                        continue
+                    end
+                    
+                    g_min, g_max = Inf, -Inf
                     for pd in values(plot_data_dict)
-                        append!(all_vals, pd.active_param_values[i])
+                        vals = nothing
+                        if i <= n_params 
+                            vals = pd.active_param_values[i]
+                        else
+                            s_data = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+                            isnothing(s_data) && continue
+                            
+                            if mode == :lagrangian
+                                if dim_sym == s_data.domain.time_dim
+                                    vals = s_data.t
+                                end
+                            else
+                                idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
+                                if !isnothing(idx)
+                                    vals = s_data.axes[idx]
+                                end
+                            end
+                        end
+                    
+                        if !isnothing(vals) && !isempty(vals)
+                            l, h = extrema(vals)
+                            g_min = min(l, g_min)  
+                            g_max = max(h, g_max)
+                        end
                     end
-                    ctrl.range[] = isempty(all_vals) ? [0.0] : sort(unique(all_vals))
-                else
-                    ctrl.range[] = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                    
+                    if isinf(g_min); g_min = 0.0; g_max = 1.0; end
+                    
+                    old_val = get(slider_cache, widget_key, Float64(ctrl.value[]))
+                    
+                    new_range = [0.0]
+                    if i <= n_params
+                        all_vals = Any[]
+                        for pd in values(plot_data_dict)
+                            append!(all_vals, pd.active_param_values[i])
+                        end
+                        new_range = isempty(all_vals) ? [0.0] : sort(unique(identity.(all_vals)))
+                    else
+                        new_range = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                    end
+                    
+                    if ctrl.range[] != new_range
+                        ctrl.range[] = new_range
+                        set_close_to!(ctrl, old_val)
+                    end
                 end
-                
-                # Restore the cached value
-                set_close_to!(ctrl, old_val)
+            finally
+                manager.locks[:Data] = false
             end
-            
         end
+        manager.triggers[:Data][] += 1
     end
 end
 
@@ -595,39 +702,39 @@ end
 function _setup_eulerian_data_sync!()
     manager = GLOBAL_PLOT_MANAGER
     w = manager.widgets
-    x_sel = w["X-Axis"].selection
-    y_sel = w["Y-Axis"].selection
-    z_sel = w["Z-Axis"].selection
-    base_obs = w["Base_Plot"].selection
-    style_obs = w["Plot_Style"].selection
+    x_sel = w[:X_Axis].selection
+    y_sel = w[:Y_Axis].selection
+    z_sel = w[:Z_Axis].selection
+    base_obs = w[:Base_Plot].selection
+    style_obs = w[:Plot_Style].selection
     
     base_opts = PLOT_MODE[] == :eulerian ? 
         Any[("Lines", :lines), ("Scatter", :scatter), ("Contour", :contour), ("Heatmap", :heatmap), ("Volume", :volume)] : 
         Any[("Scatter", :scatter)]
     
-    update_menu_safe!(w["Base_Plot"], base_opts; fallbacks=[:lines], force_notify=false)
+    update_menu_safe!(w[:Base_Plot], base_opts; fallbacks=[:lines], force_notify=false)
 
-    on(base_obs) do base_type
+    manager.listeners[:Eulerian_Base_Change] = on(base_obs) do base_type
         (isnothing(base_type) || base_type == :None) && return
-        manager.locks["Layout"] = true 
+        manager.locks[:Layout] = true 
         active_dict = PLOT_MODE[] == :lagrangian ? LAGRANGIAN_PLOT_STYLE_OPTIONS : EULERIAN_PLOT_STYLE_OPTIONS
         valid_styles = get(active_dict, base_type, Any[("1D", :lines)])
-        update_menu_safe!(w["Plot_Style"], valid_styles; fallbacks=[:lines], force_notify=false)
-        notify(manager.widgets["Editor_Scope"].selection)
+        update_menu_safe!(w[:Plot_Style], valid_styles; fallbacks=[:lines], force_notify=false)
+        notify(manager.widgets[:Editor_Scope].selection)
     end
     
-    on(style_obs) do _
-        manager.locks["Layout"] = true 
-        notify(manager.widgets["Editor_Scope"].selection)
+    manager.listeners[:Eulerian_Style_Change] = on(style_obs) do _
+        manager.locks[:Layout] = true 
+        notify(manager.widgets[:Editor_Scope].selection)
     end
 
-    active_axes_obs = manager.state["Active_Axes"]
+    active_axes_obs = manager.staged[:Active_Axes]
 
     # =========================================================================
     # CHAIN A: Structural Setup (Data, Base Plot, Plot Style) -> Axes, Anim, Compare
     # =========================================================================
-    onany(manager.plot_data, base_obs, style_obs, w["X-Axis"].selection, w["Y-Axis"].selection) do plot_data_dict, base_sel, style_sel, _x, _y
-        @with_lock manager "Menu_A" begin
+    manager.listeners[:Eulerian_Chain_A] = onany(manager.plot_data, base_obs, style_obs, w[:X_Axis].selection, w[:Y_Axis].selection) do plot_data_dict, base_sel, style_sel, _x, _y
+        @with_lock :Menu_A begin
             isempty(plot_data_dict) && return
             (isnothing(style_sel) || style_sel == :None || isnothing(base_sel) || base_sel == :None) && return
             
@@ -665,7 +772,7 @@ function _setup_eulerian_data_sync!()
                     push!(anim_options, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
                 end
             end
-            update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=[:None])
+            update_menu_safe!(w[:Anim_Target], anim_options; fallbacks=[:None])
 
             compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
             if !isnothing(sim_data.domain.time_dim)
@@ -674,9 +781,9 @@ function _setup_eulerian_data_sync!()
             for p_key in pd_first.active_param_keys
                 push!(compare_opts, (string(p_key), Symbol(p_key)))
             end
-            update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=[:None], force_notify=false)
+            update_menu_safe!(w[:Compare_Target], compare_opts; fallbacks=[:None], force_notify=false)
 
-            ptype = manager.widgets["Plot_Style"].selection[]
+            ptype = manager.widgets[:Plot_Style].selection[]
             p_dim = PLOT_DIM_MAP[ptype]
             
             function build_axis_opts(excluded_syms)
@@ -701,20 +808,20 @@ function _setup_eulerian_data_sync!()
             end
             
             base_vars = get_base_variables()
-            x_val = w["X-Axis"].selection[]
+            x_val = w[:X_Axis].selection[]
             
-            update_menu_safe!(w["X-Axis"], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
+            update_menu_safe!(w[:X_Axis], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
             if p_dim >= 2
-                update_menu_safe!(w["Y-Axis"], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
+                update_menu_safe!(w[:Y_Axis], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
             else
-                update_menu_safe!(w["Y-Axis"], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
+                update_menu_safe!(w[:Y_Axis], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
             end
             
-            curr_y = w["Y-Axis"].selection[]
+            curr_y = w[:Y_Axis].selection[]
             if p_dim >= 3
-                update_menu_safe!(w["Z-Axis"], build_axis_opts([x_val, curr_y]); fallbacks=base_vars, force_notify=false)
+                update_menu_safe!(w[:Z_Axis], build_axis_opts([x_val, curr_y]); fallbacks=base_vars, force_notify=false)
             else
-                update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
+                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
             end
         end
     end
@@ -722,8 +829,8 @@ function _setup_eulerian_data_sync!()
     # =========================================================================
     # CHAIN B: Axes Changes (X, Y, Z, Data) -> U-Axis, Active Axes
     # =========================================================================
-    onany(x_sel, y_sel, z_sel, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
-        @with_lock manager "Menu_B" begin
+    manager.listeners[:Eulerian_Chain_B] = onany(x_sel, y_sel, z_sel, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
+        @with_lock :Menu_B begin
             isempty(plot_data_dict) && return
 
             pd_first = first(values(plot_data_dict))
@@ -757,7 +864,7 @@ function _setup_eulerian_data_sync!()
             end
             
             sort!(valid_fields, by = x -> x[1])
-            update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=[:Solution], force_notify=false)
+            update_menu_safe!(w[:U_Axis], valid_fields; fallbacks=[:Solution], force_notify=false)
             
             active_axes_obs.val = collect(axes_set)
             notify(active_axes_obs)
@@ -774,13 +881,13 @@ end
 function _setup_lagrangian_data_sync!()
     manager = GLOBAL_PLOT_MANAGER
     w = manager.widgets
-    active_axes_obs = manager.state["Active_Axes"]
+    active_axes_obs = manager.staged[:Active_Axes]
     
     # =========================================================================
     # CHAIN A: Structural Setup (Data) -> Style, Axes, Anim, Compare
     # =========================================================================
-    onany(manager.plot_data) do plot_data_dict
-        @with_lock manager "Menu_A" begin
+    manager.listeners[:Lagrangian_Chain_A] = onany(manager.plot_data) do plot_data_dict
+        @with_lock :Menu_A begin
             isempty(plot_data_dict) && return
             
             pd_first = first(values(plot_data_dict))
@@ -797,19 +904,19 @@ function _setup_lagrangian_data_sync!()
             sy = D >= 2 ? spatial_keys[2] : :y
             sz = D >= 3 ? spatial_keys[3] : :z
             
-            update_menu_safe!(w["X-Axis"], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
+            update_menu_safe!(w[:X_Axis], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
-                update_menu_safe!(w["Plot_Style"], Any[("1D", :scatter1d), ("Lines", :scatterlines), ("Colors", :scattercolors)]; fallbacks=[:scatter1d], force_notify=false)
-                update_menu_safe!(w["Y-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
-                update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
+                update_menu_safe!(w[:Plot_Style], Any[("1D", :scatter1d), ("Lines", :scatterlines), ("Colors", :scattercolors)]; fallbacks=[:scatter1d], force_notify=false)
+                update_menu_safe!(w[:Y_Axis], Any[("disabled", :None)]; fallbacks=[:None])
+                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None])
             elseif D == 2
-                update_menu_safe!(w["Plot_Style"], Any[("2D", :scatter2d), ("2D (Surface)", :scatter2d_surface)]; fallbacks=[:scatter2d], force_notify=false)
-                update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
-                update_menu_safe!(w["Z-Axis"], Any[("disabled", :None)]; fallbacks=[:None])
+                update_menu_safe!(w[:Plot_Style], Any[("2D", :scatter2d), ("2D (Surface)", :scatter2d_surface)]; fallbacks=[:scatter2d], force_notify=false)
+                update_menu_safe!(w[:Y_Axis], Any[(string(sy), sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None])
             else
-                update_menu_safe!(w["Plot_Style"], Any[("3D", :scatter3d)]; fallbacks=[:scatter3d], force_notify=false)
-                update_menu_safe!(w["Y-Axis"], Any[(string(sy), sy)]; fallbacks=[sy])
-                update_menu_safe!(w["Z-Axis"], Any[(string(sz), sz)]; fallbacks=[sz])
+                update_menu_safe!(w[:Plot_Style], Any[("3D", :scatter3d)]; fallbacks=[:scatter3d], force_notify=false)
+                update_menu_safe!(w[:Y_Axis], Any[(string(sy), sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:Z_Axis], Any[(string(sz), sz)]; fallbacks=[sz])
             end
             
             anim_options = Any[("None", :None)]
@@ -820,7 +927,7 @@ function _setup_lagrangian_data_sync!()
                     push!(anim_options, (nice_string(ax_str), ax_sym))
                 end
             end
-            update_menu_safe!(w["Anim_Target"], anim_options; fallbacks=[:None])
+            update_menu_safe!(w[:Anim_Target], anim_options; fallbacks=[:None])
             
             compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
             if !isnothing(l_data.domain.time_dim)
@@ -829,15 +936,15 @@ function _setup_lagrangian_data_sync!()
             for p_key in pd_first.active_param_keys
                 push!(compare_opts, (string(p_key), Symbol(p_key)))
             end
-            update_menu_safe!(w["Compare_Target"], compare_opts; fallbacks=[:None], force_notify=false)
+            update_menu_safe!(w[:Compare_Target], compare_opts; fallbacks=[:None], force_notify=false)
         end
     end
     
     # =========================================================================
     # CHAIN B: Axes Changes (X, Y, Z, Data) -> U-Axis, Active Axes
     # =========================================================================
-    onany(w["X-Axis"].selection, w["Y-Axis"].selection, w["Z-Axis"].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
-        @with_lock manager "Menu_B" begin
+    manager.listeners[:Lagrangian_Chain_B] = onany(w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
+        @with_lock :Menu_B begin
             isempty(plot_data_dict) && return
             
             pd_first = first(values(plot_data_dict))
@@ -855,7 +962,7 @@ function _setup_lagrangian_data_sync!()
                 end
             end
             sort!(valid_fields, by = x -> x[1])
-            update_menu_safe!(w["U-Axis"], valid_fields; fallbacks=[:Solution], force_notify=false)
+            update_menu_safe!(w[:U_Axis], valid_fields; fallbacks=[:Solution], force_notify=false)
             
             axes_set = Set{Int}()
             idx_x = findfirst(isequal(x_val), manager.plot_vars); !isnothing(idx_x) && push!(axes_set, idx_x)

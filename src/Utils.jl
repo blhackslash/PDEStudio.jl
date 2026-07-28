@@ -254,14 +254,31 @@ function _recombine_tuples!(params::Dict)
     return params
 end
 
+# --- NEW: Recursive Dict Key Symbolizer ---
+function _convert_dict_keys_to_symbols(d::Dict)
+    new_d = Dict{Symbol, Any}()
+    for (k, v) in d
+        # Clean hyphens into underscores to match UI definitions (e.g. "X-Axis" -> :X_Axis)
+        clean_k = Symbol(replace(string(k), "-" => "_"))
+        if v isa Dict
+            new_d[clean_k] = _convert_dict_keys_to_symbols(v)
+        else
+            new_d[clean_k] = v
+        end
+    end
+    return new_d
+end
+
 function apply_layout_options!(layout_options::Dict)
     manager = GLOBAL_PLOT_MANAGER
     isempty(layout_options) && return
 
-    for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
-        sel_key = "$(k)_Selection"
-        if haskey(layout_options, sel_key) && haskey(manager.widgets, k)
-            val = layout_options[sel_key]
+    for k in [:Base_Plot, :Plot_Style, :Compare_Target, :Compare_Columns, :Compare_Link, :Legend_Base, :Legend_Add, :Plot_Width, :Plot_Height, :Anim_Target]
+        sel_key = Symbol(k, :_Selection)
+        # Check both the symbol and string versions to support direct API pushes
+        val = get(layout_options, sel_key, get(layout_options, string(sel_key), nothing))
+        
+        if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
             
             opts = widget.options[]
@@ -286,10 +303,11 @@ function apply_scene_options!(scene_options::Dict)
     isempty(scene_options) && return
 
     # 1. Apply Axis Dropdowns
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
-        sel_key = "$(k)_Selection"
-        if haskey(scene_options, sel_key) && haskey(manager.widgets, k)
-            val = scene_options[sel_key]
+    for k in [:X_Axis, :Y_Axis, :Z_Axis, :U_Axis, :c]
+        sel_key = Symbol(k, :_Selection)
+        val = get(scene_options, sel_key, get(scene_options, string(sel_key), nothing))
+        
+        if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
             
             opts = widget.options[]
@@ -322,18 +340,21 @@ function apply_scene_options!(scene_options::Dict)
     end
 
     # 2. Apply Slider Values
-    # THE FIX: Dict signature updated to handle Symbol keys
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{Symbol, String}()
+    rev_map = get(manager.staged, :Reverse_Map, Dict{Symbol, Symbol}())
     for (key, desired_val) in scene_options
-        if endswith(key, "_Value")
-            base_name = replace(key, "_Value" => "")
-            # THE FIX: Cast string to Symbol for dictionary lookup
+        key_str = string(key)
+        if endswith(key_str, "_Value")
+            base_name = replace(key_str, "_Value" => "")
             base_sym = Symbol(base_name)
-            w_key = haskey(rev_map, base_sym) ? rev_map[base_sym] : base_name
+            w_key = haskey(rev_map, base_sym) ? rev_map[base_sym] : base_sym
             
             if haskey(manager.widgets, w_key)
                 widget = manager.widgets[w_key]
                 if widget isa Makie.Slider
+                    # Pre-cache the target value in case the slider is temporarily disabled
+                    slider_cache = get!(manager.staged, :Slider_Cache, Dict{Symbol, Float64}())
+                    slider_cache[w_key] = Float64(desired_val)
+                    
                     rng = widget.range[]
                     isempty(rng) && continue
                     
@@ -350,10 +371,10 @@ end
 
 function extract_layout_options()
     manager = GLOBAL_PLOT_MANAGER
-    opts = Dict{String, Any}()
-    for k in ["Base_Plot", "Plot_Style", "Compare_Target", "Compare_Columns", "Compare_Link", "Legend_Base", "Legend_Add", "Plot_Width", "Plot_Height", "Anim_Target"]
+    opts = Dict{Symbol, Any}()
+    for k in [:Base_Plot, :Plot_Style, :Compare_Target, :Compare_Columns, :Compare_Link, :Legend_Base, :Legend_Add, :Plot_Width, :Plot_Height, :Anim_Target]
         if haskey(manager.widgets, k)
-            opts["$(k)_Selection"] = manager.widgets[k].selection[]
+            opts[Symbol(k, :_Selection)] = manager.widgets[k].selection[]
         end
     end
     return opts
@@ -361,20 +382,20 @@ end
 
 function extract_scene_options()
     manager = GLOBAL_PLOT_MANAGER
-    opts = Dict{String, Any}()
-    for k in ["X-Axis", "Y-Axis", "Z-Axis", "U-Axis", "c"]
+    opts = Dict{Symbol, Any}()
+    for k in [:X_Axis, :Y_Axis, :Z_Axis, :U_Axis, :c]
         if haskey(manager.widgets, k)
-            opts["$(k)_Selection"] = manager.widgets[k].selection[]
+            opts[Symbol(k, :_Selection)] = manager.widgets[k].selection[]
         end
     end
     
-    rev_map = haskey(manager.state, "Reverse_Map") ? manager.state["Reverse_Map"] : Dict{String, String}()
+    rev_map = get(manager.staged, :Reverse_Map, Dict{Symbol, Symbol}())
     for k in manager.plot_vars
-        w_key = haskey(rev_map, k) ? rev_map[k] : k
+        w_key = haskey(rev_map, k) ? rev_map[k] : k 
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                opts["$(k)_Value"] = widget.value[]
+                opts[Symbol(k, :_Value)] = widget.value[]
             end
         end
     end
@@ -413,23 +434,23 @@ function load_and_apply_csv!(filepath::String)
     # 1. Update the Data Source (No longer an Observable, so no [])
     set_sim_config!(new_config)
     
-    # 2. Buffer the Overwrites for the cascade to consume later
+    # 2. Buffer the Overwrites directly into the centralized Staged Cache using Symbols
     if haskey(parsed, "UI")
-        GLOBAL_UI_OVERWRITE[] = parsed["UI"]
+        manager.staged[:UI] = _convert_dict_keys_to_symbols(parsed["UI"])
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        GLOBAL_SCENE_OPTIONS[] = parsed["Scene"]["General"]
+        manager.staged[:Scene] = _convert_dict_keys_to_symbols(parsed["Scene"]["General"])
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
-        GLOBAL_LAYOUT_OPTIONS[] = parsed["Layout"]["General"]
+        manager.staged[:Layout] = _convert_dict_keys_to_symbols(parsed["Layout"]["General"])
     end
 
     if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
-        GLOBAL_CAMERA_OPTIONS[] = parsed["Camera"]["General"]
+        manager.staged[:Camera] = _convert_dict_keys_to_symbols(parsed["Camera"]["General"])
     else
-        GLOBAL_CAMERA_OPTIONS[] = Dict{String, Any}()
+        manager.staged[:Camera] = Dict{Symbol, Any}()
     end
     
     @info "Config buffered! Press 'Run Simulation' to compute and apply."
@@ -685,7 +706,8 @@ function saveParametersToCSV(
         for (k, v) in layout_opts
             add_row("Layout", "General", k, v)
         end
-        for (k, v) in GLOBAL_CAMERA_OPTIONS[]
+        cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
+        for (k, v) in cam_opts
             add_row("Camera", "General", k, v)
         end
 
@@ -694,7 +716,7 @@ function saveParametersToCSV(
             for (k, v) in dict; add_row("UI", scope, k, v); end
         end
 
-        # --- 4. CATEGORY: Simulation & Config (THE FIX) ---
+        # --- 4. CATEGORY: Simulation & Config ---
         config = manager.active_config
 
         for (k, v) in config.shared_params
