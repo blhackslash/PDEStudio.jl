@@ -127,7 +127,7 @@ function apply_scene_options!(scene_options::Dict)
     end
 
     # 2. Apply Slider Values
-    rev_map = get(manager.staged, :Reverse_Map, Dict{Symbol, Symbol}())
+    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     for (key, desired_val) in scene_options
         key_str = string(key)
         if endswith(key_str, "_Value")
@@ -176,7 +176,7 @@ function extract_scene_options()
         end
     end
     
-    rev_map = get(manager.staged, :Reverse_Map, Dict{Symbol, Symbol}())
+    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     for k in manager.plot_vars
         w_key = haskey(rev_map, k) ? rev_map[k] : k 
         if haskey(manager.widgets, w_key)
@@ -213,9 +213,9 @@ end
 function _setup_button_state_machine!()
     w = manager.widgets
     
-    f_sim = manager.staged[:Flag_Sim]
-    f_lay = manager.staged[:Flag_Layout]
-    f_plot = manager.staged[:Flag_Plot]
+    f_sim = manager.flags[:Simulation]
+    f_lay = manager.flags[:Layout]
+    f_plot = manager.flags[:Plot]
 
     # --- WATCHERS (Triggers flags when users adjust UI menus) ---
     manager.listeners[:Watch_Layout] = onany(
@@ -283,9 +283,9 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
-        manager.staged[:Flag_Sim][] = false
-        manager.staged[:Flag_Layout][] = false
-        manager.staged[:Flag_Plot][] = false
+        manager.flags[:Simulation][] = false
+        manager.flags[:Layout][] = false
+        manager.flags[:Plot][] = false
         manager.triggers[:Simulation][] += 1
     end
 end
@@ -293,12 +293,10 @@ end
 function _setup_method_interactions!()
     mode_btn = manager.widgets[:Mode_Button]
     menu_mth = manager.widgets[:Method_Toggle]
-    is_activate_mode = manager.staged[:Is_Activate_Mode]
+    is_activate_mode = manager.state[:Is_Activate_Mode]
     
-    if !haskey(manager.staged, :Staged_Methods)
-        manager.staged[:Staged_Methods] = Observable(copy(manager.methods[]))
-    end
-    staged_methods = manager.staged[:Staged_Methods]
+    manager.staged[:Methods] = Observable(copy(manager.methods[]))
+    staged_methods = manager.staged[:Methods]
 
     manager.listeners[:Menu_Sync] = onany(staged_methods, is_activate_mode) do staged, activate_mode
         @with_lock :Menu_Sync begin
@@ -334,7 +332,7 @@ function _setup_method_interactions!()
         end
         
         staged_methods[] = new_staged
-        manager.staged[:Flag_Sim][] = true
+        manager.flags[:Simulation][] = true
         menu_mth.i_selected[] = 1
     end
 end
@@ -345,7 +343,7 @@ function _setup_hierarchy_interactions!()
     menu_key   = manager.widgets[:Editor_Key]
     tb         = manager.widgets[:Editor_Text]
     
-    active_target_ref = manager.staged[:Active_Target_Obs]
+    active_target_ref = manager.state[:Active_Target_Obs]
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
@@ -432,10 +430,10 @@ function _setup_hierarchy_interactions!()
             target_dict[key] = smart_parse_csv_value(s)
             
             if menu_cat.selection[] == "Simulation"
-                manager.staged[:Flag_Sim][] = true 
+                manager.flags[:Simulation][] = true 
             elseif menu_cat.selection[] == "UI"
                 if key in REPLOT_OPTIONS
-                    manager.staged[:Flag_Plot][] = true
+                    manager.flags[:Plot][] = true
                 else
                     manager.triggers[:UI][] += 1
                 end
@@ -456,10 +454,10 @@ function _setup_hierarchy_interactions!()
                 tb.displayed_string[] = string(target_dict[key])
                 
                 if menu_cat.selection[] == "Simulation"
-                    manager.staged[:Flag_Sim][] = true 
+                    manager.flags[:Simulation][] = true 
                 elseif menu_cat.selection[] == "UI"
                     if key in REPLOT_OPTIONS
-                        manager.staged[:Flag_Plot][] = true
+                        manager.flags[:Plot][] = true
                     else
                         manager.triggers[:UI][] += 1
                     end
@@ -475,14 +473,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     saveBox = manager.widgets[:Export_Text]
     btn_play = manager.widgets[:Play_Anim_Button]
     btn_lock = manager.widgets[:Lock_Camera_Button] 
-    
-    if !haskey(manager.staged, :Camera_Locked)
-        manager.staged[:Camera_Locked] = Observable(false)
-    end
 
     manager.listeners[:Camera_Lock_Click] = on(btn_lock.clicks) do _
-        is_locked = !manager.staged[:Camera_Locked][]
-        manager.staged[:Camera_Locked][] = is_locked
+        is_locked = !manager.state[:Camera_Locked][]
+        manager.state[:Camera_Locked][] = is_locked
         extract_and_store_camera_state!(plot_layout)
         
         if is_locked
@@ -499,12 +493,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     anim_target_obs = manager.widgets[:Anim_Target].selection
-    is_animating = manager.staged[:Is_Animating]
-    animation_timer = manager.staged[:Animation_Timer]
+    is_animating = manager.state[:Is_Animating]
+    animation_timer = manager.state[:Animation_Timer]
 
     function get_target_widget(target_name)
         target_name == :None && return nothing
-        rev_map = haskey(manager.staged, :Reverse_Map) ? manager.staged[:Reverse_Map] : Dict{Symbol, Symbol}()
+        rev_map = haskey(manager.maps, :Reverse) ? manager.maps[:Reverse] : Dict{Symbol, Symbol}()
         w_key = haskey(rev_map, target_name) ? rev_map[target_name] : Symbol(target_name)
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
@@ -516,7 +510,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         
         idx = findfirst(isequal(target_name), manager.plot_vars)
-        if !isnothing(idx) && idx in manager.staged[:Active_Axes][]
+        if !isnothing(idx) && idx in manager.state[:Active_Axes][]
             @warn "Cannot animate an active plot axis."
             return false 
         end
@@ -547,7 +541,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
-        manager.triggers[:Primitive][] += 1
+        manager.triggers[:Plot][] += 1
         for (c_ax, e_ax) in zip(current_axes, export_axes)
             if c_ax isa Axis3
                 e_ax.azimuth[] = c_ax.azimuth[]
@@ -570,8 +564,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     manager.listeners[:Save_Image_Click] = on(manager.widgets[:Save_Image_Button].clicks) do _
-        was_locked = manager.staged[:Camera_Locked][]
-        manager.staged[:Camera_Locked][] = true 
+        was_locked = manager.state[:Camera_Locked][]
+        manager.state[:Camera_Locked][] = true 
         
         extract_and_store_camera_state!(plot_layout)
         cam_cache = deepcopy(manager.staged[:Camera])
@@ -598,10 +592,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         saveParametersToCSV(base_name, save_dir, metadata)
         
         if !was_locked
-            manager.staged[:Camera_Locked][] = false
+            manager.state[:Camera_Locked][] = false
             manager.staged[:Camera] = Dict{Symbol, Any}()
         end
-        manager.triggers[:Primitive][] += 1
+        manager.triggers[:Plot][] += 1
     end
 
     manager.listeners[:Save_GIF_Click] = on(manager.widgets[:Save_GIF_Button].clicks) do _
@@ -610,8 +604,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         !check_selection_validity(target_name) && return
         target_widget = get_target_widget(target_name)
         
-        was_locked = manager.staged[:Camera_Locked][]
-        manager.staged[:Camera_Locked][] = true 
+        was_locked = manager.state[:Camera_Locked][]
+        manager.state[:Camera_Locked][] = true 
         
         extract_and_store_camera_state!(plot_layout)
         cam_cache = deepcopy(manager.staged[:Camera])
@@ -647,21 +641,21 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             if !isnothing(export_obs_ref[]); for obs in export_obs_ref[]; off(obs); end; end
             
             if !was_locked
-                manager.staged[:Camera_Locked][] = false
+                manager.state[:Camera_Locked][] = false
                 manager.staged[:Camera] = Dict{Symbol, Any}()
             end
-            manager.triggers[:Primitive][] += 1
+            manager.triggers[:Plot][] += 1
         end
     end
 
     manager.listeners[:Save_Defs_Click] = on(manager.widgets[:Save_Defs_Button].clicks) do _
-        if manager.staged[:Camera_Locked][]
+        if manager.state[:Camera_Locked][]
             extract_and_store_camera_state!(plot_layout)
         else
             manager.staged[:Camera] = Dict{Symbol, Any}()
         end
         
-        manager.staged[:Scene]  = extract_scene_options()
+        manager.staged[:Plot]  = extract_scene_options()
         manager.staged[:Layout] = extract_layout_options() 
         
         new_ui = Dict{Symbol, Any}()
@@ -674,7 +668,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
     
     manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:Clear_Defs_Button].clicks) do _
-        manager.staged[:Scene]  = Dict{Symbol, Any}()
+        manager.staged[:Plot]  = Dict{Symbol, Any}()
         manager.staged[:UI]     = Dict{Symbol, Any}()
         manager.staged[:Layout] = Dict{Symbol, Any}()
         
@@ -909,7 +903,7 @@ end
 function _setup_chain_B!(::Val{:eulerian})
     w = manager.widgets
     x_sel, y_sel, z_sel = w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection
-    active_axes_obs = manager.staged[:Active_Axes]
+    active_axes_obs = manager.state[:Active_Axes]
 
     manager.listeners[:Eulerian_Chain_B] = onany(x_sel, y_sel, z_sel, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
         @with_lock :Menu_B begin
@@ -956,7 +950,7 @@ end
 
 function _setup_chain_B!(::Val{:lagrangian})
     w = manager.widgets
-    active_axes_obs = manager.staged[:Active_Axes]
+    active_axes_obs = manager.state[:Active_Axes]
 
     manager.listeners[:Lagrangian_Chain_B] = onany(w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
         @with_lock :Menu_B begin

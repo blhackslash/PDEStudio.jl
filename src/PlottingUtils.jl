@@ -296,7 +296,7 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     
     if isempty(plotted_objects) || isempty(labels); return; end
     
-    layout_dict = manager.staged[:Layout_Dict][]
+    layout_dict = manager.state[:Layout_Dict][]
     if !haskey(layout_dict, :Legend) || isnothing(layout_dict[:Legend]); return; end
     
     ui_style = manager.ui[:Axis_General]
@@ -334,7 +334,7 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_
     ui_stl = manager.ui[:Plot_Style]
     if !haskey(ui_stl, :color_map); return; end 
     
-    layout_dict = manager.staged[:Layout_Dict][]
+    layout_dict = manager.state[:Layout_Dict][]
     cb_list = layout_dict[:Colorbars]
     isempty(cb_list) && return
     

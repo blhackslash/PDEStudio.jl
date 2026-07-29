@@ -138,7 +138,6 @@ function create_plot_data(method_name::String, base_params::ParamDict, sim_confi
         end
     end
 
-    # Return PlotSweepData without fixed_params[cite: 18]
     return PlotSweepData{length(grid_dims)}(data_store, active_keys, active_values)
 end
 

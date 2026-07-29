@@ -60,14 +60,10 @@ end
 
 function set_sim_config!(config::SimulationConfig)
     manager.active_config = config
-    manager.staged[:Flag_Sim][] = true 
-    
-    if !haskey(manager.staged, :Staged_Methods)
-        manager.staged[:Staged_Methods] = Observable(String[])
-    end
+    manager.flags[:Simulation][] = true 
     
     default_m = isempty(config.default_methods) ? filter(k -> k != "shared", collect(keys(config.methods_dict))) : filter(k -> k != "shared", copy(config.default_methods))
-    manager.staged[:Staged_Methods][] = default_m
+    manager.staged[:Methods][] = default_m
 
     if haskey(manager.widgets, :Editor_Cat)
         notify(manager.widgets[:Editor_Cat].selection)
@@ -123,7 +119,8 @@ function reset_plotter!()
     
     manager.ui_state[:is_open] = false
     manager.ui_state[:master_fig] = nothing
-    manager.staged[:Layout] = get_base_layout_options()
+
+    if isempty(manager.staged[:Layout]); manager.staged[:Layout] = get_base_layout_options() end
     
     for (k, obs) in manager.triggers
         if k != :Simulation
@@ -141,9 +138,7 @@ function reset_plotter!()
         end
     end
     
-    if haskey(manager.staged, :plot_window_initialized)
-        manager.staged[:plot_window_initialized][] = false
-    end
+    manager.state[:plot_window_initialized][] = false
     
     manager.active_config = DUMMY_CONFIG
     @info "Plotter state completely cleared!"
@@ -174,8 +169,8 @@ end
 # --- 3. LAYOUT & RENDER HANDLERS ---
 # ==============================================================================
 function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
-    if manager.staged[:plot_window_initialized][]; return; end
-    manager.staged[:plot_window_initialized][] = true
+    if manager.state[:plot_window_initialized][]; return; end
+    manager.state[:plot_window_initialized][] = true
 
     render_observers = ObserverFunction[]
 
@@ -208,36 +203,36 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         if !isnothing(new_obs); append!(render_observers, new_obs); end
     end
 
+    manager.listeners[:Data] = on(manager.triggers[:Data]) do _
+        @with_lock :Data begin
+            _handle_data_fetch_trigger!()
+        end
+        manager.flags[:Layout][] = false
+        manager.triggers[:Layout][] += 1
+    end
+
     manager.listeners[:Layout] = on(manager.triggers[:Layout]) do _
         @with_lock :Layout begin
             _handle_layout_trigger!(rebuild_plot_layout!)
         end
-        manager.staged[:Flag_Layout][] = false
-        manager.triggers[:Primitive][] += 1
-    end
-
-    manager.listeners[:Scene] = on(manager.triggers[:Scene]) do _
-        @with_lock :Scene begin
-            _handle_scene_trigger!()
-        end
-        manager.staged[:Flag_Plot][] = true
+        manager.flags[:Plot][] = false
+        manager.triggers[:Plot][] += 1
     end
     
     manager.listeners[:Plot_Click_Sync] = on(manager.widgets[:Plot_Button].clicks) do _
-        if manager.staged[:Flag_Sim][] || manager.staged[:Flag_Layout][]
+        if manager.flags[:Simulation][] || manager.flags[:Layout][]
             return 
         end
-        manager.staged[:Flag_Plot][] = false
-        manager.triggers[:Primitive][] += 1
+        manager.flags[:Plot][] = false
+        manager.triggers[:Plot][] += 1
     end
 
     manager.listeners[:Layout_Apply_Sync] = on(manager.widgets[:Layout_Apply].clicks) do _
-        if manager.staged[:Flag_Sim][]
+        if manager.flags[:Simulation][]
             return 
         end
-        manager.staged[:Flag_Layout][] = false
+        manager.flags[:Layout][] = false
         manager.triggers[:Layout][] += 1
-        manager.staged[:Flag_Plot][]   = false
     end
 
     prev_leg_struct = Ref((false, :none, :none))
@@ -249,10 +244,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
             manager.triggers[:UI][] += 1
         else
             prev_leg_struct[] = curr
-            manager.staged[:Flag_Layout][] = true
+            manager.flags[:Layout][] = true
         end
     end
-    rebuild_plot_layout!()
+
+    manager.triggers[:Layout][] += 1
 end
 
 # ==============================================================================
@@ -265,32 +261,40 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
     axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, has_colorbar = _initialize_render_layout!(plot_layout, Val(T))
 
     # 2. Wire up the top-level trigger pipelines
-    manager.listeners[:Primitive] = on(manager.triggers[:Primitive]) do _
-        @with_lock :Primitive begin
-            _handle_primitive_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+    manager.listeners[:Plot] = on(manager.triggers[:Plot]) do _
+        local success = false
+        @with_lock :Plot begin
+            success = _handle_primitive_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
         end
-        manager.staged[:Flag_Plot][] = false
-        manager.triggers[:Slider][] += 1
-        manager.triggers[:UI][] += 1
+        if success
+            manager.triggers[:Slider][] += 1
+        end
     end
 
     manager.listeners[:Slider] = on(manager.triggers[:Slider]) do _
+        local success = false
         @with_lock :Slider begin
-            _handle_slider_trigger!(u_sel)
+            success = _handle_slider_trigger!(u_sel)
         end
-        manager.triggers[:Data][] += 1
+        if success
+            manager.triggers[:PlotData][] += 1
+        end
     end
 
-    manager.listeners[:Data_Sync_Widget] = onany(c_sel, selector_obs...) do _...
-        if manager.staged[:Flag_Plot][] || manager.staged[:Flag_Layout][] || manager.staged[:Flag_Sim][]
+    manager.listeners[:PlotData_Sync_Widget] = onany(c_sel, selector_obs...) do _...
+        if manager.flags[:Plot][] || manager.flags[:Layout][] || manager.flags[:Simulation][]
             return
         end
-        manager.triggers[:Data][] += 1
+        manager.triggers[:PlotData][] += 1
     end
 
-    manager.listeners[:Data] = on(manager.triggers[:Data]) do _
-        @with_lock :Data begin
-            _handle_data_trigger!(Val(T), axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+    manager.listeners[:PlotData] = on(manager.triggers[:PlotData]) do _
+        local success = false
+        @with_lock :PlotData begin
+            success = _handle_data_trigger!(Val(T), axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+        end
+        if success
+            manager.triggers[:UI][] += 1
         end
     end
 
@@ -300,5 +304,5 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
         end
     end
     
-    return vcat(manager.listeners[:Primitive], manager.listeners[:Slider], manager.listeners[:Data_Sync_Widget], manager.listeners[:Data], manager.listeners[:UI])
+    return vcat(manager.listeners[:Plot], manager.listeners[:Slider], manager.listeners[:PlotData_Sync_Widget], manager.listeners[:PlotData], manager.listeners[:UI])
 end

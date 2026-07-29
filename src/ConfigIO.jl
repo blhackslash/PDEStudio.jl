@@ -51,7 +51,7 @@ function load_and_apply_csv!(filepath::String)
     end
     
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        manager.staged[:Scene] = _convert_dict_keys_to_symbols(parsed["Scene"]["General"])
+        manager.staged[:Plot] = _convert_dict_keys_to_symbols(parsed["Scene"]["General"])
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")

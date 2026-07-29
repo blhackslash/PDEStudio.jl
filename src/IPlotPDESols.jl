@@ -36,7 +36,7 @@ get_base_variables() = collect(ALLOWED_PLOT_DIMS[])
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---
 # ==============================================================================
-const LOCK_HIERARCHY = [:Simulation, :Layout, :Scene, :Primitive, :Slider, :Data, :UI]
+const LOCK_HIERARCHY = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
 
 # ==============================================================================
 # --- MAKIE RENDERING CACHES ---
@@ -68,7 +68,10 @@ mutable struct PlotManager
     ui::Dict{Symbol, Dict{Symbol, Any}}     
     widgets::Dict{Symbol, Any}              
     triggers::Dict{Symbol, Observable{Int}} 
-    staged::Dict{Symbol, Any}                
+    staged::Dict{Symbol, Any}
+    flags::Dict{Symbol, Observable{Bool}}
+    state::Dict{Symbol, Any}               # Add this line
+    maps::Dict{Symbol, Any}                # Add this line
     locks::Dict{Symbol, Bool}               
     listeners::Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}} 
     
@@ -88,7 +91,11 @@ function PlotManager()
     return PlotManager(
         Dict{Symbol, Dict{Symbol, Any}}(),
         Dict{Symbol, Any}(), Dict{Symbol, Observable{Int}}(),
-        Dict{Symbol, Any}(), Dict{Symbol, Bool}(), 
+        Dict{Symbol, Any}(), 
+        Dict{Symbol, Observable{Bool}}(), 
+        Dict{Symbol, Any}(),                   # Add this line (state)
+        Dict{Symbol, Any}(),                   # Add this line (maps)
+        Dict{Symbol, Bool}(), 
         Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}(),
         Observable(String[]), Symbol[],
         Dict{Int, Dict{String, AbstractPlotCache}}(),
@@ -132,9 +139,26 @@ macro with_lock(lock_name, expr)
     end
 end
 
+function get_base_layout_options()
+    return Dict{Symbol, Any}(
+        :Base_Plot_Selection       => :lines,
+        :Plot_Style_Selection      => :one_d,
+        :Compare_Target_Selection  => :None, 
+        :Compare_Columns_Selection => 2,     
+        :Compare_Link_Selection    => :fully_coupled,
+        :Legend_Base_Selection     => :right,
+        :Legend_Add_Selection      => :detached,
+        :Plot_Width_Selection      => 600,
+        :Plot_Height_Selection     => 400,
+        :Anim_Target_Selection     => :None
+    )
+end
+
 function reset_manager!()
     
     empty!(manager.ui); empty!(manager.widgets); empty!(manager.staged)
+    empty!(manager.flags) 
+    empty!(manager.state); empty!(manager.maps) # Add this line
     empty!(manager.locks); empty!(manager.plot_vars); empty!(manager.caches)
     
     for (k, listener_node) in manager.listeners
@@ -150,29 +174,31 @@ function reset_manager!()
     manager.active_config = DUMMY_CONFIG
     manager.plot_data.val = Dict{String, AbstractPlotData}()
     
-    core_keys = [:Simulation, :Layout, :Scene, :Primitive, :Slider, :Data, :UI]
+    core_keys = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
     for k in core_keys
         manager.triggers[k] = Observable(0)
         manager.locks[k]    = false
         manager.staged[k]   = Dict{Symbol, Any}() 
+        manager.flags[k]    = Observable(false) 
     end
+    manager.staged[:Layout] = get_base_layout_options()
     
     for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
         manager.locks[k] = false
     end
     
-    manager.staged[:plot_window_initialized] = Observable(false)
-    manager.staged[:Active_Axes] = Observable{Vector{Int}}(Int[])
-    manager.staged[:Is_Activate_Mode] = Observable(true)
-    manager.staged[:Is_Animating] = Observable(false)
-    manager.staged[:Animation_Timer] = Observable{Any}(nothing)
-    manager.staged[:Active_Target_Obs] = Observable{Any}(nothing)
-    manager.staged[:Layout_Dict] = Observable(Dict{Symbol, Any}())
+    # Move these variables into manager.state
+    manager.state[:plot_window_initialized] = Observable(false)
+    manager.state[:Active_Axes] = Observable{Vector{Int}}(Int[])
+    manager.state[:Is_Activate_Mode] = Observable(true)
+    manager.state[:Is_Animating] = Observable(false)
+    manager.state[:Animation_Timer] = Observable{Any}(nothing)
+    manager.state[:Active_Target_Obs] = Observable{Any}(nothing)
+    manager.state[:Layout_Dict] = Observable(Dict{Symbol, Any}())
+    manager.state[:Camera_Locked] = Observable(false)
+
     manager.staged[:Camera] = Dict{Symbol, Any}()
-    
-    manager.staged[:Flag_Sim]    = Observable(false)
-    manager.staged[:Flag_Layout] = Observable(false)
-    manager.staged[:Flag_Plot]   = Observable(false)
+    manager.staged[:Methods] = Observable(String[])
 end
 
 struct PlotSweepData{N} <: AbstractPlotData
@@ -195,7 +221,7 @@ function __init__()
             curr_config = manager.active_config
             (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
 
-            wanted_methods = haskey(manager.staged, :Staged_Methods) ? manager.staged[:Staged_Methods][] : manager.methods[]
+            wanted_methods = manager.staged[:Methods][]
             
             if isempty(wanted_methods)
                 @warn "No methods staged! Please activate at least one method to run."
@@ -234,8 +260,8 @@ function __init__()
                 i += 1
             end
             
-            manager.staged[:Param_Map] = param_map
-            manager.staged[:Reverse_Map] = reverse_map
+            manager.maps[:Param] = param_map
+            manager.maps[:Reverse] = reverse_map
             manager.plot_vars = [real_params; get_base_variables()]
             
             manager.locks[:Layout] = true
@@ -243,10 +269,10 @@ function __init__()
                 update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
             finally
                 manager.locks[:Layout] = false
-                manager.staged[:Flag_Sim][] = false
+                manager.flags[:Simulation][] = false
             end
         end
-        manager.triggers[:Layout][] += 1
+        manager.triggers[:Data][] += 1
     end
 end
        

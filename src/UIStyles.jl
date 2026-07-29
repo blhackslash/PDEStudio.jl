@@ -64,21 +64,6 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{Symbol}}(
     :contour3d    => [:colors, :levels, :line_width, :method_index]
 )
 
-# --- TIER 1: LAYOUT OPTIONS ---
-function get_base_layout_options()
-    return Dict{Symbol, Any}(
-        :Base_Plot_Selection       => :lines,
-        :Plot_Style_Selection      => :one_d,
-        :Compare_Target_Selection  => :None, 
-        :Compare_Columns_Selection => 2,     
-        :Compare_Link_Selection    => :fully_coupled,
-        :Legend_Base_Selection     => :right,
-        :Legend_Add_Selection      => :detached,
-        :Plot_Width_Selection      => 600,
-        :Plot_Height_Selection     => 400,
-        :Anim_Target_Selection     => :None
-    )
-end
 
 # --- 2. MASTER UI TEMPLATES ---
 """
@@ -202,10 +187,6 @@ function switch_ui_plot_type!(plot_type::Symbol)
         ui[:Y_Axis] = deepcopy(master[:Y_Axis_ND])
         ui[:Z_Axis] = deepcopy(master[:Z_Axis_3D])
     end
-    
-    if haskey(manager.triggers, :UI)
-        manager.triggers[:UI][] += 1
-    end
 end
 
 function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
@@ -248,7 +229,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 
             set_ui!(:Plot_Style, :line_width, 3.6)
             set_ui!(:Plot_Style, :dashed_lines, false)
-            set_ui!(:Plot_Style, :line_styles, [:solid,:dash, :dot, (:dash, :dense), (:dot, :dense)])
+            set_ui!(:Plot_Style, :line_styles, [:solid,(:dash, :dense), (:dot, :dense),:dash, :dot, ])
             set_ui!(:Various, :save_formats, ["pdf", "svg"])
             
             set_ui!(:X_Axis, :label_offset, 5.)
@@ -290,19 +271,22 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
         end
     end
 
-    manager.staged[:UI]     = ui_over
-    manager.staged[:Scene]  = scene_opt
-    manager.staged[:Layout] = layout_opt
-    @info "Successfully applied plot presets: $(join(preset_list, " + "))"
+    merge!(manager.staged[:UI], ui_over)
+    merge!(manager.staged[:Plot], scene_opt)
+    merge!(manager.staged[:Layout], layout_opt)
+    if !isempty(layout_opt) || !isempty(scene_opt); manager.flags[:Layout][] = true end
+    @info "Successfully staged plot presets: $(join(preset_list, " + "))"
+    @info "Run Layout/Plot Update to apply them!"
 end
 
 function set_plot_presets!()
     
     manager.staged[:UI]     = Dict{Symbol, Any}()
-    manager.staged[:Scene]  = Dict{Symbol, Any}()
+    manager.staged[:Plot]  = Dict{Symbol, Any}()
     manager.staged[:Layout] = Dict{Symbol, Any}()
     manager.staged[:Camera] = Dict{Symbol, Any}()
-    @info "Plot presets cleared. Reverted to default settings."
+
+    @info "Staged presets have been cleared. Relaunch the plot to start from the defaults."
     return
 end
 

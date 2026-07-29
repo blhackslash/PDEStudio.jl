@@ -13,36 +13,21 @@ function _handle_layout_trigger!(rebuild_func::Function)
         apply_layout_options!(manager.staged[:Layout])
         empty!(manager.staged[:Layout])
     end
-    
-    if !isempty(manager.staged[:Scene])
-        apply_scene_options!(manager.staged[:Scene])
-        empty!(manager.staged[:Scene])
+
+    if !isempty(manager.staged[:Plot])
+        apply_scene_options!(manager.staged[:Plot])
+        empty!(manager.staged[:Plot])
     end
 
-    if !isempty(manager.staged[:UI])
-        for (scope, dict) in manager.staged[:UI]
-            if haskey(manager.ui, scope)
-                for (k, v) in dict
-                    if haskey(manager.ui[scope], k)
-                        if manager.ui[scope][k] isa Observable
-                            manager.ui[scope][k][] = v
-                        else
-                            manager.ui[scope][k] = v
-                        end
-                    end
-                end
-            end
-        end
-        empty!(manager.staged[:UI])
-    end
     rebuild_func()
 end
 
-function _handle_scene_trigger!()
+function _handle_data_fetch_trigger!()
     curr_config = manager.active_config
     if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
+    notify(manager.plot_data)
 end
 
 function _handle_primitive_trigger!(
@@ -50,12 +35,27 @@ function _handle_primitive_trigger!(
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
     _build_param_indices, _mutate_compare_vals
 ) where T
-    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return
-    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return; end
-    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return; end
+    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return false
+    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return false; end
+    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return false; end
     
+    if !isempty(manager.staged[:Plot])
+        apply_scene_options!(manager.staged[:Plot])
+        empty!(manager.staged[:Plot])
+    end
     data = manager.plot_data[]
-    isempty(data) && return
+    isempty(data) && return false
+
+    if !isempty(manager.staged[:UI])
+        for (scope, dict) in manager.staged[:UI]
+            if haskey(manager.ui, scope)
+                for (k, v) in dict
+                    manager.ui[scope][k] = v
+                end
+            end
+        end
+        empty!(manager.staged[:UI])
+    end
 
     target, _, _, _ = manager.staged[:Compare_State]
     is_compare = target != :None
@@ -106,14 +106,15 @@ function _handle_primitive_trigger!(
             _enforce_camera_lock!(axes)
         end
     end
+    return true
 end
 
 function _handle_slider_trigger!(u_sel)
     data = manager.plot_data[]
-    isempty(data) && return
+    isempty(data) && return false
     
     w = manager.widgets
-    active_axes = manager.staged[:Active_Axes][]
+    active_axes = manager.state[:Active_Axes][]
     u_val = u_sel[]
     anim_val = w[:Anim_Target].selection[]
 
@@ -129,7 +130,7 @@ function _handle_slider_trigger!(u_sel)
     base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
     kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
 
-    manager.locks[:Data] = true
+    manager.locks[:PlotData] = true
     try
         for i in 1:total_dims
             dim_sym = dim_names[i]
@@ -146,7 +147,7 @@ function _handle_slider_trigger!(u_sel)
                 is_spatial, is_physically_disabled = _is_spatial_dim(Val(manager.mode[]), dim_sym, sim_data, kept_syms)
             end
             
-            widget_key = i > n_params ? Symbol(dim_str) : get(manager.staged[:Reverse_Map], dim_sym, Symbol("param_$i"))
+            widget_key = i > n_params ? Symbol(dim_str) : get(manager.maps[:Reverse], dim_sym, Symbol("param_$i"))
             haskey(w, widget_key) || continue
             ctrl = w[widget_key]
             
@@ -200,8 +201,9 @@ function _handle_slider_trigger!(u_sel)
             end
         end
     finally
-        manager.locks[:Data] = false
+        manager.locks[:PlotData] = false
     end
+    return true
 end
 
 function _handle_data_trigger!(
@@ -209,14 +211,14 @@ function _handle_data_trigger!(
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
     _build_param_indices, _mutate_compare_vals
 ) where T
-    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return
-    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return; end
-    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return; end
+    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return false
+    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return false; end
+    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return false; end
     
     caches = manager.caches
     data = manager.plot_data[]
 
-    (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
+    (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return false
 
     target, _, _, _ = manager.staged[:Compare_State]
     is_compare = target != :None
@@ -252,11 +254,13 @@ function _handle_data_trigger!(
     end
     for ax in axes; apply_axis_limits_overrides!(ax); end
     _enforce_camera_lock!(axes)
+    return true
 end
 
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
+
     if !isempty(manager.staged[:Camera])
-        manager.staged[:Camera_Locked][] = true
+        manager.state[:Camera_Locked][] = true
         if haskey(manager.widgets, :Lock_Camera_Button)
             btn = manager.widgets[:Lock_Camera_Button]
             btn.label[] = "Unlock Camera"
@@ -264,7 +268,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         end
     else
         if get(manager.staged, :Camera_Locked, Observable(false))[]
-            manager.staged[:Camera_Locked][] = false
+            manager.state[:Camera_Locked][] = false
             if haskey(manager.widgets, :Lock_Camera_Button)
                 btn = manager.widgets[:Lock_Camera_Button]
                 btn.label[] = "Lock Camera"
@@ -342,7 +346,7 @@ end
 function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     w = manager.widgets
-    rev_map = get(manager.staged, :Reverse_Map, Dict{Symbol, Symbol}())
+    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     
     selector_obs = map(manager.plot_vars) do n
         w_key = haskey(rev_map, n) ? rev_map[n] : n
@@ -405,7 +409,7 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
-    manager.staged[:Layout_Dict][] = layout_dict
+    manager.state[:Layout_Dict][] = layout_dict
     
     axes = []
     for i in 1:num_plots
