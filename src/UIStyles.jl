@@ -177,7 +177,7 @@ end
 const MASTER_UI_DICT = create_master_ui_dict()
 
 function switch_ui_plot_type!(plot_type::Symbol)
-    manager = GLOBAL_PLOT_MANAGER
+    
     master = MASTER_UI_DICT
     ui = manager.ui
     empty!(ui)
@@ -209,7 +209,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
 end
 
 function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
-    manager = GLOBAL_PLOT_MANAGER
+    
     preset_list = presets isa Symbol ? [presets] : presets
     ui_over = Dict{Symbol, Any}()
     
@@ -297,7 +297,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
 end
 
 function set_plot_presets!()
-    manager = GLOBAL_PLOT_MANAGER
+    
     manager.staged[:UI]     = Dict{Symbol, Any}()
     manager.staged[:Scene]  = Dict{Symbol, Any}()
     manager.staged[:Layout] = Dict{Symbol, Any}()

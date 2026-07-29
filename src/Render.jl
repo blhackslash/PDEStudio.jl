@@ -72,7 +72,7 @@ end
 # -----------------------------------------------------------------------------
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -101,7 +101,7 @@ end
 # -----------------------------------------------------------------------------
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -127,7 +127,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs, ys, us = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -152,7 +152,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines2d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -177,7 +177,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_cmap}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -204,7 +204,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contourf}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -254,7 +254,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:surface}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples 
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -277,7 +277,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d_surface}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     pts_slices, us_slices = data_tuples
@@ -304,7 +304,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_surface}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -335,7 +335,7 @@ end
 # 3D PRIMITIVES
 # -----------------------------------------------------------------------------
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:volume}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -361,7 +361,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines3d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -387,7 +387,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour3d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
@@ -418,10 +418,10 @@ end
 # =============================================================================
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter2d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
-    is_eul = PLOT_MODE[] == :eulerian
+    is_eul = manager.mode[] == :eulerian
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
@@ -458,10 +458,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter3d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
-    is_eul = PLOT_MODE[] == :eulerian
+    is_eul = manager.mode[] == :eulerian
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
@@ -499,11 +499,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatter1d}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
-    is_eul = PLOT_MODE[] == :eulerian
+    is_eul = manager.mode[] == :eulerian
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
@@ -529,12 +529,12 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scattercolors}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
     plotted_objects, labels_for_legend = [], String[]
-    is_eul = PLOT_MODE[] == :eulerian
+    is_eul = manager.mode[] == :eulerian
 
     for (m_idx, label) in enumerate(active_methods)
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
@@ -562,12 +562,12 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:scatterlines}, plot_idx::Int)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_app = manager.ui[:Plot_Style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
     plotted_objects, labels_for_legend = [], String[]
-    is_eul = PLOT_MODE[] == :eulerian
+    is_eul = manager.mode[] == :eulerian
 
     for (m_idx, label) in enumerate(active_methods)
         cache = is_eul ? EulerianPlotCache() : LagrangianPlotCache()
@@ -632,7 +632,7 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
 end
 
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
     for (m_idx, label) in enumerate(active_methods)
@@ -655,7 +655,7 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
 end
 
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
-    manager = GLOBAL_PLOT_MANAGER
+    
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples
     ui_app = manager.ui[:Plot_Style]
 

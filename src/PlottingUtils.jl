@@ -1,6 +1,52 @@
-# ==============================================================================
-# --- PlottingUtils.jl ---
-# ==============================================================================
+function allMethodNames(config::SimulationConfig)
+    return sort_methods_robust(collect(keys(config.methods_dict)))
+end
+
+function is_reference_method(m_name::String)
+    lm = lowercase(m_name)
+    return any(k -> occursin(k, lm), ["analytic", "reference", "exact", "baseline", "true"])
+end
+
+# =============================================================================
+# THE FIX: Robust Priority Sorting
+# =============================================================================
+function sort_methods_robust(methods::Vector{String})
+    priority_keys = ["analytic", "reference", "exact", "baseline", "true"]
+    
+    function method_rank(m::String)
+        lm = lowercase(m)
+        rank = any(k -> occursin(k, lm), priority_keys) ? 0 : 1
+        return (rank, m)
+    end
+    
+    return sort(methods, by=method_rank)
+end
+
+"""
+    generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{String}, sel_vals)
+"""
+function generate_dynamic_title(
+    plot_dims::Tuple, 
+    dim_names::Vector{Symbol}, 
+    sel_vals
+)
+    title_parts = String[]
+    
+    for i in 1:length(dim_names)
+        name = String(dim_names[i])
+        
+        if i in plot_dims
+            push!(title_parts, "$name = [Axis]")
+        else
+            val = sel_vals[i]
+            val_str = val isa AbstractFloat ? @sprintf("%.3f", val) : string(val)
+            push!(title_parts, "$name = $val_str")
+        end
+    end
+    
+    return join(title_parts, " | ")
+end
+
 
 function plot_reference_lines!(
     ax::Axis,
@@ -65,7 +111,7 @@ function get_colorrange(ui_app::Dict, u_data::AbstractArray)
 end
 
 function apply_axis_limits_overrides!(ax)
-    manager = GLOBAL_PLOT_MANAGER
+    
     if get(manager.staged, :Camera_Locked, Observable(false))[]
         return
     end
@@ -108,7 +154,7 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
 end
 
 function set_axis_limits_manager!(ax::Axis, xs, us)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_x = manager.ui[:X_Axis]
     ui_y = manager.ui[:Y_Axis]
     
@@ -211,7 +257,7 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
 end
 
 function _parse_legend_position()
-    manager = GLOBAL_PLOT_MANAGER
+    
     base_align = manager.widgets[:Legend_Base].selection[]
     add_align  = manager.widgets[:Legend_Add].selection[]
     
@@ -243,7 +289,7 @@ function _parse_legend_position()
 end
 
 function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector)
-    manager = GLOBAL_PLOT_MANAGER
+    
     for c in copy(plot_layout.content)
         if c.content isa Makie.Legend; delete!(c.content); end
     end
@@ -284,7 +330,7 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
 end
 
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_stl = manager.ui[:Plot_Style]
     if !haskey(ui_stl, :color_map); return; end 
     
@@ -353,7 +399,7 @@ function _safe_extrema(data_slices)
 end
 
 function plot_extrema_lines_manager!(ax, x_data, u_data, plot_idx)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_var = manager.ui[:Various]
     ui_stl = manager.ui[:Plot_Style]
     
@@ -398,7 +444,7 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{
 end
 
 function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::String)
-    manager = GLOBAL_PLOT_MANAGER
+    
     gen = manager.ui[:Axis_General]
     lbl = manager.ui[:Labels]
     x_ui, y_ui = manager.ui[:X_Axis], manager.ui[:Y_Axis]
@@ -428,7 +474,7 @@ function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::Str
 end
 
 function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String, def_title::String)
-    manager = GLOBAL_PLOT_MANAGER
+    
     gen = manager.ui[:Axis_General]
     lbl = manager.ui[:Labels]
     x_ui, y_ui, z_ui = manager.ui[:X_Axis], manager.ui[:Y_Axis], manager.ui[:Z_Axis]
@@ -457,7 +503,7 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
 end
 
 function plot_HUD!(ax::Axis)
-    manager = GLOBAL_PLOT_MANAGER
+    
     ui_hud = manager.ui[:HUD]
     if !ui_hud[:visible] || isempty(ui_hud[:points])::Bool; return; end 
     
@@ -495,7 +541,7 @@ end
 plot_HUD!(ax::Axis3) = nothing
 
 function _apply_axis_styles!(ax, T::Symbol)
-    manager = GLOBAL_PLOT_MANAGER
+    
     x = string(manager.widgets[:X_Axis].selection[])
     y = string(manager.widgets[:Y_Axis].selection[])
     z = string(manager.widgets[:Z_Axis].selection[])
@@ -526,7 +572,7 @@ function _find_first_drawable_primitive(cache_dict)
 end
 
 function _collect_legend_elements(ui_app::Dict)
-    manager = GLOBAL_PLOT_MANAGER
+    
     plotted_objects = []
     labels_for_legend = String[]
     
@@ -576,8 +622,29 @@ function _collect_legend_elements(ui_app::Dict)
     return plotted_objects, labels_for_legend
 end
 
+function extract_and_store_camera_state!(plot_layout::GridLayout)
+    cam_opts = Dict{Symbol, Any}()
+    axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
+    for (i, ax) in enumerate(axes)
+        if ax isa Axis
+            lims = ax.finallimits[]
+            cam_opts[Symbol("Axis_$(i)_Limits")] = Float64[lims.origin[1], lims.origin[1] + lims.widths[1], lims.origin[2], lims.origin[2] + lims.widths[2]]
+        elseif ax isa Axis3
+            lims = ax.finallimits[]
+            cam_opts[Symbol("Axis_$(i)_Limits3D")]  = Float64[
+                lims.origin[1], lims.origin[1] + lims.widths[1], 
+                lims.origin[2], lims.origin[2] + lims.widths[2], 
+                lims.origin[3], lims.origin[3] + lims.widths[3]
+            ]
+            cam_opts[Symbol("Axis_$(i)_Azimuth")]   = Float64(ax.azimuth[])
+            cam_opts[Symbol("Axis_$(i)_Elevation")] = Float64(ax.elevation[])
+        end
+    end
+    manager.staged[:Camera] = cam_opts
+end
+
 function _enforce_camera_lock!(axes::Vector)
-    manager = GLOBAL_PLOT_MANAGER
+    
     is_locked = get(manager.staged, :Camera_Locked, Observable(false))[]
     cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
     

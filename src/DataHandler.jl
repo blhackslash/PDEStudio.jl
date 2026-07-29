@@ -9,7 +9,7 @@ function _get_template_simdata(sim_config::SimulationConfig)
         
         if !isempty(tasks)
             try
-                return loadSimData(tasks[1],Val(PLOT_MODE[]))
+                return loadSimData(tasks[1],Val(manager.mode[]))
             catch
             end
         end
@@ -26,6 +26,84 @@ function analyze_configuration(sim_config::SimulationConfig)
         push!(active_values, all_varied[key])
     end
     return active_keys, active_values
+end
+
+"""
+    validate_plot_dimensions(sim_data::AbstractSimData)
+
+Checks if the dimension keys of the loaded simulation data are a subset of 
+the currently allowed UI dimensions.
+"""
+function validate_plot_dimensions(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+    
+    if !issubset(actual, allowed)
+        @warn "Incompatible data loaded. Data dimensions $actual are not a subset of the configured UI dimensions $allowed. Dropping data."
+        return false
+    end
+    return true
+end
+
+"""
+    get_active_slider_indices(sim_data::AbstractSimData)
+
+Returns a boolean array indicating which of the fixed UI sliders should be enabled 
+for the loaded data.
+"""
+function get_active_slider_indices(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+    return [dim in actual for dim in allowed]
+end
+
+"""
+    map_sliders_to_tensor(sim_data::AbstractSimData)
+
+Maps the fixed UI slider indices to the dynamic dimension indices of the underlying tensor.
+"""
+function map_sliders_to_tensor(sim_data::AbstractSimData)
+    allowed = ALLOWED_PLOT_DIMS[]
+    actual = sim_data.domain.dim_keys
+    return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
+end
+
+function _get_first_valid(pd)
+    isempty(pd.data) && return nothing
+    valid_data = filter(!isnothing, pd.data)
+    return isempty(valid_data) ? nothing : first(valid_data)
+end
+
+function _recombine_tuples!(params::Dict)
+    tuple_groups = Dict{String, Vector{Pair{Int, Any}}}()
+    keys_to_remove = String[]
+    
+    for (k, v) in params
+        if occursin("__", k)
+            parts = split(k, "__")
+            if length(parts) == 2
+                base_name, idx_str = parts[1], parts[2]
+                idx = tryparse(Int, idx_str)
+                if !isnothing(idx)
+                    if !haskey(tuple_groups, base_name)
+                        tuple_groups[base_name] = Pair{Int, Any}[]
+                    end
+                    push!(tuple_groups[base_name], idx => v)
+                    push!(keys_to_remove, k)
+                end
+            end
+        end
+    end
+    
+    for k in keys_to_remove
+        delete!(params, k)
+    end
+    
+    for (base_name, pairs) in tuple_groups
+        sort!(pairs, by = x -> x[1])
+        params[base_name] = Tuple(x[2] for x in pairs)
+    end
+    return params
 end
 
 # ==============================================================================
@@ -51,7 +129,7 @@ function create_plot_data(method_name::String, base_params::ParamDict, sim_confi
         sim_data = if is_reference && !isnothing(base_template)
             IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template)
         else
-            try loadSimData(params, Val(PLOT_MODE[])) catch e; nothing end
+            try loadSimData(params, Val(manager.mode[])) catch e; nothing end
         end
         
         if !isnothing(sim_data) && validate_plot_dimensions(sim_data)
@@ -230,4 +308,62 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
         if !(k in active_methods); delete!(plot_data_dict, k); end
     end
     return plot_data_dict
+end
+
+function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+    ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
+    u_col = Any[]
+    valid_methods = String[]
+    
+    active_plot_axes_strs = string.(active_plot_axes_syms)
+
+    for m_name in local_methods
+        !haskey(data, m_name) && continue
+        pd = data[m_name]
+        p_idx = _build_param_indices(pd, mutated_sel_vals)
+        
+        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
+        if !isnothing(res)
+            p_axes, u_flat = res
+            for d in 1:length(active_plot_axes_syms)
+                push!(ax_cols[d], p_axes[d])
+            end
+            push!(u_col, u_flat)
+            push!(valid_methods, m_name)
+        end
+    end
+    return Tuple([ax_cols..., u_col]), valid_methods
+end
+
+# Helper: Lagrangian Extraction Dispatch
+function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
+    local DS = 1
+    for m_name in local_methods
+        if haskey(data, m_name)
+            sim = _get_first_valid(data[m_name])
+            if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
+        end
+    end
+    
+    ax_cols = [Any[] for _ in 1:DS]
+    u_col = Any[]
+    valid_methods = String[]
+    
+    for m_name in local_methods
+        !haskey(data, m_name) && continue
+        pd = data[m_name]
+        p_idx = _build_param_indices(pd, mutated_sel_vals)
+        
+        res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
+        if !isnothing(res)
+            p_axes, u_flat = res
+            for d in 1:DS
+                push!(ax_cols[d], p_axes[d])
+            end
+            push!(u_col, u_flat)
+            push!(valid_methods, m_name)
+        end
+    end
+    return Tuple([ax_cols..., u_col]), valid_methods
 end

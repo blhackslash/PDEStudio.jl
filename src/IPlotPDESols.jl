@@ -34,11 +34,9 @@ end
 get_base_variables() = collect(ALLOWED_PLOT_DIMS[])  
 
 # ==============================================================================
-# --- GLOBAL DASHBOARD STATE ---
+# --- GLOBAL LOCK HIERARCHY ---
 # ==============================================================================
 const LOCK_HIERARCHY = [:Simulation, :Layout, :Scene, :Primitive, :Slider, :Data, :UI]
-const PLOT_MODE = Observable{Symbol}(:eulerian)
-set_mode!(mode::Symbol) = (PLOT_MODE[] = mode)
 
 # ==============================================================================
 # --- MAKIE RENDERING CACHES ---
@@ -65,6 +63,7 @@ LagrangianPlotCache() = LagrangianPlotCache(Observable{Any}([]), Observable{Any}
 # --- UNIFIED PLOT DATA STRUCTURE ---
 # ==============================================================================
 abstract type AbstractPlotData end
+
 mutable struct PlotManager 
     ui::Dict{Symbol, Dict{Symbol, Any}}     
     widgets::Dict{Symbol, Any}              
@@ -79,6 +78,10 @@ mutable struct PlotManager
     
     active_config::SimulationConfig
     plot_data::Observable{Dict{String, AbstractPlotData}}
+
+    # Unified Encapsulated Globals
+    mode::Observable{Symbol}
+    ui_state::Dict{Symbol, Any}
 end
 
 function PlotManager()
@@ -89,67 +92,21 @@ function PlotManager()
         Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}(),
         Observable(String[]), Symbol[],
         Dict{Int, Dict{String, AbstractPlotCache}}(),
-        DUMMY_CONFIG, Observable(Dict{String, AbstractPlotData}())
+        DUMMY_CONFIG, Observable(Dict{String, AbstractPlotData}()),
+        Observable{Symbol}(:eulerian),
+        Dict{Symbol, Any}(:is_open => false, :master_fig => nothing),
     )
 end
-const GLOBAL_PLOT_MANAGER = PlotManager()
 
-force_simulation() = notify(GLOBAL_PLOT_MANAGER.triggers[:Simulation])
+const manager = PlotManager()
 
-function reset_manager!()
-    mgr = GLOBAL_PLOT_MANAGER
-    empty!(mgr.ui); empty!(mgr.widgets); empty!(mgr.staged)
-    empty!(mgr.locks); empty!(mgr.plot_vars); empty!(mgr.caches)
-    
-    for (k, listener_node) in mgr.listeners
-        if listener_node isa Vector
-            for l in listener_node; off(l); end
-        else
-            off(listener_node)
-        end
-    end
-    empty!(mgr.listeners)
-    
-    mgr.methods.val = String[]
-    mgr.active_config = DUMMY_CONFIG
-    mgr.plot_data.val = Dict{String, AbstractPlotData}()
-    
-    core_keys = [:Simulation, :Layout, :Scene, :Primitive, :Slider, :Data, :UI]
-    for k in core_keys
-        mgr.triggers[k] = Observable(0)
-        mgr.locks[k]    = false
-        mgr.staged[k]   = Dict{Symbol, Any}() 
-    end
-    
-    for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C]
-        mgr.locks[k] = false
-    end
-    
-    mgr.staged[:plot_window_initialized] = Observable(false)
-    mgr.staged[:Active_Axes] = Observable{Vector{Int}}(Int[])
-    mgr.staged[:Is_Activate_Mode] = Observable(true)
-    mgr.staged[:Is_Animating] = Observable(false)
-    mgr.staged[:Animation_Timer] = Observable{Any}(nothing)
-    mgr.staged[:Active_Target_Obs] = Observable{Any}(nothing)
-    mgr.staged[:Layout_Dict] = Observable(Dict{Symbol, Any}())
-    mgr.staged[:Camera] = Dict{Symbol, Any}()
-    
-    # --- THE FIX: Add UI State Flags for the Hierarchy Controller ---
-    mgr.staged[:Flag_Sim]    = Observable(false)
-    mgr.staged[:Flag_Layout] = Observable(false)
-    mgr.staged[:Flag_Plot]   = Observable(false)
-end
-
-struct PlotSweepData{N} <: AbstractPlotData
-    data::Array{Union{Nothing, AbstractSimData}, N} 
-    active_param_keys::Vector{String}
-    active_param_values::Vector{Vector{Any}}
-end
+set_mode!(mode::Symbol) = (manager.mode[] = mode)
+force_simulation() = notify(manager.triggers[:Simulation])
 
 macro with_lock(lock_name, expr)
     return quote
         local lname = $(esc(lock_name))
-        local locks = GLOBAL_PLOT_MANAGER.locks
+        local locks = manager.locks
         
         if !locks[lname]
             local lock_idx = findfirst(isequal(lname), LOCK_HIERARCHY)
@@ -175,17 +132,66 @@ macro with_lock(lock_name, expr)
     end
 end
 
+function reset_manager!()
+    
+    empty!(manager.ui); empty!(manager.widgets); empty!(manager.staged)
+    empty!(manager.locks); empty!(manager.plot_vars); empty!(manager.caches)
+    
+    for (k, listener_node) in manager.listeners
+        if listener_node isa Vector
+            for l in listener_node; off(l); end
+        else
+            off(listener_node)
+        end
+    end
+    empty!(manager.listeners)
+    
+    manager.methods.val = String[]
+    manager.active_config = DUMMY_CONFIG
+    manager.plot_data.val = Dict{String, AbstractPlotData}()
+    
+    core_keys = [:Simulation, :Layout, :Scene, :Primitive, :Slider, :Data, :UI]
+    for k in core_keys
+        manager.triggers[k] = Observable(0)
+        manager.locks[k]    = false
+        manager.staged[k]   = Dict{Symbol, Any}() 
+    end
+    
+    for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
+        manager.locks[k] = false
+    end
+    
+    manager.staged[:plot_window_initialized] = Observable(false)
+    manager.staged[:Active_Axes] = Observable{Vector{Int}}(Int[])
+    manager.staged[:Is_Activate_Mode] = Observable(true)
+    manager.staged[:Is_Animating] = Observable(false)
+    manager.staged[:Animation_Timer] = Observable{Any}(nothing)
+    manager.staged[:Active_Target_Obs] = Observable{Any}(nothing)
+    manager.staged[:Layout_Dict] = Observable(Dict{Symbol, Any}())
+    manager.staged[:Camera] = Dict{Symbol, Any}()
+    
+    manager.staged[:Flag_Sim]    = Observable(false)
+    manager.staged[:Flag_Layout] = Observable(false)
+    manager.staged[:Flag_Plot]   = Observable(false)
+end
+
+struct PlotSweepData{N} <: AbstractPlotData
+    data::Array{Union{Nothing, AbstractSimData}, N} 
+    active_param_keys::Vector{String}
+    active_param_values::Vector{Vector{Any}}
+end
+
 function __init__()
-    on(PLOT_MODE) do _
+    on(manager.mode) do _
         reset_plotter!()
         reset_manager!()
     end
     reset_manager!()
-    GLOBAL_PLOT_MANAGER.active_config = DUMMY_CONFIG
+    manager.active_config = DUMMY_CONFIG
     
-    on(GLOBAL_PLOT_MANAGER.triggers[:Simulation]) do _
+    on(manager.triggers[:Simulation]) do _
         @with_lock :Simulation begin
-            manager = GLOBAL_PLOT_MANAGER
+            
             curr_config = manager.active_config
             (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
 
@@ -232,24 +238,26 @@ function __init__()
             manager.staged[:Reverse_Map] = reverse_map
             manager.plot_vars = [real_params; get_base_variables()]
             
+            manager.locks[:Layout] = true
             try
                 update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
             finally
-                GLOBAL_PLOT_MANAGER.staged[:Flag_Sim][] = false
+                manager.locks[:Layout] = false
+                manager.staged[:Flag_Sim][] = false
             end
         end
-        GLOBAL_PLOT_MANAGER.triggers[:Layout][] += 1
+        manager.triggers[:Layout][] += 1
     end
 end
-
-include("Utils.jl")         
+       
 include("DataHandler.jl")
-
+include("PlottingLogic.jl")
 include("MakiePlotting.jl")
 include("UIStyles.jl")
 include("PlottingUtils.jl")
 include("Controls.jl")
-include("InteractionController.jl")
+include("UILogic.jl")
 include("Render.jl")
+include("ConfigIO.jl")
 
 end

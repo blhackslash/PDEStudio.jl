@@ -7,7 +7,7 @@
 Purely builds the UI widgets inside the provided sub-layout.
 """
 function create_controls(layout::GridLayout)
-    manager = GLOBAL_PLOT_MANAGER
+    
     rowgap!(layout, 15) 
     current_row = 1
 
@@ -53,7 +53,7 @@ function create_controls(layout::GridLayout)
 end
 
 function create_method_controls!(layout::GridLayout)
-    manager = GLOBAL_PLOT_MANAGER
+    
     manager.widgets[:Mode_Button]   = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
     manager.widgets[:Method_Toggle] = Menu(layout[1, 2:4], options = ["Methods..."], prompt = "Methods...")
 
@@ -67,7 +67,7 @@ end
 # --- 2. STATIC PLOT CONTROLS BUILDER ---
 # ==============================================================================
 function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout)
-    manager = GLOBAL_PLOT_MANAGER
+    
     cr = 1
     gaps = Int[]
     
@@ -80,7 +80,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
     size_opts = Any[("$i", i) for i in 100:100:1000]
     
-    base_opts = PLOT_MODE[] == :eulerian ? Any[("Lines", :lines), ("Scatter", :scatter), ("Contour", :contour), ("Heatmap", :heatmap), ("Volume", :volume)] : Any[("Scatter", :scatter)]
+    base_opts = manager.mode[] == :eulerian ? Any[("Lines", :lines), ("Scatter", :scatter), ("Contour", :contour), ("Heatmap", :heatmap), ("Volume", :volume)] : Any[("Scatter", :scatter)]
 
     # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
     Label(menu_layout[cr,1], "Base Plot", font=:bold, color=:teal)
@@ -184,7 +184,7 @@ end
 # --- 4. HIERARCHICAL EDITOR BUILDER ---
 # ==============================================================================
 function create_hierarchical_param_controls!(layout::GridLayout)
-    manager = GLOBAL_PLOT_MANAGER
+    
     Label(layout[1, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     
     drop_gl = layout[2, 1:4] = GridLayout()
@@ -200,7 +200,7 @@ end
 # --- 6. EXPORT OPTIONS BUILDER ---
 # ==============================================================================
 function createExportOptions!(layout::GridLayout)
-    manager = GLOBAL_PLOT_MANAGER
+    
     manager.widgets[:Save_Defs_Button]  = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral, width=nothing)
     manager.widgets[:Clear_Defs_Button] = Button(layout[1, 2], label="Clear Defs", buttoncolor=:mistyrose, width=nothing) 
     manager.widgets[:Lock_Camera_Button]= Button(layout[1, 3], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
