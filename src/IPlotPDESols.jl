@@ -121,7 +121,7 @@ function reset_manager!()
         mgr.staged[k]   = Dict{Symbol, Any}() 
     end
     
-    for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
+    for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C]
         mgr.locks[k] = false
     end
     
@@ -232,11 +232,9 @@ function __init__()
             manager.staged[:Reverse_Map] = reverse_map
             manager.plot_vars = [real_params; get_base_variables()]
             
-            manager.locks[:Layout] = true
             try
                 update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
             finally
-                manager.locks[:Layout] = false
                 GLOBAL_PLOT_MANAGER.staged[:Flag_Sim][] = false
             end
         end

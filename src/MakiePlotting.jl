@@ -32,7 +32,6 @@ function set_sim_config!(config::SimulationConfig)
     manager = GLOBAL_PLOT_MANAGER
     manager.active_config = config
 
-    manager.locks[:Layout] = true
     manager.staged[:Flag_Sim][] = true # Stage flag for Run Sim button
     
     if !haskey(manager.staged, :Staged_Methods)
@@ -286,13 +285,6 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, plot_da
         end
         manager.staged[:Flag_Plot][] = true
     end
-
-    manager.listeners[:Axes_Sync] = onany(
-        manager.widgets[:X_Axis].selection, manager.widgets[:Y_Axis].selection,
-        manager.widgets[:Z_Axis].selection, manager.widgets[:U_Axis].selection
-    ) do _...
-        if manager.locks[:Layout]; return; end
-    end
     
     manager.listeners[:Plot_Click_Sync] = on(manager.widgets[:Plot_Button].clicks) do _
         if manager.staged[:Flag_Sim][] || manager.staged[:Flag_Layout][]
@@ -302,31 +294,25 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout, plot_da
         manager.triggers[:Primitive][] += 1
     end
 
-    manager.listeners[:Base_Sync] = onany(manager.widgets[:Base_Plot].selection, manager.widgets[:Plot_Style].selection) do _,_
-        manager.locks[:Layout] = true
-    end
-
     manager.listeners[:Layout_Apply_Sync] = on(manager.widgets[:Layout_Apply].clicks) do _
         if manager.staged[:Flag_Sim][]
             return # Blocked
         end
-        manager.locks[:Layout] = false
         manager.staged[:Flag_Layout][] = false
-        manager.staged[:Flag_Plot][]   = false
         manager.triggers[:Layout][] += 1
+        manager.staged[:Flag_Plot][]   = false
     end
 
     prev_leg_struct = Ref((false, :none, :none))
     manager.listeners[:Legend_Sync] = onany(manager.widgets[:Legend_Base].selection, manager.widgets[:Legend_Add].selection) do _...
-        is_comp = manager.widgets[:Compare_Target].selection[] != :None
-        curr = _parse_legend_position(is_comp)
+        curr = _parse_legend_position()
         p = prev_leg_struct[]
         
         if (!curr[1] && !p[1])
             manager.triggers[:UI][] += 1
         else
             prev_leg_struct[] = curr
-            manager.triggers[:Layout][] += 1
+            manager.staged[:Flag_Layout][] = true
         end
     end
     rebuild_plot_layout!()
@@ -428,8 +414,15 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 num_plots = length(compare_labels)
             elseif target == :Component
                 target_tensor = get(sim_data.stats, u_sel[], sim_data.stats[:Solution])
-                target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
-                num_plots = length(target_tensor_arr[1]) 
+                
+                # --- FIX: Mirror the mode-aware logic from _setup_common_chain_c! ---
+                if PLOT_MODE[] == :lagrangian
+                    target_tensor_arr = target_tensor isa AbstractArray && ndims(target_tensor) == 1 ? target_tensor : target_tensor[1]
+                    num_plots = length(target_tensor_arr[1])
+                else
+                    num_plots = length(eltype(target_tensor))
+                end
+                # ---------------------------------------------------------------------
                 
                 comp_names_tuple = manager.ui[:Labels][:comp_names]
                 compare_labels = String[]
@@ -461,7 +454,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     if target == :None || num_plots == 0; num_plots = 1; target = :None; end
     
     is_compare = target != :None
-    is_det, halign, valign = _parse_legend_position(is_compare)
+    is_det, halign, valign = _parse_legend_position()
     
     has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :Methods
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
@@ -494,10 +487,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     target_idx = target == :Time ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : 
                  findfirst(isequal(target), manager.plot_vars)
 
+    # --- 1. SAVE COMPARE STATE TO MANAGER ---
+    manager.staged[:Compare_State] = (target, target_idx, compare_labels, compare_vals)
+
     function _mutate_compare_vals(current_sels, idx)
+        t_val, t_idx, c_labels, c_vals = manager.staged[:Compare_State]
         mutated = collect(current_sels)
-        if !isnothing(target_idx) && !isempty(compare_vals) && idx <= length(compare_vals)
-            mutated[target_idx] = compare_vals[idx]
+        if !isnothing(t_idx) && !isempty(c_vals) && idx <= length(c_vals)
+            mutated[t_idx] = c_vals[idx]
         end
         return mutated
     end
@@ -522,6 +519,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             
             data = plot_data_obs[]
             isempty(data) && return
+
+            target, _, _, _ = manager.staged[:Compare_State]
+            is_compare = target != :None
+
             empty!(manager.caches)
             
             for ax in axes
@@ -551,8 +552,11 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                         filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
                     end
                     
+                    # --- TIER 2: PRIMITIVE REBUILD (Inside the loop) ---
                     ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
-                    default_title = is_compare ? compare_labels[i] : ts
+                    
+                    # FIX 2: Combine the compare label with the dynamic title
+                    default_title = is_compare ? "$(compare_labels[i]) | $ts" : ts 
                     
                     x_str = x_sel[] == :None ? "disabled" : string(x_sel[])
                     y_str = y_sel[] == :None ? "disabled" : string(y_sel[])
@@ -574,10 +578,130 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
                 end
             end
         end
-        notify(manager.triggers[:Slider])
+        manager.staged[:Flag_Plot][] = false
+        manager.triggers[:Slider][] += 1
         manager.triggers[:UI][] += 1
     end
+    # =========================================================================
+    # NEW TIER 2.5: SLIDER SYNC
+    # =========================================================================
+    manager.listeners[:Slider] = on(manager.triggers[:Slider]) do _
+        @with_lock :Slider begin
+            data = plot_data_obs[]
+            isempty(data) && return
+            
+            active_axes = manager.staged[:Active_Axes][]
+            u_val = u_sel[]
+            comp_val = w[:Compare_Target].selection[]
+            anim_val = w[:Anim_Target].selection[]
 
+            target, target_idx, _, _ = manager.staged[:Compare_State]
+            
+            pd_first, sim_data = _get_active_sim_data(data)
+            isnothing(sim_data) && return
+
+            dim_names = manager.plot_vars
+            total_dims = length(dim_names)
+            n_params = total_dims - length(get_base_variables())
+            
+            target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
+            base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
+            kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
+
+            # Block the Data trigger while modifying widgets to prevent trampling 
+            manager.locks[:Data] = true
+            try
+                for i in 1:total_dims
+                    dim_sym = dim_names[i]
+                    dim_str = String(dim_sym)
+                    
+                    is_axis = i in active_axes
+                    is_compare = (target_idx == i) 
+                    is_anim = dim_sym == anim_val
+                    
+                    is_spatial = false
+                    is_physically_disabled = false
+                    
+                    if i > n_params
+                        if PLOT_MODE[] == :lagrangian
+                            is_spatial = dim_sym != sim_data.domain.time_dim
+                            is_physically_disabled = !is_spatial && !(dim_sym in kept_syms)
+                        else
+                            is_physically_disabled = !(dim_sym in kept_syms)
+                        end
+                    end
+                    
+                    widget_key = i > n_params ? Symbol(dim_str) : get(manager.staged[:Reverse_Map], dim_sym, Symbol("param_$i"))
+                    haskey(w, widget_key) || continue
+                    ctrl = w[widget_key]
+                    
+                    slider_cache = get!(manager.staged, :Slider_Cache, Dict{Symbol, Float64}())
+                    if length(ctrl.range[]) > 1
+                        slider_cache[widget_key] = Float64(ctrl.value[])
+                    end
+                    
+                    if is_axis || is_spatial || is_physically_disabled || is_compare || is_anim
+                        if ctrl.range[] != [0.0]
+                            ctrl.range[] = [0.0] 
+                        end
+                        continue
+                    end
+                    
+                    g_min, g_max = Inf, -Inf
+                    for pd in values(data)
+                        vals = nothing
+                        if i <= n_params 
+                            vals = pd.active_param_values[i]
+                        else
+                            s_data = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+                            isnothing(s_data) && continue
+                            
+                            if PLOT_MODE[] == :lagrangian
+                                if dim_sym == s_data.domain.time_dim
+                                    vals = s_data.t
+                                end
+                            else
+                                idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
+                                if !isnothing(idx)
+                                    vals = s_data.axes[idx]
+                                end
+                            end
+                        end
+                    
+                        if !isnothing(vals) && !isempty(vals)
+                            l, h = extrema(vals)
+                            g_min = min(l, g_min)  
+                            g_max = max(h, g_max)
+                        end
+                    end
+                    
+                    if isinf(g_min); g_min = 0.0; g_max = 1.0; end
+                    
+                    old_val = get(slider_cache, widget_key, Float64(ctrl.value[]))
+                    
+                    new_range = [0.0]
+                    if i <= n_params
+                        all_vals = Any[]
+                        for pd in values(data)
+                            append!(all_vals, pd.active_param_values[i])
+                        end
+                        new_range = isempty(all_vals) ? [0.0] : sort(unique(identity.(all_vals)))
+                    else
+                        new_range = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
+                    end
+                    
+                    if ctrl.range[] != new_range
+                        ctrl.range[] = new_range
+                        set_close_to!(ctrl, old_val)
+                    end
+                end
+            finally
+                manager.locks[:Data] = false
+            end
+        end
+        # Now trigger the Data phase safely
+        manager.triggers[:Data][] += 1
+    end
     # =========================================================================
     # TIER 3: DATA SYNC
     # =========================================================================
@@ -600,6 +724,9 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
             data = plot_data_obs[]
 
             (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return
+
+            target, _, _, _ = manager.staged[:Compare_State]
+            is_compare = target != :None
             
             # Re-extract the values inside the trigger scope
             sel_vals = [to_value(obs) for obs in selector_obs]
@@ -709,5 +836,5 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, plot_da
     end
     
     # Store dynamic UI listeners internally 
-    return vcat(manager.listeners[:Primitive], manager.listeners[:Data_Sync_Widget], manager.listeners[:Data], manager.listeners[:UI])
+    return vcat(manager.listeners[:Primitive], manager.listeners[:Slider], manager.listeners[:Data_Sync_Widget], manager.listeners[:Data], manager.listeners[:UI])
 end

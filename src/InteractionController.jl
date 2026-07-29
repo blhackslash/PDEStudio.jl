@@ -152,6 +152,7 @@ function _setup_method_interactions!()
         end
         
         staged_methods[] = new_staged
+        manager.staged[:Flag_Sim][] = true
         menu_mth.i_selected[] = 1
     end
 end
@@ -574,128 +575,6 @@ function _setup_common_chain_c!(mode::Symbol)
     end
 end
 
-function _setup_common_chain_d!(mode::Symbol)
-    manager = GLOBAL_PLOT_MANAGER
-    w = manager.widgets
-    
-    manager.listeners[:Chain_D] = on(manager.triggers[:Slider]) do _
-        @with_lock :Slider begin
-            active_axes = manager.staged[:Active_Axes][]
-            u_val = w[:U_Axis].selection[]
-            comp_val = w[:Compare_Target].selection[]
-            anim_val = w[:Anim_Target].selection[]
-            plot_data_dict = manager.plot_data[]
-
-            pd_first, sim_data = _get_active_sim_data(plot_data_dict)
-            isnothing(sim_data) && return
-
-            dim_names = manager.plot_vars
-            total_dims = length(dim_names)
-            n_params = total_dims - length(get_base_variables())
-            
-            target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
-            
-            base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
-            kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
-
-            manager.locks[:Data] = true
-            try
-                for i in 1:total_dims
-                    dim_sym = dim_names[i]
-                    dim_str = String(dim_sym)
-                    
-                    is_axis = i in active_axes
-                    is_compare = dim_sym == comp_val
-                    is_anim = dim_sym == anim_val
-                    
-                    is_spatial = false
-                    is_physically_disabled = false
-                    
-                    if i > n_params
-                        if mode == :lagrangian
-                            is_spatial = dim_sym != sim_data.domain.time_dim
-                            is_physically_disabled = !is_spatial && !(dim_sym in kept_syms)
-                        else
-                            is_physically_disabled = !(dim_sym in kept_syms)
-                        end
-                    end
-                    
-                    widget_key = i > n_params ? Symbol(dim_str) : get(manager.staged[:Reverse_Map], dim_sym, Symbol("param_$i"))
-                    haskey(w, widget_key) || continue
-                    ctrl = w[widget_key]
-                    
-                    if !haskey(manager.staged, :Slider_Cache)
-                        manager.staged[:Slider_Cache] = Dict{Symbol, Float64}()
-                    end
-                    slider_cache = manager.staged[:Slider_Cache]
-
-                    if length(ctrl.range[]) > 1
-                        slider_cache[widget_key] = Float64(ctrl.value[])
-                    end
-                    
-                    if is_axis || is_spatial || is_physically_disabled || is_compare || is_anim
-                        if ctrl.range[] != [0.0]
-                            ctrl.range[] = [0.0] 
-                        end
-                        continue
-                    end
-                    
-                    g_min, g_max = Inf, -Inf
-                    for pd in values(plot_data_dict)
-                        vals = nothing
-                        if i <= n_params 
-                            vals = pd.active_param_values[i]
-                        else
-                            s_data = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
-                            isnothing(s_data) && continue
-                            
-                            if mode == :lagrangian
-                                if dim_sym == s_data.domain.time_dim
-                                    vals = s_data.t
-                                end
-                            else
-                                idx = findfirst(==(dim_sym), s_data.domain.dim_keys)
-                                if !isnothing(idx)
-                                    vals = s_data.axes[idx]
-                                end
-                            end
-                        end
-                    
-                        if !isnothing(vals) && !isempty(vals)
-                            l, h = extrema(vals)
-                            g_min = min(l, g_min)  
-                            g_max = max(h, g_max)
-                        end
-                    end
-                    
-                    if isinf(g_min); g_min = 0.0; g_max = 1.0; end
-                    
-                    old_val = get(slider_cache, widget_key, Float64(ctrl.value[]))
-                    
-                    new_range = [0.0]
-                    if i <= n_params
-                        all_vals = Any[]
-                        for pd in values(plot_data_dict)
-                            append!(all_vals, pd.active_param_values[i])
-                        end
-                        new_range = isempty(all_vals) ? [0.0] : sort(unique(identity.(all_vals)))
-                    else
-                        new_range = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
-                    end
-                    
-                    if ctrl.range[] != new_range
-                        ctrl.range[] = new_range
-                        set_close_to!(ctrl, old_val)
-                    end
-                end
-            finally
-                manager.locks[:Data] = false
-            end
-        end
-        manager.triggers[:Data][] += 1
-    end
-end
-
 # ==============================================================================
 # --- EULERIAN PIPELINE SPECIFICS ---
 # ==============================================================================
@@ -716,7 +595,6 @@ function _setup_eulerian_data_sync!()
 
     manager.listeners[:Eulerian_Base_Change] = on(base_obs) do base_type
         (isnothing(base_type) || base_type == :None) && return
-        manager.locks[:Layout] = true 
         active_dict = PLOT_MODE[] == :lagrangian ? LAGRANGIAN_PLOT_STYLE_OPTIONS : EULERIAN_PLOT_STYLE_OPTIONS
         valid_styles = get(active_dict, base_type, Any[("1D", :lines)])
         update_menu_safe!(w[:Plot_Style], valid_styles; fallbacks=[:lines], force_notify=false)
@@ -724,7 +602,6 @@ function _setup_eulerian_data_sync!()
     end
     
     manager.listeners[:Eulerian_Style_Change] = on(style_obs) do _
-        manager.locks[:Layout] = true 
         notify(manager.widgets[:Editor_Scope].selection)
     end
 
@@ -872,7 +749,6 @@ function _setup_eulerian_data_sync!()
     end
 
     _setup_common_chain_c!(:eulerian)
-    _setup_common_chain_d!(:eulerian)
 end
 
 # ==============================================================================
@@ -979,5 +855,4 @@ function _setup_lagrangian_data_sync!()
     end
 
     _setup_common_chain_c!(:lagrangian)
-    _setup_common_chain_d!(:lagrangian)
 end

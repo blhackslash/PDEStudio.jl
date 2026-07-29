@@ -210,22 +210,34 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     return layout_dict
 end
 
-function _parse_legend_position(is_compare::Bool=false)
+function _parse_legend_position()
     manager = GLOBAL_PLOT_MANAGER
     base_align = manager.widgets[:Legend_Base].selection[]
     add_align  = manager.widgets[:Legend_Add].selection[]
     
-    s = lowercase(string(base_align) * "_" * string(add_align))
-    if occursin("none", s); return (false, :none, :none); end
+    # Check for :none directly
+    if base_align == :none || add_align == :none
+        return (false, :none, :none)
+    end
     
-    is_detached = occursin("detached", s)
+    is_detached = (add_align == :detached)
     
-    if is_compare && !is_detached
+    # Safely retrieve the comparison target from the global state 
+    # (fallback to the widget if the state hasn't been initialized yet)
+    target = haskey(manager.staged, :Compare_State) ? manager.staged[:Compare_State][1] : manager.widgets[:Compare_Target].selection[]
+    
+    # Force a detached top-center legend for comparisons (apart from :Methods)
+    if target != :None && target != :Methods && !is_detached
         return (true, :center, :top)
     end
     
-    valign = occursin("top", s) ? :top : (occursin("bottom", s) ? :bottom : :center)
-    halign = occursin("left", s) ? :left : (occursin("right", s) ? :right : :center)
+    # Resolve vertical alignment
+    valign = (:top in (base_align, add_align)) ? :top : 
+             (:bottom in (base_align, add_align) ? :bottom : :center)
+             
+    # Resolve horizontal alignment
+    halign = (:left in (base_align, add_align)) ? :left : 
+             (:right in (base_align, add_align) ? :right : :center)
 
     return (is_detached, halign, valign)
 end
@@ -246,8 +258,7 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     final_title = isempty(strip(title_str)) ? nothing : title_str
     font_size = ui_style[:font_size] 
     
-    is_compare = manager.widgets[:Compare_Target].selection[] != :None
-    is_detached, halign, valign = _parse_legend_position(is_compare)
+    is_detached, halign, valign = _parse_legend_position()
 
     if halign==:none && valign==:none; return; end
     leg_pos = layout_dict[:Legend]

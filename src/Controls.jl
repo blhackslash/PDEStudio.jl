@@ -90,7 +90,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 
     manager.widgets[:Base_Plot]   = Menu(menu_layout[cr,1], options = base_opts)
     manager.widgets[:Plot_Width]  = Menu(menu_layout[cr,2], options = size_opts)
-    manager.widgets[:Legend_Base] = Menu(menu_layout[cr,3], options = Any[("none", :none), ("center", :center), ("left", :left), ("right", :right), ("top", :top), ("bottom", :bottom)])
+    manager.widgets[:Legend_Base] = Menu(menu_layout[cr,3], options = Any[("None", :none), ("Center", :center), ("Left", :left), ("Right", :right), ("Top", :top), ("Bottom", :bottom)])
     push!(gaps, 10); cr += 1
 
     # --- ROW BLOCK 2: Plot, Size, and Legend (Modifiers) ---
@@ -101,7 +101,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 
     manager.widgets[:Plot_Style]  = Menu(menu_layout[cr,1], options = Any[("1D", :lines), ("2D", :lines2d), ("3D", :lines3d)])
     manager.widgets[:Plot_Height] = Menu(menu_layout[cr,2], options = size_opts)
-    manager.widgets[:Legend_Add]  = Menu(menu_layout[cr,3], options = Any[("none", :none), ("detached", :detached), ("left", :left), ("right", :right), ("top", :top), ("bottom", :bottom)])
+    manager.widgets[:Legend_Add]  = Menu(menu_layout[cr,3], options = Any[("Detached", :detached), ("Left", :left), ("Right", :right), ("Top", :top), ("Bottom", :bottom)])
     push!(gaps, 15); cr += 1
 
     # --- ROW BLOCK 3: Comparisons ---
