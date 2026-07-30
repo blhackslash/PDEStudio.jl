@@ -2,11 +2,6 @@ function allMethodNames(config::SimulationConfig)
     return sort_methods_robust(collect(keys(config.methods_dict)))
 end
 
-function is_reference_method(m_name::String)
-    lm = lowercase(m_name)
-    return any(k -> occursin(k, lm), ["analytic", "reference", "exact", "baseline", "true"])
-end
-
 # =============================================================================
 # THE FIX: Robust Priority Sorting
 # =============================================================================
@@ -115,8 +110,8 @@ function apply_axis_limits_overrides!(ax)
     if get(manager.staged, :Camera_Locked, Observable(false))[]
         return
     end
-    ui_x = manager.ui[:X_Axis]
-    ui_y = manager.ui[:Y_Axis]
+    ui_x = manager.ui[:x_axis]
+    ui_y = manager.ui[:y_axis]
     
     try
         if haskey(ui_x, :lims) && length(ui_x[:lims]) == 2 
@@ -129,8 +124,8 @@ function apply_axis_limits_overrides!(ax)
             if ly[1] < ly[2]; ylims!(ax, ly[1], ly[2]); end
         end
         
-        if ax isa Axis3 && haskey(manager.ui, :Z_Axis)
-            ui_z = manager.ui[:Z_Axis]
+        if ax isa Axis3 && haskey(manager.ui, :z_axis)
+            ui_z = manager.ui[:z_axis]
             if haskey(ui_z, :lims) && length(ui_z[:lims]) == 2 
                 lz = Float64.(ui_z[:lims])
                 if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
@@ -155,8 +150,8 @@ end
 
 function set_axis_limits_manager!(ax::Axis, xs, us)
     
-    ui_x = manager.ui[:X_Axis]
-    ui_y = manager.ui[:Y_Axis]
+    ui_x = manager.ui[:x_axis]
+    ui_y = manager.ui[:y_axis]
     
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
@@ -173,21 +168,30 @@ function set_axis_limits_manager!(ax::Axis, xs, us)
         @warn "Y-Axis data contains non-positive values. log_scale temporarily disabled."
     end
 
-    # FIX 1A: Use a safe wrapper so Makie's transformation pipeline never receives a negative number
-    safe_log10 = x -> log10(max(x, 1e-12))
-    new_xscale = use_log_x ? safe_log10 : identity
-    new_yscale = use_log_y ? safe_log10 : identity
+    new_xscale = use_log_x ? log10 : identity
+    new_yscale = use_log_y ? log10 : identity
 
-    # FIX 1B: ONLY update the scale if it changed! This prevents Makie from constantly destroying the Camera Lock
-    if ax.xscale[] !== new_xscale; ax.xscale[] = new_xscale; end
-    if ax.yscale[] !== new_yscale; ax.yscale[] = new_yscale; end
-
-    if !get(manager.staged, :Camera_Locked, Observable(false))[]
+    # FIX: Calculate and apply the valid padded limits BEFORE changing the scale!
+    is_locked = get(manager.staged, :Camera_Locked, Observable(false))[]
+    
+    if !is_locked
         final_xlims = calculate_padded_axis_range(raw_xlims, ui_x[:padding], use_log_x) 
         final_ylims = calculate_padded_axis_range(raw_ylims, ui_y[:padding], use_log_y) 
-
         try limits!(ax, final_xlims..., final_ylims...) catch; end
+    else
+        # Safety net: If camera is locked but the current limits are invalid for a log scale, 
+        # force an override to prevent a hard Makie crash.
+        curr_lims = ax.finallimits[]
+        if (use_log_x && curr_lims.origin[1] <= 0) || (use_log_y && curr_lims.origin[2] <= 0)
+            final_xlims = calculate_padded_axis_range(raw_xlims, ui_x[:padding], use_log_x) 
+            final_ylims = calculate_padded_axis_range(raw_ylims, ui_y[:padding], use_log_y) 
+            try limits!(ax, final_xlims..., final_ylims...) catch; end
+        end
     end
+
+    # NOW update the scales safely
+    if ax.xscale[] !== new_xscale; ax.xscale[] = new_xscale; end
+    if ax.yscale[] !== new_yscale; ax.yscale[] = new_yscale; end
 
     return
 end
@@ -258,8 +262,8 @@ end
 
 function _parse_legend_position()
     
-    base_align = manager.widgets[:Legend_Base].selection[]
-    add_align  = manager.widgets[:Legend_Add].selection[]
+    base_align = manager.widgets[:legend_base].selection[]
+    add_align  = manager.widgets[:legend_add].selection[]
     
     # Check for :none directly
     if base_align == :none || add_align == :none
@@ -299,8 +303,8 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     layout_dict = manager.state[:Layout_Dict][]
     if !haskey(layout_dict, :Legend) || isnothing(layout_dict[:Legend]); return; end
     
-    ui_style = manager.ui[:Axis_General]
-    title_str = manager.ui[:Labels][:legend] 
+    ui_style = manager.ui[:axis_general]
+    title_str = manager.ui[:labels][:legend] 
     final_title = isempty(strip(title_str)) ? nothing : title_str
     font_size = ui_style[:font_size] 
     
@@ -331,7 +335,7 @@ end
 
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
     
-    ui_stl = manager.ui[:Plot_Style]
+    ui_stl = manager.ui[:plot_style]
     if !haskey(ui_stl, :color_map); return; end 
     
     layout_dict = manager.state[:Layout_Dict][]
@@ -350,8 +354,8 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_
     
     cb_pos = is_global ? cb_list[1] : cb_list[plot_idx]
     
-    ui_lbl = manager.ui[:Labels]
-    ui_gen = manager.ui[:Axis_General]
+    ui_lbl = manager.ui[:labels]
+    ui_gen = manager.ui[:axis_general]
     final_label = ui_lbl[:colorbar_label] == "default" ? default_label : ui_lbl[:colorbar_label] 
     
     try
@@ -400,8 +404,8 @@ end
 
 function plot_extrema_lines_manager!(ax, x_data, u_data, plot_idx)
     
-    ui_var = manager.ui[:Various]
-    ui_stl = manager.ui[:Plot_Style]
+    ui_var = manager.ui[:various]
+    ui_stl = manager.ui[:plot_style]
     
     track_max = ui_var[:track_max] 
     track_min = ui_var[:track_min] 
@@ -445,9 +449,9 @@ end
 
 function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::String)
     
-    gen = manager.ui[:Axis_General]
-    lbl = manager.ui[:Labels]
-    x_ui, y_ui = manager.ui[:X_Axis], manager.ui[:Y_Axis]
+    gen = manager.ui[:axis_general]
+    lbl = manager.ui[:labels]
+    x_ui, y_ui = manager.ui[:x_axis], manager.ui[:y_axis]
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 
@@ -475,9 +479,9 @@ end
 
 function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String, def_title::String)
     
-    gen = manager.ui[:Axis_General]
-    lbl = manager.ui[:Labels]
-    x_ui, y_ui, z_ui = manager.ui[:X_Axis], manager.ui[:Y_Axis], manager.ui[:Z_Axis]
+    gen = manager.ui[:axis_general]
+    lbl = manager.ui[:labels]
+    x_ui, y_ui, z_ui = manager.ui[:x_axis], manager.ui[:y_axis], manager.ui[:z_axis]
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 
@@ -542,10 +546,10 @@ plot_HUD!(ax::Axis3) = nothing
 
 function _apply_axis_styles!(ax, T::Symbol)
     
-    x = string(manager.widgets[:X_Axis].selection[])
-    y = string(manager.widgets[:Y_Axis].selection[])
-    z = string(manager.widgets[:Z_Axis].selection[])
-    u = string(manager.widgets[:U_Axis].selection[])
+    x = string(manager.widgets[:x_axis].selection[])
+    y = string(manager.widgets[:y_axis].selection[])
+    z = string(manager.widgets[:z_axis].selection[])
+    u = string(manager.widgets[:u_axis].selection[])
     
     dim = PLOT_DIM_MAP[T] 
     def_title = ax.title[]

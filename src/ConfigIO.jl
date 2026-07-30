@@ -50,8 +50,8 @@ function load_and_apply_csv!(filepath::String)
         manager.staged[:UI] = _convert_dict_keys_to_symbols(parsed["UI"])
     end
     
-    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "General")
-        manager.staged[:Plot] = _convert_dict_keys_to_symbols(parsed["Scene"]["General"])
+    if haskey(parsed, "Plot") && haskey(parsed["Plot"], "General")
+        manager.staged[:Plot] = _convert_dict_keys_to_symbols(parsed["Plot"]["General"])
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
@@ -308,10 +308,10 @@ function saveParametersToCSV(
             for (k, v) in info; add_row("Julia", scope, k, v); end
         end
 
-        # --- 2. CATEGORY: Scene ---
-        scene_opts = extract_scene_options()
-        for (k, v) in scene_opts
-            add_row("Scene", "General", k, v)
+        # --- 2. CATEGORY: Plot ---
+        plot_opts = extract_plot_options()
+        for (k, v) in plot_opts
+            add_row("Plot", "General", k, v)
         end
         layout_opts = extract_layout_options()
         for (k, v) in layout_opts

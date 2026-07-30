@@ -1,7 +1,7 @@
 # --- 1. Type Aliases ---
-const ParamDict = Dict{String, Any}
-const MethodDict = Dict{String, ParamDict}
-const VariedDict = Dict{String, Vector}
+const ParamDict = Dict{Symbol, Any}
+const MethodDict = Dict{Symbol, ParamDict}
+const VariedDict = Dict{Symbol, Vector}
 const FixedDict = ParamDict 
 
 const _GRID_LOCK = Ref{Bool}(false)
@@ -12,7 +12,6 @@ const _T_GRID = Ref{Int}(25)
 const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
-
 set_space_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_N_GRID[] = n)
 set_time_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_T_GRID[] = n)
 set_ref_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_REF_GRID[] = n)
@@ -22,20 +21,21 @@ get_ref_resolution() = _REF_GRID[]
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 
 # --- 2. Explicit Creator Functions ---
+# Converts any generic iterator or mixed string/symbol inputs into strictly typed Symbol-keyed dictionaries
 
 # ParamDict Creators
-createParamDict(kv::Pair{String, <:Any}...) = ParamDict(kv...)
-createParamDict(kv) = ParamDict(kv) # Catches generators like (k => v for ...)
+createParamDict(kv::Pair...) = ParamDict(Symbol(k) => v for (k, v) in kv)
+createParamDict(kv) = ParamDict(Symbol(k) => v for (k, v) in kv) 
 createParamDict() = ParamDict()
 
 # MethodDict Creators
-createMethodDict(kv::Pair{String, ParamDict}...) = MethodDict(kv...)
-createMethodDict(kv) = MethodDict(kv)
+createMethodDict(kv::Pair...) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
+createMethodDict(kv) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
 createMethodDict() = MethodDict()
 
 # VariedDict Creators
-createVariedDict(kv::Pair{String, <:Vector}...) = VariedDict(kv...)
-createVariedDict(kv) = VariedDict(kv)
+createVariedDict(kv::Pair...) = VariedDict(Symbol(k) => v for (k, v) in kv)
+createVariedDict(kv) = VariedDict(Symbol(k) => v for (k, v) in kv)
 createVariedDict() = VariedDict()
 
 # A strict union covering all possible geometries of your statistics
@@ -56,12 +56,12 @@ const StatDict{M} = Dict{Symbol, AbstractStatTensor{M, Float64}}
 abstract type AbstractSimData{D, DS, M} end
 
 struct NoSimData{D, DS, M} <: AbstractSimData{D, DS, M} 
-    scalars::Dict{String, Any}
-    stats::Dict{String, Any}
+    scalars::Dict{Symbol, Any} # Typed to Symbol
+    stats::Dict{Symbol, Any}   # Typed to Symbol
 end
 
 function NoSimData(D::Int=0, DS::Int=0, M::Int=0)
-    return NoSimData{D, DS, M}(Dict{String, Any}(), Dict{String, Any}())
+    return NoSimData{D, DS, M}(Dict{Symbol, Any}(), Dict{Symbol, Any}())
 end
 
 # DomainInfo strictly models the total D tensor shape.
@@ -97,27 +97,6 @@ mutable struct LSimData{D, DS, M} <: AbstractSimData{D, DS, M}
     stats::StatDict{M}  # <-- Strictly typed and Symbolic!
 end
 
-nice_string(s::Symbol) = nice_string(String(s))
-
-function safe_string(s::AbstractString)
-    # Replace whitespace and hyphens with underscores, then lowercase
-    s_clean = replace(strip(s), r"[\s-]+" => "_")
-    return lowercase(s_clean)
-end
-
-function nice_string(s::AbstractString)
-    words = split(s, "_")
-    formatted_words = map(words) do word
-        # If the word has more than one uppercase letter, assume it's an acronym/code and keep it as-is.
-        if count(isuppercase, word) > 1
-            return word
-        else
-            return titlecase(word)
-        end
-    end
-    return join(formatted_words, " ")
-end
-
 mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     simulation_func::F
     simulation_name::Symbol # <-- Store strictly as Symbol
@@ -125,24 +104,31 @@ mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     reference_name::Union{Symbol, Nothing} # <-- Store strictly as Symbol
     shared_params::ParamDict
     methods_dict::MethodDict
-    default_methods::Vector{String}
+    default_methods::Vector{Symbol}
     varied_params::VariedDict
 end
 
-# Update the signature to accept 'nothing' for the reference function name
+# Accepts generic Dict and Vector arguments to preserve backwards compatibility,
+# then maps them strictly to Symbol types.
 function SimulationConfig(
-    sim_func_name::String, 
-    ref_func_name::Union{String, Nothing}, 
-    shared::ParamDict, 
-    methods::MethodDict, 
-    defaults::Vector{String};
-    varied_params::VariedDict = createVariedDict(),
+    sim_func_name::Union{String, Symbol}, 
+    ref_func_name::Union{String, Symbol, Nothing}, 
+    shared::Dict, 
+    methods::Dict, 
+    defaults::Vector;
+    varied_params::Dict = createVariedDict(),
 )
     target_module = _TARGET_MODULE[]
     
     # 1. Safe string conversion, then immediately to Symbol
-    ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(safe_string(ref_func_name))
-    sim_name_sym = Symbol(safe_string(sim_func_name))
+    ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(ref_func_name)
+    sim_name_sym = Symbol(sim_func_name)
+
+    # Convert generic dictionaries to enforced Symbol-keyed dictionaries
+    shared_sym   = ParamDict(Symbol(k) => v for (k, v) in shared)
+    methods_sym  = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in methods)
+    varied_sym   = VariedDict(Symbol(k) => v for (k, v) in varied_params)
+    defaults_sym = Symbol.(defaults)
 
     # 2. Resolve Simulation Function via Symbol
     sim_f = resolve_dynamic_function(sim_name_sym)
@@ -152,29 +138,27 @@ function SimulationConfig(
 
     # 3. Resolve Reference Factory Function via Symbol (No more invokelatest!)
     ref_factory = resolve_dynamic_function(ref_name_sym)
-    ref_f = isnothing(ref_factory) ? nothing : ref_factory(shared)
+    ref_f = isnothing(ref_factory) ? nothing : ref_factory(shared_sym)
     
     # 4. AUTO-INJECT: Add the reference method to the methods dictionary if it exists
-    if !isnothing(ref_func_name)
-        # Use the string for the dictionary key, not the symbol
-        ns = nice_string(safe_string(ref_func_name)) 
-        if !haskey(methods, ns)
-            methods[ns] = ParamDict()
+    if !isnothing(ref_name_sym)
+        if !haskey(methods_sym, ref_name_sym)
+            methods_sym[ref_name_sym] = ParamDict()
         end
     end
 
     return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
-        sim_f, sim_name_sym, ref_f, ref_name_sym, shared, methods, defaults, varied_params
+        sim_f, sim_name_sym, ref_f, ref_name_sym, shared_sym, methods_sym, defaults_sym, varied_sym
     )
 end
 
 # Fallback constructor for when no reference function is provided
 function SimulationConfig(
-    sim_func_name::String, 
-    shared::ParamDict, 
-    methods::MethodDict, 
-    defaults::Vector{String}; 
-    varied_params::VariedDict = createVariedDict(),
+    sim_func_name::Union{String, Symbol}, 
+    shared::Dict, 
+    methods::Dict, 
+    defaults::Vector; 
+    varied_params::Dict = createVariedDict(),
 )
     return SimulationConfig(sim_func_name, nothing, shared, methods, defaults; varied_params = varied_params)
 end

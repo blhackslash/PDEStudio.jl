@@ -3,26 +3,27 @@
 
 Safely updates a Makie Menu's options, forces a WebGL buffer sync to prevent crashes,
 and preserves the current selection or falls back to a prioritized list.
+Assumes all options are `(Label, Value)` tuples.
 """
 function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
     curr = menu_widget.selection[]
-    new_arr = isempty(new_options) ? Any[("-", :None)] : new_options
+    new_arr = isempty(new_options) ? Any[menu_opt(:none)] : new_options
     
     old_arr = menu_widget.options[]
     options_changed = false
     
+    # 1. Compare underlying option values
     is_eq = length(old_arr) == length(new_arr)
     if is_eq
         for (o, n) in zip(old_arr, new_arr)
-            o_val = hasproperty(o, :value) ? o.value : (o isa Tuple ? o[2] : o)
-            n_val = n isa Tuple ? n[2] : n
-            if o_val != n_val
+            if o[2] != n[2]
                 is_eq = false
                 break
             end
         end
     end
     
+    # 2. Update options and force WebGL sync if changed
     if !is_eq
         menu_widget.options[] = new_arr
         menu_widget.is_open[] = true
@@ -30,22 +31,24 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
         options_changed = true
     end
 
-    opt_values = (!isempty(new_options) && new_options[1] isa Tuple) ? [opt[2] for opt in new_options] : new_options
+    # 3. Extract purely the values (2nd element of every tuple)
+    opt_values = [opt[2] for opt in new_arr]
 
+    # 4. Resolve the target selection index
     target_idx = 1
-    if curr == "-" || curr == :None || isnothing(curr) || curr ∉ opt_values
-        if !isempty(new_options)
-            idx = nothing
-            for f in fallbacks
-                idx = findfirst(isequal(f), opt_values)
-                !isnothing(idx) && break
+    if curr === :none || isnothing(curr) || curr ∉ opt_values
+        for f in fallbacks
+            idx = findfirst(isequal(f), opt_values)
+            if !isnothing(idx)
+                target_idx = idx
+                break
             end
-            target_idx = isnothing(idx) ? 1 : idx
         end
     else
         target_idx = findfirst(isequal(curr), opt_values)
     end
     
+    # 5. Apply selection and notify
     selection_changed = menu_widget.i_selected[] != target_idx
     if selection_changed
         menu_widget.i_selected[] = target_idx
@@ -57,17 +60,13 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
 end
 
 function apply_layout_options!(layout_options::Dict)
-    
     isempty(layout_options) && return
 
-    for k in [:Base_Plot, :Plot_Style, :Compare_Target, :Compare_Columns, :Compare_Link, :Legend_Base, :Legend_Add, :Plot_Width, :Plot_Height, :Anim_Target]
-        sel_key = Symbol(k, :_Selection)
-        # Check both the symbol and string versions to support direct API pushes
-        val = get(layout_options, sel_key, get(layout_options, string(sel_key), nothing))
+    for k in LAYOUT_OPTIONS
+        val = get(layout_options, k, get(layout_options, string(k), nothing))
         
         if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
-            
             opts = widget.options[]
             isempty(opts) && continue
             
@@ -85,18 +84,15 @@ function apply_layout_options!(layout_options::Dict)
     end
 end
 
-function apply_scene_options!(scene_options::Dict)
-    
-    isempty(scene_options) && return
+function apply_plot_options!(plot_options::Dict)
+    isempty(plot_options) && return
 
     # 1. Apply Axis Dropdowns
-    for k in [:X_Axis, :Y_Axis, :Z_Axis, :U_Axis, :c]
-        sel_key = Symbol(k, :_Selection)
-        val = get(scene_options, sel_key, get(scene_options, string(sel_key), nothing))
+    for k in PLOT_AXIS_OPTIONS
+        val = get(plot_options, k, get(plot_options, string(k), nothing))
         
         if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
-            
             opts = widget.options[]
             isempty(opts) && continue
             
@@ -128,51 +124,49 @@ function apply_scene_options!(scene_options::Dict)
 
     # 2. Apply Slider Values
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
-    for (key, desired_val) in scene_options
-        key_str = string(key)
-        if endswith(key_str, "_Value")
-            base_name = replace(key_str, "_Value" => "")
-            base_sym = Symbol(base_name)
-            w_key = haskey(rev_map, base_sym) ? rev_map[base_sym] : base_sym
-            
-            if haskey(manager.widgets, w_key)
-                widget = manager.widgets[w_key]
-                if widget isa Makie.Slider
-                    # Pre-cache the target value in case the slider is temporarily disabled
-                    slider_cache = get!(manager.staged, :Slider_Cache, Dict{Symbol, Float64}())
-                    slider_cache[w_key] = Float64(desired_val)
-                    
-                    rng = widget.range[]
-                    isempty(rng) && continue
-                    
-                    val = Float64(rng[1])
-                    if desired_val isa Real
-                        val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
-                    end
-                    set_close_to!(widget, val) 
+    for (key, desired_val) in plot_options
+        if key in PLOT_AXIS_OPTIONS || key === :reset
+            continue
+        end
+        
+        base_sym = key
+        w_key = haskey(rev_map, base_sym) ? rev_map[base_sym] : base_sym
+        
+        if haskey(manager.widgets, w_key)
+            widget = manager.widgets[w_key]
+            if widget isa Makie.Slider
+                slider_cache = manager.staged[:Slider]
+                slider_cache[w_key] = Float64(desired_val)
+                
+                rng = widget.range[]
+                isempty(rng) && continue
+                
+                val = Float64(rng[1])
+                if desired_val isa Real
+                    val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
                 end
+                set_close_to!(widget, val) 
             end
         end
     end
 end
 
 function extract_layout_options()
-    
     opts = Dict{Symbol, Any}()
-    for k in [:Base_Plot, :Plot_Style, :Compare_Target, :Compare_Columns, :Compare_Link, :Legend_Base, :Legend_Add, :Plot_Width, :Plot_Height, :Anim_Target]
+    for k in LAYOUT_OPTIONS
         if haskey(manager.widgets, k)
-            opts[Symbol(k, :_Selection)] = manager.widgets[k].selection[]
+            opts[k] = manager.widgets[k].selection[]
         end
     end
     return opts
 end
 
-function extract_scene_options()
-    
+function extract_plot_options()
     opts = Dict{Symbol, Any}()
-    for k in [:X_Axis, :Y_Axis, :Z_Axis, :U_Axis, :c]
+    
+    for k in PLOT_AXIS_OPTIONS
         if haskey(manager.widgets, k)
-            opts[Symbol(k, :_Selection)] = manager.widgets[k].selection[]
+            opts[k] = manager.widgets[k].selection[]
         end
     end
     
@@ -182,7 +176,7 @@ function extract_scene_options()
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                opts[Symbol(k, :_Value)] = widget.value[]
+                opts[k] = widget.value[]  # Assign purely by the variable's symbol (e.g., :t)
             end
         end
     end
@@ -205,8 +199,8 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mod
     _setup_chain_B!(mode)
     _setup_chain_C!(mode)
     
-    manager.widgets[:Editor_Cat].i_selected[] = 1
-    notify(manager.widgets[:Editor_Cat].selection)
+    manager.widgets[:editor_cat].i_selected[] = 1
+    notify(manager.widgets[:editor_cat].selection)
     notify(manager.methods)
 end
 
@@ -219,16 +213,16 @@ function _setup_button_state_machine!()
 
     # --- WATCHERS (Triggers flags when users adjust UI menus) ---
     manager.listeners[:Watch_Layout] = onany(
-        w[:Base_Plot].selection, w[:Plot_Style].selection,
-        w[:Compare_Target].selection, w[:Compare_Columns].selection, w[:Compare_Link].selection,
-        w[:Legend_Base].selection, w[:Legend_Add].selection,
-        w[:Plot_Width].selection, w[:Plot_Height].selection
+        w[:base_plot].selection, w[:plot_style].selection,
+        w[:compare_target].selection, w[:compare_columns].selection, w[:compare_link].selection,
+        w[:legend_base].selection, w[:legend_add].selection,
+        w[:plot_width].selection, w[:plot_height].selection
     ) do _...
         f_lay[] = true
     end
 
     manager.listeners[:Watch_Plot] = onany(
-        w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection, w[:U_Axis].selection
+        w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, w[:u_axis].selection
     ) do _...
         f_plot[] = true
     end
@@ -250,25 +244,25 @@ function _setup_button_state_machine!()
             c_plot = :lightyellow; l_plot = "Update Plot *"
         end
 
-        if haskey(w, :Run_Button)
-            w[:Run_Button].buttoncolor[] = c_sim
-            w[:Run_Button].label[] = l_sim
+        if haskey(w, :run_button)
+            w[:run_button].buttoncolor[] = c_sim
+            w[:run_button].label[] = l_sim
         end
-        if haskey(w, :Layout_Apply)
-            w[:Layout_Apply].buttoncolor[] = c_lay
-            w[:Layout_Apply].label[] = l_lay
+        if haskey(w, :layout_apply)
+            w[:layout_apply].buttoncolor[] = c_lay
+            w[:layout_apply].label[] = l_lay
         end
-        if haskey(w, :Plot_Button)
-            w[:Plot_Button].buttoncolor[] = c_plot
-            w[:Plot_Button].label[] = l_plot
+        if haskey(w, :plot_button)
+            w[:plot_button].buttoncolor[] = c_plot
+            w[:plot_button].label[] = l_plot
         end
     end
 end
 
 function _setup_run_and_drop_interactions!(master_fig::Figure)
-    drop_label = manager.widgets[:Drop_Label]
-    drop_box   = manager.widgets[:Drop_Box]
-    run_btn    = manager.widgets[:Run_Button]
+    drop_label = manager.widgets[:drop_label]
+    drop_box   = manager.widgets[:drop_box]
+    run_btn    = manager.widgets[:run_button]
 
     manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
@@ -291,8 +285,8 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
 end
 
 function _setup_method_interactions!()
-    mode_btn = manager.widgets[:Mode_Button]
-    menu_mth = manager.widgets[:Method_Toggle]
+    mode_btn = manager.widgets[:mode_button]
+    menu_mth = manager.widgets[:method_toggle]
     is_activate_mode = manager.state[:Is_Activate_Mode]
     
     manager.staged[:Methods] = Observable(copy(manager.methods[]))
@@ -307,7 +301,7 @@ function _setup_method_interactions!()
             all_method_names = sort_methods_robust(raw_method_names)
             opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
             
-            new_opts = isempty(opts) ? [("Methods...","-")] : [("Methods...","-"); sort(opts)]
+            new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); sort(opts)]
             update_menu_safe!(menu_mth, new_opts)
         end
     end
@@ -319,7 +313,7 @@ function _setup_method_interactions!()
     end
 
     manager.listeners[:Method_Toggle] = on(menu_mth.selection) do sel
-        (isnothing(sel) || sel == "-") && return
+        (isnothing(sel) || sel == :none || sel == "-") && return
         
         new_staged = copy(staged_methods[])
         if is_activate_mode[]
@@ -338,16 +332,16 @@ function _setup_method_interactions!()
 end
 
 function _setup_hierarchy_interactions!()
-    menu_cat   = manager.widgets[:Editor_Cat]
-    menu_scope = manager.widgets[:Editor_Scope]
-    menu_key   = manager.widgets[:Editor_Key]
-    tb         = manager.widgets[:Editor_Text]
+    menu_cat   = manager.widgets[:editor_cat]
+    menu_scope = manager.widgets[:editor_scope]
+    menu_key   = manager.widgets[:editor_key]
+    tb         = manager.widgets[:editor_text]
     
     active_target_ref = manager.state[:Active_Target_Obs]
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
-        if isnothing(key) || key == "-"
+        if isnothing(key) || key == "-" || key == :none
             active_target_ref[] = nothing
             tb.stored_string.val = ""
             if tb.displayed_string[] != ""; Makie.reset!(tb); end
@@ -356,14 +350,14 @@ function _setup_hierarchy_interactions!()
         
         cat = menu_cat.selection[]
         scope = menu_scope.selection[]
-        (isnothing(cat) || isnothing(scope) || scope == "-") && return
+        (isnothing(cat) || isnothing(scope) || scope == "-" || scope == :none) && return
         
         target_dict = nothing
-        if cat == "Simulation"
+        if cat == :simulation
             config = manager.active_config
             isnothing(config) && return 
-            target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, nothing)
-        elseif cat == "UI"
+            target_dict = scope == :shared ? config.shared_params : get(config.methods_dict, scope, nothing)
+        elseif cat == :ui || cat == "UI"
             target_dict = get(manager.ui, Symbol(scope), nothing)
         end
 
@@ -377,7 +371,7 @@ function _setup_hierarchy_interactions!()
     manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, active_methods
         isnothing(cat) && return
         new_scopes = String[]
-        if cat == "Simulation"
+        if cat == :Simulation || cat == "Simulation"
             config = manager.active_config
             if !isnothing(config) 
                 push!(new_scopes, "shared")
@@ -385,7 +379,7 @@ function _setup_hierarchy_interactions!()
                     haskey(config.methods_dict, m) && push!(new_scopes, m)
                 end
             end
-        elseif cat == "UI"
+        elseif cat == :ui || cat == "UI"
             new_scopes = string.(sort(collect(keys(manager.ui))))
         end
         new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
@@ -393,26 +387,26 @@ function _setup_hierarchy_interactions!()
     end
 
     manager.listeners[:Hierarchy_Scope_Sync] = on(menu_scope.selection) do scope
-        (isnothing(scope) || scope == "-") && return 
+        (isnothing(scope) || scope == "-" || scope == :none) && return 
         cat = menu_cat.selection[]
         raw_keys = String[]
-        if cat == "Simulation"
+        if cat == :simulation
             config = manager.active_config
             if !isnothing(config) 
                 target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, Dict())
                 raw_keys = string.(sort(collect(keys(target_dict))))
             end
-        elseif cat == "UI"
+        elseif cat == :ui || cat == "UI"
             raw_keys = string.(sort(collect(keys(get(manager.ui, Symbol(scope), Dict())))))
         end
 
-        if scope == "Plot-Style" || scope == "Plot_Style"
-            ptype = manager.widgets[:Plot_Style].selection[]
+        if scope == :plot_style || scope == "plot_style"
+            ptype = manager.widgets[:plot_style].selection[]
             valid_keys = string.(get(STYLE_DEPENDENCIES, ptype, Symbol[]))
             filter!(k -> k in valid_keys, raw_keys)
         end
 
-        new_keys = isempty(raw_keys) ? [("-", "-")] : [(nice_string(k), k) for k in raw_keys]
+        new_keys = isempty(raw_keys) ? [("-", :none)] : [(nice_string(k), Symbol(k)) for k in raw_keys]
         update_menu_safe!(menu_key, new_keys; force_notify=true)
         sync_textbox_to_active_key()
     end
@@ -429,11 +423,12 @@ function _setup_hierarchy_interactions!()
         try
             target_dict[key] = smart_parse_csv_value(s)
             
-            if menu_cat.selection[] == "Simulation"
+            cat = menu_cat.selection[]
+            if cat == :simulation
                 manager.flags[:Simulation][] = true 
-            elseif menu_cat.selection[] == "UI"
+            elseif cat == :ui || cat == "UI"
                 if key in REPLOT_OPTIONS
-                    manager.flags[:Plot][] = true
+                    manager.triggers[:Plot][] += 1
                 else
                     manager.triggers[:UI][] += 1
                 end
@@ -443,7 +438,7 @@ function _setup_hierarchy_interactions!()
         end
     end
     
-    manager.listeners[:Hierarchy_Toggle_Sync] = on(manager.widgets[:Editor_Toggle].clicks) do _
+    manager.listeners[:Hierarchy_Toggle_Sync] = on(manager.widgets[:editor_toggle].clicks) do _
         target_info = active_target_ref[]
         isnothing(target_info) && return
         target_dict, key = target_info
@@ -453,11 +448,12 @@ function _setup_hierarchy_interactions!()
                 target_dict[key] = !target_dict[key]
                 tb.displayed_string[] = string(target_dict[key])
                 
-                if menu_cat.selection[] == "Simulation"
+                cat = menu_cat.selection[]
+                if cat == :simulation
                     manager.flags[:Simulation][] = true 
-                elseif menu_cat.selection[] == "UI"
+                elseif cat == :ui || cat == "UI"
                     if key in REPLOT_OPTIONS
-                        manager.flags[:Plot][] = true
+                        manager.triggers[:Plot][] += 1
                     else
                         manager.triggers[:UI][] += 1
                     end
@@ -470,9 +466,9 @@ function _setup_hierarchy_interactions!()
 end
 
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout)
-    saveBox = manager.widgets[:Export_Text]
-    btn_play = manager.widgets[:Play_Anim_Button]
-    btn_lock = manager.widgets[:Lock_Camera_Button] 
+    saveBox = manager.widgets[:export_text]
+    btn_play = manager.widgets[:play_anim_button]
+    btn_lock = manager.widgets[:lock_camera_button] 
 
     manager.listeners[:Camera_Lock_Click] = on(btn_lock.clicks) do _
         is_locked = !manager.state[:Camera_Locked][]
@@ -492,19 +488,19 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    anim_target_obs = manager.widgets[:Anim_Target].selection
+    anim_target_obs = manager.widgets[:anim_target].selection
     is_animating = manager.state[:Is_Animating]
     animation_timer = manager.state[:Animation_Timer]
 
     function get_target_widget(target_name)
-        target_name == :None && return nothing
+        target_name == :none && return nothing
         rev_map = haskey(manager.maps, :Reverse) ? manager.maps[:Reverse] : Dict{Symbol, Symbol}()
         w_key = haskey(rev_map, target_name) ? rev_map[target_name] : Symbol(target_name)
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
 
     function check_selection_validity(target_name)
-        if isnothing(target_name) || target_name == :None
+        if isnothing(target_name) || target_name == :none
             @warn "Export Error: No target selected."
             return false 
         end
@@ -534,7 +530,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
-        ptype_sym = manager.widgets[:Plot_Style].selection[]
+        ptype_sym = manager.widgets[:plot_style].selection[]
         
         local_data_obs = Observable(manager.plot_data[])
         export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, Val(ptype_sym))
@@ -563,7 +559,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return export_fig, export_obs
     end
 
-    manager.listeners[:Save_Image_Click] = on(manager.widgets[:Save_Image_Button].clicks) do _
+    manager.listeners[:Save_Image_Click] = on(manager.widgets[:save_image_button].clicks) do _
         was_locked = manager.state[:Camera_Locked][]
         manager.state[:Camera_Locked][] = true 
         
@@ -574,12 +570,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         if isempty(base_name); base_name = "plot_export"; end
 
         save_dir = joinpath(get_save_path(), "figures")
-        if manager.ui[:Various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
+        if manager.ui[:various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
         mkpath(save_dir)
 
         export_fig, export_obs = build_pristine_export_figure()
 
-        for fmt in manager.ui[:Various][:save_formats]
+        for fmt in manager.ui[:various][:save_formats]
             ext = lowercase(strip(fmt))
             full_path = joinpath(save_dir, base_name * ".$ext")
             save(full_path, export_fig; backend=CairoMakie)
@@ -598,8 +594,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         manager.triggers[:Plot][] += 1
     end
 
-    manager.listeners[:Save_GIF_Click] = on(manager.widgets[:Save_GIF_Button].clicks) do _
-        notify(manager.widgets[:Save_Defs_Button].clicks)
+    manager.listeners[:Save_GIF_Click] = on(manager.widgets[:save_gif_button].clicks) do _
+        notify(manager.widgets[:save_defs_button].clicks)
         target_name = anim_target_obs[]
         !check_selection_validity(target_name) && return
         target_widget = get_target_widget(target_name)
@@ -617,8 +613,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         mkpath(save_path)
         fname = joinpath(save_path, base_name * ".gif")
         
-        duration = manager.ui[:Various][:animation_time]
-        fps = manager.ui[:Various][:animation_FPS]
+        duration = manager.ui[:various][:animation_time]
+        fps = manager.ui[:various][:animation_FPS]
         rng = target_widget.range[]
         n_frames = Int(duration * fps)
         
@@ -648,14 +644,14 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    manager.listeners[:Save_Defs_Click] = on(manager.widgets[:Save_Defs_Button].clicks) do _
+    manager.listeners[:Save_Defs_Click] = on(manager.widgets[:save_defs_button].clicks) do _
         if manager.state[:Camera_Locked][]
             extract_and_store_camera_state!(plot_layout)
         else
             manager.staged[:Camera] = Dict{Symbol, Any}()
         end
         
-        manager.staged[:Plot]  = extract_scene_options()
+        manager.staged[:Plot]  = extract_plot_options()
         manager.staged[:Layout] = extract_layout_options() 
         
         new_ui = Dict{Symbol, Any}()
@@ -664,19 +660,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             for (k, v) in subdict; new_ui[scope][k] = v; end
         end
         manager.staged[:UI] = new_ui
-        @info "Current UI, Layout, and Scene options successfully saved to global defaults!"
+        @info "Current UI, Layout, and plot options successfully saved to global defaults!"
     end
     
-    manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:Clear_Defs_Button].clicks) do _
-        manager.staged[:Plot]  = Dict{Symbol, Any}()
-        manager.staged[:UI]     = Dict{Symbol, Any}()
-        manager.staged[:Layout] = Dict{Symbol, Any}()
-        
-        if haskey(manager.staged, :Slider_Cache)
-            empty!(manager.staged[:Slider_Cache])
-        end
-        
-        @info "Global defaults cleared! Basic scene options restored."
+    manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_defs_button].clicks) do _
+        set_plot_presets!()
+        manager.triggers[:UI][] += 1
     end
 
     manager.listeners[:Anim_State_Change] = on(is_animating) do animating
@@ -695,8 +684,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             target_widget = get_target_widget(target_name)
             is_animating[] = true
             
-            duration = manager.ui[:Various][:animation_time]
-            fps = manager.ui[:Various][:animation_FPS]
+            duration = manager.ui[:various][:animation_time]
+            fps = manager.ui[:various][:animation_FPS]
             rng = target_widget.range[]
             start_time = time()
             
@@ -726,29 +715,29 @@ end
 
 function _setup_chain_A!(::Val{:eulerian})
     w = manager.widgets
-    x_sel = w[:X_Axis].selection
-    y_sel = w[:Y_Axis].selection
-    base_obs = w[:Base_Plot].selection
-    style_obs = w[:Plot_Style].selection
+    x_sel = w[:x_axis].selection
+    y_sel = w[:y_axis].selection
+    base_obs = w[:base_plot].selection
+    style_obs = w[:plot_style].selection
     
-    base_opts = Any[("Lines", :lines), ("Scatter", :scatter), ("Contour", :contour), ("Heatmap", :heatmap), ("Volume", :volume)]
-    update_menu_safe!(w[:Base_Plot], base_opts; fallbacks=[:lines], force_notify=false)
+    base_opts = Any[menu_opt(:lines_1d), menu_opt(:scatter_1d), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)]
+    update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:lines_1d], force_notify=false)
 
     manager.listeners[:Eulerian_Base_Change] = on(base_obs) do base_type
-        (isnothing(base_type) || base_type == :None) && return
-        valid_styles = get(EULERIAN_PLOT_STYLE_OPTIONS, base_type, Any[("1D", :lines)])
-        update_menu_safe!(w[:Plot_Style], valid_styles; fallbacks=[:lines], force_notify=false)
-        notify(manager.widgets[:Editor_Scope].selection)
+        (isnothing(base_type) || base_type == :none) && return
+        valid_styles = get(EULERIAN_PLOT_STYLE_OPTIONS, base_type, Any[menu_opt(:lines_1d)])
+        update_menu_safe!(w[:plot_style], valid_styles; fallbacks=[:lines_1d], force_notify=false)
+        notify(manager.widgets[:editor_scope].selection)
     end
     
     manager.listeners[:Eulerian_Style_Change] = on(style_obs) do _
-        notify(manager.widgets[:Editor_Scope].selection)
+        notify(manager.widgets[:editor_scope].selection)
     end
 
     manager.listeners[:Eulerian_Chain_A] = onany(manager.plot_data, base_obs, style_obs, x_sel, y_sel) do plot_data_dict, base_sel, style_sel, _x, _y
         @with_lock :Menu_A begin
             isempty(plot_data_dict) && return
-            (isnothing(style_sel) || style_sel == :None || isnothing(base_sel) || base_sel == :None) && return
+            (isnothing(style_sel) || style_sel == :none || isnothing(base_sel) || base_sel == :none) && return
             
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
@@ -774,7 +763,7 @@ function _setup_chain_A!(::Val{:eulerian})
                 end
             end
             
-            anim_options = Any[("None", :None)]
+            anim_options = Any[menu_opt(:none)]
             for i in 1:length(dim_names)
                 ax_sym = dim_names[i]
                 ax_str = String(ax_sym)
@@ -784,18 +773,18 @@ function _setup_chain_A!(::Val{:eulerian})
                     push!(anim_options, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
                 end
             end
-            update_menu_safe!(w[:Anim_Target], anim_options; fallbacks=[:None])
+            update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
 
-            compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
+            compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
             if !isnothing(sim_data.domain.time_dim)
-                push!(compare_opts, ("Time", :Time))
+                push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
                 push!(compare_opts, (string(p_key), Symbol(p_key)))
             end
-            update_menu_safe!(w[:Compare_Target], compare_opts; fallbacks=[:None], force_notify=false)
+            update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
 
-            ptype = manager.widgets[:Plot_Style].selection[]
+            ptype = manager.widgets[:plot_style].selection[]
             p_dim = PLOT_DIM_MAP[ptype]
             
             function build_axis_opts(excluded_syms)
@@ -816,24 +805,24 @@ function _setup_chain_A!(::Val{:eulerian})
                         push!(opts, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
                     end
                 end
-                return isempty(opts) ? Any[("disabled", :None)] : opts
+                return isempty(opts) ? Any[menu_opt(:none)] : opts
             end
             
             base_vars = get_base_variables()
-            x_val = w[:X_Axis].selection[]
+            x_val = w[:x_axis].selection[]
             
-            update_menu_safe!(w[:X_Axis], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
+            update_menu_safe!(w[:x_axis], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
             if p_dim >= 2
-                update_menu_safe!(w[:Y_Axis], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
+                update_menu_safe!(w[:y_axis], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
             else
-                update_menu_safe!(w[:Y_Axis], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
+                update_menu_safe!(w[:y_axis], Any[menu_opt(:none)]; fallbacks=[:none], force_notify=false)
             end
             
-            curr_y = w[:Y_Axis].selection[]
+            curr_y = w[:y_axis].selection[]
             if p_dim >= 3
-                update_menu_safe!(w[:Z_Axis], build_axis_opts([x_val, curr_y]); fallbacks=base_vars, force_notify=false)
+                update_menu_safe!(w[:z_axis], build_axis_opts([x_val, curr_y]); fallbacks=base_vars, force_notify=false)
             else
-                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None], force_notify=false)
+                update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none], force_notify=false)
             end
         end
     end
@@ -859,22 +848,22 @@ function _setup_chain_A!(::Val{:lagrangian})
             sy = D >= 2 ? spatial_keys[2] : :y
             sz = D >= 3 ? spatial_keys[3] : :z
             
-            update_menu_safe!(w[:X_Axis], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
+            update_menu_safe!(w[:x_axis], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
-                update_menu_safe!(w[:Plot_Style], Any[("1D", :scatter1d), ("Lines", :scatterlines), ("Colors", :scattercolors)]; fallbacks=[:scatter1d], force_notify=false)
-                update_menu_safe!(w[:Y_Axis], Any[("disabled", :None)]; fallbacks=[:None])
-                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None])
+                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_1d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]; fallbacks=[:scatter_1d], force_notify=false)
+                update_menu_safe!(w[:y_axis], Any[menu_opt(:none)]; fallbacks=[:none])
+                update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             elseif D == 2
-                update_menu_safe!(w[:Plot_Style], Any[("2D", :scatter2d), ("2D (Surface)", :scatter2d_surface)]; fallbacks=[:scatter2d], force_notify=false)
-                update_menu_safe!(w[:Y_Axis], Any[(string(sy), sy)]; fallbacks=[sy])
-                update_menu_safe!(w[:Z_Axis], Any[("disabled", :None)]; fallbacks=[:None])
+                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_2d), menu_opt(:scatter_surface)]; fallbacks=[:scatter_2d], force_notify=false)
+                update_menu_safe!(w[:y_axis], Any[(string(sy), sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             else
-                update_menu_safe!(w[:Plot_Style], Any[("3D", :scatter3d)]; fallbacks=[:scatter3d], force_notify=false)
-                update_menu_safe!(w[:Y_Axis], Any[(string(sy), sy)]; fallbacks=[sy])
-                update_menu_safe!(w[:Z_Axis], Any[(string(sz), sz)]; fallbacks=[sz])
+                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_3d)]; fallbacks=[:scatter_3d], force_notify=false)
+                update_menu_safe!(w[:y_axis], Any[(string(sy), sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:z_axis], Any[(string(sz), sz)]; fallbacks=[sz])
             end
             
-            anim_options = Any[("None", :None)]
+            anim_options = Any[menu_opt(:none)]
             for i in 1:n_params
                 ax_sym = dim_names[i]
                 ax_str = String(ax_sym)
@@ -882,16 +871,16 @@ function _setup_chain_A!(::Val{:lagrangian})
                     push!(anim_options, (nice_string(ax_str), ax_sym))
                 end
             end
-            update_menu_safe!(w[:Anim_Target], anim_options; fallbacks=[:None])
+            update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
             
-            compare_opts = Any[("None", :None), ("Methods", :Methods), ("Component", :Component)]
+            compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
             if !isnothing(l_data.domain.time_dim)
-                push!(compare_opts, ("Time", :Time))
+                push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
                 push!(compare_opts, (string(p_key), Symbol(p_key)))
             end
-            update_menu_safe!(w[:Compare_Target], compare_opts; fallbacks=[:None], force_notify=false)
+            update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
         end
     end
 end
@@ -902,7 +891,7 @@ end
 
 function _setup_chain_B!(::Val{:eulerian})
     w = manager.widgets
-    x_sel, y_sel, z_sel = w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection
+    x_sel, y_sel, z_sel = w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection
     active_axes_obs = manager.state[:Active_Axes]
 
     manager.listeners[:Eulerian_Chain_B] = onany(x_sel, y_sel, z_sel, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
@@ -914,7 +903,7 @@ function _setup_chain_B!(::Val{:eulerian})
             isnothing(sim_data) && return
             
             axes_set = Set{Int}()
-            active_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_val, y_val, z_val])
+            active_axes_syms = filter(s -> !isnothing(s) && s != :none, [x_val, y_val, z_val])
             active_loop_dims = Symbol[]
             
             for val in active_axes_syms
@@ -940,7 +929,7 @@ function _setup_chain_B!(::Val{:eulerian})
             end
             
             sort!(valid_fields, by = x -> x[1])
-            update_menu_safe!(w[:U_Axis], valid_fields; fallbacks=[:Solution], force_notify=false)
+            update_menu_safe!(w[:u_axis], valid_fields; fallbacks=[:Solution], force_notify=false)
             
             active_axes_obs.val = collect(axes_set)
             notify(active_axes_obs)
@@ -952,7 +941,7 @@ function _setup_chain_B!(::Val{:lagrangian})
     w = manager.widgets
     active_axes_obs = manager.state[:Active_Axes]
 
-    manager.listeners[:Lagrangian_Chain_B] = onany(w[:X_Axis].selection, w[:Y_Axis].selection, w[:Z_Axis].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
+    manager.listeners[:Lagrangian_Chain_B] = onany(w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
         @with_lock :Menu_B begin
             isempty(plot_data_dict) && return
             
@@ -971,14 +960,14 @@ function _setup_chain_B!(::Val{:lagrangian})
                 end
             end
             sort!(valid_fields, by = x -> x[1])
-            update_menu_safe!(w[:U_Axis], valid_fields; fallbacks=[:Solution], force_notify=false)
+            update_menu_safe!(w[:u_axis], valid_fields; fallbacks=[:Solution], force_notify=false)
             
             axes_set = Set{Int}()
             idx_x = findfirst(isequal(x_val), manager.plot_vars); !isnothing(idx_x) && push!(axes_set, idx_x)
-            if y_val != :None
+            if y_val != :none
                 idx_y = findfirst(isequal(y_val), manager.plot_vars); !isnothing(idx_y) && push!(axes_set, idx_y)
             end
-            if z_val != :None
+            if z_val != :none
                 idx_z = findfirst(isequal(z_val), manager.plot_vars); !isnothing(idx_z) && push!(axes_set, idx_z)
             end
             
@@ -994,23 +983,23 @@ end
 
 function _setup_chain_C!(mode::Val{T}) where T
     w = manager.widgets
-    manager.listeners[:Chain_C] = onany(w[:U_Axis].selection, manager.plot_data) do u_val, plot_data_dict
+    manager.listeners[:Chain_C] = onany(w[:u_axis].selection, manager.plot_data) do u_val, plot_data_dict
         @with_lock :Menu_C begin
             pd_first, sim_data = _get_active_sim_data(plot_data_dict)
             isnothing(sim_data) && return
             
-            target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
+            target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
             target_tensor = get(sim_data.stats, target_field, sim_data.stats[:Solution])
             
             comp_max = _get_component_num_plots(mode, target_tensor)
             
-            comp_names_tuple = manager.ui[:Labels][:comp_names]
+            comp_names_tuple = manager.ui[:labels][:comp_names]
             c_options = Any[]
             for i in 1:comp_max
                 name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
                 push!(c_options, (name, i))
             end
-            update_menu_safe!(w[:c], c_options; fallbacks=[1])
+            update_menu_safe!(w[:component], c_options; fallbacks=[1])
         end
     end
 end

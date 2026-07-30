@@ -1,3 +1,8 @@
+function is_reference_method(m_name::Symbol)
+    lm = lowercase(String(m_name))
+    return any(k -> occursin(k, lm), ["analytic", "reference", "exact", "baseline", "true"])
+end
+
 """
     run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
 
@@ -18,62 +23,29 @@ function run_smart_simulation(sim_func::Function, params::ParamDict; force_overw
     
     return sim_data
 end
-"""
-    reconstruct_tuple_parameters!(params::ParamDict)
 
-Finds parameters with dimensional identifiers (e.g., Ns__x, Ns__1) and reconstructs
-them into their base Tuple (e.g., Ns = (val1, val2)).
 """
-function generate_method_tasks(base_params, active_keys, active_values, sim_fixes; ignore_keys::Vector{String}=String[])
+    generate_method_tasks(base_params, active_keys, active_values; ignore_keys=Symbol[])
+
+Generates the parameter grid for a simulation sweep. Dynamically reconstructs 
+dimensional identifiers (e.g., Ns__x, Ns__1) back into their base Tuple (e.g., Ns = (val1, val2)).
+"""
+function generate_method_tasks(base_params::ParamDict, active_keys::Vector{Symbol}, active_values::Vector; ignore_keys::Vector{Symbol}=Symbol[])
     
-    # --- 1. Pre-bake the Base Parameters with UI Fixes ---
-    # We apply sim_fixes OUTSIDE the grid loop so we only parse them once.
     processed_base = copy(base_params)
-    tup_fixes = Dict{String, Vector{Any}}()
-    
-    for (k, v) in sim_fixes
-        k in ignore_keys && continue
-        
-        m = match(r"^(.+)__([a-zA-Z0-9]+)$", k)
-        if !isnothing(m)
-            base = String(m.captures[1])
-            base in ignore_keys && continue
-            idx_str = m.captures[2]
-            idx = (idx_str == "x" || idx_str == "1") ? 1 :
-                  (idx_str == "y" || idx_str == "2") ? 2 :
-                  (idx_str == "z" || idx_str == "3") ? 3 : tryparse(Int, idx_str)
-            
-            if !isnothing(idx)
-                if !haskey(tup_fixes, base)
-                    tup_fixes[base] = haskey(processed_base, base) ? collect(Any, processed_base[base]) : Any[]
-                end
-                arr = tup_fixes[base]
-                while length(arr) < idx; push!(arr, 0.0); end
-                arr[idx] = v
-                continue
-            end
-        end
-        # Standard parameter
-        processed_base[k] = v
-    end
-    
-    # Reconstruct Fixed Tuples
-    for (base, arr) in tup_fixes
-        processed_base[base] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : 
-                               all(x -> x isa Real, arr) ? Tuple(Float64.(arr)) : Tuple(arr)
-    end
 
-    # --- 2. Pre-parse Varied Parameters (Active Keys) ---
+    # --- 1. Pre-parse Varied Parameters (Active Keys) ---
     # Regex parsing is slow! We only do it once here instead of N times in the grid.
-    varied_std = Tuple{Int, String}[]       # Stores: (index_in_pvals, key)
-    varied_tup = Tuple{Int, String, Int}[]  # Stores: (index_in_pvals, base_name, tuple_idx)
+    varied_std = Tuple{Int, Symbol}[]       # Stores: (index_in_pvals, key)
+    varied_tup = Tuple{Int, Symbol, Int}[]  # Stores: (index_in_pvals, base_name, tuple_idx)
     
     for (i, k) in enumerate(active_keys)
         k in ignore_keys && continue
         
-        m = match(r"^(.+)__([a-zA-Z0-9]+)$", k)
+        # Convert Symbol to String strictly for the Regex match
+        m = match(r"^(.+)__([a-zA-Z0-9]+)$", String(k))
         if !isnothing(m)
-            base = String(m.captures[1])
+            base = Symbol(m.captures[1])
             base in ignore_keys && continue
             idx_str = m.captures[2]
             idx = (idx_str == "x" || idx_str == "1") ? 1 :
@@ -88,7 +60,7 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
         push!(varied_std, (i, k))
     end
 
-    # --- 3. Grid Generation ---
+    # --- 2. Grid Generation ---
     if isempty(active_values)
         param_grid = [()]
     else
@@ -109,7 +81,7 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
         
         # Apply Tuple Varied Parameters
         if !isempty(varied_tup)
-            tup_updates = Dict{String, Vector{Any}}()
+            tup_updates = Dict{Symbol, Vector{Any}}()
             
             for (i, base, idx) in varied_tup
                 # User's Safety Skip applied directly to the resolved base tuple
@@ -139,25 +111,25 @@ function generate_method_tasks(base_params, active_keys, active_values, sim_fixe
 end
 
 """
-    get_ignore_keys(method_collection::MethodDict, method_name::String)
+    get_ignore_keys(method_collection::MethodDict, method_name::Symbol)
 
 Safely extracts the list of keys a specific method wishes to ignore.
 """
-function get_ignore_keys(method_collection::MethodDict, method_name::String)
+function get_ignore_keys(method_collection::MethodDict, method_name::Symbol)
     method_dict = get(method_collection, method_name, ParamDict())
-    raw_ignore = get(method_dict, "ignore", String[])
+    raw_ignore = get(method_dict, :ignore, Symbol[])
     
     if raw_ignore isa AbstractVector || raw_ignore isa Tuple
-        return String.(raw_ignore)
-    elseif raw_ignore isa AbstractString
-        return [String(raw_ignore)]
+        return Symbol.(raw_ignore)
+    elseif raw_ignore isa AbstractString || raw_ignore isa Symbol
+        return [Symbol(raw_ignore)]
     else
-        return String[]
+        return Symbol[]
     end
 end
 
 """
-    assembleParams(shared_params::ParamDict, method_collection::MethodDict, method_name::String)
+    assembleParams(shared_params::ParamDict, method_collection::MethodDict, method_name::Symbol)
 
 Backend version: Constructs a flat parameter dictionary for a simulation run by combining
 shared parameters and method-specific parameters.
@@ -165,12 +137,10 @@ shared parameters and method-specific parameters.
 function assembleParams(
     shared_params::ParamDict,
     method_collection::MethodDict,
-    method_name::String
+    method_name::Symbol
 )::ParamDict
 
     method_dict = get(method_collection, method_name, ParamDict())
-    
-    # Use the new helper!
     ignore_keys = get_ignore_keys(method_collection, method_name)
     
     current_params = ParamDict()
@@ -179,7 +149,7 @@ function assembleParams(
     for (key, val) in shared_params
         key in ignore_keys && continue
         
-        if val isa Tuple && length(val) == 2 && val[1] == :const
+        if val isa Tuple && length(val) == 2 && val[1] === :const
             current_params[key] = val[2]
         else
             current_params[key] = val
@@ -188,8 +158,8 @@ function assembleParams(
 
     # 2. Add/Override with method-specific parameters
     for (key, val) in method_dict
-        key == "ignore" && continue 
-        if val isa Tuple && length(val) == 2 && val[1] == :const
+        key === :ignore && continue 
+        if val isa Tuple && length(val) == 2 && val[1] === :const
             current_params[key] = val[2]
         else
             current_params[key] = val
@@ -206,9 +176,8 @@ Perfect for headless execution without UI overhead.
 """
 function runAllSimulations(
     sim_config::SimulationConfig;
-    active_methods::Vector{String} = sim_config.default_methods,
+    active_methods::Vector{Symbol} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
-    fixed_params::ParamDict = ParamDict(),
     force_overwrite::Bool = false,
     calculate_stats::Bool = false,
     parallel::Bool = false
@@ -221,10 +190,10 @@ function runAllSimulations(
     # 1. Generate all parameter combinations across all methods
     all_tasks = Vector{ParamDict}()
     for method in active_methods
-        if contains(safe_string(method), "analytic") || contains(safe_string(method), "reference"); continue; end
+        if is_reference_method(method); continue; end
         base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
-        tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)
+        tasks, _ = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
         append!(all_tasks, tasks)
     end
     
@@ -238,7 +207,6 @@ function runAllSimulations(
     p = Progress(num_tasks; desc="Running Simulations...")
     counter = Threads.Atomic{Int}(0)
     
-    # THE FIX: Track the time vectors to enforce a global standard
     t_vectors = Vector{Vector{Float64}}(undef, num_tasks)
     
     function _run_task(i, params)
@@ -271,15 +239,14 @@ function runAllSimulations(
         counter2 = Threads.Atomic{Int}(0)
         
         function _post_task(params)
-            sim_data = loadSimData(params,Val(:raw))
+            sim_data = loadSimData(params, Val(:raw))
             if !isnothing(sim_data)  
-                
                 if calculate_stats
-                        calculateAllStats!(
-                            sim_data, 
-                            sim_config.reference_func; 
-                            force_overwrite=force_overwrite,
-                        )
+                    calculateAllStats!(
+                        sim_data, 
+                        sim_config.reference_func; 
+                        force_overwrite=force_overwrite,
+                    )
                 end
             end
         end

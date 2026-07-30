@@ -194,7 +194,7 @@ Executes sequentially to avoid I/O bottlenecks and allow internal mathematical t
 """
 function calculateAllStats!(
     sim_config::SimulationConfig;
-    active_methods::Vector{String} = sim_config.default_methods,
+    active_methods::Vector{Symbol} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
     fixed_params::ParamDict = ParamDict(),
     kwargs...
@@ -204,7 +204,7 @@ function calculateAllStats!(
     all_tasks = Vector{ParamDict}()
     
     for method in active_methods
-        if contains(safe_string(method), "analytic") || contains(safe_string(method), "reference"); continue end
+        if is_reference_method(method); continue end
         base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)

@@ -19,23 +19,6 @@ function _get_active_title_indices(::Val{:lagrangian}, x_sel, y_sel, z_sel, sim_
     return filter(!isnothing, [findfirst(isequal(ax), manager.plot_vars) for ax in spatial_axes])
 end
 
-_resolve_plot_type(::Val{:eulerian}, style_sel, sim_data) = Symbol(style_sel)
-function _resolve_plot_type(::Val{:lagrangian}, style_sel, sim_data)
-    ptype_sym = Symbol(style_sel)
-    isnothing(sim_data) && return ptype_sym
-    D = length(sim_data.domain.dim_keys) - (isnothing(sim_data.domain.time_dim) ? 0 : 1)
-    
-    if (ptype_sym == :lines || ptype_sym == :Lines) && D == 1
-        return :scatterlines
-    elseif (ptype_sym == :colors || ptype_sym == :Colors) && D == 1
-        return :scattercolors
-    elseif (ptype_sym == :surface2D || style_sel == "2D (Surface)") && D == 2
-        return :scatter2d_surface
-    else
-        return D == 1 ? :scatter1d : (D == 2 ? :scatter2d : :scatter3d)
-    end
-end
-
 _get_time_vals(::Val{:eulerian}, sim_data, t_dim) = isnothing(t_dim) ? [0.0] : sim_data.axes[t_dim]
 _get_time_vals(::Val{:lagrangian}, sim_data, t_dim) = sim_data.t
 
@@ -264,7 +247,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
     manager.listeners[:Plot] = on(manager.triggers[:Plot]) do _
         local success = false
         @with_lock :Plot begin
-            success = _handle_primitive_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+            success = _handle_plot_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
         end
         if success
             manager.triggers[:Slider][] += 1

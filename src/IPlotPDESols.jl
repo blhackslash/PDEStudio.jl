@@ -142,13 +142,13 @@ end
 function get_base_layout_options()
     return Dict{Symbol, Any}(
         :Base_Plot_Selection       => :lines,
-        :Plot_Style_Selection      => :one_d,
+        :Plot_Style_Selection      => :lines,
         :Compare_Target_Selection  => :None, 
         :Compare_Columns_Selection => 2,     
         :Compare_Link_Selection    => :fully_coupled,
-        :Legend_Base_Selection     => :right,
+        :Legend_Base_Selection     => :top,
         :Legend_Add_Selection      => :detached,
-        :Plot_Width_Selection      => 600,
+        :Plot_Width_Selection      => 500,
         :Plot_Height_Selection     => 400,
         :Anim_Target_Selection     => :None
     )
@@ -206,6 +206,16 @@ struct PlotSweepData{N} <: AbstractPlotData
     active_param_keys::Vector{String}
     active_param_values::Vector{Vector{Any}}
 end
+       
+include("DataHandler.jl")
+include("PlottingLogic.jl")
+include("MakiePlotting.jl")
+include("UIStyles.jl")
+include("PlottingUtils.jl")
+include("Controls.jl")
+include("UILogic.jl")
+include("Render.jl")
+include("ConfigIO.jl")
 
 function __init__()
     on(manager.mode) do _
@@ -275,15 +285,5 @@ function __init__()
         manager.triggers[:Data][] += 1
     end
 end
-       
-include("DataHandler.jl")
-include("PlottingLogic.jl")
-include("MakiePlotting.jl")
-include("UIStyles.jl")
-include("PlottingUtils.jl")
-include("Controls.jl")
-include("UILogic.jl")
-include("Render.jl")
-include("ConfigIO.jl")
 
 end

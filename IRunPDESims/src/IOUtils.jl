@@ -220,12 +220,7 @@ loadSimData(params::ParamDict) = loadSimData(params, Val(:raw))
 # --- Fast Metadata Reader ---
 function _get_native_type(file_name::String)
     return jldopen(file_name, "r") do file
-        if haskey(file, "native")
-            return file["native"]
-        else
-            # Backwards compatibility for older JLD2 files
-            return typeof(file["raw"]) <: ESimData ? :eulerian : :lagrangian
-        end
+        return file["native"]
     end
 end
 

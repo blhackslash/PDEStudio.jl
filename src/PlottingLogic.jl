@@ -10,12 +10,18 @@ function _handle_layout_trigger!(rebuild_func::Function)
     notify(manager.plot_data)
 
     if !isempty(manager.staged[:Layout])
+        # 1. Reset to base layout if requested
+        if get(manager.staged[:Layout], :reset, false)
+            apply_layout_options!(get_base_layout_options())
+        end
+        # 2. Apply explicit overrides
         apply_layout_options!(manager.staged[:Layout])
         empty!(manager.staged[:Layout])
     end
 
     if !isempty(manager.staged[:Plot])
-        apply_scene_options!(manager.staged[:Plot])
+        # 1. Apply explicit overrides
+        apply_plot_options!(manager.staged[:Plot])
         empty!(manager.staged[:Plot])
     end
 
@@ -30,35 +36,24 @@ function _handle_data_fetch_trigger!()
     notify(manager.plot_data)
 end
 
-function _handle_primitive_trigger!(
+function _handle_plot_trigger!(
     ::Val{T}, plot_layout, axes, num_plots, compare_labels,
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
     _build_param_indices, _mutate_compare_vals
 ) where T
-    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return false
-    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return false; end
-    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return false; end
+    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :none || u_sel[] == :none) && return false
+    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :none) && return false; end
+    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :none) && return false; end
     
     if !isempty(manager.staged[:Plot])
-        apply_scene_options!(manager.staged[:Plot])
+        apply_plot_options!(manager.staged[:Plot])
         empty!(manager.staged[:Plot])
     end
     data = manager.plot_data[]
     isempty(data) && return false
 
-    if !isempty(manager.staged[:UI])
-        for (scope, dict) in manager.staged[:UI]
-            if haskey(manager.ui, scope)
-                for (k, v) in dict
-                    manager.ui[scope][k] = v
-                end
-            end
-        end
-        empty!(manager.staged[:UI])
-    end
-
     target, _, _, _ = manager.staged[:Compare_State]
-    is_compare = target != :None
+    is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
 
     empty!(manager.caches)
@@ -75,8 +70,8 @@ function _handle_primitive_trigger!(
             manager.caches[i] = Dict{String, _cache_type(Val(manager.mode[]))}()
             
             mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-            target_c_int = (is_compare && target == :Component) ? i : c_sel[]
-            local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
+            target_c_int = (is_compare && target == :component) ? i : c_sel[]
+            local_methods = is_compare && target == :methods ? [manager.methods[][i]] : manager.methods[]
             
             data_tuples, valid_methods = fetch_pipeline_tuples(Val(manager.mode[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
             isempty(valid_methods) && continue
@@ -87,13 +82,13 @@ function _handle_primitive_trigger!(
             ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
             default_title = is_compare ? "$(compare_labels[i]) | $ts" : ts 
             
-            x_str = x_sel[] == :None ? "disabled" : string(x_sel[])
-            y_str = y_sel[] == :None ? "disabled" : string(y_sel[])
-            z_str = z_sel[] == :None ? "disabled" : string(z_sel[])
+            x_str = x_sel[] == :none ? "disabled" : string(x_sel[])
+            y_str = y_sel[] == :none ? "disabled" : string(y_sel[])
+            z_str = z_sel[] == :none ? "disabled" : string(z_sel[])
             u_str = string(u_sel[])
 
             initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, x_str, y_str, z_str, u_str, ts, Val(T), i)
-            axes[i].title[] = manager.ui[:Labels][:title] == "default" ? default_title : manager.ui[:Labels][:title]
+            axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
             
             if !is_3d_axis
                 x_lims, y_lims = data_tuples[1], data_tuples[2]
@@ -116,7 +111,7 @@ function _handle_slider_trigger!(u_sel)
     w = manager.widgets
     active_axes = manager.state[:Active_Axes][]
     u_val = u_sel[]
-    anim_val = w[:Anim_Target].selection[]
+    anim_val = w[:anim_target].selection[]
 
     target, target_idx, _, _ = manager.staged[:Compare_State]
     pd_first, sim_data = _get_active_sim_data(data)
@@ -126,7 +121,7 @@ function _handle_slider_trigger!(u_sel)
     total_dims = length(dim_names)
     n_params = total_dims - length(get_base_variables())
     
-    target_field = (isnothing(u_val) || u_val == :None) ? :Solution : u_val
+    target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
     base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
     kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
 
@@ -151,7 +146,7 @@ function _handle_slider_trigger!(u_sel)
             haskey(w, widget_key) || continue
             ctrl = w[widget_key]
             
-            slider_cache = get!(manager.staged, :Slider_Cache, Dict{Symbol, Float64}())
+            slider_cache = manager.staged[:Slider]
             if length(ctrl.range[]) > 1
                 slider_cache[widget_key] = Float64(ctrl.value[])
             end
@@ -211,9 +206,9 @@ function _handle_data_trigger!(
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
     _build_param_indices, _mutate_compare_vals
 ) where T
-    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :None || u_sel[] == :None) && return false
-    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :None) && return false; end
-    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :None) && return false; end
+    (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :none || u_sel[] == :none) && return false
+    if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :none) && return false; end
+    if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :none) && return false; end
     
     caches = manager.caches
     data = manager.plot_data[]
@@ -221,7 +216,7 @@ function _handle_data_trigger!(
     (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return false
 
     target, _, _, _ = manager.staged[:Compare_State]
-    is_compare = target != :None
+    is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     
     sel_vals = [to_value(obs) for obs in selector_obs]
@@ -229,8 +224,8 @@ function _handle_data_trigger!(
     
     for i in 1:num_plots
         mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
-        target_c_int = (is_compare && target == :Component) ? i : c_sel[]
-        local_methods = is_compare && target == :Methods ? [manager.methods[][i]] : manager.methods[]
+        target_c_int = (is_compare && target == :component) ? i : c_sel[]
+        local_methods = is_compare && target == :methods ? [manager.methods[][i]] : manager.methods[]
         
         data_tuples, valid_methods = fetch_pipeline_tuples(Val(manager.mode[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
         isempty(valid_methods) && continue
@@ -250,7 +245,7 @@ function _handle_data_trigger!(
         
         ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
         default_title = is_compare ? compare_labels[i] : ts
-        axes[i].title[] = manager.ui[:Labels][:title] == "default" ? default_title : manager.ui[:Labels][:title]
+        axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
     end
     for ax in axes; apply_axis_limits_overrides!(ax); end
     _enforce_camera_lock!(axes)
@@ -258,6 +253,23 @@ function _handle_data_trigger!(
 end
 
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
+
+    if !isempty(manager.staged[:UI])
+        # Force a UI rebuild if the reset flag is present
+        if get(manager.staged[:UI], :reset, false)
+            switch_ui_plot_type!(T)
+        end
+        
+        for (scope, dict) in manager.staged[:UI]
+            scope === :reset && continue # Skip applying the flag itself
+            if haskey(manager.ui, scope)
+                for (k, v) in dict
+                    manager.ui[scope][k] = v
+                end
+            end
+        end
+        empty!(manager.staged[:UI])
+    end
 
     if !isempty(manager.staged[:Camera])
         manager.state[:Camera_Locked][] = true
@@ -277,7 +289,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         end
     end
 
-    ui_app = manager.ui[:Plot_Style]
+    ui_app = manager.ui[:plot_style]
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     
     for (i, ax) in enumerate(axes)
@@ -353,13 +365,13 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         w[w_key].value
     end
 
-    x_sel, y_sel = w[:X_Axis].selection, w[:Y_Axis].selection
-    z_sel, u_sel = w[:Z_Axis].selection, w[:U_Axis].selection
-    c_sel = w[:c].selection
+    x_sel, y_sel = w[:x_axis].selection, w[:y_axis].selection
+    z_sel, u_sel = w[:z_axis].selection, w[:u_axis].selection
+    c_sel = w[:component].selection
     
-    target = w[:Compare_Target].selection[]
-    cols = w[:Compare_Columns].selection[]
-    link_mode = w[:Compare_Link].selection[]
+    target = w[:compare_target].selection[]
+    cols = w[:compare_columns].selection[]
+    link_mode = w[:compare_link].selection[]
     
     num_plots, compare_labels, compare_vals = 1, String[], Any[]
 
@@ -369,14 +381,14 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         sim_data = _get_first_valid(pd_first)
         
         if !isnothing(sim_data)
-            if target == :Methods
+            if target == :methods
                 compare_labels = manager.methods[]
                 num_plots = length(compare_labels)
-            elseif target == :Component
+            elseif target == :component
                 target_tensor = get(sim_data.stats, u_sel[], sim_data.stats[:Solution])
                 num_plots = _get_component_num_plots(Val(manager.mode[]), target_tensor)
                 
-                comp_names_tuple = manager.ui[:Labels][:comp_names]
+                comp_names_tuple = manager.ui[:labels][:comp_names]
                 for i in 1:num_plots
                     if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
                         push!(compare_labels, string(comp_names_tuple[i]))
@@ -402,10 +414,10 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         end
     end
     
-    if target == :None || num_plots == 0; num_plots = 1; target = :None; end
+    if target == :none || num_plots == 0; num_plots = 1; target = :none; end
     is_det, halign, valign = _parse_legend_position()
     
-    has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :Methods
+    has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :methods
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
@@ -418,8 +430,8 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         push!(axes, ax)
     end
     
-    p_w = w[:Plot_Width].selection[]
-    p_h = w[:Plot_Height].selection[]
+    p_w = w[:plot_width].selection[]
+    p_h = w[:plot_height].selection[]
     for i in 1:plot_layout.size[1]; rowsize!(plot_layout, i, Auto()); end
     for i in 1:plot_layout.size[2]; colsize!(plot_layout, i, Auto()); end
     
