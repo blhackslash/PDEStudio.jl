@@ -17,7 +17,7 @@ function load_and_apply_csv!(filepath::String)
     
     parsed = parse_csv_to_dict(filepath)
     
-    # Restore Grid Resolutions BEFORE loading config
+    # Restore Grid Resolutions BEFORE loading config[cite: 16]
     if haskey(parsed, "Config") && haskey(parsed["Config"], "Resolutions")
         res = parsed["Config"]["Resolutions"]
         haskey(res, "N")   && (set_space_resolution!(res["N"]))
@@ -35,7 +35,7 @@ function load_and_apply_csv!(filepath::String)
     
     new_config = csv_to_simulation_config(parsed, resolved_func)
     
-    # Empty existing caches 
+    # Empty existing caches[cite: 16]
     for (key,cache_dict) in manager.caches
         empty!(cache_dict)
     end
@@ -48,15 +48,27 @@ function load_and_apply_csv!(filepath::String)
         manager.staged[:UI] = _apply_backend_keys(parsed["UI"])
     end
     
-    if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
+    # --- LOAD SCENE: LAYOUT ---
+    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
+        manager.staged[:Layout] = _apply_backend_keys(parsed["Scene"]["Layout"])
+    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") # Legacy Fallback
         manager.staged[:Layout] = _apply_backend_keys(parsed["Layout"]["General"])
     end
 
-    if haskey(parsed, "Plot") && haskey(parsed["Plot"], "General")
+    # --- LOAD SCENE: PLOT ---
+    plot_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Plot")
+        parsed["Scene"]["Plot"]
+    elseif haskey(parsed, "Plot") && haskey(parsed["Plot"], "General") # Legacy Fallback
+        parsed["Plot"]["General"]
+    else
+        nothing
+    end
+
+    if !isnothing(plot_source)
         plot_dict = Dict{Symbol, Any}()
-        for (k, v) in parsed["Plot"]["General"]
+        for (k, v) in plot_source
             bk = backend_key(k)
-            # Differentiate UI selections from strictly-cased Parameter Sliders
+            # Differentiate UI selections from strictly-cased Parameter Sliders[cite: 16]
             if bk in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
                 plot_dict[bk] = v
             else
@@ -66,11 +78,32 @@ function load_and_apply_csv!(filepath::String)
         manager.staged[:Plot] = plot_dict
     end
 
-    # Explicitly preserve exact Camera state formatting
-    if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
-        manager.staged[:Camera] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in parsed["Camera"]["General"])
+    # --- LOAD SCENE: CAMERA ---
+    cam_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Camera")
+        parsed["Scene"]["Camera"]
+    elseif haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") # Legacy Fallback
+        parsed["Camera"]["General"]
+    else
+        nothing
+    end
+
+    if !isnothing(cam_source) && !isempty(cam_source)
+        manager.staged[:Camera] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
     else
         manager.staged[:Camera] = Dict{Symbol, Any}()
+    end
+    
+    # --- LOAD SCENE: LABELS ---
+    labels_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Labels")
+        parsed["Scene"]["Labels"]
+    else
+        nothing
+    end
+    
+    if !isnothing(labels_source)
+        for (k, v) in labels_source
+            set_label!(Symbol(k), string(v))
+        end
     end
     
     @info "Config buffered! Press 'Run Simulation' to compute and apply."
@@ -79,37 +112,63 @@ end
 """
     csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
 
-Converts a parsed nested CSV dictionary into a properly formatted `SimulationConfig`.
+Converts a parsed nested CSV dictionary into a properly formatted `SimulationConfig`,
+ensuring all backend keys are strongly typed as Symbols.
 """
 function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
-    # 1. Extract Shared Parameters
-    shared_params = Dict{String, Any}()
+    # 1. Extract Shared Parameters (Cast to Symbol keys)
+    shared_params = Dict{Symbol, Any}()
     if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "shared")
-        shared_params = parsed_csv["Simulation"]["shared"]
+        for (k, v) in parsed_csv["Simulation"]["shared"]
+            shared_params[Symbol(k)] = v
+        end
     end
 
-    # 2. Extract Methods 
-    methods_dict = Dict{String, Dict{String, Any}}()
+    # 2. Extract Methods (Cast to Symbol keys)
+    methods_dict = Dict{Symbol, Dict{Symbol, Any}}()
     if haskey(parsed_csv, "Simulation")
         for (scope, params) in parsed_csv["Simulation"]
             if scope != "shared"
-                methods_dict[scope] = params
+                m_sym = Symbol(scope)
+                methods_dict[m_sym] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in params)
             end
         end
     end
 
-    # 3. Extract Varied Parameters from the Config Category
-    varied_params = Dict{String, Vector}()
+    # 3. Extract Varied Parameters from the Config Category (Cast to Symbol keys)
+    varied_params = Dict{Symbol, Vector{Any}}()
     if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "Parameters")
         for (k, v) in parsed_csv["Config"]["Parameters"]
-            varied_params[k] = v
+            varied_params[Symbol(k)] = v
         end
     else
         @warn "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
     end
 
-    # 4. Default Methods
-    default_methods = sort_methods_robust(collect(keys(methods_dict)))
+    # 4. Default Methods (Explicit override if available!)
+    default_methods = Symbol[]
+    has_explicit_active = false
+    
+    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General") && haskey(parsed_csv["Config"]["General"], "active_methods")
+        raw_active = parsed_csv["Config"]["General"]["active_methods"]
+        if raw_active isa AbstractVector
+            default_methods = Symbol.(raw_active)
+            has_explicit_active = true
+            
+            # Ensure every explicitly active method has at least an empty dict to prevent backend crashes
+            for m in default_methods
+                if !haskey(methods_dict, m)
+                    methods_dict[m] = Dict{Symbol, Any}()
+                end
+            end
+        end
+    end
+    
+    # Fallback for older CSVs without the explicitly saved active methods
+    if isempty(default_methods)
+        default_methods = collect(keys(methods_dict))
+    end
+    default_methods = sort_methods_robust(default_methods)
 
     # 5. Extract Reference Name explicitly from Config
     ref_name = nothing
@@ -132,15 +191,15 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         end
         
         if !isnothing(ref_factory)
-            # We must pass the generic Dict; the SimulationConfig constructor will handle Symbol conversion
-            shared_sym_temp = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in shared_params)
-            ref_func = ref_factory(shared_sym_temp)
+            ref_func = ref_factory(shared_params)
+            ns = Symbol(ref_name)
             
-            ns = nice_string(safe_ref_name)
             if !haskey(methods_dict, ns)
-                methods_dict[ns] = Dict{String, Any}()
+                methods_dict[ns] = Dict{Symbol, Any}()
             end
-            if !(ns in default_methods)
+            
+            # Only force the reference method to be active if we didn't get an explicit list from the CSV
+            if !(ns in default_methods) && !has_explicit_active
                 push!(default_methods, ns)
                 default_methods = sort_methods_robust(default_methods)
             end
@@ -154,11 +213,10 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     
     return SimulationConfig(
         sim_func_str, 
-        ref_name,     
         shared_params,
         methods_dict,
         default_methods;
-        varied_params = varied_params
+        varied_params = varied_params, ref_func_name = ref_name
     )
 end
 
@@ -319,25 +377,31 @@ function saveParametersToCSV(
             for (k, v) in info; add_row("Julia", scope, k, v); end
         end
 
-        # --- 2. CATEGORY: Plot ---
+        # --- 2. CATEGORY: Scene ---
         plot_opts = extract_plot_options()
         for (k, v) in plot_opts
             if k in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
-                add_row("Plot", "General", frontend_key(k), v)
+                add_row("Scene", "Plot", frontend_key(k), v)
             else
-                add_row("Plot", "General", string(k), v) # Preserve exact parameter names
+                add_row("Scene", "Plot", string(k), v) # Preserve exact parameter names
             end
         end
         
         layout_opts = extract_layout_options()
         for (k, v) in layout_opts
-            add_row("Layout", "General", frontend_key(k), v)
+            add_row("Scene", "Layout", frontend_key(k), v)
         end
         
-        # Explicitly preserve exact Camera state formatting
         cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
         for (k, v) in cam_opts
-            add_row("Camera", "General", string(k), v)
+            add_row("Scene", "Camera", string(k), v)
+        end
+
+        if haskey(manager.maps, :Labels)
+            for (k, v) in manager.maps[:Labels]
+                # Save the raw backend key as the parameter, and the user's label as the value
+                add_row("Scene", "Labels", string(k), v)
+            end
         end
 
         # --- 3. CATEGORY: UI ---
@@ -369,7 +433,8 @@ function saveParametersToCSV(
         
         add_row("Config", "General", "simulation_func", string(config.simulation_name))
         add_row("Config", "General", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
-        
+        add_row("Config", "General", "active_methods", manager.methods[])
+
         add_row("Config", "Resolutions", "N", get_space_resolution())
         add_row("Config", "Resolutions", "T", get_time_resolution())
         add_row("Config", "Resolutions", "Ref", get_ref_resolution())

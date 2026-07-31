@@ -59,6 +59,12 @@ LagrangianPlotCache() = LagrangianPlotCache(Observable{Any}([]), Observable{Any}
 # ==============================================================================
 abstract type AbstractPlotData end
 
+struct PlotSweepData{N} <: AbstractPlotData
+    data::Array{Union{Nothing, AbstractSimData}, N} 
+    active_param_keys::Vector{Symbol}
+    active_param_values::Vector{Vector{Any}}
+end
+
 mutable struct PlotManager 
     ui::Dict{Symbol, Dict{Symbol, Any}}     
     widgets::Dict{Symbol, Any}              
@@ -86,7 +92,7 @@ function PlotManager()
     return PlotManager(
         Dict{Symbol, Dict{Symbol, Any}}(),
         Dict{Symbol, Any}(), Dict{Symbol, Observable{Int}}(),
-        Dict{Symbol, Any}(), 
+        Dict{Symbol, Any}(:Simulation => Observable(0)), 
         Dict{Symbol, Observable{Bool}}(), 
         Dict{Symbol, Any}(),                   
         Dict{Symbol, Any}(),                   
@@ -101,9 +107,6 @@ function PlotManager()
 end
 
 const manager = PlotManager()
-
-set_mode!(mode::Symbol) = (manager.mode[] = mode)
-force_simulation() = notify(manager.triggers[:Simulation])
 
 macro with_lock(lock_name, expr)
     return quote
@@ -133,12 +136,6 @@ macro with_lock(lock_name, expr)
         end
     end
 end
-
-struct PlotSweepData{N} <: AbstractPlotData
-    data::Array{Union{Nothing, AbstractSimData}, N} 
-    active_param_keys::Vector{Symbol}
-    active_param_values::Vector{Vector{Any}}
-end
        
 include("DataHandler.jl")
 include("PlottingLogic.jl")
@@ -165,6 +162,80 @@ function get_base_layout_options()
         :plot_height     => 400,
         :anim_target     => :none
     )
+end
+
+set_mode!(mode::Symbol) = (manager.mode[] = mode)
+force_simulation() = notify(manager.triggers[:Simulation])
+
+function simulation_trigger() 
+    @with_lock :Simulation begin
+        
+        curr_config = manager.active_config
+        (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
+
+        wanted_methods = manager.staged[:Methods][]
+        
+        if isempty(wanted_methods)
+            @warn "No methods staged! Please activate at least one method to run."
+            return
+        end
+
+        @info "Running dynamic calculations directly from active config..."
+        runAllSimulations(curr_config; active_methods = wanted_methods, calculate_stats = true, force_overwrite = false)
+        
+        if sort(manager.methods[]) != sort(wanted_methods)
+            manager.methods[] = copy(wanted_methods)
+        end
+        
+        @info "Running Simulation and Mapping UI..."
+
+        real_params = Symbol.(sort(collect(keys(curr_config.varied_params))))
+        param_map = Dict{Symbol, Symbol}()
+        reverse_map = Dict{Symbol, Symbol}()
+        
+        i = 1
+        while haskey(manager.widgets, Symbol("param_$(i)_label"))
+            p_key = Symbol("param_$i")
+            lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
+            
+            if i <= length(real_params)
+                real_sym = real_params[i]
+                param_map[p_key] = real_sym
+                reverse_map[real_sym] = p_key
+                
+                # THE FIX: Use frontend_key for the Slider UI Label!
+                lbl_obs[] = frontend_key(real_sym) * ":"  
+            else
+                lbl_obs[] = "Unused:"
+                if haskey(manager.widgets, p_key)
+                    manager.widgets[p_key].range[] = [0.0] 
+                end
+            end
+            i += 1
+        end
+        
+        # (Optional: If your x, y, z, t sliders also have Label observables, 
+        #  you can dynamically update them here too!)
+        for base_sym in get_base_variables()
+            base_lbl_key = Symbol("$(base_sym)_label")
+            if haskey(manager.widgets, base_lbl_key)
+                manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
+            end
+        end
+        
+        manager.maps[:Param] = param_map
+        manager.maps[:Reverse] = reverse_map
+        manager.plot_vars = [real_params; get_base_variables()]
+        
+        manager.locks[:Layout] = true
+        try
+            update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
+        finally
+            manager.locks[:Layout] = false
+            manager.flags[:Simulation][] = false
+        end
+    end
+    manager.triggers[:Data][] += 1
 end
 
 function reset_manager!()
@@ -196,6 +267,7 @@ function reset_manager!()
         manager.flags[k]    = Observable(false) 
     end
     manager.staged[:Layout] = get_base_layout_options()
+    manager.listeners[:Simulation] = on(manager.triggers[:Simulation]) do _; simulation_trigger() end
     
     for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
         manager.locks[k] = false
@@ -216,6 +288,7 @@ function reset_manager!()
     manager.maps[:Labels] = deepcopy(SYMBOL_TO_LABEL_MAP)
 end
 
+
 function __init__()
     on(manager.mode) do _
         reset_plotter!()
@@ -224,76 +297,6 @@ function __init__()
     reset_manager!()
     manager.active_config = DUMMY_CONFIG
     
-    on(manager.triggers[:Simulation]) do _
-        @with_lock :Simulation begin
-            
-            curr_config = manager.active_config
-            (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
-
-            wanted_methods = manager.staged[:Methods][]
-            
-            if isempty(wanted_methods)
-                @warn "No methods staged! Please activate at least one method to run."
-                return
-            end
-
-            @info "Running dynamic calculations directly from active config..."
-            runAllSimulations(curr_config; active_methods = wanted_methods, calculate_stats = true, force_overwrite = false)
-            
-            if sort(manager.methods[]) != sort(wanted_methods)
-                manager.methods[] = copy(wanted_methods)
-            end
-            
-            @info "Running Simulation and Mapping UI..."
-
-            real_params = Symbol.(sort(collect(keys(curr_config.varied_params))))
-            param_map = Dict{Symbol, Symbol}()
-            reverse_map = Dict{Symbol, Symbol}()
-            
-            i = 1
-            while haskey(manager.widgets, Symbol("param_$(i)_label"))
-                p_key = Symbol("param_$i")
-                lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
-                
-                if i <= length(real_params)
-                    real_sym = real_params[i]
-                    param_map[p_key] = real_sym
-                    reverse_map[real_sym] = p_key
-                    
-                    # THE FIX: Use frontend_key for the Slider UI Label!
-                    lbl_obs[] = frontend_key(real_sym) * ":"  
-                else
-                    lbl_obs[] = "Unused:"
-                    if haskey(manager.widgets, p_key)
-                        manager.widgets[p_key].range[] = [0.0] 
-                    end
-                end
-                i += 1
-            end
-            
-            # (Optional: If your x, y, z, t sliders also have Label observables, 
-            #  you can dynamically update them here too!)
-            for base_sym in get_base_variables()
-                base_lbl_key = Symbol("$(base_sym)_label")
-                if haskey(manager.widgets, base_lbl_key)
-                    manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
-                end
-            end
-            
-            manager.maps[:Param] = param_map
-            manager.maps[:Reverse] = reverse_map
-            manager.plot_vars = [real_params; get_base_variables()]
-            
-            manager.locks[:Layout] = true
-            try
-                update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
-            finally
-                manager.locks[:Layout] = false
-                manager.flags[:Simulation][] = false
-            end
-        end
-        manager.triggers[:Data][] += 1
-    end
 end
 
 end

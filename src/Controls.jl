@@ -108,7 +108,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 
     manager.widgets[:compare_target]  = Menu(menu_layout[cr,1], options = compare_opts)
     manager.widgets[:compare_columns] = Menu(menu_layout[cr,2], options = Any[("$i", i) for i in 1:5])
-    manager.widgets[:compare_link]    = Menu(menu_layout[cr,3], options = Any[menu_opt(:fully_coupled), menu_opt(:coupled_colorbar), menu_opt(:decoupled)])
+    manager.widgets[:compare_link]    = Menu(menu_layout[cr,3], options = Any[menu_opt(:fully_coupled), menu_opt(:colorbar_only), menu_opt(:axes_only), menu_opt(:decoupled)])
 
     push!(gaps, 25); cr += 1
 

@@ -5,9 +5,16 @@ _cache_type(::Val{:eulerian}) = EulerianPlotCache
 _cache_type(::Val{:lagrangian}) = LagrangianPlotCache
 
 _get_component_num_plots(::Val{:eulerian}, target_tensor) = length(eltype(target_tensor))
+
 function _get_component_num_plots(::Val{:lagrangian}, target_tensor)
-    target_tensor_arr = (target_tensor isa AbstractArray && ndims(target_tensor) == 1) ? target_tensor : target_tensor[1]
-    return length(target_tensor_arr[1])
+    if target_tensor isa AbstractVector && eltype(target_tensor) <: AbstractVector
+        # Drill down: Timestep 1 -> Particle 1 -> SVector length
+        return (isempty(target_tensor) || isempty(target_tensor[1])) ? 1 : length(target_tensor[1][1])
+    elseif target_tensor isa AbstractVector
+        return isempty(target_tensor) ? 1 : length(target_tensor[1])
+    else
+        return length(target_tensor)
+    end
 end
 
 function _get_active_title_indices(::Val{:eulerian}, x_sel, y_sel, z_sel, sim_data)

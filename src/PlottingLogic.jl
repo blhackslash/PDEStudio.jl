@@ -66,8 +66,11 @@ function _handle_plot_trigger!(
     if !isempty(manager.methods[])
         sel_vals = [to_value(obs) for obs in selector_obs]
 
+        # THE FIX: Create pooling dictionaries for global max/min accumulation
+        plot_x_slices = Dict{Int, Any}()
+        plot_y_slices = Dict{Int, Any}()
+
         for i in 1:num_plots
-            # THE FIX: Strongly type the cache dictionary keys as Symbol!
             manager.caches[i] = Dict{Symbol, _cache_type(Val(manager.mode[]))}()
             
             mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
@@ -80,9 +83,8 @@ function _handle_plot_trigger!(
             sim_data = _get_first_valid(first(values(data)))
             active_title_indices = _get_active_title_indices(Val(manager.mode[]), x_sel, y_sel, z_sel, sim_data)
             
-            ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
+            ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
             
-            # THE FIX: Removed frontend_key (compare_labels is already a formatted String)
             default_title = is_compare ? "$(compare_labels[i]) | $ts" : ts 
             
             x_str = frontend_key(x_sel[])
@@ -94,15 +96,44 @@ function _handle_plot_trigger!(
             axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
             
             if !is_3d_axis
-                x_lims, y_lims = data_tuples[1], data_tuples[2]
-                safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-                if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
-                if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
-                
-                set_axis_limits_manager!(axes[i], x_lims, y_lims)
+                plot_x_slices[i] = data_tuples[1]
+                plot_y_slices[i] = data_tuples[2]
             end
-            _enforce_camera_lock!(axes)
         end
+
+        # THE FIX: Apply aggregated axis limits globally if linked!
+        if !is_3d_axis
+            link_mode = manager.widgets[:compare_link].selection[]
+            is_linked = link_mode in (:fully_coupled, :axes_only)
+            
+            global_x_slices = Any[]
+            global_y_slices = Any[]
+            if is_linked
+                for i in 1:num_plots
+                    if haskey(plot_x_slices, i)
+                        append!(global_x_slices, plot_x_slices[i])
+                        append!(global_y_slices, plot_y_slices[i])
+                    end
+                end
+            end
+            
+            for i in 1:num_plots
+                !haskey(plot_x_slices, i) && continue
+                
+                use_x = is_linked ? global_x_slices : plot_x_slices[i]
+                use_y = is_linked ? global_y_slices : plot_y_slices[i]
+                
+                # Check safe log scales instantly
+                min_x = _safe_extrema(use_x)[1]
+                min_y = _safe_extrema(use_y)[1]
+                
+                if axes[i].xscale[] == log10 && min_x <= 0; axes[i].xscale[] = identity; end
+                if axes[i].yscale[] == log10 && min_y <= 0; axes[i].yscale[] = identity; end
+                
+                set_axis_limits_manager!(axes[i], use_x, use_y)
+            end
+        end
+        _enforce_camera_lock!(axes)
     end
     return true
 end
@@ -225,6 +256,10 @@ function _handle_data_trigger!(
     sel_vals = [to_value(obs) for obs in selector_obs]
     sim_data = _get_first_valid(first(values(data)))
     
+    # THE FIX: Create pooling dictionaries for data triggers as well
+    plot_x_slices = Dict{Int, Any}()
+    plot_y_slices = Dict{Int, Any}()
+    
     for i in 1:num_plots
         mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
         target_c_int = (is_compare && target == :component) ? i : c_sel[]
@@ -234,22 +269,52 @@ function _handle_data_trigger!(
         isempty(valid_methods) && continue
         
         if !is_3d_axis
-            x_lims, y_lims = data_tuples[1], data_tuples[2]
-            safe_min(arrs) = isempty(arrs) ? 1.0 : minimum(v -> isempty(v) ? 1.0 : minimum(v), arrs)
-            if axes[i].xscale[] == log10 && safe_min(x_lims) <= 0; axes[i].xscale[] = identity; end
-            if axes[i].yscale[] == log10 && safe_min(y_lims) <= 0; axes[i].yscale[] = identity; end
-            
-            set_axis_limits_manager!(axes[i], x_lims, y_lims)
+            plot_x_slices[i] = data_tuples[1]
+            plot_y_slices[i] = data_tuples[2]
         end
         
         sync_data_to_cache!(caches[i], valid_methods, data_tuples, Val(PLOT_DIM_MAP[T]))
         
         active_title_indices = _get_active_title_indices(Val(manager.mode[]), x_sel, y_sel, z_sel, sim_data)
         
-        ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
+        ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
+        
         default_title = is_compare ? compare_labels[i] : ts
         axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
     end
+    
+    # THE FIX: Accumulate global axes max limits and set globally
+    if !is_3d_axis
+        link_mode = manager.widgets[:compare_link].selection[]
+        is_linked = link_mode in (:fully_coupled, :axes_only)
+        
+        global_x_slices = Any[]
+        global_y_slices = Any[]
+        if is_linked
+            for i in 1:num_plots
+                if haskey(plot_x_slices, i)
+                    append!(global_x_slices, plot_x_slices[i])
+                    append!(global_y_slices, plot_y_slices[i])
+                end
+            end
+        end
+        
+        for i in 1:num_plots
+            !haskey(plot_x_slices, i) && continue
+            
+            use_x = is_linked ? global_x_slices : plot_x_slices[i]
+            use_y = is_linked ? global_y_slices : plot_y_slices[i]
+            
+            min_x = _safe_extrema(use_x)[1]
+            min_y = _safe_extrema(use_y)[1]
+            
+            if axes[i].xscale[] == log10 && min_x <= 0; axes[i].xscale[] = identity; end
+            if axes[i].yscale[] == log10 && min_y <= 0; axes[i].yscale[] = identity; end
+            
+            set_axis_limits_manager!(axes[i], use_x, use_y)
+        end
+    end
+    
     for ax in axes; apply_axis_limits_overrides!(ax); end
     _enforce_camera_lock!(axes)
     return true

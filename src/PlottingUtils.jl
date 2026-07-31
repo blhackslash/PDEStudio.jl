@@ -18,18 +18,26 @@ function sort_methods_robust(methods::Vector{Symbol})
 end
 
 """
-    generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{String}, sel_vals)
+    generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{Symbol}, sel_vals, sim_data)
 """
 function generate_dynamic_title(
     plot_dims::Tuple, 
     dim_names::Vector{Symbol}, 
-    sel_vals
+    sel_vals,
+    sim_data::Union{Nothing, AbstractSimData} = nothing
 )
     title_parts = String[]
+    base_vars = get_base_variables() # Gets (:x, :y, :z, :t)
     
     for i in 1:length(dim_names)
-        # THE FIX: Use frontend_key to grab the mapped UI name
-        name = frontend_key(dim_names[i])
+        name_sym = dim_names[i]
+        
+        # Skip base variables that do not physically exist in this simulation
+        if !isnothing(sim_data) && (name_sym in base_vars) && !(name_sym in sim_data.domain.dim_keys)
+            continue
+        end
+        
+        name = titlecase(string(name_sym))
         
         if i in plot_dims
             push!(title_parts, "$name = [Axis]")

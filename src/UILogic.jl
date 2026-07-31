@@ -250,16 +250,22 @@ function _setup_button_state_machine!()
         w[:legend_base].selection, w[:legend_add].selection,
         w[:plot_width].selection, w[:plot_height].selection
     ) do _...
-        f_lay[] = true
+        # THE FIX: Ignore programmatic changes when running a Simulation or Layout update!
+        if !manager.locks[:Layout] && !manager.locks[:Simulation]
+            f_lay[] = true
+        end
     end
 
     manager.listeners[:Watch_Plot] = onany(
         w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, w[:u_axis].selection
     ) do _...
-        f_plot[] = true
+        # THE FIX: Ignore programmatic changes!
+        if !manager.locks[:Plot] && !manager.locks[:Layout] && !manager.locks[:Simulation]
+            f_plot[] = true
+        end
     end
 
-    # --- MASTER HIERARCHY RESOLVER (Evaluates Locked vs Needed vs Open visually) ---
+    # --- MASTER HIERARCHY RESOLVER ---
     manager.listeners[:Button_Hierarchy] = onany(f_sim, f_lay, f_plot) do sim_needed, lay_needed, plot_needed
         c_sim = :lightgreen;  l_sim = "Run Simulation"
         c_lay = :lightgreen;  l_lay = "Apply Layout"
@@ -473,11 +479,12 @@ function _setup_hierarchy_interactions!()
         end
 
         # Format UI keys nicely, but explicitly preserve exact casing for Simulation and Labels!
-        if cat === :simulation || cat === :labels
+        if cat === :labels
             new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[(string(k), k) for k in raw_keys]
         else
             new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[menu_opt(k) for k in raw_keys]
         end
+        filter!(k -> k[2] != :ignore, new_keys)
         
         update_menu_safe!(menu_key, new_keys; force_notify=true)
         sync_textbox_to_active_key()
@@ -518,13 +525,8 @@ function _setup_hierarchy_interactions!()
                     if haskey(manager.widgets, lbl_key)
                         manager.widgets[lbl_key][] = target_dict[key] * ":"
                     end
-                elseif scope === :components
-                    # Pinging the u_axis forces Chain_C to rebuild the component dropdown
-                    notify(manager.widgets[:u_axis].selection)
-                elseif scope === :methods
-                    # Pinging the activation mode forces the methods menu to rebuild
-                    notify(manager.state[:Is_Activate_Mode])
                 end
+                manager.triggers[:Plot][] += 1
             end
         catch e
             @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
@@ -625,12 +627,14 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         ptype_sym = manager.widgets[:plot_style].selection[]
         
-        local_data_obs = Observable(manager.plot_data[])
-        export_obs = setup_render_lift!(export_fig, export_layout, local_data_obs, Val(ptype_sym))
+        # THE FIX: Remove local_data_obs. Rely on the centralized manager!
+        export_obs = setup_render_lift!(export_fig, export_layout, Val(ptype_sym))
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
         export_axes = [c.content for c in export_layout.content if c.content isa Axis || c.content isa Axis3]
+        
         manager.triggers[:Plot][] += 1
+        
         for (c_ax, e_ax) in zip(current_axes, export_axes)
             if c_ax isa Axis3
                 e_ax.azimuth[] = c_ax.azimuth[]
@@ -872,7 +876,8 @@ function _setup_chain_A!(::Val{:eulerian})
                 push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
-                push!(compare_opts, (string(p_key), Symbol(p_key)))
+                # THE FIX: Use menu_opt instead of string()
+                push!(compare_opts, menu_opt(Symbol(p_key)))
             end
             update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
 
@@ -940,26 +945,27 @@ function _setup_chain_A!(::Val{:lagrangian})
             sy = D >= 2 ? spatial_keys[2] : :y
             sz = D >= 3 ? spatial_keys[3] : :z
             
-            update_menu_safe!(w[:x_axis], Any[(string(sx), sx)]; fallbacks=[sx], force_notify=true)
+            # THE FIX: Use menu_opt instead of string()
+            update_menu_safe!(w[:x_axis], Any[menu_opt(sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
                 update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_1d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]; fallbacks=[:scatter_1d], force_notify=false)
                 update_menu_safe!(w[:y_axis], Any[menu_opt(:none)]; fallbacks=[:none])
                 update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             elseif D == 2
                 update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_2d), menu_opt(:scatter_surface)]; fallbacks=[:scatter_2d], force_notify=false)
-                update_menu_safe!(w[:y_axis], Any[(string(sy), sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:y_axis], Any[menu_opt(sy)]; fallbacks=[sy])
                 update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             else
                 update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_3d)]; fallbacks=[:scatter_3d], force_notify=false)
-                update_menu_safe!(w[:y_axis], Any[(string(sy), sy)]; fallbacks=[sy])
-                update_menu_safe!(w[:z_axis], Any[(string(sz), sz)]; fallbacks=[sz])
+                update_menu_safe!(w[:y_axis], Any[menu_opt(sy)]; fallbacks=[sy])
+                update_menu_safe!(w[:z_axis], Any[menu_opt(sz)]; fallbacks=[sz])
             end
             
             anim_options = Any[menu_opt(:none)]
             for i in 1:n_params
                 ax_sym = dim_names[i]
                 if length(pd_first.active_param_values[i]) > 1
-                    push!(anim_options,menu_opt(ax_sym))
+                    push!(anim_options, menu_opt(ax_sym))
                 end
             end
             update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
@@ -969,7 +975,8 @@ function _setup_chain_A!(::Val{:lagrangian})
                 push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
-                push!(compare_opts, (string(p_key), Symbol(p_key)))
+                # THE FIX: Use menu_opt instead of string()
+                push!(compare_opts, menu_opt(Symbol(p_key)))
             end
             update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
         end
@@ -1043,14 +1050,14 @@ function _setup_chain_B!(::Val{:lagrangian})
             spatial_keys = filter(k -> k != l_data.domain.time_dim, l_data.domain.dim_keys)
 
             valid_fields = Any[]
-            if issubset(active_physical_axes, sim_data.domain.dim_keys)
+            if issubset(spatial_keys, l_data.domain.dim_keys)
                 push!(valid_fields, menu_opt(:Solution)) # THE FIX: Use menu_opt
             end
             
-            for k in keys(sim_data.stats)
+            for k in keys(l_data.stats)
                 k === :Solution && continue
-                kept_syms = IRunPDESims.get_kept_dims(k, sim_data.domain)
-                if issubset(active_physical_axes, kept_syms)
+                kept_syms = IRunPDESims.get_kept_dims(k, l_data.domain)
+                if issubset(spatial_keys, kept_syms)
                     push!(valid_fields, menu_opt(k))     # THE FIX: Use menu_opt
                 end
             end

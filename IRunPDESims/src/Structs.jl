@@ -144,13 +144,6 @@ function SimulationConfig(
     # 3. Resolve Reference Factory Function via Symbol (No more invokelatest!)
     ref_factory = resolve_dynamic_function(ref_name_sym)
     ref_f = isnothing(ref_factory) ? nothing : ref_factory(shared_sym)
-    
-    # 4. AUTO-INJECT: Add the reference method to the methods dictionary if it exists
-    if !isnothing(ref_name_sym)
-        if !haskey(methods_sym, ref_name_sym)
-            methods_sym[ref_name_sym] = ParamDict()
-        end
-    end
 
     return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
         sim_f, sim_name_sym, ref_f, ref_name_sym, shared_sym, methods_sym, defaults_sym, varied_sym
