@@ -45,11 +45,21 @@ function set_sim_config!(config::SimulationConfig)
     manager.active_config = config
     manager.flags[:Simulation][] = true 
     
-    default_m = isempty(config.default_methods) ? filter(k -> k != "shared", collect(keys(config.methods_dict))) : filter(k -> k != "shared", copy(config.default_methods))
+    # --- NEW: Auto-register method names to prevent frontend_key mangling ---
+    if haskey(manager.maps, :Labels)
+        for m_sym in keys(config.methods_dict)
+            if m_sym !== :shared && !haskey(manager.maps[:Labels], m_sym)
+                # Store exactly as provided (e.g. prevents :rk4 -> "Rk 4")
+                manager.maps[:Labels][m_sym] = is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym)
+            end
+        end
+    end
+    
+    default_m = isempty(config.default_methods) ? filter(k -> k !== :shared, collect(keys(config.methods_dict))) : filter(k -> k !== :shared, copy(config.default_methods))
     manager.staged[:Methods][] = default_m
 
-    if haskey(manager.widgets, :Editor_Cat)
-        notify(manager.widgets[:Editor_Cat].selection)
+    if haskey(manager.widgets, :editor_cat)
+        notify(manager.widgets[:editor_cat].selection)
     end
 end
 
@@ -162,14 +172,12 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
             extract_and_store_camera_state!(plot_layout)
         end
 
-        style_sel = manager.widgets[:Plot_Style].selection[]
+        ptype_sym = manager.widgets[:plot_style].selection[]
         
         sim_data = nothing
         if !isempty(manager.plot_data[])
             sim_data = _get_first_valid(first(values(manager.plot_data[])))
         end
-        
-        ptype_sym = _resolve_plot_type(Val(manager.mode[]), style_sel, sim_data)
 
         for obs in render_observers; off(obs); end
         empty!(render_observers)
@@ -202,7 +210,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         manager.triggers[:Plot][] += 1
     end
     
-    manager.listeners[:Plot_Click_Sync] = on(manager.widgets[:Plot_Button].clicks) do _
+    manager.listeners[:Plot_Click_Sync] = on(manager.widgets[:plot_button].clicks) do _
         if manager.flags[:Simulation][] || manager.flags[:Layout][]
             return 
         end
@@ -210,7 +218,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         manager.triggers[:Plot][] += 1
     end
 
-    manager.listeners[:Layout_Apply_Sync] = on(manager.widgets[:Layout_Apply].clicks) do _
+    manager.listeners[:Layout_Apply_Sync] = on(manager.widgets[:layout_apply].clicks) do _
         if manager.flags[:Simulation][]
             return 
         end
@@ -219,7 +227,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     end
 
     prev_leg_struct = Ref((false, :none, :none))
-    manager.listeners[:Legend_Sync] = onany(manager.widgets[:Legend_Base].selection, manager.widgets[:Legend_Add].selection) do _...
+    manager.listeners[:Legend_Sync] = onany(manager.widgets[:legend_base].selection, manager.widgets[:legend_add].selection) do _...
         curr = _parse_legend_position()
         p = prev_leg_struct[]
         

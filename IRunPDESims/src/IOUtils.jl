@@ -418,7 +418,7 @@ end
 """
 Deletes all saved simulation meshes with the given keys and values in its parameter dictionary.
 """
-function deleteSimData(keys::Vector{String}, vals::Vector)
+function deleteSimData(keys::Vector{Symbol}, vals::Vector)
     save_data = get_save_path() * "/data/"
     if !isdir(save_data); return; end
     
@@ -431,7 +431,7 @@ function deleteSimData(keys::Vector{String}, vals::Vector)
             sim_data = load(full_path, "raw")
             deletion = true
             for (i,key) in enumerate(keys)
-                # Check if key exists and matches value/type
+                # Now safely comparing against a strictly typed ParamDict
                 if !haskey(sim_data.params, key) || !(sim_data.params[key] == vals[i])
                     deletion = false
                     break

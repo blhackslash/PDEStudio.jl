@@ -4,8 +4,8 @@ function _get_template_simdata(sim_config::SimulationConfig)
         base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
         ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
         
-        # Backend still requires an empty ParamDict for sim_fixes[cite: 18]
-        tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)), ParamDict(); ignore_keys=ik)
+        # Backend still requires an empty ParamDict for sim_fixes
+        tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)); ignore_keys=ik)
         
         if !isempty(tasks)
             try
@@ -19,7 +19,7 @@ end
 
 function analyze_configuration(sim_config::SimulationConfig)
     all_varied = sim_config.varied_params
-    active_keys = String[]
+    active_keys = Symbol[]
     active_values = Vector{Vector{Any}}()
     for key in sort(collect(keys(all_varied)))
         push!(active_keys, key)
@@ -75,14 +75,16 @@ function _get_first_valid(pd)
 end
 
 function _recombine_tuples!(params::Dict)
-    tuple_groups = Dict{String, Vector{Pair{Int, Any}}}()
-    keys_to_remove = String[]
+    tuple_groups = Dict{Symbol, Vector{Pair{Int, Any}}}()
+    keys_to_remove = Symbol[]
     
     for (k, v) in params
-        if occursin("__", k)
-            parts = split(k, "__")
+        k_str = string(k)
+        if occursin("__", k_str)
+            parts = split(k_str, "__")
             if length(parts) == 2
-                base_name, idx_str = parts[1], parts[2]
+                base_name = Symbol(parts[1])
+                idx_str = parts[2]
                 idx = tryparse(Int, idx_str)
                 if !isnothing(idx)
                     if !haskey(tuple_groups, base_name)
@@ -110,11 +112,11 @@ end
 # --- MAIN TENSOR CREATION ROUTINE (Unified) ---
 # ==============================================================================
 
-function create_plot_data(method_name::String, base_params::ParamDict, sim_config::SimulationConfig)
+function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_config::SimulationConfig)
     active_keys, active_values = analyze_configuration(sim_config)
     ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
     
-    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values, ParamDict(); ignore_keys=ignore_keys)
+    tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
 
     grid_dims = isempty(active_values) ? (1,) : Tuple(length.(active_values))
@@ -144,28 +146,30 @@ end
 # ==============================================================================
 # --- DATA EXTRACTION (On-The-Fly Cross-Plotting) ---
 # ==============================================================================
-function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, active_plot_axes, u_key, target_c)
+function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, active_plot_axes::Vector{Symbol}, u_key::Symbol, target_c)
     valid_sims = filter(!isnothing, pd.data)
     isempty(valid_sims) && return nothing
     ref_sim = first(valid_sims)
     
-    active_loop_dims = String[]
+    active_loop_dims = Symbol[]
     plot_axes_data = Any[]
     ax_lengths = Int[]
     
     # 1. Parse Substitutes and Build Target Axes
-    for ax_str in active_plot_axes
-        stat_name, loop_dim = occursin("|", ax_str) ? String.(split(ax_str, "|")) : (ax_str, ax_str)
+    for ax_sym in active_plot_axes
+        ax_str = string(ax_sym)
+        stat_name, loop_dim_str = occursin("|", ax_str) ? String.(split(ax_str, "|")) : (ax_str, ax_str)
+        loop_dim = Symbol(loop_dim_str)
         push!(active_loop_dims, loop_dim)
         
-        if stat_name == loop_dim
+        if stat_name == loop_dim_str
             # Standard Parameter or Physical Dimension lookup
             p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
             if !isnothing(p_idx)
                 push!(plot_axes_data, pd.active_param_values[p_idx])
                 push!(ax_lengths, length(pd.active_param_values[p_idx]))
             else
-                d_idx = findfirst(==(Symbol(loop_dim)), ref_sim.domain.dim_keys)
+                d_idx = findfirst(==(loop_dim), ref_sim.domain.dim_keys)
                 if !isnothing(d_idx)
                     push!(plot_axes_data, ref_sim.axes[d_idx])
                     push!(ax_lengths, length(ref_sim.axes[d_idx]))
@@ -178,7 +182,6 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
             stat_vec = Float64[]
             p_idx = findfirst(isequal(loop_dim), pd.active_param_keys)
             
-            # THE FIX: Cast the string to a Symbol for dictionary lookups
             sym_stat = Symbol(stat_name)
             
             if !isnothing(p_idx)
@@ -218,25 +221,22 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         sim_data = pd.data[curr_param_idx...]
         isnothing(sim_data) && continue
         
-        sym_u_key = Symbol(u_key)
-        
-        tensor = get(sim_data.stats, sym_u_key, nothing)
+        tensor = get(sim_data.stats, u_key, nothing)
         isnothing(tensor) && continue
         
-        tensor_dim_syms = Tuple(IRunPDESims.get_kept_dims(sym_u_key, sim_data.domain))
+        tensor_dim_syms = Tuple(IRunPDESims.get_kept_dims(u_key, sim_data.domain))
         
         in_bounds = true
-        # Inside extract_eulerian_data:
         tensor_indices = ntuple(ndims(tensor)) do d
             dim_sym = tensor_dim_syms[d]
-            out_idx = findfirst(isequal(String(dim_sym)), active_loop_dims) # active_loop_dims is String[]
+            out_idx = findfirst(isequal(dim_sym), active_loop_dims) 
             
             if !isnothing(out_idx)
                 idx = I[out_idx]
                 if idx > size(tensor, d); in_bounds = false; return 1; end
                 return idx
             else
-                # --- THE FIX: Direct Symbol-to-Symbol lookup! ---
+                # Direct Symbol-to-Symbol lookup!
                 var_idx = findfirst(isequal(dim_sym), plot_vars) 
                 if isnothing(var_idx); in_bounds = false; return 1; end
                 
@@ -257,11 +257,11 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
     return Tuple(plot_axes_data), u_out
 end
 
-function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, u_key, target_c)
+function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, u_key::Symbol, target_c)
     sim_data = pd.data[param_indices...]
     isnothing(sim_data) && return nothing
     
-    tensor = get(sim_data.stats, Symbol(u_key), nothing)
+    tensor = get(sim_data.stats, u_key, nothing)
     isnothing(tensor) && return nothing
     
     time_dim = sim_data.domain.time_dim
@@ -276,7 +276,7 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
         t_idx = 1
     end
     
-    # THE FIX: Differentiate Nested Transient vs Flat Static Arrays
+    # Differentiate Nested Transient vs Flat Static Arrays
     if tensor isa AbstractVector && eltype(tensor) <: AbstractVector
         u_raw = tensor[t_idx]
     elseif tensor isa AbstractVector && eltype(tensor) <: SVector
@@ -287,13 +287,14 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     
     u_flat = target_c isa Integer ? map(v -> Float64(v[target_c]), u_raw) : map(v -> Float64(v[1]), u_raw)
     
-    # THE FIX: Map SVector coordinates to a clean Tuple of Float64 Vectors
+    # Map SVector coordinates to a clean Tuple of Float64 Vectors
     x_step = sim_data.x[t_idx]
     DS = length(x_step[1])
     p_axes = ntuple(d -> map(p -> Float64(p[d]), x_step), Val(DS))
     
     return p_axes, u_flat
 end
+
 function update_plot_data_collection!(plot_data_dict, sim_config, active_methods; force_reload=false)
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
@@ -303,26 +304,27 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
     end
+    # Ensure keys to delete are cast to String to match the internal Plot Data Dict Keys
     for k in keys(plot_data_dict)
-        if !(k in active_methods); delete!(plot_data_dict, k); end
+        if !(Symbol(k) in active_methods); delete!(plot_data_dict, k); end
     end
     return plot_data_dict
 end
-
 function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
-    active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
+    active_plot_axes_syms = filter(s -> !isnothing(s) && s !== :none, [x_sel[], y_sel[], z_sel[]])
     ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
     u_col = Any[]
-    valid_methods = String[]
     
-    active_plot_axes_strs = string.(active_plot_axes_syms)
+    # FIX: Initialize as a Symbol array
+    valid_methods = Symbol[] 
 
     for m_name in local_methods
+        # FIX: Check the data dictionary natively using the Symbol
         !haskey(data, m_name) && continue
         pd = data[m_name]
         p_idx = _build_param_indices(pd, mutated_sel_vals)
         
-        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_strs, string(u_sel[]), target_c_int)
+        res = extract_eulerian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, active_plot_axes_syms, u_sel[], target_c_int)
         if !isnothing(res)
             p_axes, u_flat = res
             for d in 1:length(active_plot_axes_syms)
@@ -339,6 +341,7 @@ end
 function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
     local DS = 1
     for m_name in local_methods
+        # FIX: Check natively using the Symbol
         if haskey(data, m_name)
             sim = _get_first_valid(data[m_name])
             if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
@@ -347,7 +350,9 @@ function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_p
     
     ax_cols = [Any[] for _ in 1:DS]
     u_col = Any[]
-    valid_methods = String[]
+    
+    # FIX: Initialize as a Symbol array
+    valid_methods = Symbol[]
     
     for m_name in local_methods
         !haskey(data, m_name) && continue

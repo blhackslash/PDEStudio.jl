@@ -11,7 +11,7 @@ export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_d
 
 function dummy_simulation_function(args...); return nothing; end
 
-const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), String[], VariedDict())
+const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), Symbol[], VariedDict())
 
 # ==============================================================================
 # --- UI DIMENSION REFERENCES (Dynamic Setup) ---
@@ -21,13 +21,8 @@ const MAX_SUPPORTED_PARAMS = Ref{Int}(2)
 
 set_max_params!(n::Int) = (MAX_SUPPORTED_PARAMS[] = n)
 
-const DIM_LABELS = Ref{Dict{Symbol, String}}(Dict(
-    :x => "Space (X)", :y => "Space (Y)", :z => "Space (Z)", :t => "Time (T)"
-))
-
-function set_allowed_dims!(dims::Tuple{Vararg{Symbol}}, labels::Dict{Symbol, String}; time_dim::Symbol=:t)
+function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
     ALLOWED_PLOT_DIMS[] = dims
-    DIM_LABELS[] = labels
     @info "Plotter UI configured for dimensions: $dims"
 end
 
@@ -70,17 +65,17 @@ mutable struct PlotManager
     triggers::Dict{Symbol, Observable{Int}} 
     staged::Dict{Symbol, Any}
     flags::Dict{Symbol, Observable{Bool}}
-    state::Dict{Symbol, Any}               # Add this line
-    maps::Dict{Symbol, Any}                # Add this line
+    state::Dict{Symbol, Any}               
+    maps::Dict{Symbol, Any}                
     locks::Dict{Symbol, Bool}               
     listeners::Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}} 
     
-    methods::Observable{Vector{String}}
+    methods::Observable{Vector{Symbol}}
     plot_vars::Vector{Symbol}
-    caches::Dict{Int, Dict{String, AbstractPlotCache}}
+    caches::Dict{Int, Dict{Symbol, AbstractPlotCache}}
     
     active_config::SimulationConfig
-    plot_data::Observable{Dict{String, AbstractPlotData}}
+    plot_data::Observable{Dict{Symbol, AbstractPlotData}}
 
     # Unified Encapsulated Globals
     mode::Observable{Symbol}
@@ -93,13 +88,13 @@ function PlotManager()
         Dict{Symbol, Any}(), Dict{Symbol, Observable{Int}}(),
         Dict{Symbol, Any}(), 
         Dict{Symbol, Observable{Bool}}(), 
-        Dict{Symbol, Any}(),                   # Add this line (state)
-        Dict{Symbol, Any}(),                   # Add this line (maps)
+        Dict{Symbol, Any}(),                   
+        Dict{Symbol, Any}(),                   
         Dict{Symbol, Bool}(), 
         Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}(),
-        Observable(String[]), Symbol[],
-        Dict{Int, Dict{String, AbstractPlotCache}}(),
-        DUMMY_CONFIG, Observable(Dict{String, AbstractPlotData}()),
+        Observable(Symbol[]), Symbol[],
+        Dict{Int, Dict{Symbol, AbstractPlotCache}}(),
+        DUMMY_CONFIG, Observable(Dict{Symbol, AbstractPlotData}()),
         Observable{Symbol}(:eulerian),
         Dict{Symbol, Any}(:is_open => false, :master_fig => nothing),
     )
@@ -139,18 +134,36 @@ macro with_lock(lock_name, expr)
     end
 end
 
+struct PlotSweepData{N} <: AbstractPlotData
+    data::Array{Union{Nothing, AbstractSimData}, N} 
+    active_param_keys::Vector{Symbol}
+    active_param_values::Vector{Vector{Any}}
+end
+       
+include("DataHandler.jl")
+include("PlottingLogic.jl")
+include("MakiePlotting.jl")
+include("UIStyles.jl")
+include("PlottingUtils.jl")
+include("Controls.jl")
+include("UILogic.jl")
+include("Render.jl")
+include("ConfigIO.jl")
+
+
+# FIX: Return lowercased, suffix-free symbols for layout options
 function get_base_layout_options()
     return Dict{Symbol, Any}(
-        :Base_Plot_Selection       => :lines,
-        :Plot_Style_Selection      => :lines,
-        :Compare_Target_Selection  => :None, 
-        :Compare_Columns_Selection => 2,     
-        :Compare_Link_Selection    => :fully_coupled,
-        :Legend_Base_Selection     => :top,
-        :Legend_Add_Selection      => :detached,
-        :Plot_Width_Selection      => 500,
-        :Plot_Height_Selection     => 400,
-        :Anim_Target_Selection     => :None
+        :base_plot       => :lines,
+        :plot_style      => :lines_1d,
+        :compare_target  => :none, 
+        :compare_columns => 2,     
+        :compare_link    => :fully_coupled,
+        :legend_base     => :top,
+        :legend_add      => :detached,
+        :plot_width      => 500,
+        :plot_height     => 400,
+        :anim_target     => :none
     )
 end
 
@@ -158,7 +171,7 @@ function reset_manager!()
     
     empty!(manager.ui); empty!(manager.widgets); empty!(manager.staged)
     empty!(manager.flags) 
-    empty!(manager.state); empty!(manager.maps) # Add this line
+    empty!(manager.state); empty!(manager.maps) 
     empty!(manager.locks); empty!(manager.plot_vars); empty!(manager.caches)
     
     for (k, listener_node) in manager.listeners
@@ -170,9 +183,10 @@ function reset_manager!()
     end
     empty!(manager.listeners)
     
-    manager.methods.val = String[]
+    # FIX: Correctly initialize empty states as Symbol vectors/dicts
+    manager.methods.val = Symbol[]
     manager.active_config = DUMMY_CONFIG
-    manager.plot_data.val = Dict{String, AbstractPlotData}()
+    manager.plot_data.val = Dict{Symbol, AbstractPlotData}()
     
     core_keys = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
     for k in core_keys
@@ -187,7 +201,6 @@ function reset_manager!()
         manager.locks[k] = false
     end
     
-    # Move these variables into manager.state
     manager.state[:plot_window_initialized] = Observable(false)
     manager.state[:Active_Axes] = Observable{Vector{Int}}(Int[])
     manager.state[:Is_Activate_Mode] = Observable(true)
@@ -198,24 +211,10 @@ function reset_manager!()
     manager.state[:Camera_Locked] = Observable(false)
 
     manager.staged[:Camera] = Dict{Symbol, Any}()
-    manager.staged[:Methods] = Observable(String[])
-end
+    manager.staged[:Methods] = Observable(Symbol[])
 
-struct PlotSweepData{N} <: AbstractPlotData
-    data::Array{Union{Nothing, AbstractSimData}, N} 
-    active_param_keys::Vector{String}
-    active_param_values::Vector{Vector{Any}}
+    manager.maps[:Labels] = deepcopy(SYMBOL_TO_LABEL_MAP)
 end
-       
-include("DataHandler.jl")
-include("PlottingLogic.jl")
-include("MakiePlotting.jl")
-include("UIStyles.jl")
-include("PlottingUtils.jl")
-include("Controls.jl")
-include("UILogic.jl")
-include("Render.jl")
-include("ConfigIO.jl")
 
 function __init__()
     on(manager.mode) do _
@@ -252,15 +251,17 @@ function __init__()
             reverse_map = Dict{Symbol, Symbol}()
             
             i = 1
-            while haskey(manager.widgets, Symbol("param_$(i)_Label"))
+            while haskey(manager.widgets, Symbol("param_$(i)_label"))
                 p_key = Symbol("param_$i")
-                lbl_obs = manager.widgets[Symbol("param_$(i)_Label")]
+                lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
                 
                 if i <= length(real_params)
                     real_sym = real_params[i]
                     param_map[p_key] = real_sym
                     reverse_map[real_sym] = p_key
-                    lbl_obs[] = string(real_sym) * ":"  
+                    
+                    # THE FIX: Use frontend_key for the Slider UI Label!
+                    lbl_obs[] = frontend_key(real_sym) * ":"  
                 else
                     lbl_obs[] = "Unused:"
                     if haskey(manager.widgets, p_key)
@@ -268,6 +269,15 @@ function __init__()
                     end
                 end
                 i += 1
+            end
+            
+            # (Optional: If your x, y, z, t sliders also have Label observables, 
+            #  you can dynamically update them here too!)
+            for base_sym in get_base_variables()
+                base_lbl_key = Symbol("$(base_sym)_label")
+                if haskey(manager.widgets, base_lbl_key)
+                    manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
+                end
             end
             
             manager.maps[:Param] = param_map

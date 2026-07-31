@@ -111,12 +111,12 @@ end
 # Accepts generic Dict and Vector arguments to preserve backwards compatibility,
 # then maps them strictly to Symbol types.
 function SimulationConfig(
-    sim_func_name::Union{String, Symbol}, 
-    ref_func_name::Union{String, Symbol, Nothing}, 
+    sim_func_name::Union{String, Symbol},  
     shared::Dict, 
     methods::Dict, 
     defaults::Vector;
     varied_params::Dict = createVariedDict(),
+    ref_func_name::Union{String, Symbol, Nothing} = nothing,
 )
     target_module = _TARGET_MODULE[]
     
@@ -129,6 +129,11 @@ function SimulationConfig(
     methods_sym  = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in methods)
     varied_sym   = VariedDict(Symbol(k) => v for (k, v) in varied_params)
     defaults_sym = Symbol.(defaults)
+    for (_, m_dict) = methods_sym
+        if haskey(m_dict,:ignore)
+            Symbol.(m_dict[:ignore])
+        end
+    end
 
     # 2. Resolve Simulation Function via Symbol
     sim_f = resolve_dynamic_function(sim_name_sym)
@@ -150,17 +155,6 @@ function SimulationConfig(
     return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
         sim_f, sim_name_sym, ref_f, ref_name_sym, shared_sym, methods_sym, defaults_sym, varied_sym
     )
-end
-
-# Fallback constructor for when no reference function is provided
-function SimulationConfig(
-    sim_func_name::Union{String, Symbol}, 
-    shared::Dict, 
-    methods::Dict, 
-    defaults::Vector; 
-    varied_params::Dict = createVariedDict(),
-)
-    return SimulationConfig(sim_func_name, nothing, shared, methods, defaults; varied_params = varied_params)
 end
 
 # Simplify wrappers to cast strings to symbols before lookup

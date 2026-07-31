@@ -67,7 +67,8 @@ function _handle_plot_trigger!(
         sel_vals = [to_value(obs) for obs in selector_obs]
 
         for i in 1:num_plots
-            manager.caches[i] = Dict{String, _cache_type(Val(manager.mode[]))}()
+            # THE FIX: Strongly type the cache dictionary keys as Symbol!
+            manager.caches[i] = Dict{Symbol, _cache_type(Val(manager.mode[]))}()
             
             mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
             target_c_int = (is_compare && target == :component) ? i : c_sel[]
@@ -80,12 +81,14 @@ function _handle_plot_trigger!(
             active_title_indices = _get_active_title_indices(Val(manager.mode[]), x_sel, y_sel, z_sel, sim_data)
             
             ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals)
+            
+            # THE FIX: Removed frontend_key (compare_labels is already a formatted String)
             default_title = is_compare ? "$(compare_labels[i]) | $ts" : ts 
             
-            x_str = x_sel[] == :none ? "disabled" : string(x_sel[])
-            y_str = y_sel[] == :none ? "disabled" : string(y_sel[])
-            z_str = z_sel[] == :none ? "disabled" : string(z_sel[])
-            u_str = string(u_sel[])
+            x_str = frontend_key(x_sel[])
+            y_str = frontend_key(y_sel[])
+            z_str = frontend_key(z_sel[])
+            u_str = frontend_key(u_sel[])
 
             initialize_base_plot!(plot_layout, axes[i], valid_methods, data_tuples, x_str, y_str, z_str, u_str, ts, Val(T), i)
             axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
@@ -382,19 +385,16 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         
         if !isnothing(sim_data)
             if target == :methods
-                compare_labels = manager.methods[]
+                compare_labels = String[frontend_key(m) for m in manager.methods[]]
                 num_plots = length(compare_labels)
             elseif target == :component
                 target_tensor = get(sim_data.stats, u_sel[], sim_data.stats[:Solution])
                 num_plots = _get_component_num_plots(Val(manager.mode[]), target_tensor)
                 
-                comp_names_tuple = manager.ui[:labels][:comp_names]
+                compare_labels = String[]
                 for i in 1:num_plots
-                    if comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))
-                        push!(compare_labels, string(comp_names_tuple[i]))
-                    else
-                        push!(compare_labels, "Component $i")
-                    end
+                    sym = Symbol("component_$i")
+                    push!(compare_labels, frontend_key(sym))
                 end
                 compare_vals = collect(1:num_plots)
             elseif target == :Time

@@ -5,7 +5,7 @@ end
 # =============================================================================
 # THE FIX: Robust Priority Sorting
 # =============================================================================
-function sort_methods_robust(methods::Vector{String})
+function sort_methods_robust(methods::Vector{Symbol})
     priority_keys = ["analytic", "reference", "exact", "baseline", "true"]
     
     function method_rank(m::String)
@@ -14,7 +14,7 @@ function sort_methods_robust(methods::Vector{String})
         return (rank, m)
     end
     
-    return sort(methods, by=method_rank)
+    return Symbol.(sort(String.(methods), by=method_rank))
 end
 
 """
@@ -28,7 +28,8 @@ function generate_dynamic_title(
     title_parts = String[]
     
     for i in 1:length(dim_names)
-        name = String(dim_names[i])
+        # THE FIX: Use frontend_key to grab the mapped UI name
+        name = frontend_key(dim_names[i])
         
         if i in plot_dims
             push!(title_parts, "$name = [Axis]")
@@ -274,7 +275,7 @@ function _parse_legend_position()
     
     # Safely retrieve the comparison target from the global state 
     # (fallback to the widget if the state hasn't been initialized yet)
-    target = haskey(manager.staged, :Compare_State) ? manager.staged[:Compare_State][1] : manager.widgets[:Compare_Target].selection[]
+    target = haskey(manager.staged, :Compare_State) ? manager.staged[:Compare_State][1] : manager.widgets[:compare_target].selection[]
     
     # Force a detached top-center legend for comparisons (apart from :Methods)
     if target != :None && target != :Methods && !is_detached
@@ -304,7 +305,7 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     if !haskey(layout_dict, :Legend) || isnothing(layout_dict[:Legend]); return; end
     
     ui_style = manager.ui[:axis_general]
-    title_str = manager.ui[:labels][:legend] 
+    title_str = manager.ui[:labels][:legend_label] 
     final_title = isempty(strip(title_str)) ? nothing : title_str
     font_size = ui_style[:font_size] 
     
@@ -546,10 +547,11 @@ plot_HUD!(ax::Axis3) = nothing
 
 function _apply_axis_styles!(ax, T::Symbol)
     
-    x = string(manager.widgets[:x_axis].selection[])
-    y = string(manager.widgets[:y_axis].selection[])
-    z = string(manager.widgets[:z_axis].selection[])
-    u = string(manager.widgets[:u_axis].selection[])
+    # THE FIX: Wrap the widget selections in frontend_key!
+    x = frontend_key(manager.widgets[:x_axis].selection[])
+    y = frontend_key(manager.widgets[:y_axis].selection[])
+    z = frontend_key(manager.widgets[:z_axis].selection[])
+    u = frontend_key(manager.widgets[:u_axis].selection[])
     
     dim = PLOT_DIM_MAP[T] 
     def_title = ax.title[]
@@ -594,12 +596,15 @@ function _collect_legend_elements(ui_app::Dict)
             group = []
             is_base = false
             
+            # THE FIX: Map the backend method symbol to its UI string immediately!
+            method_label_str = frontend_key(method_name)
+            
             for (pkey, prim) in prims
                 deps = get(STYLE_DEPENDENCIES, pkey, Symbol[])
                 
-                if pkey == :contourf
+                if pkey == :contour_f
                     push!(plotted_objects, [Makie.PolyElement(color=Makie.to_colormap(ui_app[:color_map])[end])]) 
-                    push!(labels_for_legend, "$(method_name) (Base)")
+                    push!(labels_for_legend, "$(method_label_str) (Base)")
                     is_base = true
                 end
                 
@@ -617,7 +622,7 @@ function _collect_legend_elements(ui_app::Dict)
             if !isempty(group)
                 push!(plotted_objects, group)
                 if !is_base
-                    push!(labels_for_legend, method_name)
+                    push!(labels_for_legend, method_label_str)
                 end
             end
         end

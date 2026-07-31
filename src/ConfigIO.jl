@@ -1,11 +1,9 @@
-
-function _convert_dict_keys_to_symbols(d::Dict)
+function _apply_backend_keys(d::Dict)
     new_d = Dict{Symbol, Any}()
     for (k, v) in d
-        # Clean hyphens into underscores to match UI definitions (e.g. "X-Axis" -> :X_Axis)
-        clean_k = Symbol(replace(string(k), "-" => "_"))
+        clean_k = backend_key(string(k))
         if v isa Dict
-            new_d[clean_k] = _convert_dict_keys_to_symbols(v)
+            new_d[clean_k] = _apply_backend_keys(v)
         else
             new_d[clean_k] = v
         end
@@ -42,24 +40,35 @@ function load_and_apply_csv!(filepath::String)
         empty!(cache_dict)
     end
     
-    # 1. Update the Data Source (No longer an Observable, so no [])
+    # 1. Update the Data Source
     set_sim_config!(new_config)
     
     # 2. Buffer the Overwrites directly into the centralized Staged Cache using Symbols
     if haskey(parsed, "UI")
-        manager.staged[:UI] = _convert_dict_keys_to_symbols(parsed["UI"])
-    end
-    
-    if haskey(parsed, "Plot") && haskey(parsed["Plot"], "General")
-        manager.staged[:Plot] = _convert_dict_keys_to_symbols(parsed["Plot"]["General"])
+        manager.staged[:UI] = _apply_backend_keys(parsed["UI"])
     end
     
     if haskey(parsed, "Layout") && haskey(parsed["Layout"], "General")
-        manager.staged[:Layout] = _convert_dict_keys_to_symbols(parsed["Layout"]["General"])
+        manager.staged[:Layout] = _apply_backend_keys(parsed["Layout"]["General"])
     end
 
+    if haskey(parsed, "Plot") && haskey(parsed["Plot"], "General")
+        plot_dict = Dict{Symbol, Any}()
+        for (k, v) in parsed["Plot"]["General"]
+            bk = backend_key(k)
+            # Differentiate UI selections from strictly-cased Parameter Sliders
+            if bk in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
+                plot_dict[bk] = v
+            else
+                plot_dict[Symbol(k)] = v 
+            end
+        end
+        manager.staged[:Plot] = plot_dict
+    end
+
+    # Explicitly preserve exact Camera state formatting
     if haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") && !isempty(parsed["Camera"]["General"])
-        manager.staged[:Camera] = _convert_dict_keys_to_symbols(parsed["Camera"]["General"])
+        manager.staged[:Camera] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in parsed["Camera"]["General"])
     else
         manager.staged[:Camera] = Dict{Symbol, Any}()
     end
@@ -105,7 +114,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 5. Extract Reference Name explicitly from Config
     ref_name = nothing
     if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
-        csv_ref = String(get(parsed_csv["Config"]["General"], "reference_func", :none))
+        csv_ref = String(get(parsed_csv["Config"]["General"], "reference_func", "none"))
         if csv_ref != "none" && !isempty(csv_ref)
             ref_name = csv_ref
         end
@@ -123,11 +132,13 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         end
         
         if !isnothing(ref_factory)
-            ref_func = ref_factory(shared_params)
+            # We must pass the generic Dict; the SimulationConfig constructor will handle Symbol conversion
+            shared_sym_temp = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in shared_params)
+            ref_func = ref_factory(shared_sym_temp)
             
             ns = nice_string(safe_ref_name)
             if !haskey(methods_dict, ns)
-                methods_dict[ns] = ParamDict()
+                methods_dict[ns] = Dict{String, Any}()
             end
             if !(ns in default_methods)
                 push!(default_methods, ns)
@@ -311,38 +322,49 @@ function saveParametersToCSV(
         # --- 2. CATEGORY: Plot ---
         plot_opts = extract_plot_options()
         for (k, v) in plot_opts
-            add_row("Plot", "General", k, v)
+            if k in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
+                add_row("Plot", "General", frontend_key(k), v)
+            else
+                add_row("Plot", "General", string(k), v) # Preserve exact parameter names
+            end
         end
+        
         layout_opts = extract_layout_options()
         for (k, v) in layout_opts
-            add_row("Layout", "General", k, v)
+            add_row("Layout", "General", frontend_key(k), v)
         end
+        
+        # Explicitly preserve exact Camera state formatting
         cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
         for (k, v) in cam_opts
-            add_row("Camera", "General", k, v)
+            add_row("Camera", "General", string(k), v)
         end
 
         # --- 3. CATEGORY: UI ---
         for (scope, dict) in manager.ui
-            for (k, v) in dict; add_row("UI", scope, k, v); end
+            f_scope = frontend_key(scope)
+            for (k, v) in dict
+                add_row("UI", f_scope, frontend_key(k), v)
+            end
         end
 
         # --- 4. CATEGORY: Simulation & Config ---
         config = manager.active_config
 
         for (k, v) in config.shared_params
-            add_row("Simulation", "shared", k, v)
+            add_row("Simulation", "shared", string(k), v)
         end
         for m_name in manager.methods[]
-            if haskey(config.methods_dict, m_name)
-                for (k, v) in config.methods_dict[m_name]
-                    add_row("Simulation", m_name, k, v)
+            m_sym = Symbol(m_name)
+            if haskey(config.methods_dict, m_sym)
+                for (k, v) in config.methods_dict[m_sym]
+                    add_row("Simulation", m_name, string(k), v)
                 end
             end
         end
 
         for (k, v) in config.varied_params
-            add_row("Config", "Parameters", k, v)
+            add_row("Config", "Parameters", string(k), v)
         end
         
         add_row("Config", "General", "simulation_func", string(config.simulation_name))

@@ -1,22 +1,54 @@
 """
+    menu_option_rank(opt::Tuple)
+
+Custom sorting ranker for Makie dropdown tuples.
+Rank 0: Defaults / Disabled / Main Prompts
+Rank 1: Analytical / Reference methods
+Rank 2: Standard alphabetical sorting
+"""
+function menu_option_rank(opt)
+    label_str = string(opt[1])
+    val = length(opt) > 1 ? opt[2] : nothing
+    
+    # Rank 0: Main prompts and ":none" fallbacks 
+    # (Catches "Methods...", "-", and the resolved UI label for :none)
+    if val === :none || label_str == "Methods..." || label_str == "-" || val in manager.plot_vars || val === :shared
+        return (0, label_str)
+    end
+    
+    # Rank 1: Priority references
+    priority_keys = ("analytic", "reference", "exact", "baseline", "true")
+    lm = lowercase(label_str)
+    if any(k -> occursin(k, lm), priority_keys)
+        return (1, label_str)
+    end
+    
+    # Rank 2: Everything else
+    return (2, label_str)
+end
+
+"""
     update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
 
 Safely updates a Makie Menu's options, forces a WebGL buffer sync to prevent crashes,
 and preserves the current selection or falls back to a prioritized list.
-Assumes all options are `(Label, Value)` tuples.
+Assumes all options are `(Label, Value)` tuples and automatically sorts them by priority.
 """
 function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
     curr = menu_widget.selection[]
-    new_arr = isempty(new_options) ? Any[menu_opt(:none)] : new_options
+    
+    # Ensure options are properly sorted by priority BEFORE comparing state
+    new_arr = isempty(new_options) ? Any[menu_opt(:none)] : sort(new_options, by=menu_option_rank)
     
     old_arr = menu_widget.options[]
     options_changed = false
     
-    # 1. Compare underlying option values
+    # 1. Compare underlying option labels AND values
     is_eq = length(old_arr) == length(new_arr)
     if is_eq
         for (o, n) in zip(old_arr, new_arr)
-            if o[2] != n[2]
+            # THE FIX: Check if either the Label (o[1]) or the Value (o[2]) changed
+            if o[1] != n[1] || o[2] != n[2]
                 is_eq = false
                 break
             end
@@ -297,11 +329,11 @@ function _setup_method_interactions!()
             config = manager.active_config
             isnothing(config) && return 
             
-            raw_method_names = filter(k -> k != "shared", collect(keys(config.methods_dict)))
-            all_method_names = sort_methods_robust(raw_method_names)
-            opts = activate_mode ? filter(m -> !(m in staged), all_method_names) : copy(staged)
-            
-            new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); sort(opts)]
+            raw_method_names = filter(k -> k != :shared, collect(keys(config.methods_dict)))
+            opts = activate_mode ? filter(m -> !(m in staged), raw_method_names) : copy(staged)
+
+            opts_sorted = sort_methods_robust(opts)
+            new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); menu_opt.(opts_sorted)]
             update_menu_safe!(menu_mth, new_opts)
         end
     end
@@ -341,7 +373,7 @@ function _setup_hierarchy_interactions!()
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
-        if isnothing(key) || key == "-" || key == :none
+        if isnothing(key) || key === :none || key == "-"
             active_target_ref[] = nothing
             tb.stored_string.val = ""
             if tb.displayed_string[] != ""; Makie.reset!(tb); end
@@ -350,63 +382,103 @@ function _setup_hierarchy_interactions!()
         
         cat = menu_cat.selection[]
         scope = menu_scope.selection[]
-        (isnothing(cat) || isnothing(scope) || scope == "-" || scope == :none) && return
+        (isnothing(cat) || isnothing(scope) || scope === :none || scope == "-") && return
         
         target_dict = nothing
-        if cat == :simulation
+        if cat === :simulation
             config = manager.active_config
             isnothing(config) && return 
-            target_dict = scope == :shared ? config.shared_params : get(config.methods_dict, scope, nothing)
-        elseif cat == :ui || cat == "UI"
-            target_dict = get(manager.ui, Symbol(scope), nothing)
+            target_dict = scope === :shared ? config.shared_params : get(config.methods_dict, scope, nothing)
+        elseif cat === :ui
+            target_dict = get(manager.ui, scope, nothing)
+        elseif cat === :labels
+            target_dict = manager.maps[:Labels]
         end
 
-        if !isnothing(target_dict) && haskey(target_dict, Symbol(key))
-            active_target_ref[] = (target_dict, Symbol(key))
-            val_str = string(target_dict[Symbol(key)])
+        if !isnothing(target_dict) && haskey(target_dict, key)
+            active_target_ref[] = (target_dict, key)
+            val_str = string(target_dict[key])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
         end
     end
 
     manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, active_methods
         isnothing(cat) && return
-        new_scopes = String[]
-        if cat == :Simulation || cat == "Simulation"
+        new_scopes = Any[]
+        
+        if cat === :simulation
             config = manager.active_config
             if !isnothing(config) 
-                push!(new_scopes, "shared")
+                push!(new_scopes, ("Shared", :shared))
                 for m in sort_methods_robust(active_methods)
-                    haskey(config.methods_dict, m) && push!(new_scopes, m)
+                    m_sym = Symbol(m)
+                    haskey(config.methods_dict, m_sym) && push!(new_scopes, (string(m_sym), m_sym))
                 end
             end
-        elseif cat == :ui || cat == "UI"
-            new_scopes = string.(sort(collect(keys(manager.ui))))
+        elseif cat === :ui
+            new_scopes = [menu_opt(k) for k in sort(collect(keys(manager.ui)))]
+        elseif cat === :labels
+            new_scopes = Any[("Components", :components), ("Variables", :variables), ("Methods", :methods)]
         end
-        new_scopes = isempty(new_scopes) ? ["-"] : new_scopes
+        
+        new_scopes = isempty(new_scopes) ? Any[menu_opt(:none)] : new_scopes
         update_menu_safe!(menu_scope, new_scopes; force_notify=true)
     end
 
     manager.listeners[:Hierarchy_Scope_Sync] = on(menu_scope.selection) do scope
-        (isnothing(scope) || scope == "-" || scope == :none) && return 
+        (isnothing(scope) || scope === :none || scope == "-") && return 
         cat = menu_cat.selection[]
-        raw_keys = String[]
-        if cat == :simulation
+        raw_keys = Symbol[]
+        
+        if cat === :simulation
             config = manager.active_config
             if !isnothing(config) 
-                target_dict = scope == "shared" ? config.shared_params : get(config.methods_dict, scope, Dict())
-                raw_keys = string.(sort(collect(keys(target_dict))))
+                target_dict = scope === :shared ? config.shared_params : get(config.methods_dict, scope, Dict{Symbol, Any}())
+                raw_keys = sort(collect(keys(target_dict)))
             end
-        elseif cat == :ui || cat == "UI"
-            raw_keys = string.(sort(collect(keys(get(manager.ui, Symbol(scope), Dict())))))
+        elseif cat === :ui
+            raw_keys = sort(collect(keys(get(manager.ui, scope, Dict{Symbol, Any}()))))
+        elseif cat === :labels
+            if scope === :components
+                c_max = 1
+                if !isempty(manager.plot_data[])
+                    pd_first = first(values(manager.plot_data[]))
+                    sim_data = _get_first_valid(pd_first)
+                    if !isnothing(sim_data)
+                        u_val = manager.widgets[:u_axis].selection[]
+                        target_field = (isnothing(u_val) || u_val === :none) ? :Solution : u_val
+                        target_tensor = get(sim_data.stats, target_field, sim_data.stats[:Solution])
+                        c_max = _get_component_num_plots(Val(manager.mode[]), target_tensor)
+                    end
+                end
+                raw_keys = [Symbol("component_$i") for i in 1:c_max]
+            elseif scope === :variables
+                raw_keys = manager.plot_vars
+            elseif scope === :methods
+                raw_keys = manager.methods[]
+            end
+            
+            # Auto-initialize missing labels so the textbox isn't empty
+            for k in raw_keys
+                if !haskey(manager.maps[:Labels], k)
+                    manager.maps[:Labels][k] = string(k)
+                end
+            end
         end
 
-        if scope == :plot_style || scope == "plot_style"
+        if scope === :plot_style
             ptype = manager.widgets[:plot_style].selection[]
-            valid_keys = string.(get(STYLE_DEPENDENCIES, ptype, Symbol[]))
+            valid_keys = get(STYLE_DEPENDENCIES, ptype, Symbol[])
             filter!(k -> k in valid_keys, raw_keys)
         end
 
-        new_keys = isempty(raw_keys) ? [("-", :none)] : [(nice_string(k), Symbol(k)) for k in raw_keys]
+        # Format UI keys nicely, but explicitly preserve exact casing for Simulation and Labels!
+        if cat === :simulation || cat === :labels
+            new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[(string(k), k) for k in raw_keys]
+        else
+            new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[menu_opt(k) for k in raw_keys]
+        end
+        
         update_menu_safe!(menu_key, new_keys; force_notify=true)
         sync_textbox_to_active_key()
     end
@@ -420,17 +492,38 @@ function _setup_hierarchy_interactions!()
         isnothing(target_info) && return
         target_dict, key = target_info
         
+        cat = menu_cat.selection[]
+        scope = menu_scope.selection[] # Grab the scope to know WHAT we are editing
+        
         try
-            target_dict[key] = smart_parse_csv_value(s)
+            if cat === :labels
+                target_dict[key] = string(s)
+            else
+                target_dict[key] = smart_parse_csv_value(s)
+            end
             
-            cat = menu_cat.selection[]
-            if cat == :simulation
+            if cat === :simulation
                 manager.flags[:Simulation][] = true 
-            elseif cat == :ui || cat == "UI"
+            elseif cat === :ui
                 if key in REPLOT_OPTIONS
                     manager.triggers[:Plot][] += 1
                 else
                     manager.triggers[:UI][] += 1
+                end
+            elseif cat === :labels
+                
+                # --- THE FIX: Instant UI Label Syncing ---
+                if scope === :variables
+                    lbl_key = Symbol("$(key)_label")
+                    if haskey(manager.widgets, lbl_key)
+                        manager.widgets[lbl_key][] = target_dict[key] * ":"
+                    end
+                elseif scope === :components
+                    # Pinging the u_axis forces Chain_C to rebuild the component dropdown
+                    notify(manager.widgets[:u_axis].selection)
+                elseif scope === :methods
+                    # Pinging the activation mode forces the methods menu to rebuild
+                    notify(manager.state[:Is_Activate_Mode])
                 end
             end
         catch e
@@ -449,9 +542,9 @@ function _setup_hierarchy_interactions!()
                 tb.displayed_string[] = string(target_dict[key])
                 
                 cat = menu_cat.selection[]
-                if cat == :simulation
+                if cat === :simulation
                     manager.flags[:Simulation][] = true 
-                elseif cat == :ui || cat == "UI"
+                elseif cat === :ui
                     if key in REPLOT_OPTIONS
                         manager.triggers[:Plot][] += 1
                     else
@@ -720,7 +813,7 @@ function _setup_chain_A!(::Val{:eulerian})
     base_obs = w[:base_plot].selection
     style_obs = w[:plot_style].selection
     
-    base_opts = Any[menu_opt(:lines_1d), menu_opt(:scatter_1d), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)]
+    base_opts = Any[menu_opt(:lines), menu_opt(:scatter), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)]
     update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:lines_1d], force_notify=false)
 
     manager.listeners[:Eulerian_Base_Change] = on(base_obs) do base_type
@@ -766,11 +859,10 @@ function _setup_chain_A!(::Val{:eulerian})
             anim_options = Any[menu_opt(:none)]
             for i in 1:length(dim_names)
                 ax_sym = dim_names[i]
-                ax_str = String(ax_sym)
                 if i <= n_params && length(pd_first.active_param_values[i]) > 1
-                    push!(anim_options, (nice_string(ax_str), ax_sym))
+                    push!(anim_options, menu_opt(ax_sym))
                 elseif i > n_params && ax_sym in valid_indep_axes
-                    push!(anim_options, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
+                    push!(anim_options, menu_opt(ax_sym))
                 end
             end
             update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
@@ -796,13 +888,13 @@ function _setup_chain_A!(::Val{:eulerian})
                     loop_dim in excluded_loops && continue
                     
                     if occursin("|", ax_str)
-                        stat_name = split(ax_str, "|")[1]
-                        nice_name = "$(nice_string(stat_name)) (over $(nice_string(string(loop_dim))))"
+                        stat_sym = Symbol(split(ax_str, "|")[1])
+                        # Use frontend_key directly for the complex string construction
+                        nice_name = "$(frontend_key(stat_sym)) ($(frontend_key(loop_dim)))"
                         push!(opts, (nice_name, ax_sym))
-                    elseif ax_sym in manager.plot_vars && ax_sym ∉ ALLOWED_PLOT_DIMS[]
-                        push!(opts, (nice_string(ax_str), ax_sym))
                     else
-                        push!(opts, (get(DIM_LABELS[], ax_sym, nice_string(ax_str)), ax_sym))
+                        # Use menu_opt for all standard parameters and dimensions!
+                        push!(opts, menu_opt(ax_sym))
                     end
                 end
                 return isempty(opts) ? Any[menu_opt(:none)] : opts
@@ -866,9 +958,8 @@ function _setup_chain_A!(::Val{:lagrangian})
             anim_options = Any[menu_opt(:none)]
             for i in 1:n_params
                 ax_sym = dim_names[i]
-                ax_str = String(ax_sym)
                 if length(pd_first.active_param_values[i]) > 1
-                    push!(anim_options, (nice_string(ax_str), ax_sym))
+                    push!(anim_options,menu_opt(ax_sym))
                 end
             end
             update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
@@ -924,7 +1015,7 @@ function _setup_chain_B!(::Val{:eulerian})
                 k === :Solution && continue
                 kept_syms = IRunPDESims.get_kept_dims(k, sim_data.domain)
                 if issubset(active_physical_axes, kept_syms)
-                    push!(valid_fields, (string(k), k))
+                    push!(valid_fields, menu_opt(k))
                 end
             end
             
@@ -951,12 +1042,16 @@ function _setup_chain_B!(::Val{:lagrangian})
             
             spatial_keys = filter(k -> k != l_data.domain.time_dim, l_data.domain.dim_keys)
 
-            valid_fields = Any[("Solution", :Solution)]
-            for k in keys(l_data.stats)
+            valid_fields = Any[]
+            if issubset(active_physical_axes, sim_data.domain.dim_keys)
+                push!(valid_fields, menu_opt(:Solution)) # THE FIX: Use menu_opt
+            end
+            
+            for k in keys(sim_data.stats)
                 k === :Solution && continue
-                kept_syms = IRunPDESims.get_kept_dims(k, l_data.domain)
-                if issubset(spatial_keys, kept_syms)
-                    push!(valid_fields, (string(k), k))
+                kept_syms = IRunPDESims.get_kept_dims(k, sim_data.domain)
+                if issubset(active_physical_axes, kept_syms)
+                    push!(valid_fields, menu_opt(k))     # THE FIX: Use menu_opt
                 end
             end
             sort!(valid_fields, by = x -> x[1])
@@ -988,16 +1083,21 @@ function _setup_chain_C!(mode::Val{T}) where T
             pd_first, sim_data = _get_active_sim_data(plot_data_dict)
             isnothing(sim_data) && return
             
-            target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
+            target_field = (isnothing(u_val) || u_val === :none) ? :Solution : u_val
             target_tensor = get(sim_data.stats, target_field, sim_data.stats[:Solution])
             
             comp_max = _get_component_num_plots(mode, target_tensor)
             
-            comp_names_tuple = manager.ui[:labels][:comp_names]
             c_options = Any[]
             for i in 1:comp_max
-                name = (comp_names_tuple isa Tuple && length(comp_names_tuple) >= i && comp_names_tuple[i] != "default" && !isempty(string(comp_names_tuple[i]))) ? string(comp_names_tuple[i]) : string(i)
-                push!(c_options, (name, i))
+                sym = Symbol("component_$i")
+                # Auto-initialize the label if it doesn't exist yet
+                if !haskey(manager.maps[:Labels], sym)
+                    manager.maps[:Labels][sym] = "Component $i"
+                end
+                
+                # THE FIX: Push the frontend_key mapped string to the UI menu
+                push!(c_options, (frontend_key(sym), i))
             end
             update_menu_safe!(w[:component], c_options; fallbacks=[1])
         end

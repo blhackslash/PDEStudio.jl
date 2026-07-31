@@ -2,9 +2,9 @@
 # --- UIStyles.jl ---
 # ==============================================================================
 
-const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour, :contour_f, :contour_surface)
-const COLORBAR_SUPPORTED_PLOTS = (:heatmap, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :surface, :volume, :contour_cmap, :lines_2d, :lines_3d)
-const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :log_scale, :dashed_lines, :levels, :rasterize)
+const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_f, :contour_surface)
+const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
+const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :log_scale, :dashed_lines, :levels, :rasterize, :legend_label)
 const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height, :anim_target)
 const PLOT_AXIS_OPTIONS = (:x_axis, :y_axis, :z_axis, :u_axis, :component)
 
@@ -17,7 +17,7 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :z_axis => "Z-Axis",
     :u_axis => "U-Axis (Dep)",
     :ui => "UI",
-    :none => "-",
+    :none => "Disabled",
     
     # Plot Styles
     :lines_1d => "1D Lines",
@@ -29,14 +29,19 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :scatter_lines => "Scatter Lines",
     :scatter_colors => "Scatter Colors",
     :scatter_surface => "2D Scatter (Surface)",
-    :contour => "Contour Lines",
+    :contour_colors => "Contour Lines",
     :contour_cmap => "Contour Colormap",
     :contour_f => "Contour Filled",
     :contour_surface => "Contour Surface",
     :contour_3d => "3D Contour",
-    :heatmap => "Heatmap",
-    :surface => "Surface",
-    :volume => "3D Cloud (Volume)"
+    :heatmap_flat => "Flat",
+    :heatmap_surface => "Surface",
+    :volume_3d => "3D Cloud (Volume)",
+
+    :x => "Space (X)",
+    :y => "Space (Y)",
+    :z => "Space (Z)",
+    :t => "Time (T)",
 )
 
 function backend_key(s::AbstractString)
@@ -44,10 +49,22 @@ function backend_key(s::AbstractString)
     return Symbol(lowercase(s_clean))
 end
 
+"""
+    set_label!(sym::Symbol, label::AbstractString)
+
+Registers a custom UI display name for a backend Symbol. 
+Perfect for fixing method acronyms (e.g., `set_label!(:rk4, "RK4")`).
+"""
+function set_label!(sym::Symbol, label::AbstractString)
+    manager.maps[:Labels][sym] = String(label)
+end
+
 function frontend_key(s::Symbol)
-    if haskey(SYMBOL_TO_LABEL_MAP, s)
-        return SYMBOL_TO_LABEL_MAP[s]
+    # 1. Check User-Defined dynamic labels first
+    if haskey(manager.maps, :Labels) && haskey(manager.maps[:Labels], s)
+        return manager.maps[:Labels][s]
     end
+    # 3. Algorithmic Fallback
     words = split(String(s), "_")
     return join(map(titlecase, words), " ")
 end
@@ -69,26 +86,26 @@ const PLOT_DIM_MAP = Dict(
     :scatter_lines      => 1,
     :scatter_colors     => 1,
     :lines_2d           => 2,
-    :heatmap            => 2,
-    :contour            => 2,
+    :heatmap_flat       => 2,
+    :contour_colors     => 2,
     :contour_cmap       => 2, 
     :contour_f          => 2,
     :scatter_2d         => 2,
     :scatter_surface    => 2,
-    :surface            => 2,
+    :heatmap_surface    => 2,
     :contour_surface    => 2,
     :contour_3d         => 3,
     :lines_3d           => 3,
     :scatter_3d         => 3,
-    :volume             => 3,
+    :volume_3d          => 3,
 )
 
 const EULERIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
     :lines   => Any[menu_opt(:lines_1d), menu_opt(:lines_2d), menu_opt(:lines_3d)],
     :scatter => Any[menu_opt(:scatter_1d), menu_opt(:scatter_lines), menu_opt(:scatter_colors), menu_opt(:scatter_2d), menu_opt(:scatter_3d)],
-    :contour => Any[menu_opt(:contour), menu_opt(:contour_cmap), menu_opt(:contour_f), menu_opt(:contour_surface), menu_opt(:contour_3d)],
-    :heatmap => Any[menu_opt(:heatmap), menu_opt(:surface)],
-    :volume  => Any[menu_opt(:volume)]
+    :contour => Any[menu_opt(:contour_colors), menu_opt(:contour_cmap), menu_opt(:contour_f), menu_opt(:contour_surface), menu_opt(:contour_3d)],
+    :heatmap => Any[menu_opt(:heatmap_flat), menu_opt(:heatmap_surface)],
+    :volume  => Any[menu_opt(:volume_3d)]
 )
 
 const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
@@ -108,13 +125,13 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{Symbol}}(
     :scatter_surface  => [:color_map, :color_range, :markers, :marker_size, :rasterize, :method_index],
     :scatter_3d       => [:color_map, :color_range, :markers, :marker_size, :rasterize, :method_index],
     
-    :contour          => [:colors, :levels, :line_width, :labels],
+    :contour_colors          => [:colors, :levels, :line_width, :labels],
     :contour_cmap     => [:color_map, :color_range, :levels, :line_width, :labels, :bottom_margin, :method_index],
     :contour_f        => [:color_map, :color_range, :levels, :method_index, :rasterize, :bottom_margin],
     :contour_surface  => [:colors, :levels, :line_width, :labels],
-    :heatmap          => [:color_map, :color_range, :rasterize, :bottom_margin, :method_index],
-    :surface          => [:color_map, :color_range, :rasterize, :method_index],
-    :volume           => [:color_map, :color_range, :rasterize, :method_index],
+    :heatmap_flat          => [:color_map, :color_range, :rasterize, :bottom_margin, :method_index],
+    :heatmap_surface          => [:color_map, :color_range, :rasterize, :method_index],
+    :volume_3d           => [:color_map, :color_range, :rasterize, :method_index],
     :contour_3d       => [:colors, :levels, :line_width, :method_index]
 )
 
@@ -143,7 +160,7 @@ function create_master_ui_dict()
         :y_label        => "default", 
         :z_label        => "default", 
         :colorbar_label => "default", 
-        :legend         => "Methods",
+        :legend_label         => "Methods",
         :comp_names     => ("default",)
     )
     
@@ -190,12 +207,12 @@ function create_master_ui_dict()
     master[:y_axis_nd] = axis_dict(0.0, 15.0)
     master[:z_axis_3d] = axis_dict(0.05, 20.0)
     
-    master[:Plot_Style] = Dict{Symbol, Any}(
+    master[:plot_style] = Dict{Symbol, Any}(
         :colors          => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
         :color_map       => :viridis,
         :color_range     => Any[],
         :line_width      => 3.0,
-        :line_direction  => "Horizontal",
+        :line_direction  => :horizontal,
         :line_styles     => [:solid, :dash, :dot, (:dash, :dense), (:dot, :dense)],
         :markers         => [:circle, :rect, :utriangle, :dtriangle, :cross],
         :marker_size     => 15.0,
@@ -316,7 +333,7 @@ end
 
 function apply_plot_preset!(::Val{:publication}, ui::Dict, plot::Dict, layout::Dict)
     set_ui_opt!(ui, :labels, :title, "")
-    set_ui_opt!(ui, :labels, :legend, "")
+    set_ui_opt!(ui, :labels, :legend_label, "")
 
     set_ui_opt!(ui, :axis_general, :font_size, 18)
     set_ui_opt!(ui, :axis_general, :label_size, 18)
@@ -381,7 +398,7 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     
     ui_over    = Dict{Symbol, Any}()
     plot_opt   = Dict{Symbol, Any}()
-    layout_opt = get_base_layout_options()
+    layout_opt = Dict{Symbol, Any}()
 
     for preset in preset_list
         apply_plot_preset!(Val(preset), ui_over, plot_opt, layout_opt)

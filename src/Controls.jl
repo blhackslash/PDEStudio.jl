@@ -137,7 +137,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 
     manager.widgets[:u_axis]      = Menu(menu_layout[cr,1], options = Any[menu_opt(:none)])
     manager.widgets[:anim_target] = Menu(menu_layout[cr,2], options = Any[menu_opt(:none)])
-    manager.widgets[:component]           = Menu(menu_layout[cr,3], options = Any[("1",1)])
+    manager.widgets[:component]   = Menu(menu_layout[cr,3], options = Any[(frontend_key(:component_1), 1)])
 
     for i in 1:3; colsize!(menu_layout, i, Relative(1/3)); end
     for (i, gap) in enumerate(gaps); rowgap!(menu_layout, i, gap); end
@@ -161,8 +161,12 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     end
 
     for p_sym in get_base_variables()
-        p_str = string(p_sym)
-        Label(slider_layout[slider_row, 1], "$p_str:", halign=:right)
+        # THE FIX: Make the base labels dynamic Observables and store them!
+        lbl_key = Symbol("$(p_sym)_label")
+        lbl_text = Observable("$(frontend_key(p_sym)):")
+        manager.widgets[lbl_key] = lbl_text
+        
+        Label(slider_layout[slider_row, 1], lbl_text, halign=:right)
         sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
         manager.widgets[p_sym] = sl
         
@@ -184,7 +188,7 @@ function create_hierarchical_param_controls!(layout::GridLayout)
     Label(layout[1, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)
     
     drop_gl = layout[2, 1:4] = GridLayout()
-    manager.widgets[:editor_cat]   = Menu(drop_gl[1, 1], options=[menu_opt(:simulation), menu_opt(:ui)], prompt="Category")
+    manager.widgets[:editor_cat]   = Menu(drop_gl[1, 1], options=[menu_opt(:simulation), menu_opt(:ui), menu_opt(:labels)], prompt="Category")
     manager.widgets[:editor_scope] = Menu(drop_gl[1, 2], options=[menu_opt(:none)], prompt="Scope")
     manager.widgets[:editor_key]   = Menu(drop_gl[1, 3], options=[menu_opt(:none)], prompt="Parameter")
     
