@@ -64,6 +64,10 @@ function frontend_key(s::Symbol)
     if haskey(manager.maps, :Labels) && haskey(manager.maps[:Labels], s)
         return manager.maps[:Labels][s]
     end
+    # 2. Default Mappings
+    if haskey(SYMBOL_TO_LABEL_MAP, s)
+        return SYMBOL_TO_LABEL_MAP[s]
+    end
     # 3. Algorithmic Fallback
     words = split(String(s), "_")
     return join(map(titlecase, words), " ")
@@ -135,6 +139,16 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{Symbol}}(
     :contour_3d       => [:colors, :levels, :line_width, :method_index]
 )
 
+# In UIStyles.jl
+const PRESET_DESCRIPTIONS = Dict{Symbol, String}(
+    :convergence => "Optimized for 1D error convergence plots.",
+    :publication => "Clean, high-contrast style for papers.",
+    :heatmap     => "Optimized layout and margins for 2D heatmaps.",
+    :component   => "Splits components into separate linked plots.",
+    :compact3d   => "Adjusts 3D axis labels for tighter packing.",
+    :nolabels    => "Removes all axis and title labels.",
+    :darkmode    => "High-contrast colors for dark themes."
+)
 
 # --- 2. MASTER UI TEMPLATES ---
 """
@@ -199,12 +213,12 @@ function create_master_ui_dict()
         :lims              => Any[]
     )
 
-    master[:x_axis_1d] = axis_dict(0.05, 15.0)
+    master[:x_axis_1d] = axis_dict(0.0, 15.0)
     master[:y_axis_1d] = axis_dict(0.05, 15.0)
     
-    master[:x_axis_nd] = axis_dict(0.0, 15.0)
-    master[:y_axis_nd] = axis_dict(0.0, 15.0)
-    master[:z_axis_3d] = axis_dict(0.05, 20.0)
+    master[:x_axis_nd] = axis_dict(0.0, 40.0)
+    master[:y_axis_nd] = axis_dict(0.0, 40.0)
+    master[:z_axis_3d] = axis_dict(0.05, 50.0)
     
     master[:plot_style] = Dict{Symbol, Any}(
         :colors          => [(:black,.8), :blue, :green, :orange, :purple, :yellow],
@@ -280,7 +294,7 @@ function set_plot_presets!()
 
     empty!(manager.staged[:Slider])
 
-    manager.flags[:Layout][] = true
+    manager.triggers[:Layout][] += 1
     @info "Staged presets have been cleared. Run Layout update to apply the default values."
     return
 end
@@ -357,14 +371,18 @@ end
 
 function apply_plot_preset!(::Val{:heatmap}, ui::Dict, plot::Dict, layout::Dict)
     layout[:base_plot]  = :heatmap
-    layout[:plot_style] = :heatmap 
+    layout[:plot_style] = :heatmap_flat
     set_ui_opt!(ui, :x_axis, :label_offset, 10.0)
     set_ui_opt!(ui, :y_axis, :label_offset, 10.0)
+    set_ui_opt!(ui, :x_axis, :padding, 0.0)
+    set_ui_opt!(ui, :y_axis, :padding, 0.0)
+    layout[:compare_target]  = :methods
+    layout[:compare_link]    = :fully_coupled
     set_ui_opt!(ui, :plot_style, :bottom_margin, 20)
 end
 
 function apply_plot_preset!(::Val{:component}, ui::Dict, plot::Dict, layout::Dict)
-    layout[:compare_target]  = :Component
+    layout[:compare_target]  = :component
     layout[:compare_Columns] = 1
     layout[:compare_link]    = :decoupled
     set_ui_opt!(ui, :labels, :title, "default")
@@ -407,8 +425,8 @@ function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
     merge!(manager.staged[:Plot], plot_opt)
     merge!(manager.staged[:Layout], layout_opt)
     
-    if !isempty(layout_opt); manager.flags[:Layout][] = true
-    elseif !isempty(plot_opt); manager.flags[:Plot][] = true end 
+    if !isempty(layout_opt); manager.triggers[:Layout][] += 1
+    elseif !isempty(plot_opt); manager.triggers[:Plot][] += 1 end 
     
     @info "Successfully staged plot presets: $(join(preset_list, " + "))"
 end

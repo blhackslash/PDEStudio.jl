@@ -49,6 +49,24 @@ function _handle_plot_trigger!(
         apply_plot_options!(manager.staged[:Plot])
         empty!(manager.staged[:Plot])
     end
+    
+    # THE FIX: Apply staged UI settings early so Plot limits can use them!
+    if !isempty(manager.staged[:UI])
+        if get(manager.staged[:UI], :reset, false)
+            switch_ui_plot_type!(T)
+        end
+        
+        for (scope, dict) in manager.staged[:UI]
+            scope === :reset && continue
+            if haskey(manager.ui, scope)
+                for (k, v) in dict
+                    manager.ui[scope][k] = v
+                end
+            end
+        end
+        empty!(manager.staged[:UI])
+    end
+
     data = manager.plot_data[]
     isempty(data) && return false
 
@@ -321,23 +339,6 @@ function _handle_data_trigger!(
 end
 
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
-
-    if !isempty(manager.staged[:UI])
-        # Force a UI rebuild if the reset flag is present
-        if get(manager.staged[:UI], :reset, false)
-            switch_ui_plot_type!(T)
-        end
-        
-        for (scope, dict) in manager.staged[:UI]
-            scope === :reset && continue # Skip applying the flag itself
-            if haskey(manager.ui, scope)
-                for (k, v) in dict
-                    manager.ui[scope][k] = v
-                end
-            end
-        end
-        empty!(manager.staged[:UI])
-    end
 
     if !isempty(manager.staged[:Camera])
         manager.state[:Camera_Locked][] = true

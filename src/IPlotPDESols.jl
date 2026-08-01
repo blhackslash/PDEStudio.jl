@@ -156,7 +156,7 @@ function get_base_layout_options()
         :compare_target  => :none, 
         :compare_columns => 2,     
         :compare_link    => :fully_coupled,
-        :legend_base     => :top,
+        :legend_base     => :right,
         :legend_add      => :detached,
         :plot_width      => 500,
         :plot_height     => 400,
@@ -285,7 +285,8 @@ function reset_manager!()
     manager.staged[:Camera] = Dict{Symbol, Any}()
     manager.staged[:Methods] = Observable(Symbol[])
 
-    manager.maps[:Labels] = deepcopy(SYMBOL_TO_LABEL_MAP)
+    manager.maps[:Labels] = Dict{Symbol, String}()
+    manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)
 end
 
 

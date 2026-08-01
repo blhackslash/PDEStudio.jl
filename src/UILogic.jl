@@ -12,7 +12,7 @@ function menu_option_rank(opt)
     
     # Rank 0: Main prompts and ":none" fallbacks 
     # (Catches "Methods...", "-", and the resolved UI label for :none)
-    if val === :none || label_str == "Methods..." || label_str == "-" || val in manager.plot_vars || val === :shared
+    if val === :none || label_str == "Methods..." || label_str == "-" || val in manager.plot_vars || val === :shared || val == :presets
         return (0, label_str)
     end
     
@@ -383,6 +383,9 @@ function _setup_hierarchy_interactions!()
             active_target_ref[] = nothing
             tb.stored_string.val = ""
             if tb.displayed_string[] != ""; Makie.reset!(tb); end
+            
+            manager.widgets[:editor_toggle].label[] = "Toggle"
+            manager.widgets[:editor_toggle].buttoncolor[] = :lightgray
             return
         end
         
@@ -396,7 +399,7 @@ function _setup_hierarchy_interactions!()
             isnothing(config) && return 
             target_dict = scope === :shared ? config.shared_params : get(config.methods_dict, scope, nothing)
         elseif cat === :ui
-            target_dict = get(manager.ui, scope, nothing)
+            target_dict = scope === :presets ? manager.maps[:Presets] : get(manager.ui, scope, nothing)
         elseif cat === :labels
             target_dict = manager.maps[:Labels]
         end
@@ -405,6 +408,15 @@ function _setup_hierarchy_interactions!()
             active_target_ref[] = (target_dict, key)
             val_str = string(target_dict[key])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
+            
+            # THE FIX: Dynamic Toggle/Apply Button!
+            if cat === :ui && scope === :presets
+                manager.widgets[:editor_toggle].label[] = "Apply"
+                manager.widgets[:editor_toggle].buttoncolor[] = :lightgreen
+            else
+                manager.widgets[:editor_toggle].label[] = "Toggle"
+                manager.widgets[:editor_toggle].buttoncolor[] = :lightgray
+            end
         end
     end
 
@@ -422,7 +434,11 @@ function _setup_hierarchy_interactions!()
                 end
             end
         elseif cat === :ui
-            new_scopes = [menu_opt(k) for k in sort(collect(keys(manager.ui)))]
+            # THE FIX: Inject Presets as the default UI scope
+            push!(new_scopes, ("Presets", :presets))
+            for k in sort(collect(keys(manager.ui)))
+                push!(new_scopes, menu_opt(k))
+            end
         elseif cat === :labels
             new_scopes = Any[("Components", :components), ("Variables", :variables), ("Methods", :methods)]
         end
@@ -443,7 +459,11 @@ function _setup_hierarchy_interactions!()
                 raw_keys = sort(collect(keys(target_dict)))
             end
         elseif cat === :ui
-            raw_keys = sort(collect(keys(get(manager.ui, scope, Dict{Symbol, Any}()))))
+            if scope === :presets
+                raw_keys = sort(collect(keys(manager.maps[:Presets])))
+            else
+                raw_keys = sort(collect(keys(get(manager.ui, scope, Dict{Symbol, Any}()))))
+            end
         elseif cat === :labels
             if scope === :components
                 c_max = 1
@@ -464,7 +484,6 @@ function _setup_hierarchy_interactions!()
                 raw_keys = manager.methods[]
             end
             
-            # Auto-initialize missing labels so the textbox isn't empty
             for k in raw_keys
                 if !haskey(manager.maps[:Labels], k)
                     manager.maps[:Labels][k] = string(k)
@@ -478,13 +497,12 @@ function _setup_hierarchy_interactions!()
             filter!(k -> k in valid_keys, raw_keys)
         end
 
-        # Format UI keys nicely, but explicitly preserve exact casing for Simulation and Labels!
+        # Preserve exact casing for Simulation, Labels, and Presets!
         if cat === :labels
             new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[(string(k), k) for k in raw_keys]
         else
             new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[menu_opt(k) for k in raw_keys]
         end
-        filter!(k -> k[2] != :ignore, new_keys)
         
         update_menu_safe!(menu_key, new_keys; force_notify=true)
         sync_textbox_to_active_key()
@@ -500,10 +518,10 @@ function _setup_hierarchy_interactions!()
         target_dict, key = target_info
         
         cat = menu_cat.selection[]
-        scope = menu_scope.selection[] # Grab the scope to know WHAT we are editing
+        scope = menu_scope.selection[]
         
         try
-            if cat === :labels
+            if cat === :labels || (cat === :ui && scope === :presets)
                 target_dict[key] = string(s)
             else
                 target_dict[key] = smart_parse_csv_value(s)
@@ -512,21 +530,26 @@ function _setup_hierarchy_interactions!()
             if cat === :simulation
                 manager.flags[:Simulation][] = true 
             elseif cat === :ui
-                if key in REPLOT_OPTIONS
-                    manager.triggers[:Plot][] += 1
-                else
-                    manager.triggers[:UI][] += 1
+                if scope !== :presets
+                    if key in REPLOT_OPTIONS
+                        manager.triggers[:Plot][] += 1
+                    else
+                        manager.triggers[:UI][] += 1
+                    end
                 end
             elseif cat === :labels
+                manager.triggers[:Layout][] += 1
                 
-                # --- THE FIX: Instant UI Label Syncing ---
                 if scope === :variables
                     lbl_key = Symbol("$(key)_label")
                     if haskey(manager.widgets, lbl_key)
                         manager.widgets[lbl_key][] = target_dict[key] * ":"
                     end
+                elseif scope === :components
+                    notify(manager.widgets[:u_axis].selection)
+                elseif scope === :methods
+                    notify(manager.state[:Is_Activate_Mode])
                 end
-                manager.triggers[:Plot][] += 1
             end
         catch e
             @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
@@ -538,12 +561,20 @@ function _setup_hierarchy_interactions!()
         isnothing(target_info) && return
         target_dict, key = target_info
         
+        cat = menu_cat.selection[]
+        scope = menu_scope.selection[]
+        
         try
+            # THE FIX: Clicking Apply triggers the preset!
+            if cat === :ui && scope === :presets
+                set_plot_presets!(key)
+                return
+            end
+            
             if target_dict[key] isa Bool
                 target_dict[key] = !target_dict[key]
                 tb.displayed_string[] = string(target_dict[key])
                 
-                cat = menu_cat.selection[]
                 if cat === :simulation
                     manager.flags[:Simulation][] = true 
                 elseif cat === :ui
