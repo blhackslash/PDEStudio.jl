@@ -565,9 +565,12 @@ function _setup_hierarchy_interactions!()
         scope = menu_scope.selection[]
         
         try
-            # THE FIX: Clicking Apply triggers the preset!
             if cat === :ui && scope === :presets
-                set_plot_presets!(key)
+                if key === :create_new
+                    @info "Fill in a filename below and click 'Save Defs' to write to disk."
+                else
+                    set_plot_presets!(key)
+                end
                 return
             end
             
@@ -772,23 +775,50 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    manager.listeners[:Save_Defs_Click] = on(manager.widgets[:save_defs_button].clicks) do _
-        if manager.state[:Camera_Locked][]
-            extract_and_store_camera_state!(plot_layout)
+    manager.listeners[:Save_Defs] = on(manager.widgets[:save_defs_button].clicks) do _
+        cat = manager.widgets[:editor_cat].selection[]
+        scope = manager.widgets[:editor_scope].selection[]
+        key = manager.widgets[:editor_key].selection[]
+
+        if cat === :ui && scope === :presets && key === :create_new
+            # --- DISK SAVE (Create New Preset) ---
+            filename = manager.widgets[:export_text].stored_string[]
+            if isempty(filename)
+                @warn "Please enter a preset name in the Filename box."
+                return
+            end
+            
+            sym_name = Symbol(lowercase(replace(strip(filename), r"\s+" => "_")))
+            save_dir = joinpath(get_save_path(), "Presets")
+            mkpath(save_dir)
+            
+            desc = manager.maps[:Presets][:create_new]
+            if desc == "Type a description here, type a filename below, and click Save Defs." || isempty(desc)
+                desc = "User custom preset: $filename"
+            end
+            manager.maps[:Presets][sym_name] = desc
+            
+            success = savePresetToCSV(sym_name, save_dir)
+            if success
+                Makie.reset!(manager.widgets[:export_text])
+                # Reset the creation text for the next preset
+                manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
+                notify(manager.widgets[:editor_scope].selection)
+                
+                # Auto-select the newly created preset
+                idx = findfirst(x -> x[2] == sym_name, manager.widgets[:editor_key].options[])
+                if !isnothing(idx); manager.widgets[:editor_key].selection[] = sym_name; end
+            end
         else
-            manager.staged[:Camera] = Dict{Symbol, Any}()
+            # --- QUICK STAGING (RAM ONLY) ---
+            # Stage the current selection so you can close the window and come back to where you left off
+            manager.staged[:Plot]   = extract_plot_options()
+            manager.staged[:Layout] = extract_layout_options()
+            manager.staged[:UI]     = deepcopy(manager.ui)
+            
+            Makie.reset!(manager.widgets[:export_text]) # Clear box for visual feedback
+            @info "Session definitions staged! They will be preserved if you reopen the plotter."
         end
-        
-        manager.staged[:Plot]  = extract_plot_options()
-        manager.staged[:Layout] = extract_layout_options() 
-        
-        new_ui = Dict{Symbol, Any}()
-        for (scope, subdict) in manager.ui
-            new_ui[scope] = Dict{Symbol, Any}()
-            for (k, v) in subdict; new_ui[scope][k] = v; end
-        end
-        manager.staged[:UI] = new_ui
-        @info "Current UI, Layout, and plot options successfully saved to global defaults!"
     end
     
     manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_defs_button].clicks) do _

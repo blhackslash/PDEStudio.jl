@@ -342,11 +342,11 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     end
 end
 
-function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs::Observable, default_label::String, plot_idx::Int=1)
+function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs, default_label::String, plot_idx::Int=1)
     
     ui_stl = manager.ui[:plot_style]
     if !haskey(ui_stl, :color_map); return; end 
-    
+    safe_limits = color_range_obs isa Tuple ? color_range_obs : lift(cr -> (Float64(cr[1]), Float64(cr[2])), color_range_obs)
     layout_dict = manager.state[:Layout_Dict][]
     cb_list = layout_dict[:Colorbars]
     isempty(cb_list) && return
@@ -370,7 +370,7 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_
     try
         Colorbar(plot_layout[cb_pos...];
             colormap = ui_stl[:color_map], 
-            limits = color_range_obs,
+            limits = safe_limits,
             label = final_label,
             labelsize = ui_gen[:label_size], 
             ticklabelsize = ui_gen[:ticklabel_size] 

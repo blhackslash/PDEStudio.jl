@@ -287,6 +287,21 @@ function reset_manager!()
 
     manager.maps[:Labels] = Dict{Symbol, String}()
     manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)
+
+    # Initialize the default creation text
+    manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
+    
+    preset_dir = joinpath(get_save_path(), "Presets")
+    if isdir(preset_dir)
+        for file in readdir(preset_dir)
+            if endswith(file, ".csv")
+                sym = Symbol(replace(file, ".csv" => ""))
+                if !haskey(manager.maps[:Presets], sym)
+                    manager.maps[:Presets][sym] = "Custom disk preset" 
+                end
+            end
+        end
+    end
 end
 
 

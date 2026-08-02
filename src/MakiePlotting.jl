@@ -107,6 +107,7 @@ end
 
 function reset_plotter!()
     fig = manager.ui_state[:master_fig]
+    set_plot_presets!()
     
     if !isnothing(fig)
         try

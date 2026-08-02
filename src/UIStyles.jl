@@ -302,26 +302,31 @@ end
 # ==============================================================================
 # --- PLOT PRESET EXTENSION INTERFACE ---
 # ==============================================================================
+# ==============================================================================
+# --- PLOT PRESET EXTENSION INTERFACE ---
+# ==============================================================================
 
 """
-    set_ui_opt!(ui_dict, scope, key, val)
+    set_ui_opt!(scope, key, val)
 
-Helper function to safely stage UI options in custom presets.
+Helper function to safely stage UI options in custom presets directly into the manager.
 """
-function set_ui_opt!(ui_dict::Dict, scope::Symbol, key::Symbol, val::Any)
-    if !haskey(ui_dict, scope)
-        ui_dict[scope] = Dict{Symbol, Any}()
+function set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
+    if !haskey(manager.staged, :UI)
+        manager.staged[:UI] = Dict{Symbol, Any}()
     end
-    ui_dict[scope][key] = val
+    if !haskey(manager.staged[:UI], scope)
+        manager.staged[:UI][scope] = Dict{Symbol, Any}()
+    end
+    manager.staged[:UI][scope][key] = val
 end
 
 """
-    apply_plot_preset!(::Val{:preset_name}, ui, plot, layout)
+    apply_plot_preset!(::Val{:preset_name})
 
-Dispatched function to define a plot preset. Modify the provided `ui`, `plot`, 
-and `layout` dictionaries to stage your desired settings.
+Dispatched function to define a plot preset. Modifies `manager.staged` directly.
 """
-function apply_plot_preset!(::Val{T}, ui::Dict, plot::Dict, layout::Dict) where T
+function apply_plot_preset!(::Val{T}) where T
     @warn "Unknown plot preset ignored: $T"
 end
 
@@ -329,106 +334,117 @@ end
 # --- BUILT-IN PRESETS ---
 # ==============================================================================
 
-function apply_plot_preset!(::Val{:convergence}, ui::Dict, plot::Dict, layout::Dict)
-    plot[:x_axis]       = :Ns__1
-    plot[:u_axis]       = :relative_l2error
-    plot[:t]            = 10.0^10              # Replaces :t_Value
-    layout[:base_plot]  = :lines_1d
-    layout[:plot_style] = :lines_1d 
+function apply_plot_preset!(::Val{:convergence})
+    manager.staged[:Plot][:x_axis]       = :Ns__1
+    manager.staged[:Plot][:u_axis]       = :relative_l2error
+    manager.staged[:Plot][:t]            = 10.0^10              # Replaces :t_Value
+    manager.staged[:Layout][:base_plot]  = :lines_1d
+    manager.staged[:Layout][:plot_style] = :lines_1d 
     
-    set_ui_opt!(ui, :x_axis, :log_scale, true)
-    set_ui_opt!(ui, :y_axis, :log_scale, true)
-    set_ui_opt!(ui, :x_axis, :padding, 0.0)
+    set_ui_opt!(:x_axis, :log_scale, true)
+    set_ui_opt!(:y_axis, :log_scale, true)
+    set_ui_opt!(:x_axis, :padding, 0.0)
     
-    set_ui_opt!(ui, :labels, :x_label, "Number of Cells (N)")
-    set_ui_opt!(ui, :labels, :y_label, "Relative L2 Error")
+    set_ui_opt!(:labels, :x_label, "Number of Cells (N)")
+    set_ui_opt!(:labels, :y_label, "Relative L2 Error")
 end
 
-function apply_plot_preset!(::Val{:publication}, ui::Dict, plot::Dict, layout::Dict)
-    set_ui_opt!(ui, :labels, :title, "")
-    set_ui_opt!(ui, :labels, :legend_label, "")
+function apply_plot_preset!(::Val{:publication})
+    set_ui_opt!(:labels, :title, "")
+    set_ui_opt!(:labels, :legend_label, "")
 
-    set_ui_opt!(ui, :axis_general, :font_size, 18)
-    set_ui_opt!(ui, :axis_general, :label_size, 18)
-    set_ui_opt!(ui, :axis_general, :title_size, 22)
-    set_ui_opt!(ui, :axis_general, :ticklabel_size, 16)
+    set_ui_opt!(:axis_general, :font_size, 18)
+    set_ui_opt!(:axis_general, :label_size, 18)
+    set_ui_opt!(:axis_general, :title_size, 22)
+    set_ui_opt!(:axis_general, :ticklabel_size, 16)
     
-    set_ui_opt!(ui, :x_axis, :padding, 0.0)
-    set_ui_opt!(ui, :x_axis, :label_offset, 5.0)
-    set_ui_opt!(ui, :y_axis, :label_offset, 5.0)
-    set_ui_opt!(ui, :z_axis, :label_offset, 5.0)
+    set_ui_opt!(:x_axis, :padding, 0.0)
+    set_ui_opt!(:x_axis, :label_offset, 5.0)
+    set_ui_opt!(:y_axis, :label_offset, 5.0)
+    set_ui_opt!(:z_axis, :label_offset, 5.0)
 
-    set_ui_opt!(ui, :plot_style, :line_width, 3.6)
-    set_ui_opt!(ui, :plot_style, :dashed_lines, false)
-    set_ui_opt!(ui, :plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
-    set_ui_opt!(ui, :various, :save_formats, ["pdf", "svg"])
+    set_ui_opt!(:plot_style, :line_width, 3.6)
+    set_ui_opt!(:plot_style, :dashed_lines, false)
+    set_ui_opt!(:plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
+    set_ui_opt!(:various, :save_formats, ["pdf", "svg"])
 
-    layout[:legend_base] = :top
-    layout[:legend_add]  = :detached
-    layout[:plot_width]  = 500
-    layout[:plot_height] = 400
+    manager.staged[:Layout][:legend_base] = :top
+    manager.staged[:Layout][:legend_add]  = :detached
+    manager.staged[:Layout][:plot_width]  = 500
+    manager.staged[:Layout][:plot_height] = 400
 end
 
-function apply_plot_preset!(::Val{:heatmap}, ui::Dict, plot::Dict, layout::Dict)
-    layout[:base_plot]  = :heatmap
-    layout[:plot_style] = :heatmap_flat
-    set_ui_opt!(ui, :x_axis, :label_offset, 10.0)
-    set_ui_opt!(ui, :y_axis, :label_offset, 10.0)
-    set_ui_opt!(ui, :x_axis, :padding, 0.0)
-    set_ui_opt!(ui, :y_axis, :padding, 0.0)
-    layout[:compare_target]  = :methods
-    layout[:compare_link]    = :fully_coupled
-    set_ui_opt!(ui, :plot_style, :bottom_margin, 20)
+function apply_plot_preset!(::Val{:heatmap})
+    manager.staged[:Layout][:base_plot]  = :heatmap
+    manager.staged[:Layout][:plot_style] = :heatmap_flat
+    
+    set_ui_opt!(:x_axis, :label_offset, 10.0)
+    set_ui_opt!(:y_axis, :label_offset, 10.0)
+    set_ui_opt!(:x_axis, :padding, 0.0)
+    set_ui_opt!(:y_axis, :padding, 0.0)
+    
+    manager.staged[:Layout][:compare_target] = :methods
+    manager.staged[:Layout][:compare_link]   = :fully_coupled
+    set_ui_opt!(:plot_style, :bottom_margin, 20)
 end
 
-function apply_plot_preset!(::Val{:component}, ui::Dict, plot::Dict, layout::Dict)
-    layout[:compare_target]  = :component
-    layout[:compare_Columns] = 1
-    layout[:compare_link]    = :decoupled
-    set_ui_opt!(ui, :labels, :title, "default")
-    set_ui_opt!(ui, :labels, :y_label, "")
+function apply_plot_preset!(::Val{:component})
+    manager.staged[:Layout][:compare_target]  = :component
+    manager.staged[:Layout][:compare_columns] = 1
+    manager.staged[:Layout][:compare_link]    = :decoupled
+    
+    set_ui_opt!(:labels, :title, "default")
+    set_ui_opt!(:labels, :y_label, "")
 end
 
-function apply_plot_preset!(::Val{:compact3d}, ui::Dict, plot::Dict, layout::Dict)
-    set_ui_opt!(ui, :x_axis, :label_offset, 5.0)
-    set_ui_opt!(ui, :y_axis, :label_offset, 5.0)
-    set_ui_opt!(ui, :z_axis, :label_offset, 15.0)
-    set_ui_opt!(ui, :axis_general, :legend_pos, :td)
+function apply_plot_preset!(::Val{:compact3d})
+    set_ui_opt!(:x_axis, :label_offset, 5.0)
+    set_ui_opt!(:y_axis, :label_offset, 5.0)
+    set_ui_opt!(:z_axis, :label_offset, 15.0)
+    set_ui_opt!(:axis_general, :legend_pos, :td)
 end
 
-function apply_plot_preset!(::Val{:nolabels}, ui::Dict, plot::Dict, layout::Dict)
+function apply_plot_preset!(::Val{:nolabels})
     for key in keys(MASTER_UI_DICT[:labels])
-        set_ui_opt!(ui, :Labels, key, "")
+        set_ui_opt!(:labels, key, "")
     end
 end
 
-function apply_plot_preset!(::Val{:darkmode}, ui::Dict, plot::Dict, layout::Dict)
-    set_ui_opt!(ui, :plot_style, :colors, [:cyan, :magenta, :yellow, :white])
+function apply_plot_preset!(::Val{:darkmode})
+    set_ui_opt!(:plot_style, :colors, [:cyan, :magenta, :yellow, :white])
 end
 
 # ==============================================================================
 # --- THE ORCHESTRATOR ---
 # ==============================================================================
 
-function set_plot_presets!(presets::Union{Symbol, Vector{Symbol}})
-    preset_list = presets isa Symbol ? [presets] : presets
-    
-    ui_over    = Dict{Symbol, Any}()
-    plot_opt   = Dict{Symbol, Any}()
-    layout_opt = Dict{Symbol, Any}()
-
-    for preset in preset_list
-        apply_plot_preset!(Val(preset), ui_over, plot_opt, layout_opt)
+function set_plot_presets!(name::Symbol)
+    # 1. Check for Hardcoded functions
+    if haskey(PRESET_DESCRIPTIONS, name)
+        # Ensure target dictionaries exist before the preset writes to them
+        if !haskey(manager.staged, :Plot);   manager.staged[:Plot]   = Dict{Symbol, Any}(); end
+        if !haskey(manager.staged, :Layout); manager.staged[:Layout] = Dict{Symbol, Any}(); end
+        
+        apply_plot_preset!(Val(name))
+        manager.triggers[:Layout][] += 1
+        @info "Applied hardcoded preset: $name"
+    else
+        # 2. Check Disk CSVs
+        preset_path = joinpath(get_save_path(), "Presets", "$(name).csv")
+        if isfile(preset_path)
+            load_and_apply_csv!(preset_path)
+            
+            parsed = parse_csv_to_dict(preset_path)
+            if haskey(parsed, "Metadata") && haskey(parsed["Metadata"], "Preset")
+                manager.maps[:Presets][name] = get(parsed["Metadata"]["Preset"], "description", "Custom disk preset")
+            end
+            
+            manager.triggers[:Layout][] += 1
+            @info "Applied custom disk preset: $name"
+        else
+            @warn "Preset '$name' not found in Disk or Hardcoded styles."
+        end
     end
-
-    merge!(manager.staged[:UI], ui_over)
-    merge!(manager.staged[:Plot], plot_opt)
-    merge!(manager.staged[:Layout], layout_opt)
-    
-    if !isempty(layout_opt); manager.triggers[:Layout][] += 1
-    elseif !isempty(plot_opt); manager.triggers[:Plot][] += 1 end 
-    
-    @info "Successfully staged plot presets: $(join(preset_list, " + "))"
 end
 
 # ==============================================================================

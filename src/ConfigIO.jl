@@ -17,33 +17,36 @@ function load_and_apply_csv!(filepath::String)
     
     parsed = parse_csv_to_dict(filepath)
     
-    # Restore Grid Resolutions BEFORE loading config[cite: 16]
-    if haskey(parsed, "Config") && haskey(parsed["Config"], "Resolutions")
-        res = parsed["Config"]["Resolutions"]
-        haskey(res, "N")   && (set_space_resolution!(res["N"]))
-        haskey(res, "T")   && (set_time_resolution!(res["T"]))
-        haskey(res, "Ref") && (set_ref_resolution!(res["Ref"]))
-        @info "Restored grid resolutions: N=$(res["N"]), T=$(res["T"]), REF=$(res["Ref"])"
-    end
+    # --- 1. FULL PROJECT DATA (Optional for pure visual presets) ---
+    if haskey(parsed, "Config")
+        if haskey(parsed["Config"], "Resolutions")
+            res = parsed["Config"]["Resolutions"]
+            haskey(res, "N")   && (set_space_resolution!(res["N"]))
+            haskey(res, "T")   && (set_time_resolution!(res["T"]))
+            haskey(res, "Ref") && (set_ref_resolution!(res["Ref"]))
+            @info "Restored grid resolutions: N=$(res["N"]), T=$(res["T"]), REF=$(res["Ref"])"
+        end
 
-    sim_func_str = parsed["Config"]["General"]["simulation_func"]
-    resolved_func = resolve_simulation_function(sim_func_str, nothing)
-    if isnothing(resolved_func)
-        @error "Aborting: Could not resolve simulation function '$sim_func_str'"
-        return
+        sim_func_str = get(parsed["Config"]["General"], "simulation_func", "none")
+        resolved_func = resolve_simulation_function(sim_func_str, nothing)
+        if isnothing(resolved_func)
+            @error "Aborting: Could not resolve simulation function '$sim_func_str'"
+            return
+        end
+        
+        new_config = csv_to_simulation_config(parsed, resolved_func)
+        
+        for (key,cache_dict) in manager.caches
+            empty!(cache_dict)
+        end
+        
+        set_sim_config!(new_config)
+        @info "Project configuration buffered! Press 'Run Simulation' to compute and apply."
+    else
+        @info "No simulation data found. Loading as a visual preset."
     end
     
-    new_config = csv_to_simulation_config(parsed, resolved_func)
-    
-    # Empty existing caches[cite: 16]
-    for (key,cache_dict) in manager.caches
-        empty!(cache_dict)
-    end
-    
-    # 1. Update the Data Source
-    set_sim_config!(new_config)
-    
-    # 2. Buffer the Overwrites directly into the centralized Staged Cache using Symbols
+    # --- 2. VISUAL PRESETS & STAGING (Runs for both Full Projects and Presets) ---
     if haskey(parsed, "UI")
         manager.staged[:UI] = _apply_backend_keys(parsed["UI"])
     end
@@ -51,14 +54,14 @@ function load_and_apply_csv!(filepath::String)
     # --- LOAD SCENE: LAYOUT ---
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
         manager.staged[:Layout] = _apply_backend_keys(parsed["Scene"]["Layout"])
-    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") # Legacy Fallback
+    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
         manager.staged[:Layout] = _apply_backend_keys(parsed["Layout"]["General"])
     end
 
     # --- LOAD SCENE: PLOT ---
     plot_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Plot")
         parsed["Scene"]["Plot"]
-    elseif haskey(parsed, "Plot") && haskey(parsed["Plot"], "General") # Legacy Fallback
+    elseif haskey(parsed, "Plot") && haskey(parsed["Plot"], "General") 
         parsed["Plot"]["General"]
     else
         nothing
@@ -68,7 +71,6 @@ function load_and_apply_csv!(filepath::String)
         plot_dict = Dict{Symbol, Any}()
         for (k, v) in plot_source
             bk = backend_key(k)
-            # Differentiate UI selections from strictly-cased Parameter Sliders[cite: 16]
             if bk in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
                 plot_dict[bk] = v
             else
@@ -81,7 +83,7 @@ function load_and_apply_csv!(filepath::String)
     # --- LOAD SCENE: CAMERA ---
     cam_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Camera")
         parsed["Scene"]["Camera"]
-    elseif haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") # Legacy Fallback
+    elseif haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") 
         parsed["Camera"]["General"]
     else
         nothing
@@ -105,8 +107,6 @@ function load_and_apply_csv!(filepath::String)
             set_label!(Symbol(k), string(v))
         end
     end
-    
-    @info "Config buffered! Press 'Run Simulation' to compute and apply."
 end
 
 """
@@ -444,6 +444,67 @@ function saveParametersToCSV(
         return true
     catch e
         @error "CSV Save Failed" exception=(e, catch_backtrace())
+        return false
+    end
+end
+
+# In ConfigIO.jl
+function savePresetToCSV(preset_name::Symbol, save_dir::String)
+    csv_filename = joinpath(save_dir, string(preset_name) * ".csv")
+    
+    try
+        cats, scopes, params, vals = String[], String[], String[], String[]
+
+        function add_row(cat, scope, p, v)
+            push!(cats, string(cat))
+            push!(scopes, string(scope))
+            push!(params, string(p))
+            push!(vals, _value_to_string_for_csv(to_value(v)))
+        end
+
+        # --- 1. PRESET METADATA ---
+        desc = get(manager.maps[:Presets], preset_name, "User custom preset")
+        add_row("Metadata", "Preset", "description", desc)
+
+        # --- 2. SCENE ---
+        plot_opts = extract_plot_options()
+        for (k, v) in plot_opts
+            if k in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
+                add_row("Scene", "Plot", frontend_key(k), v)
+            else
+                add_row("Scene", "Plot", string(k), v) 
+            end
+        end
+        
+        layout_opts = extract_layout_options()
+        for (k, v) in layout_opts
+            add_row("Scene", "Layout", frontend_key(k), v)
+        end
+        
+        cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
+        for (k, v) in cam_opts
+            add_row("Scene", "Camera", string(k), v)
+        end
+
+        if haskey(manager.maps, :Labels)
+            for (k, v) in manager.maps[:Labels]
+                add_row("Scene", "Labels", string(k), v)
+            end
+        end
+
+        # --- 3. UI ---
+        for (scope, dict) in manager.ui
+            f_scope = frontend_key(scope)
+            for (k, v) in dict
+                add_row("UI", f_scope, frontend_key(k), v)
+            end
+        end
+
+        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        @info "Preset saved to $csv_filename"
+        return true
+    catch e
+        @error "Preset Save Failed" exception=(e, catch_backtrace())
         return false
     end
 end
