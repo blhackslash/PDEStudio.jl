@@ -244,12 +244,11 @@ function create_master_ui_dict()
 end
 
 const MASTER_UI_DICT = create_master_ui_dict()
-
 function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
     
-    do_reset = get(manager.staged[:UI], :reset, false)
+    # Cache user's current settings before overwriting with defaults
     cached_ui = deepcopy(ui)
     empty!(ui)
     
@@ -273,73 +272,57 @@ function switch_ui_plot_type!(plot_type::Symbol)
         ui[:z_axis] = deepcopy(master[:z_axis_3d])
     end
 
-    if !do_reset
-        for (scope, dict) in cached_ui
-            if haskey(ui, scope)
-                for (k, v) in dict
-                    ui[scope][k] = v
-                end
-            else
-                ui[scope] = deepcopy(dict)
+    # Instantly re-apply the cached tweaks without needing a staging flag
+    for (scope, dict) in cached_ui
+        if haskey(ui, scope)
+            for (k, v) in dict
+                ui[scope][k] = v
             end
+        else
+            ui[scope] = deepcopy(dict)
         end
     end
 end
 
 function set_plot_presets!()
-    manager.staged[:UI]     = Dict{Symbol, Any}(:reset => true)
-    manager.staged[:Plot]   = Dict{Symbol, Any}()
-    manager.staged[:Layout] = Dict{Symbol, Any}(:reset => true)
-    manager.staged[:Camera] = Dict{Symbol, Any}()
-
-    empty!(manager.staged[:Slider])
+    # 1. Directly overwrite the UI dictionary
+    manager.ui = deepcopy(MASTER_UI_DICT)
+    
+    # 2. Reset Layout and Sliders safely
+    apply_layout_options!(get_base_layout_options())
+    empty!(manager.state[:Slider_Cache])
+    
+    # 3. Reset Camera
+    manager.state[:Camera_Cache] = Dict{Symbol, Any}()
 
     manager.triggers[:Layout][] += 1
-    @info "Staged presets have been cleared. Run Layout update to apply the default values."
+    @info "UI and Layout have been directly reset to defaults."
     return
 end
 
-# ==============================================================================
-# --- PLOT PRESET EXTENSION INTERFACE ---
-# ==============================================================================
-# ==============================================================================
-# --- PLOT PRESET EXTENSION INTERFACE ---
-# ==============================================================================
-
-"""
-    set_ui_opt!(scope, key, val)
-
-Helper function to safely stage UI options in custom presets directly into the manager.
-"""
 function set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
-    if !haskey(manager.staged, :UI)
-        manager.staged[:UI] = Dict{Symbol, Any}()
+    # Directly mutates the active UI dictionary
+    if !haskey(manager.ui, scope)
+        manager.ui[scope] = Dict{Symbol, Any}()
     end
-    if !haskey(manager.staged[:UI], scope)
-        manager.staged[:UI][scope] = Dict{Symbol, Any}()
-    end
-    manager.staged[:UI][scope][key] = val
+    manager.ui[scope][key] = val
 end
 
 """
     apply_plot_preset!(::Val{:preset_name})
 
-Dispatched function to define a plot preset. Modifies `manager.staged` directly.
+Dispatched function to define a plot preset.
 """
 function apply_plot_preset!(::Val{T}) where T
     @warn "Unknown plot preset ignored: $T"
 end
-
 # ==============================================================================
 # --- BUILT-IN PRESETS ---
 # ==============================================================================
 
 function apply_plot_preset!(::Val{:convergence})
-    manager.staged[:Plot][:x_axis]       = :Ns__1
-    manager.staged[:Plot][:u_axis]       = :relative_l2error
-    manager.staged[:Plot][:t]            = 10.0^10              # Replaces :t_Value
-    manager.staged[:Layout][:base_plot]  = :lines_1d
-    manager.staged[:Layout][:plot_style] = :lines_1d 
+    apply_plot_options!(Dict(:x_axis => :Ns__1, :u_axis => :relative_l2error, :t => 10.0^10))
+    apply_layout_options!(Dict(:base_plot => :lines_1d, :plot_style => :lines_1d))
     
     set_ui_opt!(:x_axis, :log_scale, true)
     set_ui_opt!(:y_axis, :log_scale, true)
@@ -368,30 +351,35 @@ function apply_plot_preset!(::Val{:publication})
     set_ui_opt!(:plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
     set_ui_opt!(:various, :save_formats, ["pdf", "svg"])
 
-    manager.staged[:Layout][:legend_base] = :top
-    manager.staged[:Layout][:legend_add]  = :detached
-    manager.staged[:Layout][:plot_width]  = 500
-    manager.staged[:Layout][:plot_height] = 400
+    apply_layout_options!(Dict(
+        :legend_base => :top,
+        :legend_add  => :detached,
+        :plot_width  => 500,
+        :plot_height => 400
+    ))
 end
 
 function apply_plot_preset!(::Val{:heatmap})
-    manager.staged[:Layout][:base_plot]  = :heatmap
-    manager.staged[:Layout][:plot_style] = :heatmap_flat
+    apply_layout_options!(Dict(
+        :base_plot      => :heatmap,
+        :plot_style     => :heatmap_flat,
+        :compare_target => :methods,
+        :compare_link   => :fully_coupled
+    ))
     
     set_ui_opt!(:x_axis, :label_offset, 10.0)
     set_ui_opt!(:y_axis, :label_offset, 10.0)
     set_ui_opt!(:x_axis, :padding, 0.0)
     set_ui_opt!(:y_axis, :padding, 0.0)
-    
-    manager.staged[:Layout][:compare_target] = :methods
-    manager.staged[:Layout][:compare_link]   = :fully_coupled
     set_ui_opt!(:plot_style, :bottom_margin, 20)
 end
 
 function apply_plot_preset!(::Val{:component})
-    manager.staged[:Layout][:compare_target]  = :component
-    manager.staged[:Layout][:compare_columns] = 1
-    manager.staged[:Layout][:compare_link]    = :decoupled
+    apply_layout_options!(Dict(
+        :compare_target  => :component,
+        :compare_columns => 1,
+        :compare_link    => :decoupled
+    ))
     
     set_ui_opt!(:labels, :title, "default")
     set_ui_opt!(:labels, :y_label, "")
@@ -421,9 +409,6 @@ end
 function set_plot_presets!(name::Symbol)
     # 1. Check for Hardcoded functions
     if haskey(PRESET_DESCRIPTIONS, name)
-        # Ensure target dictionaries exist before the preset writes to them
-        if !haskey(manager.staged, :Plot);   manager.staged[:Plot]   = Dict{Symbol, Any}(); end
-        if !haskey(manager.staged, :Layout); manager.staged[:Layout] = Dict{Symbol, Any}(); end
         
         apply_plot_preset!(Val(name))
         manager.triggers[:Layout][] += 1

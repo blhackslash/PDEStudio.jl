@@ -46,16 +46,21 @@ function load_and_apply_csv!(filepath::String)
         @info "No simulation data found. Loading as a visual preset."
     end
     
-    # --- 2. VISUAL PRESETS & STAGING (Runs for both Full Projects and Presets) ---
+    # --- 2. VISUAL PRESETS & STAGING ---
     if haskey(parsed, "UI")
-        manager.staged[:UI] = _apply_backend_keys(parsed["UI"])
+        ui_overrides = _apply_backend_keys(parsed["UI"])
+        for (scope, dict) in ui_overrides
+            for (k, v) in dict
+                set_ui_opt!(scope, k, v)
+            end
+        end
     end
     
     # --- LOAD SCENE: LAYOUT ---
     if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
-        manager.staged[:Layout] = _apply_backend_keys(parsed["Scene"]["Layout"])
+        apply_layout_options!(_apply_backend_keys(parsed["Scene"]["Layout"]))
     elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
-        manager.staged[:Layout] = _apply_backend_keys(parsed["Layout"]["General"])
+        apply_layout_options!(_apply_backend_keys(parsed["Layout"]["General"]))
     end
 
     # --- LOAD SCENE: PLOT ---
@@ -77,7 +82,7 @@ function load_and_apply_csv!(filepath::String)
                 plot_dict[Symbol(k)] = v 
             end
         end
-        manager.staged[:Plot] = plot_dict
+        apply_plot_options!(plot_dict)
     end
 
     # --- LOAD SCENE: CAMERA ---
@@ -90,9 +95,9 @@ function load_and_apply_csv!(filepath::String)
     end
 
     if !isnothing(cam_source) && !isempty(cam_source)
-        manager.staged[:Camera] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
+        manager.state[:Camera_Cache] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
     else
-        manager.staged[:Camera] = Dict{Symbol, Any}()
+        manager.state[:Camera_Cache] = Dict{Symbol, Any}()
     end
     
     # --- LOAD SCENE: LABELS ---
@@ -392,7 +397,7 @@ function saveParametersToCSV(
             add_row("Scene", "Layout", frontend_key(k), v)
         end
         
-        cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
+        cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
         for (k, v) in cam_opts
             add_row("Scene", "Camera", string(k), v)
         end
@@ -481,7 +486,7 @@ function savePresetToCSV(preset_name::Symbol, save_dir::String)
             add_row("Scene", "Layout", frontend_key(k), v)
         end
         
-        cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
+        cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
         for (k, v) in cam_opts
             add_row("Scene", "Camera", string(k), v)
         end

@@ -1,3 +1,6 @@
+const _RANK_0 = (:none,:shared,:presets,:create_new)
+const _RANK_1 = ("analytic", "reference", "exact", "baseline", "true")
+
 """
     menu_option_rank(opt::Tuple)
 
@@ -12,14 +15,13 @@ function menu_option_rank(opt)
     
     # Rank 0: Main prompts and ":none" fallbacks 
     # (Catches "Methods...", "-", and the resolved UI label for :none)
-    if val === :none || label_str == "Methods..." || label_str == "-" || val in manager.plot_vars || val === :shared || val == :presets
+    if val in manager.plot_vars || val in _RANK_0
         return (0, label_str)
     end
     
     # Rank 1: Priority references
-    priority_keys = ("analytic", "reference", "exact", "baseline", "true")
     lm = lowercase(label_str)
-    if any(k -> occursin(k, lm), priority_keys)
+    if any(k -> occursin(k, lm), _RANK_1)
         return (1, label_str)
     end
     
@@ -90,10 +92,15 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
         notify(menu_widget.selection)
     end
 end
-
 function apply_layout_options!(layout_options::Dict)
     isempty(layout_options) && return
 
+    # 1. ALWAYS update the central source of truth
+    for (k, v) in layout_options
+        manager.state[:Layout_Cache][k] = v
+    end
+
+    # 2. Sync the widgets ONLY if they currently exist
     for k in LAYOUT_OPTIONS
         val = get(layout_options, k, get(layout_options, string(k), nothing))
         
@@ -110,6 +117,7 @@ function apply_layout_options!(layout_options::Dict)
             end
             
             if !isnothing(idx)
+                # Setting this will automatically trigger Makie's UI update
                 widget.i_selected[] = idx 
             end
         end
@@ -119,7 +127,12 @@ end
 function apply_plot_options!(plot_options::Dict)
     isempty(plot_options) && return
 
-    # 1. Apply Axis Dropdowns
+    # 1. ALWAYS update the central source of truth
+    for (k, v) in plot_options
+        manager.state[:Plot_Cache][k] = v
+    end
+
+    # 2. Sync Axis Dropdowns ONLY if they exist
     for k in PLOT_AXIS_OPTIONS
         val = get(plot_options, k, get(plot_options, string(k), nothing))
         
@@ -154,7 +167,7 @@ function apply_plot_options!(plot_options::Dict)
         end
     end
 
-    # 2. Apply Slider Values
+    # 3. Apply Slider Values
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     for (key, desired_val) in plot_options
         if key in PLOT_AXIS_OPTIONS || key === :reset
@@ -167,7 +180,7 @@ function apply_plot_options!(plot_options::Dict)
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                slider_cache = manager.staged[:Slider]
+                slider_cache = manager.state[:Slider_Cache]
                 slider_cache[w_key] = Float64(desired_val)
                 
                 rng = widget.range[]
@@ -250,6 +263,7 @@ function _setup_button_state_machine!()
         w[:legend_base].selection, w[:legend_add].selection,
         w[:plot_width].selection, w[:plot_height].selection
     ) do _...
+        merge!(manager.state[:Layout_Cache], extract_layout_options())
         # THE FIX: Ignore programmatic changes when running a Simulation or Layout update!
         if !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_lay[] = true
@@ -259,7 +273,7 @@ function _setup_button_state_machine!()
     manager.listeners[:Watch_Plot] = onany(
         w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, w[:u_axis].selection
     ) do _...
-        # THE FIX: Ignore programmatic changes!
+        merge!(manager.state[:Plot_Cache], extract_plot_options())
         if !manager.locks[:Plot] && !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_plot[] = true
         end
@@ -298,20 +312,38 @@ function _setup_button_state_machine!()
 end
 
 function _setup_run_and_drop_interactions!(master_fig::Figure)
-    drop_label = manager.widgets[:drop_label]
-    drop_box   = manager.widgets[:drop_box]
-    run_btn    = manager.widgets[:run_button]
+    load_btn = manager.widgets[:load_config_button]
+    run_btn  = manager.widgets[:run_button]
+    path_box = manager.widgets[:export_text]
 
+    # Keep drag and drop for Makie backends that support it
     manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
-            drop_label.text[] = "Loaded:\n" * basename(path)
-            drop_label.color[] = RGBAf(0.0, 0.5, 0.0, 1.0)
-            drop_box.color[] = RGBAf(0.8, 1.0, 0.8, 1.0)
+            path_box.stored_string[] = path
+            path_box.displayed_string[] = path
+            load_btn.buttoncolor[] = :lightgreen
             run_btn.buttoncolor[] = :lightgreen
-            
             load_and_apply_csv!(path) 
         end
+    end
+
+    # NEW: Fallback button for WGLMakie
+    manager.listeners[:Load_Click] = on(load_btn.clicks) do _
+        path = strip(path_box.stored_string[])
+        if isempty(path)
+            @warn "Please enter a path or filename in the textbox below first."
+            return
+        end
+        
+        if !isfile(path)
+            set_sim_config!(path)
+        else
+            load_and_apply_csv!(path)
+        end
+        
+        load_btn.buttoncolor[] = :lightgreen
+        run_btn.buttoncolor[] = :lightgreen
     end
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
@@ -327,8 +359,8 @@ function _setup_method_interactions!()
     menu_mth = manager.widgets[:method_toggle]
     is_activate_mode = manager.state[:Is_Activate_Mode]
     
-    manager.staged[:Methods] = Observable(copy(manager.methods[]))
-    staged_methods = manager.staged[:Methods]
+    manager.state[:Methods] = Observable(copy(manager.methods[]))
+    staged_methods = manager.state[:Methods]
 
     manager.listeners[:Menu_Sync] = onany(staged_methods, is_activate_mode) do staged, activate_mode
         @with_lock :Menu_Sync begin
@@ -598,11 +630,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     saveBox = manager.widgets[:export_text]
     btn_play = manager.widgets[:play_anim_button]
     btn_lock = manager.widgets[:lock_camera_button] 
+    btn_export = manager.widgets[:export_button]
 
     manager.listeners[:Camera_Lock_Click] = on(btn_lock.clicks) do _
         is_locked = !manager.state[:Camera_Locked][]
         manager.state[:Camera_Locked][] = is_locked
-        extract_and_store_camera_state!(plot_layout)
         
         if is_locked
             extract_and_store_camera_state!(plot_layout)
@@ -610,9 +642,9 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             btn_lock.buttoncolor[] = :lightgreen
             @info "Camera locked to current view."
         else
-            manager.staged[:Camera] = Dict{Symbol, Any}()
+            manager.state[:Camera_Cache] = Dict{Symbol, Any}()
             btn_lock.label[] = "Lock Camera"
-            btn_lock.buttoncolor[] = :lightgray
+            btn_lock.buttoncolor[] = :lightblue
             @info "Camera unlocked. Will auto-scale on next data update."
         end
     end
@@ -654,14 +686,16 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         return true
     end
-
     function build_pristine_export_figure()
-        export_fig = Figure() 
+        # THE FIX: Match the pristine figure exactly to the cropped plot dimensions
+        bbox = plot_layout.layoutobservables.computedbbox[]
+        w, h = bbox.widths[1], bbox.widths[2]
+        w = max(w, 400); h = max(h, 300) # Fallback minimums
+        
+        export_fig = Figure(size = (w, h)) 
         export_layout = export_fig[1, 1] = GridLayout()
         
         ptype_sym = manager.widgets[:plot_style].selection[]
-        
-        # THE FIX: Remove local_data_obs. Rely on the centralized manager!
         export_obs = setup_render_lift!(export_fig, export_layout, Val(ptype_sym))
         
         current_axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
@@ -689,139 +723,124 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         resize_to_layout!(export_fig)
         return export_fig, export_obs
     end
-
-    manager.listeners[:Save_Image_Click] = on(manager.widgets[:save_image_button].clicks) do _
-        was_locked = manager.state[:Camera_Locked][]
-        manager.state[:Camera_Locked][] = true 
+    manager.listeners[:Export_Click] = on(btn_export.clicks) do _
+        raw_filename = string(strip(saveBox.stored_string[]))
+        if isempty(raw_filename); raw_filename = "plot_export"; end
         
-        extract_and_store_camera_state!(plot_layout)
-        cam_cache = deepcopy(manager.staged[:Camera])
+        base_name, ext = splitext(raw_filename)
+        ext = lowercase(replace(ext, "." => ""))
         
-        base_name = string(strip(saveBox.stored_string[]))
-        if isempty(base_name); base_name = "plot_export"; end
-
-        save_dir = joinpath(get_save_path(), "figures")
-        if manager.ui[:various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
-        mkpath(save_dir)
-
-        export_fig, export_obs = build_pristine_export_figure()
-
-        for fmt in manager.ui[:various][:save_formats]
-            ext = lowercase(strip(fmt))
-            full_path = joinpath(save_dir, base_name * ".$ext")
-            save(full_path, export_fig; backend=CairoMakie)
-            @info "Pristine Image ($ext) saved safely via CairoMakie!"
+        formats = String[]
+        is_anim = false
+        
+        if isempty(ext)
+            formats = lowercase.(manager.ui[:various][:save_formats])
+            is_anim = "gif" in formats || "mp4" in formats
+        else
+            formats = [ext]
+            is_anim = ext == "gif" || ext == "mp4"
         end
 
-        if !isnothing(export_obs); for obs in export_obs; off(obs); end; end
-        
-        metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-        saveParametersToCSV(base_name, save_dir, metadata)
-        
-        if !was_locked
-            manager.state[:Camera_Locked][] = false
-            manager.staged[:Camera] = Dict{Symbol, Any}()
+        target_name = anim_target_obs[] 
+        if is_anim
+            !check_selection_validity(target_name) && return
         end
-        manager.triggers[:Plot][] += 1
-    end
 
-    manager.listeners[:Save_GIF_Click] = on(manager.widgets[:save_gif_button].clicks) do _
-        notify(manager.widgets[:save_defs_button].clicks)
-        target_name = anim_target_obs[]
-        !check_selection_validity(target_name) && return
-        target_widget = get_target_widget(target_name)
-        
         was_locked = manager.state[:Camera_Locked][]
         manager.state[:Camera_Locked][] = true 
-        
         extract_and_store_camera_state!(plot_layout)
-        cam_cache = deepcopy(manager.staged[:Camera])
         
-        base_name = string(strip(saveBox.stored_string[]))
-        if isempty(base_name); base_name = "anim_export"; end
+        target_widget = is_anim ? get_target_widget(target_name) : nothing
         
-        save_path = joinpath(get_save_path(), "animations")
-        mkpath(save_path)
-        fname = joinpath(save_path, base_name * ".gif")
+        # THE FIX: Tell the macro to let both windows render simultaneously
+        manager.state[:Bypass_Locks] = true
         
-        duration = manager.ui[:various][:animation_time]
-        fps = manager.ui[:various][:animation_FPS]
-        rng = target_widget.range[]
-        n_frames = Int(duration * fps)
-        
-        @info "Recording pristine '$target_name' animation to $fname..."
-        export_obs_ref = Ref{Any}(nothing)
         try
             export_fig, export_obs = build_pristine_export_figure()
-            export_obs_ref[] = export_obs
-            record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
-                set_close_to!(target_widget, val)
-                yield() 
+
+            if is_anim
+                save_path = joinpath(get_save_path(), "animations")
+                mkpath(save_path)
+                
+                active_ext = isempty(ext) ? "gif" : ext
+                fname = joinpath(save_path, base_name * "." * active_ext)
+                
+                duration = manager.ui[:various][:animation_time]
+                fps = manager.ui[:various][:animation_FPS]
+                rng = target_widget.range[]
+                n_frames = Int(duration * fps)
+                @info "Recording pristine '$target_name' animation to $fname..."
+                # Because the locks are bypassed, moving the main window's slider
+                # WILL successfully animate the pristine figure in the background!
+                record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
+                    set_close_to!(target_widget, val)
+                    yield() 
+                end
+                display(master_fig)
+                metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
+                saveParametersToCSV(base_name, save_path, metadata) 
+                @info "Pristine Animation Saved Successfully."
+                
+                for obs in export_obs; off(obs); end
+            else
+                save_dir = joinpath(get_save_path(), "figures")
+                if manager.ui[:various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
+                mkpath(save_dir)
+
+                for fmt in formats
+                    full_path = joinpath(save_dir, base_name * ".$fmt")
+                    save(full_path, export_fig; backend=CairoMakie)
+                    @info "Pristine Image ($fmt) saved safely via CairoMakie!"
+                end
+
+                for obs in export_obs; off(obs); end
+                
+                metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
+                saveParametersToCSV(base_name, save_dir, metadata)
             end
-            
-            metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-            saveParametersToCSV(base_name, save_path, metadata) 
-            @info "Pristine GIF Saved Successfully."
         catch e
-            @error "GIF Recording Failed" exception=(e, catch_backtrace())
+            @error "Export Failed" exception=(e, catch_backtrace())
         finally
-            if !isnothing(export_obs_ref[]); for obs in export_obs_ref[]; off(obs); end; end
+            # Restore the lock safety net!
+            manager.state[:Bypass_Locks] = false
             
             if !was_locked
                 manager.state[:Camera_Locked][] = false
-                manager.staged[:Camera] = Dict{Symbol, Any}()
+                manager.state[:Camera_Cache] = Dict{Symbol, Any}()
             end
-            manager.triggers[:Plot][] += 1
         end
     end
 
-    manager.listeners[:Save_Defs] = on(manager.widgets[:save_defs_button].clicks) do _
-        cat = manager.widgets[:editor_cat].selection[]
-        scope = manager.widgets[:editor_scope].selection[]
-        key = manager.widgets[:editor_key].selection[]
-
-        if cat === :ui && scope === :presets && key === :create_new
-            # --- DISK SAVE (Create New Preset) ---
-            filename = manager.widgets[:export_text].stored_string[]
-            if isempty(filename)
-                @warn "Please enter a preset name in the Filename box."
-                return
-            end
+    manager.listeners[:Save_Defs] = on(manager.widgets[:save_presets_button].clicks) do _
+        # --- DISK SAVE (Create New Preset) ---
+        filename = manager.widgets[:export_text].stored_string[]
+        if isempty(filename)
+            @warn "Please enter a preset name in the Filename box."
+            return
+        end
+        
+        sym_name = Symbol(lowercase(replace(strip(filename), r"\s+" => "_")))
+        save_dir = joinpath(get_save_path(), "Presets")
+        mkpath(save_dir)
+        
+        desc = manager.maps[:Presets][:create_new]
+        if desc == "Type a description here, type a filename below, and click Save Defs." || isempty(desc)
+            desc = "User custom preset: $filename"
+        end
+        manager.maps[:Presets][sym_name] = desc
+        
+        success = savePresetToCSV(sym_name, save_dir)
+        if success
+            Makie.reset!(manager.widgets[:export_text])
+            manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
+            notify(manager.widgets[:editor_scope].selection)
             
-            sym_name = Symbol(lowercase(replace(strip(filename), r"\s+" => "_")))
-            save_dir = joinpath(get_save_path(), "Presets")
-            mkpath(save_dir)
-            
-            desc = manager.maps[:Presets][:create_new]
-            if desc == "Type a description here, type a filename below, and click Save Defs." || isempty(desc)
-                desc = "User custom preset: $filename"
-            end
-            manager.maps[:Presets][sym_name] = desc
-            
-            success = savePresetToCSV(sym_name, save_dir)
-            if success
-                Makie.reset!(manager.widgets[:export_text])
-                # Reset the creation text for the next preset
-                manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
-                notify(manager.widgets[:editor_scope].selection)
-                
-                # Auto-select the newly created preset
-                idx = findfirst(x -> x[2] == sym_name, manager.widgets[:editor_key].options[])
-                if !isnothing(idx); manager.widgets[:editor_key].selection[] = sym_name; end
-            end
-        else
-            # --- QUICK STAGING (RAM ONLY) ---
-            # Stage the current selection so you can close the window and come back to where you left off
-            manager.staged[:Plot]   = extract_plot_options()
-            manager.staged[:Layout] = extract_layout_options()
-            manager.staged[:UI]     = deepcopy(manager.ui)
-            
-            Makie.reset!(manager.widgets[:export_text]) # Clear box for visual feedback
-            @info "Session definitions staged! They will be preserved if you reopen the plotter."
+            idx = findfirst(x -> x[2] == sym_name, manager.widgets[:editor_key].options[])
+            if !isnothing(idx); manager.widgets[:editor_key].selection[] = sym_name; end
         end
     end
     
-    manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_defs_button].clicks) do _
+    manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_presets_button].clicks) do _
         set_plot_presets!()
         manager.triggers[:UI][] += 1
     end

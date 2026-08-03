@@ -116,7 +116,7 @@ end
 
 function apply_axis_limits_overrides!(ax)
     
-    if get(manager.staged, :Camera_Locked, Observable(false))[]
+    if get(manager.state, :Camera_Locked, Observable(false))[]
         return
     end
     ui_x = manager.ui[:x_axis]
@@ -181,7 +181,7 @@ function set_axis_limits_manager!(ax::Axis, xs, us)
     new_yscale = use_log_y ? log10 : identity
 
     # FIX: Calculate and apply the valid padded limits BEFORE changing the scale!
-    is_locked = get(manager.staged, :Camera_Locked, Observable(false))[]
+    is_locked = get(manager.state, :Camera_Locked, Observable(false))[]
     
     if !is_locked
         final_xlims = calculate_padded_axis_range(raw_xlims, ui_x[:padding], use_log_x) 
@@ -283,7 +283,7 @@ function _parse_legend_position()
     
     # Safely retrieve the comparison target from the global state 
     # (fallback to the widget if the state hasn't been initialized yet)
-    target = haskey(manager.staged, :Compare_State) ? manager.staged[:Compare_State][1] : manager.widgets[:compare_target].selection[]
+    target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] : manager.widgets[:compare_target].selection[]
     
     # Force a detached top-center legend for comparisons (apart from :Methods)
     if target != :None && target != :Methods && !is_detached
@@ -510,7 +510,7 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
     haskey(z_ui, :label_offset) && (ax.zlabeloffset = z_ui[:label_offset]) 
 
     ax.perspectiveness = 0.5
-    if !get(manager.staged, :Camera_Locked, Observable(false))[]
+    if !get(manager.state, :Camera_Locked, Observable(false))[]
         ax.aspect = (1, 1, 0.6)
     end
 end
@@ -657,13 +657,13 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
             cam_opts[Symbol("Axis_$(i)_Elevation")] = Float64(ax.elevation[])
         end
     end
-    manager.staged[:Camera] = cam_opts
+    manager.state[:Camera_Cache] = cam_opts
 end
 
 function _enforce_camera_lock!(axes::Vector)
     
-    is_locked = get(manager.staged, :Camera_Locked, Observable(false))[]
-    cam_opts = get(manager.staged, :Camera, Dict{Symbol, Any}())
+    is_locked = get(manager.state, :Camera_Locked, Observable(false))[]
+    cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
     
     if !isempty(cam_opts)
         for (i, ax) in enumerate(axes)
@@ -690,7 +690,7 @@ function _enforce_camera_lock!(axes::Vector)
         # FIX: If it wasn't permanently locked by the user, this was a temporary staged state.
         # Clear it out so auto-scaling resumes on the next data update!
         if !is_locked
-            empty!(manager.staged[:Camera])
+            empty!(manager.state[:Camera_Cache])
         end
     end
 end

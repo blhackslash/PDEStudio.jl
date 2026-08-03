@@ -9,22 +9,6 @@ function _handle_layout_trigger!(rebuild_func::Function)
     
     notify(manager.plot_data)
 
-    if !isempty(manager.staged[:Layout])
-        # 1. Reset to base layout if requested
-        if get(manager.staged[:Layout], :reset, false)
-            apply_layout_options!(get_base_layout_options())
-        end
-        # 2. Apply explicit overrides
-        apply_layout_options!(manager.staged[:Layout])
-        empty!(manager.staged[:Layout])
-    end
-
-    if !isempty(manager.staged[:Plot])
-        # 1. Apply explicit overrides
-        apply_plot_options!(manager.staged[:Plot])
-        empty!(manager.staged[:Plot])
-    end
-
     rebuild_func()
 end
 
@@ -44,33 +28,11 @@ function _handle_plot_trigger!(
     (isnothing(x_sel[]) || isnothing(u_sel[]) || x_sel[] == :none || u_sel[] == :none) && return false
     if PLOT_DIM_MAP[T] >= 2; (isnothing(y_sel[]) || y_sel[] == :none) && return false; end
     if PLOT_DIM_MAP[T] >= 3; (isnothing(z_sel[]) || z_sel[] == :none) && return false; end
-    
-    if !isempty(manager.staged[:Plot])
-        apply_plot_options!(manager.staged[:Plot])
-        empty!(manager.staged[:Plot])
-    end
-    
-    # THE FIX: Apply staged UI settings early so Plot limits can use them!
-    if !isempty(manager.staged[:UI])
-        if get(manager.staged[:UI], :reset, false)
-            switch_ui_plot_type!(T)
-        end
-        
-        for (scope, dict) in manager.staged[:UI]
-            scope === :reset && continue
-            if haskey(manager.ui, scope)
-                for (k, v) in dict
-                    manager.ui[scope][k] = v
-                end
-            end
-        end
-        empty!(manager.staged[:UI])
-    end
 
     data = manager.plot_data[]
     isempty(data) && return false
 
-    target, _, _, _ = manager.staged[:Compare_State]
+    target, _, _, _ = manager.state[:Compare_State]
     is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
 
@@ -165,7 +127,7 @@ function _handle_slider_trigger!(u_sel)
     u_val = u_sel[]
     anim_val = w[:anim_target].selection[]
 
-    target, target_idx, _, _ = manager.staged[:Compare_State]
+    target, target_idx, _, _ = manager.state[:Compare_State]
     pd_first, sim_data = _get_active_sim_data(data)
     isnothing(sim_data) && return
 
@@ -198,12 +160,12 @@ function _handle_slider_trigger!(u_sel)
             haskey(w, widget_key) || continue
             ctrl = w[widget_key]
             
-            slider_cache = manager.staged[:Slider]
+            slider_cache = manager.state[:Slider_Cache]
             if length(ctrl.range[]) > 1
                 slider_cache[widget_key] = Float64(ctrl.value[])
             end
             
-            if is_axis || is_spatial || is_physically_disabled || is_compare || is_anim
+            if is_axis || is_spatial || is_physically_disabled || is_compare
                 if ctrl.range[] != [0.0]
                     ctrl.range[] = [0.0] 
                 end
@@ -267,7 +229,7 @@ function _handle_data_trigger!(
 
     (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return false
 
-    target, _, _, _ = manager.staged[:Compare_State]
+    target, _, _, _ = manager.state[:Compare_State]
     is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     
@@ -340,7 +302,8 @@ end
 
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
 
-    if !isempty(manager.staged[:Camera])
+    # THE FIX: Read from the persistent Camera_Cache
+    if !isempty(manager.state[:Camera_Cache])
         manager.state[:Camera_Locked][] = true
         if haskey(manager.widgets, :Lock_Camera_Button)
             btn = manager.widgets[:Lock_Camera_Button]
@@ -348,8 +311,8 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
             btn.buttoncolor[] = :lightgreen
         end
     else
-        if get(manager.staged, :Camera_Locked, Observable(false))[]
-            manager.state[:Camera_Locked][] = false
+        # Just ensure UI respects the pure lock flag without consuming it
+        if !manager.state[:Camera_Locked][]
             if haskey(manager.widgets, :Lock_Camera_Button)
                 btn = manager.widgets[:Lock_Camera_Button]
                 btn.label[] = "Lock Camera"
@@ -407,7 +370,7 @@ end
 # ==============================================================================
 
 function _mutate_compare_vals(current_sels, idx)
-    t_val, t_idx, c_labels, c_vals = manager.staged[:Compare_State]
+    t_val, t_idx, c_labels, c_vals = manager.state[:Compare_State]
     mutated = collect(current_sels)
     if !isnothing(t_idx) && !isempty(c_vals) && idx <= length(c_vals)
         mutated[t_idx] = c_vals[idx]
@@ -513,7 +476,7 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     
     target_idx = target == :Time ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : findfirst(isequal(target), manager.plot_vars)
 
-    manager.staged[:Compare_State] = (target, target_idx, compare_labels, compare_vals)
+    manager.state[:Compare_State] = (target, target_idx, compare_labels, compare_vals)
 
     return axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, has_colorbar
 end

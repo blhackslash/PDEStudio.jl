@@ -63,7 +63,7 @@ function set_sim_config!(config::SimulationConfig)
     end
     
     default_m = isempty(config.default_methods) ? filter(k -> k !== :shared, collect(keys(config.methods_dict))) : filter(k -> k !== :shared, copy(config.default_methods))
-    manager.staged[:Methods][] = default_m
+    manager.state[:Methods][] = default_m
 
     if haskey(manager.widgets, :editor_cat)
         notify(manager.widgets[:editor_cat].selection)
@@ -107,7 +107,6 @@ end
 
 function reset_plotter!()
     fig = manager.ui_state[:master_fig]
-    set_plot_presets!()
     
     if !isnothing(fig)
         try
@@ -120,8 +119,6 @@ function reset_plotter!()
     
     manager.ui_state[:is_open] = false
     manager.ui_state[:master_fig] = nothing
-
-    if isempty(manager.staged[:Layout]); manager.staged[:Layout] = get_base_layout_options() end
     
     for (k, obs) in manager.triggers
         if k != :Simulation
@@ -146,13 +143,11 @@ function reset_plotter!()
 end
 
 function launch_plotter()
-    if manager.ui_state[:is_open]
-        @info "Plotter already open, bringing to front..."
-        return manager.ui_state[:master_fig]
-    end
+
+    reset_plotter!()
 
     master_fig = Figure()
-    ctrl_layout = master_fig[1, 1] = GridLayout(width = 550)
+    ctrl_layout = master_fig[1, 1] = GridLayout()
     plot_layout = master_fig[1, 2] = GridLayout() 
     
     create_controls(ctrl_layout)
@@ -173,10 +168,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     if manager.state[:plot_window_initialized][]; return; end
     manager.state[:plot_window_initialized][] = true
 
-    render_observers = ObserverFunction[]
+    # THE FIX: Store observers globally so we can pause them during export
+    manager.state[:Main_Render_Observers] = ObserverFunction[]
 
     function rebuild_plot_layout!()
-        if get(manager.staged, :Camera_Locked, Observable(false))[]
+        if get(manager.state, :Camera_Locked, Observable(false))[]
             extract_and_store_camera_state!(plot_layout)
         end
 
@@ -187,8 +183,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
             sim_data = _get_first_valid(first(values(manager.plot_data[])))
         end
 
-        for obs in render_observers; off(obs); end
-        empty!(render_observers)
+        # THE FIX: Safely clear old observers
+        if haskey(manager.state, :Main_Render_Observers)
+            for obs in manager.state[:Main_Render_Observers]; off(obs); end
+            empty!(manager.state[:Main_Render_Observers])
+        end
         empty!(manager.caches)
         
         for c in copy(plot_layout.content)
@@ -199,7 +198,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         switch_ui_plot_type!(ptype_sym)
         
         new_obs = setup_render_lift!(master_fig, plot_layout, Val(ptype_sym))
-        if !isnothing(new_obs); append!(render_observers, new_obs); end
+        if !isnothing(new_obs); append!(manager.state[:Main_Render_Observers], new_obs); end
     end
 
     manager.listeners[:Data] = on(manager.triggers[:Data]) do _
@@ -281,6 +280,24 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
     end
 
     manager.listeners[:PlotData_Sync_Widget] = onany(c_sel, selector_obs...) do _...
+        
+        # ====================================================================
+        # THE FIX: Sync manual slider drags into the persistent caches!
+        # ====================================================================
+        rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+        for k in manager.plot_vars
+            w_key = haskey(rev_map, k) ? rev_map[k] : k 
+            if haskey(manager.widgets, w_key)
+                widget = manager.widgets[w_key]
+                if widget isa Makie.Slider
+                    val = widget.value[]
+                    manager.state[:Slider_Cache][w_key] = Float64(val)
+                    manager.state[:Plot_Cache][k] = val # Assign by the pure variable symbol
+                end
+            end
+        end
+        # ====================================================================
+
         if manager.flags[:Plot][] || manager.flags[:Layout][] || manager.flags[:Simulation][]
             return
         end

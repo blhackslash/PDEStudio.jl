@@ -7,47 +7,72 @@
 Purely builds the UI widgets inside the provided sub-layout.
 """
 function create_controls(layout::GridLayout)
-    
     rowgap!(layout, 15) 
     current_row = 1
 
-    # --- 1. DRAG/DROP ZONE ---
-    drop_layout = layout[current_row, 1] = GridLayout() 
-    drop_box = Box(drop_layout[1, 1], color=:lightgray, width=450, strokecolor=:gray, strokewidth=2, cornerradius=10, height=80)
-    drop_label = Label(drop_layout[1, 1], "Drag & Drop CSV Here", halign=:center, valign=:center, color=RGBAf(0.3, 0.3, 0.3, 1.0))
-    manager.widgets[:drop_box]   = drop_box
-    manager.widgets[:drop_label] = drop_label
+    # --- 1. LOAD CONFIG / DRAG DROP ZONE ---
+    manager.widgets[:load_config_button] = Button(
+        layout[current_row, 1], 
+        label="Load CSV from Path Below / Drag & Drop Here", 
+        buttoncolor=:lightgray, 
+        height=60, width=450
+    )
     current_row += 1
     
-    # --- 2. EXECUTION CONTROLS (1/3 Width) ---
+    # --- 2. FILENAME / PATH TEXTBOX ---
+    manager.widgets[:export_text] = Textbox(
+        layout[current_row, 1], 
+        placeholder="Filename for Export or Path to Load...", 
+        width=nothing
+    )
+    current_row += 1
+
+    # --- 3. UNIFIED FILE OPS & EXPORT (Uniform Color) ---
+    file_ops = layout[current_row, 1] = GridLayout()
+    uniform_color = :lightblue
+
+    manager.widgets[:save_presets_button]  = Button(file_ops[1, 1], label="Save Presets", buttoncolor=uniform_color, width=nothing)
+    manager.widgets[:clear_presets_button] = Button(file_ops[1, 2], label="Clear Presets", buttoncolor=uniform_color, width=nothing)
+    manager.widgets[:export_button]        = Button(file_ops[1, 3], label="Export", buttoncolor=uniform_color, width=nothing)
+    
+    for i in 1:3; colsize!(file_ops, i, Relative(1/3)); end
+    current_row += 1
+    
+    # --- 4. EXECUTION CONTROLS ---
     exec_layout = layout[current_row, 1] = GridLayout()    
     manager.widgets[:run_button]   = Button(exec_layout[1, 1], label="Run Simulation", buttoncolor=:lightgreen, width = nothing)
     manager.widgets[:layout_apply] = Button(exec_layout[1, 2], label="Apply Layout", buttoncolor=:lightgreen, width=nothing)
     manager.widgets[:plot_button]  = Button(exec_layout[1, 3], label="Update Plot", buttoncolor=:lightgreen, width=nothing)
-    colsize!(exec_layout, 1, Relative(1/3))
-    colsize!(exec_layout, 2, Relative(1/3))
-    colsize!(exec_layout, 3, Relative(1/3))
+    for i in 1:3; colsize!(exec_layout, i, Relative(1/3)); end
     current_row += 1
 
-    # --- 3. HIERARCHICAL EDITOR ---
+    # --- 5. HIERARCHICAL EDITOR ---
     param_nav_layout = layout[current_row, 1] = GridLayout()
     create_hierarchical_param_controls!(param_nav_layout)
     current_row += 1
     
-    # --- 4. METHODS ---
+    # --- 6. METHODS ---
     method_layout = layout[current_row, 1] = GridLayout()
     create_method_controls!(method_layout) 
     current_row += 1
     
-    # --- 5. STATIC PLOT CONTROLS ---
+    # --- 7. STATIC PLOT CONTROLS ---
     menu_area = layout[current_row, 1] = GridLayout()
     current_row += 1
     slider_area = layout[current_row, 1] = GridLayout()
     current_row += 1
-    export_layout = layout[current_row, 1] = GridLayout()
 
     build_static_plot_controls!(menu_area, slider_area)
-    createExportOptions!(export_layout)
+    
+    # --- 8. CAMERA & ANIMATION CONTROLS (Bottom) ---
+    bottom_ops = layout[current_row, 1] = GridLayout()
+    manager.widgets[:play_anim_button]   = Button(bottom_ops[1, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
+    manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
+    for i in 1:2; colsize!(bottom_ops, i, Relative(1/2)); end
+
+    # Restore from the persistent cache instead of hard defaults
+    apply_layout_options!(manager.state[:Layout_Cache])
+    apply_plot_options!(manager.state[:Plot_Cache])
 end
 
 function create_method_controls!(layout::GridLayout)
@@ -194,22 +219,4 @@ function create_hierarchical_param_controls!(layout::GridLayout)
     
     manager.widgets[:editor_text]   = Textbox(layout[3, 1:3], placeholder="Val / 'default'", width=nothing) 
     manager.widgets[:editor_toggle] = Button(layout[3, 4], label="Toggle", buttoncolor=:lightgray)          
-end
-
-# ==============================================================================
-# --- 6. EXPORT OPTIONS BUILDER ---
-# ==============================================================================
-function createExportOptions!(layout::GridLayout)
-    
-    manager.widgets[:save_defs_button]   = Button(layout[1, 1], label="Save Defs", buttoncolor=:lightcoral, width=nothing)
-    manager.widgets[:clear_defs_button]  = Button(layout[1, 2], label="Clear Defs", buttoncolor=:mistyrose, width=nothing) 
-    manager.widgets[:lock_camera_button] = Button(layout[1, 3], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
-    
-    manager.widgets[:play_anim_button]   = Button(layout[2, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
-    manager.widgets[:save_image_button]  = Button(layout[2, 2], label="Save Image", buttoncolor=:lightblue, width=nothing)
-    manager.widgets[:save_gif_button]    = Button(layout[2, 3], label="Save GIF", buttoncolor=:lightgreen, width=nothing)
-
-    manager.widgets[:export_text]        = Textbox(layout[3, 1:3], placeholder = "Filename...", width=nothing)
-
-    for i in 1:3; colsize!(layout, i, Relative(1/3)); end
 end

@@ -7,7 +7,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using IRunPDESims 
 
-export launch_plotter, set_sim_config!, reset_plotter!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation
+export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation
 
 function dummy_simulation_function(args...); return nothing; end
 
@@ -69,7 +69,6 @@ mutable struct PlotManager
     ui::Dict{Symbol, Dict{Symbol, Any}}     
     widgets::Dict{Symbol, Any}              
     triggers::Dict{Symbol, Observable{Int}} 
-    staged::Dict{Symbol, Any}
     flags::Dict{Symbol, Observable{Bool}}
     state::Dict{Symbol, Any}               
     maps::Dict{Symbol, Any}                
@@ -91,8 +90,8 @@ end
 function PlotManager()
     return PlotManager(
         Dict{Symbol, Dict{Symbol, Any}}(),
-        Dict{Symbol, Any}(), Dict{Symbol, Observable{Int}}(),
-        Dict{Symbol, Any}(:Simulation => Observable(0)), 
+        Dict{Symbol, Any}(), 
+        Dict{Symbol, Observable{Int}}(),
         Dict{Symbol, Observable{Bool}}(), 
         Dict{Symbol, Any}(),                   
         Dict{Symbol, Any}(),                   
@@ -113,7 +112,10 @@ macro with_lock(lock_name, expr)
         local lname = $(esc(lock_name))
         local locks = manager.locks
         
-        if !locks[lname]
+        # THE FIX: Allow pristine figures to bypass locks during headless exports!
+        if get(manager.state, :Bypass_Locks, false)
+            $(esc(expr))
+        elseif !locks[lname]
             local lock_idx = findfirst(isequal(lname), LOCK_HIERARCHY)
             local blocked = false
             if !isnothing(lock_idx)
@@ -173,10 +175,10 @@ function simulation_trigger()
         curr_config = manager.active_config
         (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
 
-        wanted_methods = manager.staged[:Methods][]
+        wanted_methods = manager.state[:Methods][]
         
         if isempty(wanted_methods)
-            @warn "No methods staged! Please activate at least one method to run."
+            @warn "No methods selected Please activate at least one method to run."
             return
         end
 
@@ -240,7 +242,7 @@ end
 
 function reset_manager!()
     
-    empty!(manager.ui); empty!(manager.widgets); empty!(manager.staged)
+    empty!(manager.ui); empty!(manager.widgets)
     empty!(manager.flags) 
     empty!(manager.state); empty!(manager.maps) 
     empty!(manager.locks); empty!(manager.plot_vars); empty!(manager.caches)
@@ -263,10 +265,9 @@ function reset_manager!()
     for k in core_keys
         manager.triggers[k] = Observable(0)
         manager.locks[k]    = false
-        manager.staged[k]   = Dict{Symbol, Any}() 
         manager.flags[k]    = Observable(false) 
     end
-    manager.staged[:Layout] = get_base_layout_options()
+    
     manager.listeners[:Simulation] = on(manager.triggers[:Simulation]) do _; simulation_trigger() end
     
     for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
@@ -282,11 +283,20 @@ function reset_manager!()
     manager.state[:Layout_Dict] = Observable(Dict{Symbol, Any}())
     manager.state[:Camera_Locked] = Observable(false)
 
-    manager.staged[:Camera] = Dict{Symbol, Any}()
-    manager.staged[:Methods] = Observable(Symbol[])
+    manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+    manager.state[:Slider_Cache] = Dict{Symbol, Float64}()
+    manager.state[:Layout_Cache] = get_base_layout_options()
+    manager.state[:Plot_Cache]   = Dict{Symbol, Any}()
+
+    manager.state[:Methods]      = Observable(Symbol[])
+    manager.state[:Compare_State] = (:none, nothing, String[], Any[])
+    # ---------------------------------------------
 
     manager.maps[:Labels] = Dict{Symbol, String}()
     manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)
+
+    # Set plot defaults
+    set_plot_presets!()
 
     # Initialize the default creation text
     manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
