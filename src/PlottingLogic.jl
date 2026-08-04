@@ -60,6 +60,9 @@ function _handle_plot_trigger!(
             data_tuples, valid_methods = fetch_pipeline_tuples(Val(manager.mode[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
             isempty(valid_methods) && continue
             
+            data_tuples = apply_outlier_mask(axes[i], data_tuples, valid_methods, is_3d_axis)
+            plot_extrema_lines_manager!(axes[i], data_tuples, valid_methods, is_3d_axis)
+
             sim_data = _get_first_valid(first(values(data)))
             active_title_indices = _get_active_title_indices(Val(manager.mode[]), x_sel, y_sel, z_sel, sim_data)
             
@@ -248,6 +251,9 @@ function _handle_data_trigger!(
         data_tuples, valid_methods = fetch_pipeline_tuples(Val(manager.mode[]), data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
         isempty(valid_methods) && continue
         
+        data_tuples = apply_outlier_mask(axes[i], data_tuples, valid_methods, is_3d_axis)
+        plot_extrema_lines_manager!(axes[i], data_tuples, valid_methods, is_3d_axis)
+
         if !is_3d_axis
             plot_x_slices[i] = data_tuples[1]
             plot_y_slices[i] = data_tuples[2]
@@ -323,6 +329,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
 
     ui_app = manager.ui[:plot_style]
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
+
     
     for (i, ax) in enumerate(axes)
         _apply_axis_styles!(ax, T)

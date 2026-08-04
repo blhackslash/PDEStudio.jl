@@ -73,6 +73,7 @@ function create_controls(layout::GridLayout)
     # Restore from the persistent cache instead of hard defaults
     apply_layout_options!(manager.state[:Layout_Cache])
     apply_plot_options!(manager.state[:Plot_Cache])
+    apply_exploration_options!(manager.state[:Exploration_Cache])
 end
 
 function create_method_controls!(layout::GridLayout)

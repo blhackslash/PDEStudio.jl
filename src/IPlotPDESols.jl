@@ -162,7 +162,7 @@ function get_base_layout_options()
         :legend_add      => :detached,
         :plot_width      => 500,
         :plot_height     => 400,
-        :anim_target     => :none
+        :anim_target     => :t
     )
 end
 
@@ -287,6 +287,7 @@ function reset_manager!()
     manager.state[:Slider_Cache] = Dict{Symbol, Float64}()
     manager.state[:Layout_Cache] = get_base_layout_options()
     manager.state[:Plot_Cache]   = Dict{Symbol, Any}()
+    manager.state[:Exploration_Cache] = Dict{Symbol, Any}()
 
     manager.state[:Methods]      = Observable(Symbol[])
     manager.state[:Compare_State] = (:none, nothing, String[], Any[])

@@ -106,12 +106,25 @@ function load_and_apply_csv!(filepath::String)
     else
         nothing
     end
-    
+
     if !isnothing(labels_source)
         for (k, v) in labels_source
             set_label!(Symbol(k), string(v))
         end
     end
+    # --- LOAD SCENE: EXPLORATION ---
+    exp_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Exploration")
+        parsed["Scene"]["Exploration"]
+    elseif haskey(parsed, "Exploration") && haskey(parsed["Exploration"], "General") 
+        parsed["Exploration"]["General"]
+    else
+        nothing
+    end
+
+    if !isnothing(exp_source)
+        apply_exploration_options!(_apply_backend_keys(exp_source))
+    end
+
 end
 
 """
@@ -496,7 +509,11 @@ function savePresetToCSV(preset_name::Symbol, save_dir::String)
                 add_row("Scene", "Labels", string(k), v)
             end
         end
-
+        
+        exp_opts = extract_exploration_options()
+        for (k, v) in exp_opts
+            add_row("Scene", "Exploration", frontend_key(k), v)
+        end
         # --- 3. UI ---
         for (scope, dict) in manager.ui
             f_scope = frontend_key(scope)

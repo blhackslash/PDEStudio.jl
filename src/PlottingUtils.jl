@@ -411,32 +411,120 @@ function _safe_extrema(data_slices)
     return (minimum(mins), maximum(maxs))
 end
 
-function plot_extrema_lines_manager!(ax, x_data, u_data, plot_idx)
+function plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d_axis)
+    # Clear old extrema lines
+    delete_plots_by_label!(ax, "Extrema_Max")
+    delete_plots_by_label!(ax, "Extrema_Min")
     
-    ui_var = manager.ui[:various]
-    ui_stl = manager.ui[:plot_style]
+    is_3d_axis && return
     
-    track_max = ui_var[:track_max] 
-    track_min = ui_var[:track_min] 
+    ui_ext = get(manager.ui, :outliers_extrema, Dict())
+    track_max = get(ui_ext, :track_max, false)
+    track_min = get(ui_ext, :track_min, false)
     (!track_max && !track_min) && return
 
-    valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
-    isempty(valid_pairs) && return
-    
-    color = ui_stl[:colors][mod1(plot_idx, end)] 
+    ui_stl = manager.ui[:plot_style]
+    colors = get(ui_stl, :colors, [:black])
     lw = haskey(ui_stl, :line_width) ? (ui_stl[:line_width] / 2) : 2.0 
 
-    if track_max
-        max_u, idx = findmax(p -> p[2], valid_pairs)
-        max_x = valid_pairs[idx][1]
-        linesegments!(ax, [Point2f(max_x, 0), Point2f(max_x, max_u)]; color=(color, 0.7), linestyle=:dash, line_width=lw)
-    end
-    if track_min
-        min_u, idx = findmin(p -> p[2], valid_pairs)
-        min_x = valid_pairs[idx][1]
-        linesegments!(ax, [Point2f(min_x, 0), Point2f(min_x, min_u)]; color=(color, 0.7), linestyle=:dot, line_width=lw)
+    if length(data_tuples) >= 2 
+        xs_all = data_tuples[1]
+        us_all = data_tuples[end]
+        
+        for (m_idx, m_name) in enumerate(valid_methods)
+            x_data, u_data = xs_all[m_idx], us_all[m_idx]
+            valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
+            isempty(valid_pairs) && continue
+            
+            c = colors[mod1(m_idx, length(colors))]
+            
+            if track_max
+                max_u, idx = findmax(p -> p[2], valid_pairs)
+                max_x = valid_pairs[idx][1]
+                linesegments!(ax, [Point2f(max_x, 0), Point2f(max_x, max_u)]; color=(c, 0.7), linestyle=:dash, linewidth=lw, label="Extrema_Max")
+            end
+            if track_min
+                min_u, idx = findmin(p -> p[2], valid_pairs)
+                min_x = valid_pairs[idx][1]
+                linesegments!(ax, [Point2f(min_x, 0), Point2f(min_x, min_u)]; color=(c, 0.7), linestyle=:dot, linewidth=lw, label="Extrema_Min")
+            end
+        end
     end
 end
+
+plot_extrema_lines_manager!(ax::Axis3, args...) = nothing
+
+function apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
+    # 1. Always clear the old markers first
+    delete_plots_by_label!(ax, "Outlier")
+    
+    ui_ext = get(manager.ui, :outliers_extrema, Dict())
+    remove_outs = get(ui_ext, :remove_outliers, false)
+    mark_outs   = get(ui_ext, :mark_outliers, false)
+
+    # 2. If both features are inactive, exit early and return unmodified data
+    if !remove_outs && !mark_outs
+        return data_tuples
+    end
+
+    thresh = get(ui_ext, :outlier_threshold, 1.5)
+    u_slices = data_tuples[end]
+    new_u_slices = Any[]
+    
+    # Fetch method colors so the markers match the plot lines
+    ui_stl = manager.ui[:plot_style]
+    colors = get(ui_stl, :colors, [:red])
+
+    for (m_idx, m_name) in enumerate(valid_methods)
+        u_clean = u_slices[m_idx]
+        out_idx = _find_outlier_indices(u_clean, thresh)
+
+        # 3. Draw the Outliers immediately on the axis
+        if !isempty(out_idx) && mark_outs && !is_3d_axis
+            c = colors[mod1(m_idx, length(colors))]
+            
+            if length(data_tuples) == 2 # 1D Line/Scatter Plot
+                xs = data_tuples[1][m_idx]
+                segments = Point2f[]
+                for idx in out_idx
+                    x_val, u_val = Float64(xs[idx]), Float64(u_clean[idx])
+                    push!(segments, Point2f(x_val, 0.0), Point2f(x_val, u_val))
+                end
+                linesegments!(ax, segments; color=(c, 0.6), linewidth=2.0, linestyle=:dash, label="Outlier")
+                
+            elseif length(data_tuples) >= 3 # 2D Heatmap/Contour Fallback
+                xs, ys = data_tuples[1][m_idx], data_tuples[2][m_idx]
+                pts = Point2f[]
+                if out_idx isa Vector{CartesianIndex{2}}
+                    for idx in out_idx; push!(pts, Point2f(xs[idx[1]], ys[idx[2]])); end
+                else
+                    for idx in out_idx; push!(pts, Point2f(xs[idx], ys[idx])); end
+                end
+                scatter!(ax, pts; color=c, marker=:xcross, markersize=15, label="Outlier")
+            end
+        end
+
+        # 4. Conditionally apply NaN masking
+        if remove_outs && !isempty(out_idx)
+            u_clean_copy = copy(u_clean)
+            if !(eltype(u_clean_copy) <: AbstractFloat)
+                u_clean_copy = float.(u_clean_copy)
+            end
+            for idx in out_idx
+                u_clean_copy[idx] = NaN
+            end
+            push!(new_u_slices, u_clean_copy)
+        else
+            push!(new_u_slices, u_clean)
+        end
+    end
+
+    # Return modified tuple only if removal was explicitly requested
+    return remove_outs ? (data_tuples[1:end-1]..., new_u_slices) : data_tuples
+end
+
+# Safety fallback for Axis3
+apply_outlier_mask(ax::Axis3, data_tuples, valid_methods, is_3d_axis) = data_tuples
 
 function _find_outlier_indices(y_data::AbstractVector, threshold::Real)
     if length(y_data) < 5; return Int[]; end
@@ -450,7 +538,7 @@ function _find_outlier_indices(y_data::AbstractVector, threshold::Real)
     return findall(y -> isfinite(y) && (y < lower_bound || y > upper_bound), y_data)
 end
 
-function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)::Vector{CartesianIndex}
+function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)
     flat_vector = vec(matrix)
     linear_outlier_indices = _find_outlier_indices(flat_vector, threshold)
     return CartesianIndices(matrix)[linear_outlier_indices]
@@ -516,8 +604,10 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
 end
 
 function plot_HUD!(ax::Axis)
+    # THE FIX: Always clear the previous HUD before drawing or exiting
+    delete_plots_by_label!(ax, "HUD")
     
-    ui_hud = manager.ui[:HUD]
+    ui_hud = manager.ui[:hud]
     if !ui_hud[:visible] || isempty(ui_hud[:points])::Bool; return; end 
     
     pts = ui_hud[:points] 
@@ -536,15 +626,16 @@ function plot_HUD!(ax::Axis)
         ls    = ui_hud[:line_style] 
         ms    = ui_hud[:marker_size] 
 
+        # THE FIX: Add label="HUD" to all primitives so they can be targeted and deleted
         if mode == "scatter"
-            scatter!(ax, x_pct, y_pct; color=color, marker_size=ms, space=:relative)
+            scatter!(ax, x_pct, y_pct; color=color, markersize=ms, space=:relative, label="HUD")
         elseif mode == "scatterlines"
-            scatterlines!(ax, x_pct, y_pct; color=color, line_width=lw, linestyle=ls, marker_size=ms, space=:relative)
+            scatterlines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, markersize=ms, space=:relative, label="HUD")
         elseif mode == "polygon"
             poly_pts = Point2f.(zip(x_pct, y_pct))
-            poly!(ax, poly_pts; color=(color, 0.3), strokecolor=color, strokewidth=lw, space=:relative)
+            poly!(ax, poly_pts; color=(color, 0.3), strokecolor=color, strokewidth=lw, space=:relative, label="HUD")
         else
-            lines!(ax, x_pct, y_pct; color=color, line_width=lw, linestyle=ls, space=:relative)
+            lines!(ax, x_pct, y_pct; color=color, linewidth=lw, linestyle=ls, space=:relative, label="HUD")
         end
     catch e
         @warn "Failed to plot HUD. Ensure 'points' is a vector of tuples, e.g., [(0.1, 0.1), (0.9, 0.9)]."
@@ -554,8 +645,6 @@ end
 plot_HUD!(ax::Axis3) = nothing
 
 function _apply_axis_styles!(ax, T::Symbol)
-    
-    # THE FIX: Wrap the widget selections in frontend_key!
     x = frontend_key(manager.widgets[:x_axis].selection[])
     y = frontend_key(manager.widgets[:y_axis].selection[])
     z = frontend_key(manager.widgets[:z_axis].selection[])
@@ -567,6 +656,9 @@ function _apply_axis_styles!(ax, T::Symbol)
     if ax isa Axis
         def_y = dim == 1 ? u : y
         set_axis_styles!(ax, x, def_y, def_title)
+        
+        # THE FIX: Actually call the HUD drawing function!
+        plot_HUD!(ax)
     elseif ax isa Axis3
         def_z = dim == 2 ? u : z
         set_axis_styles!(ax, x, y, def_z, def_title)

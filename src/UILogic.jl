@@ -92,50 +92,17 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
         notify(menu_widget.selection)
     end
 end
-function apply_layout_options!(layout_options::Dict)
-    isempty(layout_options) && return
+function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
+    isempty(new_options) && return
 
     # 1. ALWAYS update the central source of truth
-    for (k, v) in layout_options
-        manager.state[:Layout_Cache][k] = v
+    for (k, v) in new_options
+        manager.state[cache_key][k] = v
     end
 
     # 2. Sync the widgets ONLY if they currently exist
-    for k in LAYOUT_OPTIONS
-        val = get(layout_options, k, get(layout_options, string(k), nothing))
-        
-        if !isnothing(val) && haskey(manager.widgets, k)
-            widget = manager.widgets[k]
-            opts = widget.options[]
-            isempty(opts) && continue
-            
-            valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
-            idx = findfirst(v -> string(v) == string(val), valid_vals)
-            
-            if isnothing(idx) && val isa String
-                idx = findfirst(v -> startswith(string(v), val), valid_vals)
-            end
-            
-            if !isnothing(idx)
-                # Setting this will automatically trigger Makie's UI update
-                widget.i_selected[] = idx 
-            end
-        end
-    end
-end
-
-function apply_plot_options!(plot_options::Dict)
-    isempty(plot_options) && return
-
-    # 1. ALWAYS update the central source of truth
-    for (k, v) in plot_options
-        manager.state[:Plot_Cache][k] = v
-    end
-
-    # 2. Sync Axis Dropdowns ONLY if they exist
-    for k in PLOT_AXIS_OPTIONS
-        val = get(plot_options, k, get(plot_options, string(k), nothing))
-        
+    for k in option_keys
+        val = get(new_options, k, get(new_options, string(k), nothing))
         if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
             opts = widget.options[]
@@ -152,6 +119,7 @@ function apply_plot_options!(plot_options::Dict)
                 widget.i_selected[] = idx
                 notify(widget.selection)
             else
+                # Fallback for dynamic menus (like Axis targets) pushing new options
                 if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
                     new_opts = copy(opts)
                     push!(new_opts, (string(val), val))
@@ -166,11 +134,25 @@ function apply_plot_options!(plot_options::Dict)
             end
         end
     end
+end
 
-    # 3. Apply Slider Values
+function extract_options(option_keys::Tuple)
+    opts = Dict{Symbol, Any}()
+    for k in option_keys
+        if haskey(manager.widgets, k)
+            opts[k] = manager.widgets[k].selection[]
+        end
+    end
+    return opts
+end
+
+function apply_slider_options!(slider_options::Dict)
+    isempty(slider_options) && return
+    
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
-    for (key, desired_val) in plot_options
-        if key in PLOT_AXIS_OPTIONS || key === :reset
+    for (key, desired_val) in slider_options
+        # Skip standard dropdown keys if a mixed dictionary is passed in
+        if key in PLOT_AXIS_OPTIONS || key in LAYOUT_OPTIONS || key in EXPLORATION_OPTIONS || key === :reset
             continue
         end
         
@@ -180,8 +162,8 @@ function apply_plot_options!(plot_options::Dict)
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                slider_cache = manager.state[:Slider_Cache]
-                slider_cache[w_key] = Float64(desired_val)
+                manager.state[:Slider_Cache][w_key] = Float64(desired_val)
+                manager.state[:Plot_Cache][key] = desired_val
                 
                 rng = widget.range[]
                 isempty(rng) && continue
@@ -196,35 +178,38 @@ function apply_plot_options!(plot_options::Dict)
     end
 end
 
-function extract_layout_options()
+function extract_slider_options()
     opts = Dict{Symbol, Any}()
-    for k in LAYOUT_OPTIONS
-        if haskey(manager.widgets, k)
-            opts[k] = manager.widgets[k].selection[]
-        end
-    end
-    return opts
-end
-
-function extract_plot_options()
-    opts = Dict{Symbol, Any}()
-    
-    for k in PLOT_AXIS_OPTIONS
-        if haskey(manager.widgets, k)
-            opts[k] = manager.widgets[k].selection[]
-        end
-    end
-    
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     for k in manager.plot_vars
         w_key = haskey(rev_map, k) ? rev_map[k] : k 
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                opts[k] = widget.value[]  # Assign purely by the variable's symbol (e.g., :t)
+                opts[k] = widget.value[]  # Assign purely by the variable's symbol
             end
         end
     end
+    return opts
+end
+
+# ==============================================================================
+# --- ALIASES FOR COMPATIBILITY ---
+# ==============================================================================
+apply_layout_options!(opts::Dict)      = apply_options!(:Layout_Cache, LAYOUT_OPTIONS, opts)
+apply_exploration_options!(opts::Dict) = apply_options!(:Exploration_Cache, EXPLORATION_OPTIONS, opts)
+
+function apply_plot_options!(opts::Dict)
+    apply_options!(:Plot_Cache, PLOT_AXIS_OPTIONS, opts)
+    apply_slider_options!(opts)
+end
+
+extract_layout_options()      = extract_options(LAYOUT_OPTIONS)
+extract_exploration_options() = extract_options(EXPLORATION_OPTIONS)
+
+function extract_plot_options()
+    opts = extract_options(PLOT_AXIS_OPTIONS)
+    merge!(opts, extract_slider_options())
     return opts
 end
 
@@ -256,27 +241,29 @@ function _setup_button_state_machine!()
     f_lay = manager.flags[:Layout]
     f_plot = manager.flags[:Plot]
 
-    # --- WATCHERS (Triggers flags when users adjust UI menus) ---
-    manager.listeners[:Watch_Layout] = onany(
-        w[:base_plot].selection, w[:plot_style].selection,
-        w[:compare_target].selection, w[:compare_columns].selection, w[:compare_link].selection,
-        w[:legend_base].selection, w[:legend_add].selection,
-        w[:plot_width].selection, w[:plot_height].selection
-    ) do _...
+    # --- DYNAMIC WATCHERS ---
+    # 1. Layout Watcher
+    layout_obs = [w[k].selection for k in LAYOUT_OPTIONS if haskey(w, k)]
+    manager.listeners[:Watch_Layout] = onany(layout_obs...) do _...
         merge!(manager.state[:Layout_Cache], extract_layout_options())
-        # THE FIX: Ignore programmatic changes when running a Simulation or Layout update!
         if !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_lay[] = true
         end
     end
 
-    manager.listeners[:Watch_Plot] = onany(
-        w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, w[:u_axis].selection
-    ) do _...
+    # 2. Plot Watcher
+    plot_obs = [w[k].selection for k in PLOT_AXIS_OPTIONS if haskey(w, k)]
+    manager.listeners[:Watch_Plot] = onany(plot_obs...) do _...
         merge!(manager.state[:Plot_Cache], extract_plot_options())
         if !manager.locks[:Plot] && !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_plot[] = true
         end
+    end
+    
+    # 3. Exploration Watcher (Updates Cache, but doesn't flag a hard reset!)
+    exp_obs = [w[k].selection for k in EXPLORATION_OPTIONS if haskey(w, k)]
+    manager.listeners[:Watch_Exploration] = onany(exp_obs...) do _...
+        merge!(manager.state[:Exploration_Cache], extract_exploration_options())
     end
 
     # --- MASTER HIERARCHY RESOLVER ---
@@ -949,7 +936,12 @@ function _setup_chain_A!(::Val{:eulerian})
                     push!(anim_options, menu_opt(ax_sym))
                 end
             end
-            update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
+            
+            # THE FIX: Dynamically set the fallback to the time dimension!
+            t_dim = sim_data.domain.time_dim
+            anim_fallbacks = !isnothing(t_dim) ? [t_dim, :none] : [:none]
+            
+            update_menu_safe!(w[:anim_target], anim_options; fallbacks=anim_fallbacks)
 
             compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
             if !isnothing(sim_data.domain.time_dim)
@@ -964,7 +956,7 @@ function _setup_chain_A!(::Val{:eulerian})
             ptype = manager.widgets[:plot_style].selection[]
             p_dim = PLOT_DIM_MAP[ptype]
             
-            function build_axis_opts(excluded_syms)
+            build_axis_opts = function(excluded_syms)
                 excluded_loops = [occursin("|", string(ex)) ? Symbol(split(string(ex), "|")[2]) : ex for ex in excluded_syms]
                 opts = Any[]
                 for ax_sym in valid_indep_axes
@@ -975,7 +967,8 @@ function _setup_chain_A!(::Val{:eulerian})
                     if occursin("|", ax_str)
                         stat_sym = Symbol(split(ax_str, "|")[1])
                         # Use frontend_key directly for the complex string construction
-                        nice_name = "$(frontend_key(stat_sym)) ($(frontend_key(loop_dim)))"
+                        add_name = loop_dim in get_base_variables() ? titlecase(string(loop_dim)) : frontend_key(loop_dim)
+                        nice_name = "$(frontend_key(stat_sym)) ($(add_name))"
                         push!(opts, (nice_name, ax_sym))
                     else
                         # Use menu_opt for all standard parameters and dimensions!
@@ -1048,7 +1041,16 @@ function _setup_chain_A!(::Val{:lagrangian})
                     push!(anim_options, menu_opt(ax_sym))
                 end
             end
-            update_menu_safe!(w[:anim_target], anim_options; fallbacks=[:none])
+            
+            # THE FIX: Explicitly add time to Lagrangian anim options and set it as the default
+            t_dim = l_data.domain.time_dim
+            if !isnothing(t_dim)
+                push!(anim_options, menu_opt(t_dim))
+            end
+            
+            anim_fallbacks = !isnothing(t_dim) ? [t_dim, :none] : [:none]
+            
+            update_menu_safe!(w[:anim_target], anim_options; fallbacks=anim_fallbacks)
             
             compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
             if !isnothing(l_data.domain.time_dim)

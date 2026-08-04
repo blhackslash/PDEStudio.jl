@@ -5,8 +5,9 @@
 const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_f, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
 const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :padding, :log_scale, :dashed_lines, :levels, :rasterize, :legend_label)
-const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height, :anim_target)
+const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
 const PLOT_AXIS_OPTIONS = (:x_axis, :y_axis, :z_axis, :u_axis, :component)
+const EXPLORATION_OPTIONS = (:anim_target, :component)
 
 # --- SYMBOL / LABEL ROUTING ---
 const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
@@ -18,6 +19,7 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :u_axis => "U-Axis (Dep)",
     :ui => "UI",
     :none => "Disabled",
+    :outliers_extrema => "Outliers & Extrema",
     
     # Plot Styles
     :lines_1d => "1D Lines",
@@ -193,6 +195,8 @@ function create_master_ui_dict()
         :create_savefolder    => false,
         :animation_time       => 10.0, 
         :animation_FPS        => 30, 
+    )
+    master[:outliers_extrema] = Dict{Symbol, Any}(
         :remove_outliers      => false, 
         :mark_outliers        => false, 
         :outlier_threshold    => 1.5, 
@@ -257,6 +261,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
     ui[:axis_general] = deepcopy(master[:axis_general])
     ui[:labels]       = deepcopy(master[:labels])
     ui[:various]      = deepcopy(master[:various])
+    ui[:outliers_extrema]   = deepcopy(master[:outliers_extrema])
     ui[:hud]          = deepcopy(master[:hud])
     ui[:plot_style]   = deepcopy(master[:plot_style])
     
@@ -272,8 +277,14 @@ function switch_ui_plot_type!(plot_type::Symbol)
         ui[:z_axis] = deepcopy(master[:z_axis_3d])
     end
 
+    # THE FIX: Define the internal template keys that should never be shown in the UI editor
+    template_keys = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d)
+
     # Instantly re-apply the cached tweaks without needing a staging flag
     for (scope, dict) in cached_ui
+        # Prevent old templates from leaking back into the active UI scope!
+        scope in template_keys && continue 
+        
         if haskey(ui, scope)
             for (k, v) in dict
                 ui[scope][k] = v
@@ -285,8 +296,8 @@ function switch_ui_plot_type!(plot_type::Symbol)
 end
 
 function set_plot_presets!()
-    # 1. Directly overwrite the UI dictionary
-    manager.ui = deepcopy(MASTER_UI_DICT)
+    # 1. Clear the UI dictionary completely (switch_ui_plot_type! will build the specific defaults)
+    empty!(manager.ui)
     
     # 2. Reset Layout and Sliders safely
     apply_layout_options!(get_base_layout_options())
@@ -294,6 +305,11 @@ function set_plot_presets!()
     
     # 3. Reset Camera
     manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+    
+    # 4. Reset Exploration Options
+    if haskey(manager.state, :Exploration_Cache)
+        manager.state[:Exploration_Cache] = Dict{Symbol, Any}(:anim_target => :none, :component => 1)
+    end
 
     manager.triggers[:Layout][] += 1
     @info "UI and Layout have been directly reset to defaults."
@@ -319,18 +335,6 @@ end
 # ==============================================================================
 # --- BUILT-IN PRESETS ---
 # ==============================================================================
-
-function apply_plot_preset!(::Val{:convergence})
-    apply_plot_options!(Dict(:x_axis => :Ns__1, :u_axis => :relative_l2error, :t => 10.0^10))
-    apply_layout_options!(Dict(:base_plot => :lines_1d, :plot_style => :lines_1d))
-    
-    set_ui_opt!(:x_axis, :log_scale, true)
-    set_ui_opt!(:y_axis, :log_scale, true)
-    set_ui_opt!(:x_axis, :padding, 0.0)
-    
-    set_ui_opt!(:labels, :x_label, "Number of Cells (N)")
-    set_ui_opt!(:labels, :y_label, "Relative L2 Error")
-end
 
 function apply_plot_preset!(::Val{:publication})
     set_ui_opt!(:labels, :title, "")
