@@ -4,75 +4,53 @@ const MethodDict = Dict{Symbol, ParamDict}
 const VariedDict = Dict{Symbol, Vector}
 const FixedDict = ParamDict 
 
-const _GRID_LOCK = Ref{Bool}(false)
-
 const _SAVE_ROOT_PATH = Ref{String}(pwd())
-const _N_GRID = Ref{Int}(100)
-const _T_GRID = Ref{Int}(25)
-const _REF_GRID = Ref{Int}(500)
 const _TARGET_MODULE = Ref{Module}(Main)
 
-set_space_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_N_GRID[] = n)
-set_time_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_T_GRID[] = n)
-set_ref_resolution!(n::Int) = _GRID_LOCK[] ? (@warn "Grid is currently locked!") : (_REF_GRID[] = n)
-get_space_resolution() = _N_GRID[]
-get_time_resolution() = _T_GRID[]
-get_ref_resolution() = _REF_GRID[]
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
 
 # --- 2. Explicit Creator Functions ---
 # Converts any generic iterator or mixed string/symbol inputs into strictly typed Symbol-keyed dictionaries
 
 # ParamDict Creators
-createParamDict(kv::Pair...) = ParamDict(Symbol(k) => v for (k, v) in kv)
-createParamDict(kv) = ParamDict(Symbol(k) => v for (k, v) in kv) 
-createParamDict() = ParamDict()
+create_param_dict(kv::Pair...) = ParamDict(Symbol(k) => v for (k, v) in kv)
+create_param_dict(kv) = ParamDict(Symbol(k) => v for (k, v) in kv) 
+create_param_dict() = ParamDict()
 
 # MethodDict Creators
-createMethodDict(kv::Pair...) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
-createMethodDict(kv) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
-createMethodDict() = MethodDict()
+create_method_dict(kv::Pair...) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
+create_method_dict(kv) = MethodDict(Symbol(k) => ParamDict(Symbol(ki) => vi for (ki, vi) in v) for (k, v) in kv)
+create_method_dict() = MethodDict()
 
 # VariedDict Creators
-createVariedDict(kv::Pair...) = VariedDict(Symbol(k) => v for (k, v) in kv)
-createVariedDict(kv) = VariedDict(Symbol(k) => v for (k, v) in kv)
-createVariedDict() = VariedDict()
+create_varied_dict(kv::Pair...) = VariedDict(Symbol(k) => v for (k, v) in kv)
+create_varied_dict(kv) = VariedDict(Symbol(k) => v for (k, v) in kv)
+create_varied_dict() = VariedDict()
 
-# A strict union covering all possible geometries of your statistics
-const AbstractStatTensor{M, T} = Union{
-    SVector{M, T},
-    AbstractArray{SVector{M, T}},
-    Vector{Vector{SVector{M, T}}}
-}
-
-# The strictly typed dictionary for SimData
-const StatDict{M} = Dict{Symbol, AbstractStatTensor{M, Float64}}
 
 # ==============================================================================
 # --- 1. Abstract Hierarchy & Metadata ---
 # ==============================================================================
 
-# D = Total Spacetime Dimensions, DS = Spatial Dimensions, M = Vector Components
-abstract type AbstractSimData{D, DS, M} end
+# 1. Abstract Hierarchy (Now with T)
+abstract type AbstractSimData{D, DS, M, T <: Real} end 
 
-struct NoSimData{D, DS, M} <: AbstractSimData{D, DS, M} 
-    scalars::Dict{Symbol, Any} # Typed to Symbol
-    stats::Dict{Symbol, Any}   # Typed to Symbol
-end
+struct NoSimData <: AbstractSimData{0, 0, 0, Real} end
 
-function NoSimData(D::Int=0, DS::Int=0, M::Int=0)
-    return NoSimData{D, DS, M}(Dict{Symbol, Any}(), Dict{Symbol, Any}())
-end
+const AbstractStatTensor{M, T} = Union{
+    SVector{M, T},
+    AbstractArray{SVector{M, T}},
+    Vector{Vector{SVector{M, T}}} 
+}
+const StatDict{M, T} = Dict{Symbol, AbstractStatTensor{M, T}} 
 
-# DomainInfo strictly models the total D tensor shape.
-struct DomainInfo{D}
+# 2. Modernized DomainInfo (Using SVector and T)
+struct DomainInfo{D, T <: Real}
     dim_keys::Tuple{Vararg{Symbol, D}}
-    mins::Tuple{Vararg{Float64, D}}
-    maxs::Tuple{Vararg{Float64, D}}
-    spacing::Tuple{Vararg{Float64, D}}
+    mins::SVector{D, T}
+    maxs::SVector{D, T}
+    spacing::SVector{D, T}
     time_dim::Union{Nothing,Symbol}
-    
-    # --- NEW: Local Registry ---
     stat_registry::Dict{Symbol, Union{Symbol, Vector{Symbol}}} 
 end
 
@@ -80,28 +58,28 @@ end
 # --- 2. D-Dimensional Data Structures ---
 # ==============================================================================
 
-mutable struct ESimData{D, DS, M} <: AbstractSimData{D, DS, M}
+mutable struct ESimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
     params::ParamDict
-    domain::DomainInfo{D}
-    axes::NTuple{D, Vector{Float64}}
-    u::Array{SVector{M, Float64}, D}
-    stats::StatDict{M}  # <-- Strictly typed and Symbolic!
+    domain::DomainInfo{D, T} # You can optionally parameterize DomainInfo with T as well
+    axes::NTuple{D, Vector{T}}
+    u::Array{SVector{M, T}, D}
+    stats::StatDict{M, T}
 end
 
-mutable struct LSimData{D, DS, M} <: AbstractSimData{D, DS, M}
+mutable struct LSimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
     params::ParamDict
-    domain::DomainInfo{D}
-    t::Vector{Float64}
-    x::Vector{Vector{SVector{DS, Float64}}}
-    u::Vector{Vector{SVector{M, Float64}}}
-    stats::StatDict{M}  # <-- Strictly typed and Symbolic!
+    domain::DomainInfo{D, T}
+    t::Vector{T}
+    x::Vector{Vector{SVector{DS, T}}}
+    u::Vector{Vector{SVector{M, T}}}
+    stats::StatDict{M, T} 
 end
 
 mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     simulation_func::F
-    simulation_name::Symbol # <-- Store strictly as Symbol
+    simulation_name::Symbol
     reference_func::A 
-    reference_name::Union{Symbol, Nothing} # <-- Store strictly as Symbol
+    reference_name::Union{Symbol, Nothing}
     shared_params::ParamDict
     methods_dict::MethodDict
     default_methods::Vector{Symbol}
@@ -115,7 +93,7 @@ function SimulationConfig(
     shared::Dict, 
     methods::Dict, 
     defaults::Vector;
-    varied_params::Dict = createVariedDict(),
+    varied_params::Dict = create_varied_dict(),
     ref_func_name::Union{String, Symbol, Nothing} = nothing,
 )
     target_module = _TARGET_MODULE[]

@@ -5,7 +5,22 @@ matching the provided parameters, was not found.
 struct SimFileNotFoundError <: Exception
     message::String # Optional: To store a descriptive message
 end
+# Normalize scalar Ints or Tuples into a standard spatial Tuple
+function _normalize_spatial_res(N_grid::Union{Int, Tuple}, DS::Int)
+    if N_grid isa Int
+        return ntuple(_ -> N_grid, Val(DS))
+    elseif N_grid isa Tuple
+        length(N_grid) == DS || error("Spatial grid tuple length $(length(N_grid)) does not match DS = $DS")
+        return N_grid
+    else
+        error("Unsupported grid resolution type: $(typeof(N_grid))")
+    end
+end
 
+# Generate standard string key from a spacetime resolution tuple
+function get_conv_key(res::Tuple)
+    return "conv_E_" * join(res, "x")
+end
 
 """
     set_save_path!(path::String)
@@ -81,16 +96,32 @@ end
 
 
 
-"""
-Calculates the hash of a given params dictionary
-"""
-function calculateHash(params::ParamDict)
+# Normalizes values to a consistent string format before hashing
+function _normalize_for_hash(val)
+    if val isa Number
+        # Coerce all numbers to Float64 so 1 and 1.0 become identical strings
+        # Use a formatted string to avoid floating-point display quirks
+        return string(Float64(val)) 
+    elseif val isa Tuple || val isa AbstractArray
+        # Recursively normalize collections
+        return "[" * join([_normalize_for_hash(v) for v in val], ",") * "]"
+    elseif val isa Symbol || val isa String
+        return string(val)
+    else
+        # Fallback for complex custom types
+        return string(val) 
+    end
+end
+
+function calculate_hash(params::ParamDict)
     sorted_keys = sort(collect(keys(params)))
-    stringToHash = join(map(key -> "$key => $(params[key])", sorted_keys))
+    # Apply the normalizer to ensure type-agnostic hashing
+    stringToHash = join(map(key -> "$key => $(_normalize_for_hash(params[key]))", sorted_keys))
     return bytes2hex(sha256(stringToHash))
 end
-function getFileName(params::ParamDict)
-    hash_val = calculateHash(params)
+
+function get_file_name(params::ParamDict)
+    hash_val = calculate_hash(params)
     save_data = joinpath(get_save_path(), "data")
     
     if !isdir(save_data)
@@ -132,17 +163,17 @@ function getFileName(params::ParamDict)
     throw(SimFileNotFoundError("Hash matched, but exact parameters did not match any file."))
 end
 
-function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
+function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
     file_name = ""
     try
-        file_name = getFileName(sim_data.params)
+        file_name = get_file_name(sim_data.params)
     catch e
         if !isa(e, SimFileNotFoundError); rethrow(e); end
     end
 
     # 1. New File Initialization
     if isempty(file_name)
-        hash_val = calculateHash(sim_data.params)
+        hash_val = calculate_hash(sim_data.params)
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
         save_data = joinpath(get_save_path(), "data")
         if !isdir(save_data); mkpath(save_data); end
@@ -154,26 +185,28 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
         mode = "a+"
         
         # 2. Determine Key based on Base Type mapping
+        # Inside save_sim_data, replace the target_key block with this:
         target_key = jldopen(file_name, "r") do file
             if haskey(file, "raw")
                 raw_data = file["raw"]
                 
-                # If they are the exact same paradigm, we overwrite raw
-                is_same_base = (sim_data isa ESimData && raw_data isa ESimData) || 
-                               (sim_data isa LSimData && raw_data isa LSimData)
-                
-                if is_same_base
-                    return "raw"
-                elseif sim_data isa ESimData
-                    # Lagrangian -> Eulerian (needs grid resolution)
-                    return "conv_$(_N_GRID[])_$(_T_GRID[])"
-                else
-                    # Eulerian -> Lagrangian (unique representation, no grid needed)
-                    return "conv"
+                if sim_data isa ESimData
+                    # If raw is Eulerian and the sizes match exactly, we are overwriting raw
+                    if raw_data isa ESimData && size(raw_data.u) == size(sim_data.u)
+                        return "raw"
+                    else
+                        # Otherwise, this is either L->E or an E->E resampling!
+                        return get_conv_key(size(sim_data.u))
+                    end
+                elseif sim_data isa LSimData
+                    if raw_data isa LSimData
+                        return "raw"
+                    else
+                        return "conv_L" # E -> L conversion
+                    end
                 end
-            else
-                return "raw" # Fallback if file exists but is empty
             end
+            return "raw" # Fallback if file exists but is empty
         end
     end
 
@@ -185,18 +218,8 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
                 file[target_key] = sim_data
                 @info "Overwrote existing '$target_key' in $(basename(file_name))"
                 
-                # --- THE FIX: Clear outdated conversions if overwriting raw ---
-                if target_key == "raw"
-                    for k in keys(file)
-                        if startswith(k, "conv")
-                            delete!(file, k)
-                            @info "Cleared outdated conversion cache: '$k'"
-                        end
-                    end
-                end
-                
             else
-                @info "'$target_key' already exists in $(basename(file_name)). Skipping save."
+                @debug "'$target_key' already exists in $(basename(file_name)). Skipping save."
             end
         else
             file[target_key] = sim_data
@@ -215,7 +238,7 @@ function saveSimData(sim_data::AbstractSimData; overwrite::Bool = false)
 end
 
 # Default fallback routes to :raw
-loadSimData(params::ParamDict) = loadSimData(params, Val(:raw))
+load_sim_data(params::ParamDict) = load_sim_data(params, Val(:raw))
 
 # --- Fast Metadata Reader ---
 function _get_native_type(file_name::String)
@@ -228,86 +251,141 @@ end
 # --- LOAD ROUTERS ---
 # ==============================================================================
 
-function loadSimData(params::ParamDict, ::Val{:raw})
-    file_name = getFileName(params)
+function load_sim_data(params::ParamDict, ::Val{:raw})
+    file_name = get_file_name(params)
     return jldopen(file_name, "r") do file
         haskey(file, "raw") ? file["raw"] : throw(SimFileNotFoundError("Key 'raw' not found."))
     end
 end
 
-function loadSimData(params::ParamDict, ::Val{:conv})
-    file_name = getFileName(params)
-    native = _get_native_type(file_name)
-    target_key = native == :lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
+"""
+    list_available_conversions(params::ParamDict)
+
+Returns a list of all conversion key strings currently stored inside the JLD2 file.
+"""
+function list_available_conversions(params::ParamDict)
+    file_name = get_file_name(params)
+    return jldopen(file_name, "r") do file
+        return filter(k -> startswith(k, "conv_"), keys(file))
+    end
+end
+
+function load_sim_data(params::ParamDict, ::Val{:eulerian}, res::Tuple)
+    file_name = get_file_name(params)
     
-    has_conv = jldopen(file_name, "r") do file; haskey(file, target_key); end
-    if has_conv
-        return jldopen(file_name, "r") do file; file[target_key]; end
+    # 1. Check if the raw data is ALREADY the perfect Eulerian grid we need
+    is_perfect_match = jldopen(file_name, "r") do file
+        raw = file["raw"]
+        return raw isa ESimData && size(raw.u) == res
     end
     
-    @info "Converted format '$target_key' not found. Generating on the fly..."
-    raw_data = loadSimData(params, Val(:raw))
-    conv_data = native == :lagrangian ? convert_to_eulerian(raw_data) : convert_to_lagrangian(raw_data)
+    if is_perfect_match
+        return load_sim_data(params, Val(:raw))
+    end
     
-    saveSimData(conv_data; overwrite=true) 
+    # 2. Check for an existing cached conversion matching this exact resolution
+    key = get_conv_key(res)
+    has_conv = jldopen(file_name, "r") do file; haskey(file, key); end
+    
+    if has_conv
+        return jldopen(file_name, "r") do file; file[key]; end
+    end
+    
+    # 3. Generate it on the fly
+    @info "Target Eulerian resolution $key not found. Generating on the fly..."
+    raw_data = load_sim_data(params, Val(:raw))
+    
+    conv_data = if raw_data isa LSimData
+        convert_to_eulerian(raw_data, res)
+    else
+        resample_eulerian(raw_data, res)
+    end
+    
+    save_sim_data(conv_data; overwrite=true) 
     return conv_data
 end
 
-# The User's Brilliant 1-Line Semantic Routers!
-function loadSimData(params::ParamDict, ::Val{:eulerian})
-    native = _get_native_type(getFileName(params))
-    return native == :eulerian ? loadSimData(params, Val(:raw)) : loadSimData(params, Val(:conv))
-end
-
-function loadSimData(params::ParamDict, ::Val{:lagrangian})
-    native = _get_native_type(getFileName(params))
-    return native == :lagrangian ? loadSimData(params, Val(:raw)) : loadSimData(params, Val(:conv))
+function load_sim_data(params::ParamDict, ::Val{:lagrangian})
+    native = _get_native_type(get_file_name(params))
+    
+    if native == :lagrangian
+        return load_sim_data(params, Val(:raw))
+    else
+        # Directly load the L-conversion or generate it
+        file_name = get_file_name(params)
+        has_conv = jldopen(file_name, "r") do file; haskey(file, "conv_L"); end
+        
+        if has_conv
+            return jldopen(file_name, "r") do file; file["conv_L"]; end
+        else
+            @info "Lagrangian conversion not found. Generating on the fly..."
+            raw_data = load_sim_data(params, Val(:raw))
+            conv_data = convert_to_lagrangian(raw_data)
+            save_sim_data(conv_data; overwrite=true)
+            return conv_data
+        end
+    end
 end
 
 # ==============================================================================
 # --- EXISTENCE CHECKERS ---
 # ==============================================================================
 
-doesSimDataExist(params::ParamDict) = doesSimDataExist(params, Val(:raw))
+does_sim_data_exist(params::ParamDict) = does_sim_data_exist(params, Val(:raw))
 
-function doesSimDataExist(params::ParamDict, ::Val{:raw})
+function does_sim_data_exist(params::ParamDict, ::Val{:raw})
     try
-        return jldopen(getFileName(params), "r") do file; haskey(file, "raw"); end
+        return jldopen(get_file_name(params), "r") do file; haskey(file, "raw"); end
     catch e
         return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end
 end
 
-function doesSimDataExist(params::ParamDict, ::Val{:conv})
+function does_sim_data_exist(params::ParamDict, ::Val{:eulerian}, res::Tuple)
     try
-        file_name = getFileName(params)
+        file_name = get_file_name(params)
         native = _get_native_type(file_name)
-        target_key = native == :lagrangian ? "conv_$(_N_GRID[])_$(_T_GRID[])" : "conv"
+        
+        if native == :eulerian
+            # If native is Eulerian, check if the raw data perfectly matches the requested resolution
+            is_perfect_match = jldopen(file_name, "r") do file
+                raw = file["raw"]
+                return size(raw.u) == res
+            end
+            
+            if is_perfect_match
+                return true
+            end
+        end
+        
+        # If not a perfect raw match (or native is Lagrangian), check for the explicit cached key
+        target_key = get_conv_key(res)
         return jldopen(file_name, "r") do file; haskey(file, target_key); end
+        
     catch e
         return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end
 end
 
-function doesSimDataExist(params::ParamDict, ::Val{:eulerian})
+function does_sim_data_exist(params::ParamDict, ::Val{:lagrangian})
     try
-        native = _get_native_type(getFileName(params))
-        return native == :eulerian ? doesSimDataExist(params, Val(:raw)) : doesSimDataExist(params, Val(:conv))
+        file_name = get_file_name(params)
+        native = _get_native_type(file_name)
+        
+        if native == :lagrangian
+            # If native is Lagrangian, we just need the raw data
+            return jldopen(file_name, "r") do file; haskey(file, "raw"); end
+        else
+            # If native is Eulerian, check for the specific L-conversion key
+            return jldopen(file_name, "r") do file; haskey(file, "conv_L"); end
+        end
+        
     catch e
         return isa(e, SimFileNotFoundError) ? false : rethrow(e)
     end
 end
 
-function doesSimDataExist(params::ParamDict, ::Val{:lagrangian})
-    try
-        native = _get_native_type(getFileName(params))
-        return native == :lagrangian ? doesSimDataExist(params, Val(:raw)) : doesSimDataExist(params, Val(:conv))
-    catch e
-        return isa(e, SimFileNotFoundError) ? false : rethrow(e)
-    end
-end
-
-function loadSimData(hash_prefix::String; index::Int=1)
+function load_sim_data(hash_prefix::String; index::Int=1)
     clean_prefix = replace(hash_prefix, ".jld2" => "")
     save_data = joinpath(get_save_path(), "data")
     
@@ -418,7 +496,7 @@ end
 """
 Deletes all saved simulation meshes with the given keys and values in its parameter dictionary.
 """
-function deleteSimData(keys::Vector{Symbol}, vals::Vector)
+function delete_sim_data(keys::Vector{Symbol}, vals::Vector)
     save_data = get_save_path() * "/data/"
     if !isdir(save_data); return; end
     

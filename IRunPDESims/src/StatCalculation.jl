@@ -35,9 +35,9 @@ function remove_nan_stats!(stats_dict::StatDict)
     for k in keys_to_remove; delete!(stats_dict, k); end
 end
 
-function calculateAllStats!(sim_data::AbstractSimData, ref_func; force_overwrite = false, kwargs...)
+function calculate_all_stats!(sim_data::AbstractSimData, ref_func; force_overwrite = false, kwargs...)
     # 1. Generate full analytical field upfront (NaNs or exact)
-    u_ana = isnothing(ref_func) ? generate_nan_reference(sim_data) : generate_analytical_reference(sim_data, ref_func)
+    u_ana = isnothing(ref_func) ? generate_pointwise_nan(sim_data) : generate_pointwise_reference(sim_data, ref_func)
     
     # 2. Process all registered statistics dynamically
     stat_change = false
@@ -53,36 +53,29 @@ function calculateAllStats!(sim_data::AbstractSimData, ref_func; force_overwrite
     end
     # 3. Cleanup and Save
     remove_nan_stats!(sim_data.stats)
-    saveSimData(sim_data; overwrite=stat_change)
+    save_sim_data(sim_data; overwrite=stat_change)
 end
 
 # ==============================================================================
 # --- EULERIAN STATISTICAL REDUCTIONS ---
 # ==============================================================================
 
-function _calc_stat!(sim_data::ESimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
+function _calc_stat!(sim_data::ESimData{D, DS, M, T}, u_ana, stat_name::Symbol) where {D, DS, M, T}
     kept_idx = get_kept_indices(stat_name, sim_data.domain)
     
-    # Base Case: Pure Scalar (Integrates ALL dimensions out)
     if isempty(kept_idx)
-        return calc_stat(Val(stat_name), SVector{0,Float64}(), vec(sim_data.u), vec(u_ana), sim_data.domain)
+        return calc_stat(Val(stat_name), SVector{0, T}(), vec(sim_data.u), vec(u_ana), sim_data.domain)
     end
     
-    # Preallocate multi-dimensional output array based on kept dimensions
     out_sz = ntuple(d -> length(sim_data.axes[kept_idx[d]]), length(kept_idx))
-    res = Array{SVector{M, Float64}, length(kept_idx)}(undef, out_sz...)
+    res = Array{SVector{M, T}, length(kept_idx)}(undef, out_sz...)
     
-    # Generate zero-allocation iterable slices for the dimensions being integrated out
     u_slices = eachslice(sim_data.u, dims=Tuple(kept_idx))
     ana_slices = eachslice(u_ana, dims=Tuple(kept_idx))
     
-    # Process each slice over the kept multi-dimensional grid
     @batch for i in eachindex(u_slices)
         I = CartesianIndices(u_slices)[i]
-        
-        # Build the exact fixed coordinates for this specific slice
-        fixed_coords = SVector{length(kept_idx), Float64}(ntuple(d -> sim_data.axes[kept_idx[d]][I[d]], length(kept_idx)))
-        
+        fixed_coords = SVector{length(kept_idx), T}(ntuple(d -> sim_data.axes[kept_idx[d]][I[d]], length(kept_idx)))
         res[i] = calc_stat(Val(stat_name), fixed_coords, vec(u_slices[i]), vec(ana_slices[i]), sim_data.domain)
     end
     
@@ -93,44 +86,33 @@ end
 # --- LAGRANGIAN STATISTICAL REDUCTIONS ---
 # ==============================================================================
 
-function _calc_stat!(sim_data::LSimData{D, DS, M}, u_ana, stat_name::Symbol) where {D, DS, M}
+function _calc_stat!(sim_data::LSimData{D, DS, M, T}, u_ana, stat_name::Symbol) where {D, DS, M, T}
     kept_dims = get_kept_dims(stat_name, sim_data.domain)
     
     is_series = kept_dims == [sim_data.domain.time_dim] || (D == DS && isempty(kept_dims))
     is_field = length(kept_dims) == D
-    
     Nt = length(sim_data.t)
     
     if is_series
-        res = Vector{SVector{M, Float64}}(undef, Nt)
+        res = Vector{SVector{M, T}}(undef, Nt)
         @batch for t_idx in 1:Nt
-            # Pass 1D time vector if transient, empty vector if static
-            fixed = D > DS ? SVector{1, Float64}(sim_data.t[t_idx]) : SVector{0, Float64}()
-            
+            fixed = D > DS ? SVector{1, T}(sim_data.t[t_idx]) : SVector{0, T}()
             res[t_idx] = calc_stat(Val(stat_name), fixed, sim_data.u[t_idx], u_ana[t_idx], sim_data.domain)
         end
         return res
         
     elseif is_field
-        # Fields keep all space dimensions. calc_stat expects an iterable to integrate,
-        # so we pass 1-element tuples `(u,)` which avoids memory allocations while naturally resolving to the point.
-        res = Vector{Vector{SVector{M, Float64}}}(undef, Nt)
+        res = Vector{Vector{SVector{M, T}}}(undef, Nt)
         @batch for t_idx in 1:Nt
             Np = length(sim_data.x[t_idx])
-            res_t = Vector{SVector{M, Float64}}(undef, Np)
+            res_t = Vector{SVector{M, T}}(undef, Np)
             for p_idx in 1:Np
-                # Reconstruct full Spacetime position
-                fixed = D > DS ? SVector{D, Float64}(sim_data.x[t_idx][p_idx]..., sim_data.t[t_idx]) : SVector{D, Float64}(sim_data.x[t_idx][p_idx]...)
-                
+                fixed = D > DS ? SVector{D, T}(sim_data.x[t_idx][p_idx]..., sim_data.t[t_idx]) : SVector{D, T}(sim_data.x[t_idx][p_idx]...)
                 res_t[p_idx] = calc_stat(Val(stat_name), fixed, (sim_data.u[t_idx][p_idx],), (u_ana[t_idx][p_idx],), sim_data.domain)
             end
             res[t_idx] = res_t
         end
         return res
-        
-    elseif !isempty(kept_dims)
-        @warn "Statistic :$stat_name requires keeping $kept_dims. Partial spatial integrations are physically undefined for scattered Lagrangian data. Skipping."
-        return nothing
     end
 end
 
@@ -138,61 +120,143 @@ end
 # --- ANALYTICAL CACHE GENERATOR ---
 # ==============================================================================
 
-function generate_nan_reference(data::LSimData{D, DS, M}) where {D, DS, M}
-    return [fill(SVector{M, Float64}([NaN for _ = 1:M]), length(x)) for x in data.x]
+function generate_pointwise_nan(data::LSimData{D, DS, M, T}) where {D, DS, M, T}
+    return [fill(SVector{M, T}(ntuple(_ -> T(NaN), M)), length(x)) for x in data.x]
 end
 
-function generate_nan_reference(data::ESimData{D, DS, M}) where {D, DS, M}
-    return fill(SVector{M, Float64}([NaN for _ = 1:M]), size(data.u))
+function generate_pointwise_nan(data::ESimData{D, DS, M, T}) where {D, DS, M, T}
+    return fill(SVector{M, T}(ntuple(_ -> T(NaN), M)), size(data.u))
 end
 
-function generate_analytical_reference(ldata::LSimData{D, DS, M}, ref_func) where {D, DS, M}
+function generate_pointwise_reference(ldata::LSimData{D, DS, M, T}, ref_func) where {D, DS, M, T}
     Nt = length(ldata.t)
-    u_ana = Vector{Vector{SVector{M, Float64}}}(undef, Nt)
+    u_ana = Vector{Vector{SVector{M, T}}}(undef, Nt)
     _ref = ref_func 
     
     @batch for t_idx in 1:Nt
         t_val = ldata.t[t_idx]
         xs = ldata.x[t_idx]
-        
-        # Conditionally construct pure spatial or spacetime vectors
         if D > DS
-            u_ana[t_idx] = [_ref(SVector{D, Float64}(x..., t_val)) for x in xs]
+            u_ana[t_idx] = [_ref(SVector{D, T}(x..., t_val)) for x in xs]
         else
-            u_ana[t_idx] = [_ref(SVector{D, Float64}(x...)) for x in xs]
+            u_ana[t_idx] = [_ref(SVector{D, T}(x...)) for x in xs]
         end
     end
-    
     return u_ana
 end
 
-function generate_analytical_reference(edata::ESimData{D, DS, M}, ref_func) where {D, DS, M}
+function generate_pointwise_reference(edata::ESimData{D, DS, M, T}, ref_func) where {D, DS, M, T}
     u_ana = similar(edata.u)
     _ref = ref_func
     
-    # Directly iterate over the entire Spacetime tensor to build the reference mapping
     @batch for i in eachindex(edata.u)
         I = CartesianIndices(edata.u)[i]
-        st = SVector{D, Float64}(ntuple(d -> edata.axes[d][I[d]], Val(D)))
+        st = SVector{D, T}(ntuple(d -> edata.axes[d][I[d]], Val(D)))
         u_ana[i] = _ref(st)
     end
-    
     return u_ana
 end
 
+# ==============================================================================
+# --- REFERENCE GENERATORS ---
+# ==============================================================================
+
+function generate_reference_simdata(
+    ref_func::Function, 
+    params::ParamDict, 
+    template::ESimData{D, DS, M, T},
+    res::NTuple{D, Int}
+) where {D, DS, M, T}
+    
+    # 1. Build axes dynamically from the explicit res tuple
+    axes_list = ntuple(Val(D)) do d
+        collect(range(template.domain.mins[d], template.domain.maxs[d], length=res[d]))
+    end
+    
+    # 2. Evaluate one spacetime point to find the number of components (M_ref)
+    sample_st = SVector{D, T}(ntuple(d -> axes_list[d][1], Val(D)))
+    M_ref = length(ref_func(sample_st))
+    
+    # 3. Allocate the generalized Spacetime tensor
+    u_exact = Array{SVector{M_ref, T}, D}(undef, res...)
+    
+    # 4. Evaluate the exact function on the fly using multithreading
+    Threads.@threads for idx in CartesianIndices(res)
+        st = SVector{D, T}(ntuple(d -> axes_list[d][idx[d]], Val(D)))
+        u_exact[idx] = SVector{M_ref, T}(ref_func(st))
+    end
+    
+    # Safely compute spacings using the explicit resolution
+    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template.domain.maxs[d] - template.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
+    
+    ref_domain = DomainInfo{D, T}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
+    
+    ram_data = ESimData{D, DS, M_ref, T}(params, ref_domain, axes_list, u_exact, StatDict{M_ref, T}(:Solution => u_exact))
+    
+    return ram_data
+end
+
+function generate_reference_simdata(
+    ref_func::Function, 
+    params::ParamDict, 
+    template::LSimData{D, DS, M, T},
+    res::NTuple{D, Int}
+) where {D, DS, M, T}
+    
+    t_dim_idx = get_time_dim(template.domain)
+    
+    # 1. Extract spatial and temporal resolutions from the unified res tuple
+    s_shape = isnothing(t_dim_idx) ? res : ntuple(d -> res[d < t_dim_idx ? d : d+1], Val(DS))
+    T_len = isnothing(t_dim_idx) ? 1 : res[t_dim_idx]
+    
+    # 2. Build spatial axes and static particles
+    s_axes = ntuple(d -> collect(range(template.domain.mins[d], template.domain.maxs[d], length=s_shape[d])), Val(DS))
+    
+    static_particles = vec([SVector{DS, T}(ntuple(d -> s_axes[d][idx[d]], Val(DS))) 
+                            for idx in CartesianIndices(s_shape)])
+    
+    # Temporal constraints
+    t_vec = D > DS ? collect(range(template.domain.mins[t_dim_idx], template.domain.maxs[t_dim_idx], length=T_len)) : T[0.0]
+    
+    x_ref = [copy(static_particles) for _ in 1:T_len]
+    
+    # 3. Pack a sample point to infer M_ref
+    sample_st = D > DS ? SVector{D, T}(static_particles[1]..., t_vec[1]) : SVector{D, T}(static_particles[1])
+    M_ref = length(ref_func(sample_st))
+    
+    u_ref = Vector{Vector{SVector{M_ref, T}}}(undef, T_len)
+    
+    # 4. Evaluate using multithreading
+    Threads.@threads for t_idx in 1:T_len
+        t_val = t_vec[t_idx]
+        if D > DS
+            # Pack the DS-dimensional position and 1D time into a D Spacetime vector
+            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos..., t_val))) for pos in static_particles]
+        else
+            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos))) for pos in static_particles]
+        end
+    end
+    
+    # Safely compute spacings using the unified tuple
+    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template.domain.maxs[d] - template.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
+    
+    ref_domain = DomainInfo{D, T}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
+    
+    return LSimData{D, DS, M_ref, T}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M_ref, T}(:Solution => u_ref))
+end
 # ==============================================================================
 # --- BATCH PROCESSOR ---
 # ==============================================================================
 
-calculateAllStats!(::NoSimData, kwargs...) = return
+calculate_all_stats!(::NoSimData, kwargs...) = return
 
 """
-    calculateAllStats!(sim_config::SimulationConfig; kwargs...)
+    calculate_all_stats!(sim_config::SimulationConfig; kwargs...)
 
 Batch calculates statistics for all simulations defined in a `SimulationConfig`.
 Executes sequentially to avoid I/O bottlenecks and allow internal mathematical threading.
 """
-function calculateAllStats!(
+function calculate_all_stats!(
     sim_config::SimulationConfig;
     active_methods::Vector{Symbol} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
@@ -205,7 +269,7 @@ function calculateAllStats!(
     
     for method in active_methods
         if is_reference_method(method); continue end
-        base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
+        base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values, fixed_params; ignore_keys=ignore_keys)
         append!(all_tasks, tasks)
@@ -222,9 +286,9 @@ function calculateAllStats!(
     ref_func = sim_config.reference_func
     
     @showprogress "Calculating Stats..." for params in all_tasks
-        sim_data = try loadSimData(params) catch; nothing end
+        sim_data = try load_sim_data(params) catch; nothing end
         if !isnothing(sim_data)
-            calculateAllStats!(sim_data, ref_func; kwargs...)
+            calculate_all_stats!(sim_data, ref_func; kwargs...)
         end
     end
 end

@@ -11,14 +11,14 @@ If it does (and `force_overwrite` is false), it skips execution and returns `NoS
 Otherwise, it executes the simulation, saves the result, and returns the data.
 """
 function run_smart_simulation(sim_func::Function, params::ParamDict; force_overwrite::Bool=false)
-    if !force_overwrite && doesSimDataExist(params)
+    if !force_overwrite && does_sim_data_exist(params)
         return NoSimData()
     end
     # Run the actual simulation
     sim_data = sim_func(params)
     
     if !isnothing(sim_data)
-        saveSimData(sim_data; overwrite=true)
+        save_sim_data(sim_data; overwrite=true)
     end
     
     return sim_data
@@ -97,8 +97,7 @@ function generate_method_tasks(base_params::ParamDict, active_keys::Vector{Symbo
             end
             
             for (base, arr) in tup_updates
-                task_params[base] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : 
-                                    all(x -> x isa Real, arr) ? Tuple(Float64.(arr)) : Tuple(arr)
+                task_params[base] = all(x -> x isa Integer, arr) ? Tuple(Int.(arr)) : Tuple(arr)
             end
         end
         
@@ -129,12 +128,12 @@ function get_ignore_keys(method_collection::MethodDict, method_name::Symbol)
 end
 
 """
-    assembleParams(shared_params::ParamDict, method_collection::MethodDict, method_name::Symbol)
+    assemble_params(shared_params::ParamDict, method_collection::MethodDict, method_name::Symbol)
 
 Backend version: Constructs a flat parameter dictionary for a simulation run by combining
 shared parameters and method-specific parameters.
 """
-function assembleParams(
+function assemble_params(
     shared_params::ParamDict,
     method_collection::MethodDict,
     method_name::Symbol
@@ -169,12 +168,12 @@ function assembleParams(
 end
 
 """
-    runAllSimulations(sim_config::SimulationConfig; kwargs...)
+    run_all_simulations(sim_config::SimulationConfig; kwargs...)
 
 Executes all simulations defined in a `SimulationConfig`. 
 Perfect for headless execution without UI overhead.
 """
-function runAllSimulations(
+function run_all_simulations(
     sim_config::SimulationConfig;
     active_methods::Vector{Symbol} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
@@ -182,16 +181,15 @@ function runAllSimulations(
     calculate_stats::Bool = false,
     parallel::Bool = false
 )
-    _GRID_LOCK[] = true
-    @info "Started Simulation Pipeline. Grid Lock is enabled!"
+    @info "Started Simulation Pipeline."
     active_keys = collect(keys(varied_params))
     active_values = collect(values(varied_params))
     
-    # 1. Generate all parameter combinations across all methods
+    # 1. Generate all parameter combinations
     all_tasks = Vector{ParamDict}()
     for method in active_methods
         if is_reference_method(method); continue; end
-        base_params = assembleParams(sim_config.shared_params, sim_config.methods_dict, method)
+        base_params = assemble_params(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = get_ignore_keys(sim_config.methods_dict, method)
         tasks, _ = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
         append!(all_tasks, tasks)
@@ -200,25 +198,18 @@ function runAllSimulations(
     num_tasks = length(all_tasks)
     if num_tasks == 0
         @info "No numerical simulations generated to run."
-        return Float64[]
+        return 
     end
     
     @info "Pass 1: Executing $num_tasks simulations (Parallel: $parallel)..."
     p = Progress(num_tasks; desc="Running Simulations...")
     counter = Threads.Atomic{Int}(0)
     
-    t_vectors = Vector{Vector{Float64}}(undef, num_tasks)
-    
-    function _run_task(i, params)
-        run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
-        sim_data = loadSimData(params)
-        t_vectors[i] = !isnothing(sim_data) ? sim_data.t : Float64[]
-    end
-
+    # Run loop strictly iterating over the parameters
     if parallel
-        Threads.@threads for i in 1:num_tasks
+        Threads.@threads for params in all_tasks
             try
-                _run_task(i, all_tasks[i])
+                run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
             catch e
                 @error "Simulation Thread Error" exception=(e, catch_backtrace())
             end
@@ -226,38 +217,30 @@ function runAllSimulations(
             ProgressMeter.update!(p, counter[])
         end
     else
-        for i in 1:num_tasks
-            _run_task(i, all_tasks[i])
+        for params in all_tasks
+            run_smart_simulation(sim_config.simulation_func, params; force_overwrite=force_overwrite)
             counter[] += 1
             ProgressMeter.update!(p, counter[])
         end
     end
     
+    # Pass 2: Calculate Statistics
     if calculate_stats
         @info "Pass 2: Calculating Stats"
         p2 = Progress(num_tasks; desc="Post-processing...")
         counter2 = Threads.Atomic{Int}(0)
         
-        function _post_task(params)
-            sim_data = loadSimData(params, Val(:raw))
-            if !isnothing(sim_data)  
-                if calculate_stats
-                    calculateAllStats!(
-                        sim_data, 
-                        sim_config.reference_func; 
-                        force_overwrite=force_overwrite,
-                    )
-                end
+        for params in all_tasks
+            # Directly load raw data and process it inline
+            sim_data = load_sim_data(params, Val(:raw))
+            if !(sim_data isa NoSimData)  
+                calculate_all_stats!(sim_data, sim_config.reference_func; force_overwrite=force_overwrite)
             end
-        end
-        for i in 1:num_tasks
-            _post_task(all_tasks[i])
             counter2[] += 1
             ProgressMeter.update!(p2, counter2[])
         end
     end
     
-    @info "Batch simulation run complete! Disabling Grid Lock!"
-    _GRID_LOCK[] = false
+    @info "Batch simulation run complete!"
     return 
 end

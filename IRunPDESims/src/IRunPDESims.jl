@@ -1,7 +1,7 @@
 module IRunPDESims
 
 # --- 1. Headless-Safe Dependencies ---
-using LinearAlgebra, StaticArrays, ProgressMeter, Polyester
+using LinearAlgebra, StaticArrays, ProgressMeter, Polyester, Interpolations
 using JLD2, FileIO, SHA, Dates, DataFrames
 import Base: show
 
@@ -9,20 +9,18 @@ import Base: show
 # Core Types
 export AbstractSimData, ESimData, LSimData, NoSimData, SimulationConfig
 export ParamDict, MethodDict, VariedDict, FixedDict
-export createParamDict, createMethodDict, createVariedDict, createSimData
+export create_param_dict, create_method_dict, create_varied_dict, create_sim_data
 
 # Globals & Settings
-export _SAVE_ROOT_PATH, _TARGET_MODULE, SimFileNotFoundError
-export set_save_path!, set_space_resolution!, set_time_resolution!, set_ref_resolution!, set_sim_path!, set_target_module!
-export get_save_path, get_space_resolution, get_time_resolution, get_ref_resolution
+export set_save_path!, set_target_module!, get_save_path
 export register_stat!, delete_stat!, add_stat!, get_kept_dims, get_kept_indices
 # Simulation & Data Pipeline
-export run_smart_simulation, runAllSimulations, loadSimData, saveSimData, generate_method_tasks
-export doesSimDataExist, deleteSimData
-export calculateAllStats!, process_existing_data, convert_to_eulerian, check_data, generate_reference_simdata
+export run_all_simulations, load_sim_data, save_sim_data, generate_method_tasks
+export does_sim_data_exist, delete_sim_data
+export calculate_all_stats!, check_data, generate_reference_simdata
 
 # Utilities
-export smart_parse_and_update!, get_ignore_keys, is_reference_method
+export get_ignore_keys, is_reference_method
 export resolve_simulation_function, resolve_reference_function, resolve_dynamic_function
 
 # --- 3. Core Logic Inclusions ---
@@ -36,8 +34,8 @@ include("Simulations.jl")         # run_smart_simulation, runAllSimulations
 
 
 # Custom REPL print for Lagrangian Data
-function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, DS, M}) where {D, DS, M}
-    println(io, "🟢 LSimData{$D, $DS, $M} (Lagrangian Simulation Data)")
+function Base.show(io::IO, ::MIME"text/plain", data::LSimData{D, DS, M, T}) where {D, DS, M, T}
+    println(io, "🟢 LSimData{$D, $DS, $M, $T} (Lagrangian Simulation Data)")
     println(io, "==================================================")
     
     # Time Summary (Supports Static vs Transient)
@@ -79,8 +77,8 @@ end
 
 
 # Custom REPL print for Eulerian Data
-function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, DS, M}) where {D, DS, M}
-    println(io, "🟦 ESimData{$D, $DS, $M} (Eulerian Grid Data)")
+function Base.show(io::IO, ::MIME"text/plain", data::ESimData{D, DS, M, T}) where {D, DS, M, T}
+    println(io, "🟦 ESimData{$D, $DS, $M, $T} (Eulerian Grid Data)")
     println(io, "==================================================")
     
     # Time Summary

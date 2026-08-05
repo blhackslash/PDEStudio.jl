@@ -86,11 +86,10 @@ end
 Appends a fully custom statistic to a simulation dataset. 
 Registers the dimensions it keeps so the Plotter UI knows exactly how to slice and display it.
 """
-function add_stat!(sim_data::AbstractSimData{D, DS, M}, name::Symbol, value, kept_dims::Union{Symbol, Vector{Symbol}}) where {D, DS, M}
-    value_vec = value isa Real ? SVector{M,Float64}([Float64(value) for _ in 1:M]) : value
+function add_stat!(sim_data::AbstractSimData{D, DS, M, T}, name::Symbol, value, kept_dims::Union{Symbol, Vector{Symbol}}) where {D, DS, M, T}
+    value_vec = value isa Real ? SVector{M, T}([T(value) for _ in 1:M]) : value
     sim_data.stats[name] = value_vec
     sim_data.domain.stat_registry[name] = kept_dims
-    
     @info "Added custom stat '$name' keeping dimensions: $kept_dims"
 end
 
@@ -126,22 +125,16 @@ function calc_stat(::Val{:wave_height}, fixed_coords, u, ana, domain::DomainInfo
 end
 
 function calc_stat(::Val{:wave_position}, fixed_coords, u, ana, domain::DomainInfo)
-    # Find the primary dimension that was integrated out to serve as the physical "axis"
     kept_dims = get_kept_dims(:wave_position, domain)
     int_idx = findfirst(k -> k ∉ kept_dims, domain.dim_keys)
-    
-    # Fallback to index 1 if no integrated dimension is found
     int_idx = isnothing(int_idx) ? 1 : int_idx 
 
     M = length(eltype(u))
-    return SVector{M, Float64}(ntuple(M) do c
+    T = eltype(eltype(u)) # Dynamically get T
+    return SVector{M, T}(ntuple(M) do c
         max_idx = argmax(map(v -> v[c], u))
-        
-        # Handle both 1D vectors and N-dimensional Cartesian slices safely
         local_idx = max_idx isa CartesianIndex ? max_idx[1] : max_idx
-        
-        # Calculate physical position: min + (idx - 1) * spacing
-        domain.mins[int_idx] + (local_idx - 1) * domain.spacing[int_idx]
+        T(domain.mins[int_idx] + (local_idx - 1) * domain.spacing[int_idx])
     end)
 end
 
@@ -175,13 +168,13 @@ end
 
 function calc_stat(::Val{:relative_mass}, fixed_coords, u, ana, domain::DomainInfo)
     measure = get_integration_measure(:relative_mass, domain)
-    
     sum_u = sum(u .* measure)
     sum_ana = sum(ana .* measure)
     m_ana = abs.(sum_ana) 
 
     M = length(eltype(u))
-    return SVector{M, Float64}(ntuple(M) do c
-        m_ana[c] < 1e-9 ? NaN : sum_u[c] / sum_ana[c]
+    T = eltype(eltype(u)) # Dynamically get T
+    return SVector{M, T}(ntuple(M) do c
+        m_ana[c] < 1e-9 ? T(NaN) : T(sum_u[c] / sum_ana[c])
     end)
 end
