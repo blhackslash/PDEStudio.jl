@@ -1,19 +1,25 @@
-function _get_template_simdata(sim_config::SimulationConfig)
-    for (m_name, params) in sim_config.methods_dict
+function _get_template_domain(sim_config::SimulationConfig)
+    for m_name in sim_config.active_methods
         if is_reference_method(m_name); continue; end
-        base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
+        
+        base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
         ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
         
-        # Backend still requires an empty ParamDict for sim_fixes
         tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)); ignore_keys=ik)
         
         if !isempty(tasks)
             try
-                return loadSimData(tasks[1],Val(manager.mode[]))
-            catch
+                # Load via :raw to bypass any resolution requirements
+                raw_data = load_sim_data(tasks[1], Val(:raw))
+                return raw_data.domain
+            catch e
+                # THE FIX: Stop failing silently!
+                @warn "Failed to load template domain for $m_name." exception=(e, catch_backtrace())
+                continue
             end
         end
     end
+    
     return nothing
 end
 
@@ -35,7 +41,7 @@ Checks if the dimension keys of the loaded simulation data are a subset of
 the currently allowed UI dimensions.
 """
 function validate_plot_dimensions(sim_data::AbstractSimData)
-    allowed = ALLOWED_PLOT_DIMS[]
+    allowed = manager.allowed_dims
     actual = sim_data.domain.dim_keys
     
     if !issubset(actual, allowed)
@@ -52,7 +58,7 @@ Returns a boolean array indicating which of the fixed UI sliders should be enabl
 for the loaded data.
 """
 function get_active_slider_indices(sim_data::AbstractSimData)
-    allowed = ALLOWED_PLOT_DIMS[]
+    allowed = manager.allowed_dims
     actual = sim_data.domain.dim_keys
     return [dim in actual for dim in allowed]
 end
@@ -63,7 +69,7 @@ end
 Maps the fixed UI slider indices to the dynamic dimension indices of the underlying tensor.
 """
 function map_sliders_to_tensor(sim_data::AbstractSimData)
-    allowed = ALLOWED_PLOT_DIMS[]
+    allowed = manager.allowed_dims
     actual = sim_data.domain.dim_keys
     return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
 end
@@ -123,15 +129,24 @@ function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_confi
     data_store = Array{Union{Nothing, AbstractSimData}, length(grid_dims)}(nothing, grid_dims...)
 
     is_reference = is_reference_method(method_name)
-    base_template = _get_template_simdata(sim_config)
+    domain = _get_template_domain(sim_config)
+    mode = Val(manager.mode[])
 
     for (k, params) in enumerate(tasks)
         _recombine_tuples!(params)
         
-        sim_data = if is_reference && !isnothing(base_template)
-            IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, base_template)
+        sim_data = if is_reference && !isnothing(domain)
+            IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
+        
+        elseif !isnothing(domain) # THE FIX: Explicitly protect domain.dim_keys
+            try 
+                load_sim_data(params, mode, build_res_tuple(domain.dim_keys; is_ref=false)) 
+            catch
+                # Silently catch disk misses (perfectly normal if simulation hasn't run yet)
+                nothing 
+            end
         else
-            try loadSimData(params, Val(manager.mode[])) catch e; nothing end
+            nothing
         end
         
         if !isnothing(sim_data) && validate_plot_dimensions(sim_data)
@@ -299,7 +314,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
-            base_params = IRunPDESims.assembleParams(sim_config.shared_params, sim_config.methods_dict, m_name)
+            base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
             new_data = create_plot_data(m_name, base_params, sim_config)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end

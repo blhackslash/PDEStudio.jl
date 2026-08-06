@@ -129,7 +129,7 @@ function get_file_name(params::ParamDict)
     end
 
     all_files = readdir(save_data)
-    candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2") || startswith(f, "$(hash_val)_")) && endswith(f, ".jld2"), all_files)
+    candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2")), all_files)
 
     if isempty(candidate_files)
         throw(SimFileNotFoundError("File with matching parameters not found."))

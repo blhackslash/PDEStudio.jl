@@ -173,7 +173,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     # =========================================================================
     slider_row = 0
     
-    for i in 1:MAX_SUPPORTED_PARAMS[] 
+    for i in 1:manager.max_params 
         p_key = Symbol("param_$i")
         lbl_text = Observable("Param $i:")
         manager.widgets[Symbol("param_$(i)_label")] = lbl_text

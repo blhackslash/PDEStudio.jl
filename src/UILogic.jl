@@ -303,19 +303,27 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     run_btn  = manager.widgets[:run_button]
     path_box = manager.widgets[:export_text]
 
-    # Keep drag and drop for Makie backends that support it
+    function _handle_load(path)
+        # Load the CSV (which theoretically modifies manager.allowed_dims / max_params)
+        if load_and_apply_csv!(path)
+            load_btn.buttoncolor[] = :orange
+            run_btn.buttoncolor[] = :orange
+            load_btn.label[] = "Structural limits changed! \nClicking 'Run Simulation' will completely reset the backend. \nSave current settings as a preset if you want to keep them."
+        else
+            load_btn.label[] = "CSV successfully loaded! Press 'Run Simulation' to apply it."
+            load_btn.buttoncolor[] = :lightgreen
+        end
+    end
+
     manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
         if !isempty(files) && endswith(lowercase(files[1]), ".csv")
             path = files[1]
             path_box.stored_string[] = path
             path_box.displayed_string[] = path
-            load_btn.buttoncolor[] = :lightgreen
-            run_btn.buttoncolor[] = :lightgreen
-            load_and_apply_csv!(path) 
+            _handle_load(path)
         end
     end
 
-    # NEW: Fallback button for WGLMakie
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
         path = strip(path_box.stored_string[])
         if isempty(path)
@@ -325,15 +333,40 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
         
         if !isfile(path)
             set_sim_config!(path)
+            run_btn.buttoncolor[] = :lightgreen
+            run_btn.label[] = "Run Simulation"
         else
-            load_and_apply_csv!(path)
+            _handle_load(path)
         end
-        
-        load_btn.buttoncolor[] = :lightgreen
-        run_btn.buttoncolor[] = :lightgreen
     end
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
+        
+        if haskey(manager.state, :CSV_Cache)
+            @info "Structural rebuild initiated. Relaunching UI..."
+            
+            # 1. Extract the staging area
+            new_dims, new_max, parsed = manager.state[:CSV_Cache]
+            
+            # 2. Apply structural limits globally
+            manager.allowed_dims = new_dims
+            manager.max_params = new_max
+            
+            # 3. Physically relaunch UI (and display it safely if using GLMakie)
+            Base.invokelatest() do
+                fig = launch_plotter()
+                display(fig)
+                
+                # 4. Apply the fully cached configuration directly to the NEW widgets
+                load_and_apply_csv!(parsed)
+                force_simulation()
+            end
+            
+            # 5. Clean up
+            delete!(manager.state, :CSV_Cache)
+        end
+        return
+        
         manager.flags[:Simulation][] = false
         manager.flags[:Layout][] = false
         manager.flags[:Plot][] = false
@@ -346,20 +379,23 @@ function _setup_method_interactions!()
     menu_mth = manager.widgets[:method_toggle]
     is_activate_mode = manager.state[:Is_Activate_Mode]
     
-    manager.state[:Methods] = Observable(copy(manager.methods[]))
-    staged_methods = manager.state[:Methods]
+    # THE FIX: A helper function to manually sync the menu directly from the config
+    function sync_menu()
+        config = manager.active_config
+        isnothing(config) && return 
+        
+        staged = config.active_methods
+        raw_method_names = filter(k -> k != :shared, collect(keys(config.methods_dict)))
+        opts = is_activate_mode[] ? filter(m -> !(m in staged), raw_method_names) : copy(staged)
 
-    manager.listeners[:Menu_Sync] = onany(staged_methods, is_activate_mode) do staged, activate_mode
+        opts_sorted = sort_methods_robust(opts)
+        new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); menu_opt.(opts_sorted)]
+        update_menu_safe!(menu_mth, new_opts)
+    end
+
+    manager.listeners[:Menu_Sync] = on(is_activate_mode) do _
         @with_lock :Menu_Sync begin
-            config = manager.active_config
-            isnothing(config) && return 
-            
-            raw_method_names = filter(k -> k != :shared, collect(keys(config.methods_dict)))
-            opts = activate_mode ? filter(m -> !(m in staged), raw_method_names) : copy(staged)
-
-            opts_sorted = sort_methods_robust(opts)
-            new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); menu_opt.(opts_sorted)]
-            update_menu_safe!(menu_mth, new_opts)
+            sync_menu()
         end
     end
 
@@ -372,7 +408,10 @@ function _setup_method_interactions!()
     manager.listeners[:Method_Toggle] = on(menu_mth.selection) do sel
         (isnothing(sel) || sel == :none || sel == "-") && return
         
-        new_staged = copy(staged_methods[])
+        config = manager.active_config
+        isnothing(config) && return
+        
+        new_staged = copy(config.active_methods)
         if is_activate_mode[]
             if !(sel in new_staged)
                 push!(new_staged, sel)
@@ -382,9 +421,14 @@ function _setup_method_interactions!()
             filter!(x -> x != sel, new_staged)
         end
         
-        staged_methods[] = new_staged
+        # THE FIX: Directly mutate the config!
+        config.active_methods = new_staged
         manager.flags[:Simulation][] = true
         menu_mth.i_selected[] = 1
+        
+        @with_lock :Menu_Sync begin
+            sync_menu()
+        end
     end
 end
 
@@ -625,14 +669,21 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         if is_locked
             extract_and_store_camera_state!(plot_layout)
-            btn_lock.label[] = "Camera: Locked"
-            btn_lock.buttoncolor[] = :lightgreen
             @info "Camera locked to current view."
         else
             manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+            @info "Camera unlocked. Will auto-scale on next data update."
+        end
+    end
+
+    # THE FIX: Couple the button directly to the observable!
+    manager.listeners[:Camera_State_Sync] = on(manager.state[:Camera_Locked]) do is_locked
+        if is_locked
+            btn_lock.label[] = "Camera: Locked"
+            btn_lock.buttoncolor[] = :lightgreen
+        else
             btn_lock.label[] = "Lock Camera"
             btn_lock.buttoncolor[] = :lightblue
-            @info "Camera unlocked. Will auto-scale on next data update."
         end
     end
 
@@ -765,7 +816,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 end
                 display(master_fig)
                 metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-                saveParametersToCSV(base_name, save_path, metadata) 
+                save_params_to_csv(base_name, save_path, metadata) 
                 @info "Pristine Animation Saved Successfully."
                 
                 for obs in export_obs; off(obs); end
@@ -783,7 +834,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 for obs in export_obs; off(obs); end
                 
                 metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
-                saveParametersToCSV(base_name, save_dir, metadata)
+                save_params_to_csv(base_name, save_dir, metadata)
             end
         catch e
             @error "Export Failed" exception=(e, catch_backtrace())
@@ -816,7 +867,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         manager.maps[:Presets][sym_name] = desc
         
-        success = savePresetToCSV(sym_name, save_dir)
+        success = save_preset_to_csv(sym_name, save_dir)
         if success
             Makie.reset!(manager.widgets[:export_text])
             manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
@@ -902,7 +953,6 @@ function _setup_chain_A!(::Val{:eulerian})
         @with_lock :Menu_A begin
             isempty(plot_data_dict) && return
             (isnothing(style_sel) || style_sel == :none || isnothing(base_sel) || base_sel == :none) && return
-            
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
             if n_params > 0; manager.plot_vars[1:n_params] .= Symbol.(pd_first.active_param_keys); end

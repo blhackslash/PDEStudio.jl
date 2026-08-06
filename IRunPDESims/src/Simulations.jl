@@ -175,13 +175,14 @@ Perfect for headless execution without UI overhead.
 """
 function run_all_simulations(
     sim_config::SimulationConfig;
-    active_methods::Vector{Symbol} = sim_config.default_methods,
-    varied_params::VariedDict = sim_config.varied_params,
     force_overwrite::Bool = false,
     calculate_stats::Bool = false,
     parallel::Bool = false
 )
     @info "Started Simulation Pipeline."
+    varied_params = sim_config.varied_params
+    active_methods = sim_config.active_methods
+
     active_keys = collect(keys(varied_params))
     active_values = collect(values(varied_params))
     
@@ -243,4 +244,96 @@ function run_all_simulations(
     
     @info "Batch simulation run complete!"
     return 
+end
+
+# ==============================================================================
+# --- REFERENCE GENERATORS ---
+# ==============================================================================
+
+function generate_reference_simdata(
+    ref_func::Function, 
+    params::ParamDict, 
+    template_domain::DomainInfo{D, T},
+    res::NTuple{D, Int},
+    ::Val{:eulerian}
+) where {D, T}
+    
+    # Dynamically infer Spatial Dimensions (DS)
+    DS = isnothing(template_domain.time_dim) ? D : D - 1
+    
+    # 1. Build axes dynamically from the explicit res tuple
+    axes_list = ntuple(Val(D)) do d
+        collect(range(template_domain.mins[d], template_domain.maxs[d], length=res[d]))
+    end
+    
+    # 2. Evaluate one spacetime point to find the number of components (M_ref)
+    sample_st = SVector{D, T}(ntuple(d -> axes_list[d][1], Val(D)))
+    M_ref = length(ref_func(sample_st))
+    
+    # 3. Allocate the generalized Spacetime tensor
+    u_exact = Array{SVector{M_ref, T}, D}(undef, res...)
+    
+    # 4. Evaluate the exact function on the fly using multithreading
+    Threads.@threads for idx in CartesianIndices(res)
+        st = SVector{D, T}(ntuple(d -> axes_list[d][idx[d]], Val(D)))
+        u_exact[idx] = SVector{M_ref, T}(ref_func(st))
+    end
+    
+    # Safely compute spacings using the explicit resolution
+    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template_domain.maxs[d] - template_domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
+    
+    ref_domain = DomainInfo{D, T}(template_domain.dim_keys, template_domain.mins, template_domain.maxs, spacing, template_domain.time_dim, template_domain.stat_registry)
+    
+    ram_data = ESimData{D, DS, M_ref, T}(params, ref_domain, axes_list, u_exact, StatDict{M_ref, T}(:Solution => u_exact))
+    
+    return ram_data
+end
+function generate_reference_simdata(
+    ref_func::Function, 
+    params::ParamDict, 
+    template_domain::DomainInfo{D, T},
+    res::NTuple{D, Int},
+    ::Val{:lagrangian}
+) where {D, T}
+    
+    t_dim_idx = template_domain.time_dim
+    DS = isnothing(t_dim_idx) ? D : D - 1
+    
+    # 1. Extract spatial and temporal resolutions from the unified res tuple
+    s_shape = isnothing(t_dim_idx) ? res : ntuple(d -> res[d < t_dim_idx ? d : d+1], Val(DS))
+    T_len = isnothing(t_dim_idx) ? 1 : res[t_dim_idx]
+    
+    # 2. Build spatial axes and static particles
+    s_axes = ntuple(d -> collect(range(template_domain.mins[d], template_domain.maxs[d], length=s_shape[d])), Val(DS))
+    
+    static_particles = vec([SVector{DS, T}(ntuple(d -> s_axes[d][idx[d]], Val(DS))) 
+                            for idx in CartesianIndices(s_shape)])
+    
+    # Temporal constraints
+    t_vec = D > DS ? collect(range(template_domain.mins[t_dim_idx], template_domain.maxs[t_dim_idx], length=T_len)) : T[0.0]
+    
+    x_ref = [copy(static_particles) for _ in 1:T_len]
+    
+    # 3. Pack a sample point to infer M_ref
+    sample_st = D > DS ? SVector{D, T}(static_particles[1]..., t_vec[1]) : SVector{D, T}(static_particles[1])
+    M_ref = length(ref_func(sample_st))
+    
+    u_ref = Vector{Vector{SVector{M_ref, T}}}(undef, T_len)
+    
+    # 4. Evaluate using multithreading
+    Threads.@threads for t_idx in 1:T_len
+        t_val = t_vec[t_idx]
+        if D > DS
+            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos..., t_val))) for pos in static_particles]
+        else
+            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos))) for pos in static_particles]
+        end
+    end
+    
+    # Safely compute spacings using the unified tuple
+    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template_domain.maxs[d] - template_domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
+    
+    ref_domain = DomainInfo{D, T}(template_domain.dim_keys, template_domain.mins, template_domain.maxs, spacing, template_domain.time_dim, template_domain.stat_registry)
+    
+    return LSimData{D, DS, M_ref, T}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M_ref, T}(:Solution => u_ref))
 end

@@ -157,93 +157,7 @@ function generate_pointwise_reference(edata::ESimData{D, DS, M, T}, ref_func) wh
     return u_ana
 end
 
-# ==============================================================================
-# --- REFERENCE GENERATORS ---
-# ==============================================================================
 
-function generate_reference_simdata(
-    ref_func::Function, 
-    params::ParamDict, 
-    template::ESimData{D, DS, M, T},
-    res::NTuple{D, Int}
-) where {D, DS, M, T}
-    
-    # 1. Build axes dynamically from the explicit res tuple
-    axes_list = ntuple(Val(D)) do d
-        collect(range(template.domain.mins[d], template.domain.maxs[d], length=res[d]))
-    end
-    
-    # 2. Evaluate one spacetime point to find the number of components (M_ref)
-    sample_st = SVector{D, T}(ntuple(d -> axes_list[d][1], Val(D)))
-    M_ref = length(ref_func(sample_st))
-    
-    # 3. Allocate the generalized Spacetime tensor
-    u_exact = Array{SVector{M_ref, T}, D}(undef, res...)
-    
-    # 4. Evaluate the exact function on the fly using multithreading
-    Threads.@threads for idx in CartesianIndices(res)
-        st = SVector{D, T}(ntuple(d -> axes_list[d][idx[d]], Val(D)))
-        u_exact[idx] = SVector{M_ref, T}(ref_func(st))
-    end
-    
-    # Safely compute spacings using the explicit resolution
-    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template.domain.maxs[d] - template.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
-    
-    ref_domain = DomainInfo{D, T}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
-    
-    ram_data = ESimData{D, DS, M_ref, T}(params, ref_domain, axes_list, u_exact, StatDict{M_ref, T}(:Solution => u_exact))
-    
-    return ram_data
-end
-
-function generate_reference_simdata(
-    ref_func::Function, 
-    params::ParamDict, 
-    template::LSimData{D, DS, M, T},
-    res::NTuple{D, Int}
-) where {D, DS, M, T}
-    
-    t_dim_idx = get_time_dim(template.domain)
-    
-    # 1. Extract spatial and temporal resolutions from the unified res tuple
-    s_shape = isnothing(t_dim_idx) ? res : ntuple(d -> res[d < t_dim_idx ? d : d+1], Val(DS))
-    T_len = isnothing(t_dim_idx) ? 1 : res[t_dim_idx]
-    
-    # 2. Build spatial axes and static particles
-    s_axes = ntuple(d -> collect(range(template.domain.mins[d], template.domain.maxs[d], length=s_shape[d])), Val(DS))
-    
-    static_particles = vec([SVector{DS, T}(ntuple(d -> s_axes[d][idx[d]], Val(DS))) 
-                            for idx in CartesianIndices(s_shape)])
-    
-    # Temporal constraints
-    t_vec = D > DS ? collect(range(template.domain.mins[t_dim_idx], template.domain.maxs[t_dim_idx], length=T_len)) : T[0.0]
-    
-    x_ref = [copy(static_particles) for _ in 1:T_len]
-    
-    # 3. Pack a sample point to infer M_ref
-    sample_st = D > DS ? SVector{D, T}(static_particles[1]..., t_vec[1]) : SVector{D, T}(static_particles[1])
-    M_ref = length(ref_func(sample_st))
-    
-    u_ref = Vector{Vector{SVector{M_ref, T}}}(undef, T_len)
-    
-    # 4. Evaluate using multithreading
-    Threads.@threads for t_idx in 1:T_len
-        t_val = t_vec[t_idx]
-        if D > DS
-            # Pack the DS-dimensional position and 1D time into a D Spacetime vector
-            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos..., t_val))) for pos in static_particles]
-        else
-            u_ref[t_idx] = [SVector{M_ref, T}(ref_func(SVector{D, T}(pos))) for pos in static_particles]
-        end
-    end
-    
-    # Safely compute spacings using the unified tuple
-    spacing = SVector{D, T}(ntuple(d -> res[d] > 1 ? (template.domain.maxs[d] - template.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D)))
-    
-    ref_domain = DomainInfo{D, T}(template.domain.dim_keys, template.domain.mins, template.domain.maxs, spacing, template.domain.time_dim, template.domain.stat_registry)
-    
-    return LSimData{D, DS, M_ref, T}(params, ref_domain, t_vec, x_ref, u_ref, StatDict{M_ref, T}(:Solution => u_ref))
-end
 # ==============================================================================
 # --- BATCH PROCESSOR ---
 # ==============================================================================
@@ -258,7 +172,6 @@ Executes sequentially to avoid I/O bottlenecks and allow internal mathematical t
 """
 function calculate_all_stats!(
     sim_config::SimulationConfig;
-    active_methods::Vector{Symbol} = sim_config.default_methods,
     varied_params::VariedDict = sim_config.varied_params,
     fixed_params::ParamDict = ParamDict(),
     kwargs...
@@ -267,7 +180,7 @@ function calculate_all_stats!(
     active_values = collect(values(varied_params))
     all_tasks = Vector{ParamDict}()
     
-    for method in active_methods
+    for method in sim_config.active_methods
         if is_reference_method(method); continue end
         base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, method)
         ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method)

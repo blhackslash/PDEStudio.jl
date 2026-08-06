@@ -14,21 +14,6 @@ function dummy_simulation_function(args...); return nothing; end
 const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, ParamDict(), MethodDict(), Symbol[], VariedDict())
 
 # ==============================================================================
-# --- UI DIMENSION REFERENCES (Dynamic Setup) ---
-# ==============================================================================
-const ALLOWED_PLOT_DIMS = Ref{Tuple{Vararg{Symbol}}}((:x, :y, :z, :t))
-const MAX_SUPPORTED_PARAMS = Ref{Int}(2)
-
-set_max_params!(n::Int) = (MAX_SUPPORTED_PARAMS[] = n)
-
-function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
-    ALLOWED_PLOT_DIMS[] = dims
-    @info "Plotter UI configured for dimensions: $dims"
-end
-
-get_base_variables() = collect(ALLOWED_PLOT_DIMS[])  
-
-# ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---
 # ==============================================================================
 const LOCK_HIERARCHY = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
@@ -85,6 +70,9 @@ mutable struct PlotManager
     # Unified Encapsulated Globals
     mode::Observable{Symbol}
     ui_state::Dict{Symbol, Any}
+
+    allowed_dims::Tuple{Vararg{Symbol}}
+    max_params::Int
 end
 
 function PlotManager()
@@ -102,10 +90,47 @@ function PlotManager()
         DUMMY_CONFIG, Observable(Dict{Symbol, AbstractPlotData}()),
         Observable{Symbol}(:eulerian),
         Dict{Symbol, Any}(:is_open => false, :master_fig => nothing),
+        (:x, :y, :z, :t), 2,
     )
 end
 
 const manager = PlotManager()
+
+function set_max_params!(n::Int)
+    manager.max_params = n
+end
+
+function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
+    manager.allowed_dims = dims
+    @info "Plotter UI configured for dimensions: $dims"
+end
+
+get_base_variables() = collect(manager.allowed_dims)
+
+# ==============================================================================
+# --- DIMENSIONAL RESOLUTION MANAGEMENT ---
+# ==============================================================================
+
+function set_resolution!(dim::Symbol, val::Int; is_ref::Bool=false)
+    target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
+    target[dim] = val
+end
+
+function get_resolution(dim::Symbol; is_ref::Bool=false)
+    target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
+    # Fallback default if a completely new dimension is requested dynamically
+    return get(target, dim, is_ref ? 400 : 200)
+end
+
+"""
+    build_res_tuple(dim_keys::AbstractVector{Symbol}; is_ref::Bool=false)
+
+Dynamically generates the `NTuple{D, Int}` required by the backend, ensuring 
+the resolutions are ordered exactly according to the backend's expected `dim_keys`.
+"""
+function build_res_tuple(dim_keys::Union{AbstractVector{Symbol},Tuple{Vararg{Symbol}}}; is_ref::Bool=false)
+    return Tuple(get_resolution(d; is_ref=is_ref) for d in dim_keys)
+end
 
 macro with_lock(lock_name, expr)
     return quote
@@ -162,7 +187,6 @@ function get_base_layout_options()
         :legend_add      => :detached,
         :plot_width      => 500,
         :plot_height     => 400,
-        :anim_target     => :t
     )
 end
 
@@ -175,63 +199,28 @@ function simulation_trigger()
         curr_config = manager.active_config
         (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
 
-        wanted_methods = manager.state[:Methods][]
+        active_methods = curr_config.active_methods
         
-        if isempty(wanted_methods)
-            @warn "No methods selected Please activate at least one method to run."
+        if isempty(active_methods)
+            @warn "No methods selected. Please activate at least one method to run."
             return
         end
 
         @info "Running dynamic calculations directly from active config..."
-        runAllSimulations(curr_config; active_methods = wanted_methods, calculate_stats = true, force_overwrite = false)
+        run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
         
-        if sort(manager.methods[]) != sort(wanted_methods)
-            manager.methods[] = copy(wanted_methods)
+        if sort(manager.methods[]) != sort(active_methods)
+            manager.methods[] = copy(active_methods)
         end
         
         @info "Running Simulation and Mapping UI..."
 
-        real_params = Symbol.(sort(collect(keys(curr_config.varied_params))))
-        param_map = Dict{Symbol, Symbol}()
-        reverse_map = Dict{Symbol, Symbol}()
-        
-        i = 1
-        while haskey(manager.widgets, Symbol("param_$(i)_label"))
-            p_key = Symbol("param_$i")
-            lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
-            
-            if i <= length(real_params)
-                real_sym = real_params[i]
-                param_map[p_key] = real_sym
-                reverse_map[real_sym] = p_key
-                
-                # THE FIX: Use frontend_key for the Slider UI Label!
-                lbl_obs[] = frontend_key(real_sym) * ":"  
-            else
-                lbl_obs[] = "Unused:"
-                if haskey(manager.widgets, p_key)
-                    manager.widgets[p_key].range[] = [0.0] 
-                end
-            end
-            i += 1
-        end
-        
-        # (Optional: If your x, y, z, t sliders also have Label observables, 
-        #  you can dynamically update them here too!)
-        for base_sym in get_base_variables()
-            base_lbl_key = Symbol("$(base_sym)_label")
-            if haskey(manager.widgets, base_lbl_key)
-                manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
-            end
-        end
-        
-        manager.maps[:Param] = param_map
-        manager.maps[:Reverse] = reverse_map
-        manager.plot_vars = [real_params; get_base_variables()]
-        
+        # THE FIX: Mapping is already handled by set_sim_config! 
+        # We just need to update the plot data.
         manager.locks[:Layout] = true
         try
             update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
+            notify(manager.plot_data)
         finally
             manager.locks[:Layout] = false
             manager.flags[:Simulation][] = false
@@ -289,8 +278,18 @@ function reset_manager!()
     manager.state[:Plot_Cache]   = Dict{Symbol, Any}()
     manager.state[:Exploration_Cache] = Dict{Symbol, Any}()
 
-    manager.state[:Methods]      = Observable(Symbol[])
     manager.state[:Compare_State] = (:none, nothing, String[], Any[])
+
+    # NEW: Generic Dimensional Resolution Tracking
+    manager.state[:Resolution_Base] = Dict{Symbol, Int}()
+    manager.state[:Resolution_Ref]  = Dict{Symbol, Int}()
+    
+    # Auto-populate defaults based on the active allowed dimensions
+    for d in manager.allowed_dims
+        # Optional: Provide a slightly lower default for time if desired
+        manager.state[:Resolution_Base][d] = d === :t ? 50 : 200
+        manager.state[:Resolution_Ref][d]  = d === :t ? 100 : 400
+    end
     # ---------------------------------------------
 
     manager.maps[:Labels] = Dict{Symbol, String}()

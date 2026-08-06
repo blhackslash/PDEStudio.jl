@@ -82,7 +82,7 @@ mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
     reference_name::Union{Symbol, Nothing}
     shared_params::ParamDict
     methods_dict::MethodDict
-    default_methods::Vector{Symbol}
+    active_methods::Vector{Symbol}
     varied_params::VariedDict
 end
 

@@ -3,7 +3,8 @@
 # ==============================================================================
 function _handle_layout_trigger!(rebuild_func::Function)
     curr_config = manager.active_config
-    if !isnothing(curr_config) && curr_config.simulation_func != "none"
+
+    if !isnothing(curr_config) && curr_config.simulation_func !== dummy_simulation_function
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
     
@@ -307,25 +308,6 @@ function _handle_data_trigger!(
 end
 
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
-
-    # THE FIX: Read from the persistent Camera_Cache
-    if !isempty(manager.state[:Camera_Cache])
-        manager.state[:Camera_Locked][] = true
-        if haskey(manager.widgets, :Lock_Camera_Button)
-            btn = manager.widgets[:Lock_Camera_Button]
-            btn.label[] = "Unlock Camera"
-            btn.buttoncolor[] = :lightgreen
-        end
-    else
-        # Just ensure UI respects the pure lock flag without consuming it
-        if !manager.state[:Camera_Locked][]
-            if haskey(manager.widgets, :Lock_Camera_Button)
-                btn = manager.widgets[:Lock_Camera_Button]
-                btn.label[] = "Lock Camera"
-                btn.buttoncolor[] = :lightgray
-            end
-        end
-    end
 
     ui_app = manager.ui[:plot_style]
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)

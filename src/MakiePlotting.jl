@@ -52,22 +52,66 @@ function set_sim_config!(config::SimulationConfig)
     manager.active_config = config
     manager.flags[:Simulation][] = true 
     
-    # --- NEW: Auto-register method names to prevent frontend_key mangling ---
     if haskey(manager.maps, :Labels)
         for m_sym in keys(config.methods_dict)
             if m_sym !== :shared && !haskey(manager.maps[:Labels], m_sym)
-                # Store exactly as provided (e.g. prevents :rk4 -> "Rk 4")
                 manager.maps[:Labels][m_sym] = is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym)
             end
         end
     end
     
-    default_m = isempty(config.default_methods) ? filter(k -> k !== :shared, collect(keys(config.methods_dict))) : filter(k -> k !== :shared, copy(config.default_methods))
-    manager.state[:Methods][] = default_m
+    # Use active_methods
+    active_m = isempty(config.active_methods) ? filter(k -> k !== :shared, collect(keys(config.methods_dict))) : filter(k -> k !== :shared, copy(config.active_methods))
+    
+    # Ensure the config is updated if it was empty
+    config.active_methods = active_m
+    manager.methods[] = copy(active_m) # Keep this observable for the layout plot loops
+
+    # =========================================================================
+    # THE FIX: Build UI mappings immediately so CSV loading and layout triggers can use them!
+    # =========================================================================
+    real_params = Symbol.(sort(collect(keys(config.varied_params))))
+    param_map = Dict{Symbol, Symbol}()
+    reverse_map = Dict{Symbol, Symbol}()
+    
+    i = 1
+    while haskey(manager.widgets, Symbol("param_$(i)_label"))
+        p_key = Symbol("param_$i")
+        lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
+        
+        if i <= length(real_params)
+            real_sym = real_params[i]
+            param_map[p_key] = real_sym
+            reverse_map[real_sym] = p_key
+            
+            lbl_obs[] = frontend_key(real_sym) * ":"  
+        else
+            lbl_obs[] = "Unused:"
+            if haskey(manager.widgets, p_key)
+                manager.widgets[p_key].range[] = [0.0] 
+            end
+        end
+        i += 1
+    end
+    
+    for base_sym in get_base_variables()
+        base_lbl_key = Symbol("$(base_sym)_label")
+        if haskey(manager.widgets, base_lbl_key)
+            manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
+        end
+    end
+    
+    manager.maps[:Param] = param_map
+    manager.maps[:Reverse] = reverse_map
+    manager.plot_vars = [real_params; get_base_variables()]
+    # =========================================================================
 
     if haskey(manager.widgets, :editor_cat)
         notify(manager.widgets[:editor_cat].selection)
     end
+    
+    # Force the UI menu to redraw itself with the newly loaded config
+    notify(manager.state[:Is_Activate_Mode])
 end
 
 function set_sim_config!(csv_name::String)
@@ -119,6 +163,7 @@ function reset_plotter!()
     
     manager.ui_state[:is_open] = false
     manager.ui_state[:master_fig] = nothing
+    manager.state[:Camera_Locked][] = false
     
     for (k, obs) in manager.triggers
         if k != :Simulation
@@ -138,7 +183,6 @@ function reset_plotter!()
     
     manager.state[:plot_window_initialized][] = false
     
-    manager.active_config = DUMMY_CONFIG
     @info "Plotter state completely cleared!"
 end
 
@@ -173,7 +217,12 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
 
     function rebuild_plot_layout!()
         if get(manager.state, :Camera_Locked, Observable(false))[]
-            extract_and_store_camera_state!(plot_layout)
+            # THE FIX: Don't extract the dying axes if we just loaded a perfect CSV cache!
+            if get(manager.state, :Skip_Next_Camera_Extract, false)
+                manager.state[:Skip_Next_Camera_Extract] = false
+            else
+                extract_and_store_camera_state!(plot_layout)
+            end
         end
 
         ptype_sym = manager.widgets[:plot_style].selection[]

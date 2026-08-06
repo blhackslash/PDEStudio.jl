@@ -12,19 +12,75 @@ function _apply_backend_keys(d::Dict)
 end
 
 function load_and_apply_csv!(filepath::String)
-    
     @info "Loading configuration from CSV: $filepath"
-    
     parsed = parse_csv_to_dict(filepath)
     
-    # --- 1. FULL PROJECT DATA (Optional for pure visual presets) ---
+    is_structural_change = false
+    new_dims = manager.allowed_dims
+    new_max = manager.max_params
+    
+    if haskey(parsed, "Config") && haskey(parsed["Config"], "Dimensions")
+        dims = parsed["Config"]["Dimensions"]
+        if haskey(dims, "allowed_dims")
+            new_dims = dims["allowed_dims"]
+        end
+        if haskey(dims, "max_params")
+            new_max = Int(dims["max_params"])
+        end
+        
+        if new_dims != manager.allowed_dims || new_max != manager.max_params
+            is_structural_change = true
+        end
+    end
+    
+    if is_structural_change
+        # THE FIX: Stage the parsed dict AND the new limits so the button knows exactly what to do!
+        manager.state[:CSV_Cache] = (new_dims, new_max, parsed)
+        @info "Structural limits changed! Configuration staged."
+    else
+        load_and_apply_csv!(parsed)
+    end
+    
+    return is_structural_change
+end
+
+function load_and_apply_csv!(parsed::Dict)
+    @info "Applying parsed CSV configuration..."
+    
+    # --- 1. FULL PROJECT DATA ---
     if haskey(parsed, "Config")
-        if haskey(parsed["Config"], "Resolutions")
-            res = parsed["Config"]["Resolutions"]
-            haskey(res, "N")   && (set_space_resolution!(res["N"]))
-            haskey(res, "T")   && (set_time_resolution!(res["T"]))
-            haskey(res, "Ref") && (set_ref_resolution!(res["Ref"]))
-            @info "Restored grid resolutions: N=$(res["N"]), T=$(res["T"]), REF=$(res["Ref"])"
+        cfg = parsed["Config"]
+        
+        # Load Dimensions (Acts as a failsafe if triggered directly)
+        if haskey(cfg, "Dimensions")
+            dims = cfg["Dimensions"]
+            if haskey(dims, "allowed_dims")
+                raw_dims = dims["allowed_dims"]
+                if raw_dims isa Tuple
+                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
+                elseif raw_dims isa Vector
+                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
+                elseif raw_dims isa AbstractString
+                    clean_str = replace(raw_dims, r"[\(\): ]" => "")
+                    manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
+                end
+            end
+            if haskey(dims, "max_params")
+                manager.max_params = Int(dims["max_params"])
+            end
+        end
+        
+        # Load Resolutions
+        if haskey(cfg, "Resolution_Base")
+            for (k, v) in cfg["Resolution_Base"]
+                manager.state[:Resolution_Base][Symbol(k)] = Int(v)
+            end
+        end
+        
+        if haskey(cfg, "Resolution_Ref")
+            for (k, v) in cfg["Resolution_Ref"]
+                manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
+            end
         end
 
         sim_func_str = get(parsed["Config"]["General"], "simulation_func", "none")
@@ -96,8 +152,12 @@ function load_and_apply_csv!(filepath::String)
 
     if !isnothing(cam_source) && !isempty(cam_source)
         manager.state[:Camera_Cache] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
+        
+        manager.state[:Camera_Locked][] = true
+        manager.state[:Skip_Next_Camera_Extract] = true
     else
         manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+        manager.state[:Camera_Locked][] = false
     end
     
     # --- LOAD SCENE: LABELS ---
@@ -112,6 +172,7 @@ function load_and_apply_csv!(filepath::String)
             set_label!(Symbol(k), string(v))
         end
     end
+    
     # --- LOAD SCENE: EXPLORATION ---
     exp_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Exploration")
         parsed["Scene"]["Exploration"]
@@ -124,7 +185,6 @@ function load_and_apply_csv!(filepath::String)
     if !isnothing(exp_source)
         apply_exploration_options!(_apply_backend_keys(exp_source))
     end
-
 end
 
 """
@@ -160,21 +220,21 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
             varied_params[Symbol(k)] = v
         end
     else
-        @warn "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
+        @info "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
     end
 
     # 4. Default Methods (Explicit override if available!)
-    default_methods = Symbol[]
+    active_methods = Symbol[]
     has_explicit_active = false
     
     if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General") && haskey(parsed_csv["Config"]["General"], "active_methods")
         raw_active = parsed_csv["Config"]["General"]["active_methods"]
         if raw_active isa AbstractVector
-            default_methods = Symbol.(raw_active)
+            active_methods = Symbol.(raw_active)
             has_explicit_active = true
             
             # Ensure every explicitly active method has at least an empty dict to prevent backend crashes
-            for m in default_methods
+            for m in active_methods
                 if !haskey(methods_dict, m)
                     methods_dict[m] = Dict{Symbol, Any}()
                 end
@@ -183,10 +243,10 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     end
     
     # Fallback for older CSVs without the explicitly saved active methods
-    if isempty(default_methods)
-        default_methods = collect(keys(methods_dict))
+    if isempty(active_methods)
+        active_methods = collect(keys(methods_dict))
     end
-    default_methods = sort_methods_robust(default_methods)
+    active_methods = sort_methods_robust(active_methods)
 
     # 5. Extract Reference Name explicitly from Config
     ref_name = nothing
@@ -217,9 +277,9 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
             end
             
             # Only force the reference method to be active if we didn't get an explicit list from the CSV
-            if !(ns in default_methods) && !has_explicit_active
-                push!(default_methods, ns)
-                default_methods = sort_methods_robust(default_methods)
+            if !(ns in active_methods) && !has_explicit_active
+                push!(active_methods, ns)
+                active_methods = sort_methods_robust(active_methods)
             end
         else
             @warn "Failed to resolve reference function: $safe_ref_name"
@@ -233,7 +293,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         sim_func_str, 
         shared_params,
         methods_dict,
-        default_methods;
+        active_methods;
         varied_params = varied_params, ref_func_name = ref_name
     )
 end
@@ -361,7 +421,7 @@ function get_julia_info(git_repo_names::Vector{String})
     return info
 end
 
-function saveParametersToCSV(
+function save_params_to_csv(
     base_filename::String,
     save_dir::String,
     metadata_general::Dict
@@ -453,9 +513,17 @@ function saveParametersToCSV(
         add_row("Config", "General", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
         add_row("Config", "General", "active_methods", manager.methods[])
 
-        add_row("Config", "Resolutions", "N", get_space_resolution())
-        add_row("Config", "Resolutions", "T", get_time_resolution())
-        add_row("Config", "Resolutions", "Ref", get_ref_resolution())
+        # NEW: Dimensions Scope
+        add_row("Config", "Dimensions", "allowed_dims", manager.allowed_dims)
+        add_row("Config", "Dimensions", "max_params", manager.max_params)
+
+        # NEW: Dynamic Resolutions
+        for (dim, res) in manager.state[:Resolution_Base]
+            add_row("Config", "Resolution_Base", string(dim), res)
+        end
+        for (dim, res) in manager.state[:Resolution_Ref]
+            add_row("Config", "Resolution_Ref", string(dim), res)
+        end
 
         CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
         @info "Metadata and Parameters saved to $csv_filename"
@@ -467,7 +535,7 @@ function saveParametersToCSV(
 end
 
 # In ConfigIO.jl
-function savePresetToCSV(preset_name::Symbol, save_dir::String)
+function save_preset_to_csv(preset_name::Symbol, save_dir::String)
     csv_filename = joinpath(save_dir, string(preset_name) * ".csv")
     
     try
