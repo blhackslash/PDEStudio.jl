@@ -80,8 +80,20 @@ function _handle_plot_trigger!(
             axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
             
             if !is_3d_axis
-                plot_x_slices[i] = data_tuples[1]
-                plot_y_slices[i] = data_tuples[2]
+                # THE FIX: Gracefully unwrap Point2f arrays so the Axis limits work perfectly
+                if manager.mode[] == :lagrangian
+                    pts_slices = data_tuples[1]
+                    if !isempty(pts_slices) && eltype(pts_slices[1]) <: Point2f
+                        plot_x_slices[i] = [[p[1] for p in s] for s in pts_slices]
+                        plot_y_slices[i] = [[p[2] for p in s] for s in pts_slices]
+                    else
+                        plot_x_slices[i] = pts_slices
+                        plot_y_slices[i] = data_tuples[end] # For 1D, Y limits are the U data!
+                    end
+                else
+                    plot_x_slices[i] = data_tuples[1]
+                    plot_y_slices[i] = data_tuples[2]
+                end
             end
         end
 
@@ -182,8 +194,10 @@ function _handle_slider_trigger!(u_sel)
                 if i <= n_params 
                     vals = pd.active_param_values[i]
                 else
-                    s_data = isempty(pd.data) ? nothing : first(filter(!isnothing, pd.data))
+                    # THE FIX: Use our safe helper function instead of manually filtering!
+                    s_data = _get_first_valid(pd)
                     isnothing(s_data) && continue
+                    
                     vals = _get_dim_vals(Val(manager.mode[]), s_data, dim_sym)
                 end
             
@@ -256,8 +270,20 @@ function _handle_data_trigger!(
         plot_extrema_lines_manager!(axes[i], data_tuples, valid_methods, is_3d_axis)
 
         if !is_3d_axis
-            plot_x_slices[i] = data_tuples[1]
-            plot_y_slices[i] = data_tuples[2]
+            # THE FIX: Gracefully unwrap Point2f arrays so the Axis limits work perfectly
+            if manager.mode[] == :lagrangian
+                pts_slices = data_tuples[1]
+                if !isempty(pts_slices) && eltype(pts_slices[1]) <: Point2f
+                    plot_x_slices[i] = [[p[1] for p in s] for s in pts_slices]
+                    plot_y_slices[i] = [[p[2] for p in s] for s in pts_slices]
+                else
+                    plot_x_slices[i] = pts_slices
+                    plot_y_slices[i] = data_tuples[end] # For 1D, Y limits are the U data!
+                end
+            else
+                plot_x_slices[i] = data_tuples[1]
+                plot_y_slices[i] = data_tuples[2]
+            end
         end
         
         sync_data_to_cache!(caches[i], valid_methods, data_tuples, Val(PLOT_DIM_MAP[T]))

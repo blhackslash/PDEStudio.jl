@@ -103,6 +103,9 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     size_opts = Any[("$i", i) for i in 100:100:1000]
     
     base_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines), menu_opt(:scatter), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)] : Any[menu_opt(:scatter)]
+    
+    # THE FIX: Dynamically set the initial plot style options based on mode!
+    style_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines_1d), menu_opt(:lines_2d), menu_opt(:lines_3d)] : Any[menu_opt(:scatter_1d), menu_opt(:scatter_2d), menu_opt(:scatter_surface), menu_opt(:scatter_3d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]
 
     # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
     Label(menu_layout[cr,1], "Base Plot", font=:bold, color=:teal)
@@ -110,7 +113,10 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Base", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    manager.widgets[:base_plot]   = Menu(menu_layout[cr,1], options = base_opts)
+    # THE FIX: Explicitly set the starting selection!
+    start_base = manager.mode[] == :eulerian ? :lines : :scatter
+    manager.widgets[:base_plot]   = Menu(menu_layout[cr,1], options = base_opts, default = frontend_key(start_base))
+    
     manager.widgets[:plot_width]  = Menu(menu_layout[cr,2], options = size_opts)
     manager.widgets[:legend_base] = Menu(menu_layout[cr,3], options = Any[menu_opt(:none), menu_opt(:center), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
     push!(gaps, 10); cr += 1
@@ -121,7 +127,8 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    manager.widgets[:plot_style]  = Menu(menu_layout[cr,1], options = Any[menu_opt(:lines_1d), menu_opt(:lines_2d), menu_opt(:lines_3d)])
+    start_style = manager.mode[] == :eulerian ? :lines_1d : :scatter_1d
+    manager.widgets[:plot_style]  = Menu(menu_layout[cr,1], options = style_opts, default = frontend_key(start_style))
     manager.widgets[:plot_height] = Menu(menu_layout[cr,2], options = size_opts)
     manager.widgets[:legend_add]  = Menu(menu_layout[cr,3], options = Any[menu_opt(:detached), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
     push!(gaps, 15); cr += 1

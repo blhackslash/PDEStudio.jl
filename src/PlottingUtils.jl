@@ -433,6 +433,9 @@ function plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d
         
         for (m_idx, m_name) in enumerate(valid_methods)
             x_data, u_data = xs_all[m_idx], us_all[m_idx]
+
+            (eltype(x_data) <: Point) && continue
+
             valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
             isempty(valid_pairs) && continue
             
@@ -482,9 +485,9 @@ function apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
         # 3. Draw the Outliers immediately on the axis
         if !isempty(out_idx) && mark_outs && !is_3d_axis
             c = colors[mod1(m_idx, length(colors))]
+            xs = data_tuples[1][m_idx]
             
-            if length(data_tuples) == 2 # 1D Line/Scatter Plot
-                xs = data_tuples[1][m_idx]
+            if eltype(xs) <: Real && length(data_tuples) == 2 # 1D Line/Scatter Plot
                 segments = Point2f[]
                 for idx in out_idx
                     x_val, u_val = Float64(xs[idx]), Float64(u_clean[idx])
@@ -492,7 +495,11 @@ function apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
                 end
                 linesegments!(ax, segments; color=(c, 0.6), linewidth=2.0, linestyle=:dash, label="Outlier")
                 
-            elseif length(data_tuples) >= 3 # 2D Heatmap/Contour Fallback
+            elseif eltype(xs) <: Point2f # THE FIX: Native 2D Lagrangian Point Cloud
+                pts = Point2f[xs[idx] for idx in out_idx]
+                scatter!(ax, pts; color=c, marker=:xcross, markersize=15, label="Outlier")
+                
+            elseif length(data_tuples) >= 3 # 2D Eulerian Heatmap/Contour Fallback
                 xs, ys = data_tuples[1][m_idx], data_tuples[2][m_idx]
                 pts = Point2f[]
                 if out_idx isa Vector{CartesianIndex{2}}

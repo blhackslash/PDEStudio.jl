@@ -140,7 +140,11 @@ function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_confi
         
         elseif !isnothing(domain) # THE FIX: Explicitly protect domain.dim_keys
             try 
-                load_sim_data(params, mode, build_res_tuple(domain.dim_keys; is_ref=false)) 
+                if mode === Val(:eulerian)
+                    load_sim_data(params, mode, build_res_tuple(domain.dim_keys; is_ref=false)) 
+                else
+                    load_sim_data(params, mode)
+                end
             catch
                 # Silently catch disk misses (perfectly normal if simulation hasn't run yet)
                 nothing 
@@ -271,7 +275,6 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
     
     return Tuple(plot_axes_data), u_out
 end
-
 function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, u_key::Symbol, target_c)
     sim_data = pd.data[param_indices...]
     isnothing(sim_data) && return nothing
@@ -280,8 +283,6 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     isnothing(tensor) && return nothing
     
     time_dim = sim_data.domain.time_dim
-    
-    # Direct Symbol-to-Symbol lookup
     ui_time_idx = findfirst(isequal(time_dim), plot_vars) 
     
     if !isnothing(ui_time_idx) && !isempty(sim_data.t)
@@ -291,7 +292,6 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
         t_idx = 1
     end
     
-    # Differentiate Nested Transient vs Flat Static Arrays
     if tensor isa AbstractVector && eltype(tensor) <: AbstractVector
         u_raw = tensor[t_idx]
     elseif tensor isa AbstractVector && eltype(tensor) <: SVector
@@ -302,12 +302,19 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     
     u_flat = target_c isa Integer ? map(v -> Float64(v[target_c]), u_raw) : map(v -> Float64(v[1]), u_raw)
     
-    # Map SVector coordinates to a clean Tuple of Float64 Vectors
+    # THE FIX: Map natively to Makie Point types!
     x_step = sim_data.x[t_idx]
     DS = length(x_step[1])
-    p_axes = ntuple(d -> map(p -> Float64(p[d]), x_step), Val(DS))
     
-    return p_axes, u_flat
+    if DS == 1
+        pts = Float64[Float64(p[1]) for p in x_step]
+    elseif DS == 2
+        pts = Point2f[Point2f(p[1], p[2]) for p in x_step]
+    else
+        pts = Point3f[Point3f(p[1], p[2], p[3]) for p in x_step]
+    end
+    
+    return pts, u_flat
 end
 
 function update_plot_data_collection!(plot_data_dict, sim_config, active_methods; force_reload=false)
@@ -354,19 +361,9 @@ end
 
 # Helper: Lagrangian Extraction Dispatch
 function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
-    local DS = 1
-    for m_name in local_methods
-        # FIX: Check natively using the Symbol
-        if haskey(data, m_name)
-            sim = _get_first_valid(data[m_name])
-            if !isnothing(sim); DS = length(sim.domain.mins) - (isnothing(sim.domain.time_dim) ? 0 : 1); break; end
-        end
-    end
     
-    ax_cols = [Any[] for _ in 1:DS]
+    pts_col = Any[]
     u_col = Any[]
-    
-    # FIX: Initialize as a Symbol array
     valid_methods = Symbol[]
     
     for m_name in local_methods
@@ -376,13 +373,12 @@ function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_p
         
         res = extract_lagrangian_data(pd, p_idx, mutated_sel_vals, manager.plot_vars, u_sel[], target_c_int)
         if !isnothing(res)
-            p_axes, u_flat = res
-            for d in 1:DS
-                push!(ax_cols[d], p_axes[d])
-            end
+            pts, u_flat = res
+            push!(pts_col, pts)
             push!(u_col, u_flat)
             push!(valid_methods, m_name)
         end
     end
-    return Tuple([ax_cols..., u_col]), valid_methods
+    # Lagrangian is ALWAYS length 2: (Points, U)
+    return (pts_col, u_col), valid_methods
 end

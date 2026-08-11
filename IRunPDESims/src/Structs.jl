@@ -8,6 +8,7 @@ const _SAVE_ROOT_PATH = Ref{String}(pwd())
 const _TARGET_MODULE = Ref{Module}(Main)
 
 set_target_module!(target_module::Module) = (_TARGET_MODULE[] = target_module)
+get_target_module() = _TARGET_MODULE[]
 
 # --- 2. Explicit Creator Functions ---
 # Converts any generic iterator or mixed string/symbol inputs into strictly typed Symbol-keyed dictionaries

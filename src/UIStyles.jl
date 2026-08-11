@@ -251,6 +251,8 @@ const MASTER_UI_DICT = create_master_ui_dict()
 function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
+
+    if ui[:plot_style] == plot_type; return end
     
     # Cache user's current settings before overwriting with defaults
     cached_ui = deepcopy(ui)
@@ -278,12 +280,12 @@ function switch_ui_plot_type!(plot_type::Symbol)
     end
 
     # THE FIX: Define the internal template keys that should never be shown in the UI editor
-    template_keys = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d)
+    skip_keys = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d, :x_axis, :y_axis, :z_axis)
 
     # Instantly re-apply the cached tweaks without needing a staging flag
     for (scope, dict) in cached_ui
         # Prevent old templates from leaking back into the active UI scope!
-        scope in template_keys && continue 
+        scope in skip_keys && continue 
         
         if haskey(ui, scope)
             for (k, v) in dict

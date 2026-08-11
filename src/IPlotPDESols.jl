@@ -7,7 +7,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using IRunPDESims 
 
-export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation
+export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation, set_resolution!
 
 function dummy_simulation_function(args...); return nothing; end
 
@@ -97,10 +97,13 @@ end
 const manager = PlotManager()
 
 function set_max_params!(n::Int)
+    reset_plotter!()
     manager.max_params = n
 end
 
 function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
+
+    reset_plotter!()
     manager.allowed_dims = dims
     @info "Plotter UI configured for dimensions: $dims"
 end
@@ -177,9 +180,12 @@ include("ConfigIO.jl")
 
 # FIX: Return lowercased, suffix-free symbols for layout options
 function get_base_layout_options()
+    # THE FIX: Check the mode dynamically!
+    is_lag = manager.mode[] == :lagrangian
+    
     return Dict{Symbol, Any}(
-        :base_plot       => :lines,
-        :plot_style      => :lines_1d,
+        :base_plot       => is_lag ? :scatter : :lines,
+        :plot_style      => is_lag ? :scatter_1d : :lines_1d,
         :compare_target  => :none, 
         :compare_columns => 2,     
         :compare_link    => :fully_coupled,

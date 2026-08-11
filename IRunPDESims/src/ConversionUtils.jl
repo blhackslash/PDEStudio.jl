@@ -218,12 +218,13 @@ function interpolate_to_grid!(
     end
 end
 
-
 """
     resample_eulerian(data::ESimData, res::NTuple{D, Int})
 
 Resamples the full Eulerian spacetime tensor and all dimensionally-dependent 
-statistics to a new resolution using multi-dimensional linear interpolation.
+statistics to a new resolution. Uses Linear interpolation for spatial dimensions 
+and Constant (Nearest-Neighbor) interpolation for the time dimension to prevent 
+cross-fading artifacts on low-resolution temporal data.
 """
 function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) where {D, DS, M, T}
     # 1. Fast exit if resolutions already match perfectly
@@ -231,22 +232,27 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
         return data
     end
     
-    @info "Linearly interpolating Eulerian data from $(size(data.u)) to $res..."
+    @info "Interpolating Eulerian data from $(size(data.u)) to $res (Linear Space, Constant Time)..."
     
     # 2. Build the new coordinate axes
     new_axes = ntuple(D) do d
         collect(range(data.domain.mins[d], data.domain.maxs[d], length=res[d]))
     end
     
-    # 3. Create interpolation object for the main tensor
+    # 3. Create mixed interpolation object for the main tensor
+    interp_types = ntuple(Val(D)) do d
+        data.domain.dim_keys[d] == data.domain.time_dim ? Gridded(Constant()) : Gridded(Linear())
+    end
+    
     # Flat extrapolation prevents bounds errors if float precision causes slight overshoots
-    itp = linear_interpolation(data.axes, data.u, extrapolation_bc=Flat())
+    itp_obj = interpolate(data.axes, data.u, interp_types)
+    itp = extrapolate(itp_obj, Flat())
     
     # Evaluate the interpolation across the entire new grid
     # Iterators.product creates the multi-dimensional cartesian grid perfectly
     new_u = [itp(pt...) for pt in Iterators.product(new_axes...)]
     
-    # 4. Dynamically resample statistics
+    # 4. Dynamically resample statistics using the same mixed logic
     new_stats = StatDict{M, T}()
     for (k, v) in data.stats
         if !(v isa AbstractArray) || isempty(v)
@@ -273,13 +279,19 @@ function resample_eulerian(data::ESimData{D, DS, M, T}, res::NTuple{D, Int}) whe
         stat_axes = ntuple(i -> data.axes[kept_indices[i]], length(kept_indices))
         stat_new_axes = ntuple(i -> new_axes[kept_indices[i]], length(kept_indices))
         
-        stat_itp = linear_interpolation(stat_axes, v, extrapolation_bc=Flat())
+        stat_interp_types = ntuple(length(kept_indices)) do i
+            data.domain.dim_keys[kept_indices[i]] == data.domain.time_dim ? Gridded(Constant()) : Gridded(Linear())
+        end
+        
+        stat_itp_obj = interpolate(stat_axes, v, stat_interp_types)
+        stat_itp = extrapolate(stat_itp_obj, Flat())
+        
         new_stats[k] = [stat_itp(pt...) for pt in Iterators.product(stat_new_axes...)]
     end
     
     # 5. Build updated spacing and DomainInfo
     new_spacing = SVector{D, T}(
-        ntuple(d -> res[d] > 1 ? (data.domain.maxs[d] - data.domain.mins[d]) / T(res[d] - 1) : one(T), D)
+        ntuple(d -> res[d] > 1 ? (data.domain.maxs[d] - data.domain.mins[d]) / T(res[d] - 1) : one(T), Val(D))
     )
     
     new_domain = DomainInfo{D, T}(

@@ -365,12 +365,12 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
             # 5. Clean up
             delete!(manager.state, :CSV_Cache)
         end
-        return
         
         manager.flags[:Simulation][] = false
         manager.flags[:Layout][] = false
         manager.flags[:Plot][] = false
         manager.triggers[:Simulation][] += 1
+        return
     end
 end
 
@@ -862,7 +862,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         mkpath(save_dir)
         
         desc = manager.maps[:Presets][:create_new]
-        if desc == "Type a description here, type a filename below, and click Save Defs." || isempty(desc)
+        if desc == "Type a description here, type a filename above, \nand click Save Preset." || isempty(desc)
             desc = "User custom preset: $filename"
         end
         manager.maps[:Presets][sym_name] = desc
@@ -870,7 +870,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         success = save_preset_to_csv(sym_name, save_dir)
         if success
             Makie.reset!(manager.widgets[:export_text])
-            manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
+            manager.maps[:Presets][:create_new] = "Type a description here, type a filename above, \nand click Save Preset."
             notify(manager.widgets[:editor_scope].selection)
             
             idx = findfirst(x -> x[2] == sym_name, manager.widgets[:editor_key].options[])
@@ -1050,6 +1050,11 @@ end
 
 function _setup_chain_A!(::Val{:lagrangian})
     w = manager.widgets
+    
+    # THE FIX: Ensure the base menu is locked to Scatter when in Lagrangian mode!
+    base_opts = Any[menu_opt(:scatter)]
+    update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:scatter], force_notify=false)
+
     manager.listeners[:Lagrangian_Chain_A] = onany(manager.plot_data) do plot_data_dict
         @with_lock :Menu_A begin
             isempty(plot_data_dict) && return

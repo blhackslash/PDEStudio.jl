@@ -296,7 +296,7 @@ function generate_reference_simdata(
     ::Val{:lagrangian}
 ) where {D, T}
     
-    t_dim_idx = template_domain.time_dim
+    t_dim_idx = get_time_dim(template_domain)
     DS = isnothing(t_dim_idx) ? D : D - 1
     
     # 1. Extract spatial and temporal resolutions from the unified res tuple
