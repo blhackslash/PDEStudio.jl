@@ -12,6 +12,7 @@ const STAT_REGISTRY = Dict{Symbol, Union{Symbol, Vector{Symbol}}}(
     :relative_l2error => :time,
     :relative_l1error => :time,
     :relative_mass => :time,
+    :mass_error    => :time,
     :wave_position => :time,
     # Examples of your new D-agnostic aliases:
     # :u_squared   => :all,      (Field: keeps everything)
@@ -176,5 +177,17 @@ function calc_stat(::Val{:relative_mass}, fixed_coords, u, ana, domain::DomainIn
     T = eltype(eltype(u)) # Dynamically get T
     return SVector{M, T}(ntuple(M) do c
         m_ana[c] < 1e-9 ? T(NaN) : T(sum_u[c] / sum_ana[c])
+    end)
+end
+
+function calc_stat(::Val{:mass_error}, fixed_coords, u, ana, domain::DomainInfo)
+    measure = get_integration_measure(:mass_error, domain)
+    sum_u = sum(u .* measure)
+    sum_ana = sum(ana .* measure)
+    m_err = abs.(sum_u - sum_ana)
+    M = length(eltype(u))
+    T = eltype(eltype(u)) # Dynamically get T
+    return SVector{M, T}(ntuple(M) do c
+        m_err[c] < 1e-9 ? T(1e-9) : T(m_err[c])
     end)
 end

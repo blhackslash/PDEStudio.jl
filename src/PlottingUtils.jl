@@ -268,33 +268,26 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     end
     return layout_dict
 end
-
 function _parse_legend_position()
-    
     base_align = manager.widgets[:legend_base].selection[]
     add_align  = manager.widgets[:legend_add].selection[]
     
-    # Check for :none directly
     if base_align == :none || add_align == :none
         return (false, :none, :none)
     end
     
     is_detached = (add_align == :detached)
     
-    # Safely retrieve the comparison target from the global state 
-    # (fallback to the widget if the state hasn't been initialized yet)
     target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] : manager.widgets[:compare_target].selection[]
     
-    # Force a detached top-center legend for comparisons (apart from :Methods)
-    if target != :None && target != :Methods && !is_detached
+    # THE FIX: Use lowercase :none and :methods!
+    if target != :none && target != :methods && !is_detached
         return (true, :center, :top)
     end
     
-    # Resolve vertical alignment
     valign = (:top in (base_align, add_align)) ? :top : 
              (:bottom in (base_align, add_align) ? :bottom : :center)
              
-    # Resolve horizontal alignment
     halign = (:left in (base_align, add_align)) ? :left : 
              (:right in (base_align, add_align) ? :right : :center)
 

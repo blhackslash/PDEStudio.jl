@@ -252,40 +252,50 @@ function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
 
-    if ui[:plot_style] == plot_type; return end
+    # THE FIX: Track the active state and calculate dimensionality shifts!
+    old_plot_type = get(manager.state, :Active_Plot_Type, :none)
+    if old_plot_type == plot_type && !isempty(ui)
+        return 
+    end
+    manager.state[:Active_Plot_Type] = plot_type
+    
+    old_dim = haskey(PLOT_DIM_MAP, old_plot_type) ? PLOT_DIM_MAP[old_plot_type] : 0
+    new_dim = PLOT_DIM_MAP[plot_type]
+    dim_changed = old_dim != new_dim
     
     # Cache user's current settings before overwriting with defaults
     cached_ui = deepcopy(ui)
     empty!(ui)
     
-    dim = PLOT_DIM_MAP[plot_type]
-    
-    ui[:axis_general] = deepcopy(master[:axis_general])
-    ui[:labels]       = deepcopy(master[:labels])
-    ui[:various]      = deepcopy(master[:various])
+    ui[:axis_general]       = deepcopy(master[:axis_general])
+    ui[:labels]             = deepcopy(master[:labels])
+    ui[:various]            = deepcopy(master[:various])
     ui[:outliers_extrema]   = deepcopy(master[:outliers_extrema])
-    ui[:hud]          = deepcopy(master[:hud])
-    ui[:plot_style]   = deepcopy(master[:plot_style])
+    ui[:hud]                = deepcopy(master[:hud])
+    ui[:plot_style]         = deepcopy(master[:plot_style])
     
-    if dim == 1
+    if new_dim == 1
         ui[:x_axis] = deepcopy(master[:x_axis_1d])
         ui[:y_axis] = deepcopy(master[:y_axis_1d])
-    elseif dim == 2 && !is_surface(plot_type)
+    elseif new_dim == 2 && !is_surface(plot_type)
         ui[:x_axis] = deepcopy(master[:x_axis_nd])
         ui[:y_axis] = deepcopy(master[:y_axis_nd])
-    elseif dim == 3 || is_surface(plot_type)
+    elseif new_dim == 3 || is_surface(plot_type)
         ui[:x_axis] = deepcopy(master[:x_axis_nd])
         ui[:y_axis] = deepcopy(master[:y_axis_nd])
         ui[:z_axis] = deepcopy(master[:z_axis_3d])
     end
 
-    # THE FIX: Define the internal template keys that should never be shown in the UI editor
-    skip_keys = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d, :x_axis, :y_axis, :z_axis)
+    # Core master templates that should never act as active overrides
+    internal_templates = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d)
 
-    # Instantly re-apply the cached tweaks without needing a staging flag
     for (scope, dict) in cached_ui
-        # Prevent old templates from leaking back into the active UI scope!
-        scope in skip_keys && continue 
+        scope in internal_templates && continue 
+        
+        # THE FIX: Only wipe the axis customizations if the dimensionality fundamentally changed!
+        if dim_changed && scope in (:x_axis, :y_axis, :z_axis)
+            continue
+        end
         
         if haskey(ui, scope)
             for (k, v) in dict
@@ -352,7 +362,7 @@ function apply_plot_preset!(::Val{:publication})
     set_ui_opt!(:y_axis, :label_offset, 5.0)
     set_ui_opt!(:z_axis, :label_offset, 5.0)
 
-    set_ui_opt!(:plot_style, :line_width, 3.6)
+    set_ui_opt!(:plot_style, :line_width, 2.5)
     set_ui_opt!(:plot_style, :dashed_lines, false)
     set_ui_opt!(:plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
     set_ui_opt!(:various, :save_formats, ["pdf", "svg"])
@@ -445,17 +455,22 @@ function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_
     k = Symbol(prim_key)
     deps = get(STYLE_DEPENDENCIES, k, Symbol[])
     
-    if :colors in deps
-        prim.color[] = color
-    elseif :color_map in deps
-        prim.colormap[] = ui_app[:color_map]
-    end
-    
-    if :line_width in deps
-        prim.linewidth[] = ui_app[:line_width]
-    end
-    
-    if :marker_size in deps
-        prim.markersize[] = ui_app[:marker_size]
+    try
+        # THE FIX: Force conversion to Makie's strict observable types!
+        if :colors in deps
+            prim.color[] = Makie.to_color(color)
+        elseif :color_map in deps
+            prim.colormap[] = Makie.to_colormap(ui_app[:color_map])
+        end
+        
+        if :line_width in deps
+            prim.linewidth[] = Float64(ui_app[:line_width])
+        end
+        
+        if :marker_size in deps
+            prim.markersize[] = Float32(ui_app[:marker_size])
+        end
+    catch e
+        @warn "Failed to apply UI style dynamically to $k" exception=(e, catch_backtrace())
     end
 end

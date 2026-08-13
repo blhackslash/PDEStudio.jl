@@ -298,12 +298,22 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     )
 end
 
-function smart_parse_csv_value(val_str::String)
+function smart_parse_csv_value(val_str::AbstractString)
     val_str = strip(val_str)
     
     if val_str == "true"; return true; end
     if val_str == "false"; return false; end
     if val_str == "<empty>"; return ""; end
+    
+    # THE FIX: Safely parse standard Julia Types back into DataType objects
+    type_map = Dict{String, DataType}(
+        "Float16" => Float16, "Float32" => Float32, "Float64" => Float64, "BigFloat" => BigFloat,
+        "Int8" => Int8, "Int16" => Int16, "Int32" => Int32, "Int64" => Int64, "Int128" => Int128,
+        "ComplexF32" => ComplexF32, "ComplexF64" => ComplexF64, "Bool" => Bool
+    )
+    if haskey(type_map, val_str)
+        return type_map[val_str]
+    end
     
     v_int = tryparse(Int, val_str)
     if !isnothing(v_int); return v_int; end
