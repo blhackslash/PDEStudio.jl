@@ -246,29 +246,39 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         tensor_dim_syms = Tuple(IRunPDESims.get_kept_dims(u_key, sim_data.domain))
         
         in_bounds = true
-        tensor_indices = ntuple(ndims(tensor)) do d
-            dim_sym = tensor_dim_syms[d]
-            out_idx = findfirst(isequal(dim_sym), active_loop_dims) 
-            
-            if !isnothing(out_idx)
-                idx = I[out_idx]
-                if idx > size(tensor, d); in_bounds = false; return 1; end
-                return idx
-            else
-                # Direct Symbol-to-Symbol lookup!
-                var_idx = findfirst(isequal(dim_sym), plot_vars) 
-                if isnothing(var_idx); in_bounds = false; return 1; end
+        
+        # THE FIX: If there are no spatial dimensions, it's a pure scalar stat. 
+        # Bypass spatial unpacking completely!
+        if isempty(tensor_dim_syms)
+            u_raw = tensor isa AbstractArray ? first(tensor) : tensor
+        else
+            tensor_indices = ntuple(length(tensor_dim_syms)) do d
+                dim_sym = tensor_dim_syms[d]
+                out_idx = findfirst(isequal(dim_sym), active_loop_dims) 
                 
-                target_val = sel_vals[var_idx]
-                axis_idx = findfirst(==(dim_sym), sim_data.domain.dim_keys)
-                idx = findmin(v -> abs(v - target_val), sim_data.axes[axis_idx])[2]
-                if idx > size(tensor, d); in_bounds = false; return 1; end
-                return idx
+                if !isnothing(out_idx)
+                    idx = I[out_idx]
+                    if idx > size(tensor, d); in_bounds = false; return 1; end
+                    return idx
+                else
+                    # Direct Symbol-to-Symbol lookup!
+                    var_idx = findfirst(isequal(dim_sym), plot_vars) 
+                    if isnothing(var_idx); in_bounds = false; return 1; end
+                    
+                    target_val = sel_vals[var_idx]
+                    axis_idx = findfirst(==(dim_sym), sim_data.domain.dim_keys)
+                    idx = findmin(v -> abs(v - target_val), sim_data.axes[axis_idx])[2]
+                    if idx > size(tensor, d); in_bounds = false; return 1; end
+                    return idx
+                end
+            end
+            
+            if in_bounds
+                u_raw = tensor[tensor_indices...]
             end
         end
         
         if in_bounds
-            u_raw = tensor[tensor_indices...]
             u_out[I] = target_c isa Integer ? Float64(u_raw[target_c]) : Float64(u_raw[1])
         end
     end

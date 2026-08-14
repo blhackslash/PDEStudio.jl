@@ -4,7 +4,12 @@
 _cache_type(::Val{:eulerian}) = EulerianPlotCache
 _cache_type(::Val{:lagrangian}) = LagrangianPlotCache
 
-_get_component_num_plots(::Val{:eulerian}, target_tensor) = length(eltype(target_tensor))
+# THE FIX: Safely check the first element instead of querying the type itself!
+function _get_component_num_plots(::Val{:eulerian}, target_tensor)
+    isempty(target_tensor) && return 1
+    first_elem = first(target_tensor)
+    return (first_elem isa AbstractArray || first_elem isa Tuple) ? length(first_elem) : 1
+end
 
 function _get_component_num_plots(::Val{:lagrangian}, target_tensor)
     if target_tensor isa AbstractVector && eltype(target_tensor) <: AbstractVector

@@ -119,6 +119,9 @@ function calculate_hash(params::ParamDict)
     stringToHash = join(map(key -> "$key => $(_normalize_for_hash(params[key]))", sorted_keys))
     return bytes2hex(sha256(stringToHash))
 end
+# ==============================================================================
+# --- IOUtils.jl Updates ---
+# ==============================================================================
 
 function get_file_name(params::ParamDict)
     hash_val = calculate_hash(params)
@@ -129,7 +132,7 @@ function get_file_name(params::ParamDict)
     end
 
     all_files = readdir(save_data)
-    candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2")), all_files)
+    candidate_files = filter(f -> (endswith(f, "_$(hash_val).jld2") || startswith(f, "$(hash_val)_")) && endswith(f, ".jld2"), all_files)
 
     if isempty(candidate_files)
         throw(SimFileNotFoundError("File with matching parameters not found."))
@@ -137,16 +140,17 @@ function get_file_name(params::ParamDict)
 
     sort!(candidate_files, by = f -> mtime(joinpath(save_data, f)), rev=true)
     
-    # --- THE FIX: Exact Parameter Match Resolution ---
+    # --- FAST METADATA READ ---
     for file in candidate_files
         full_path = joinpath(save_data, file)
         try
             is_match = jldopen(full_path, "r") do f
-                # Grab the first available key to inspect its parameters
-                if !isempty(keys(f))
-                    first_key = first(keys(f))
-                    saved_params = f[first_key].params
-                    return saved_params == params
+                # Fast path: Read the isolated params key directly
+                if haskey(f, "params")
+                    return f["params"] == params
+                # Slow fallback for backwards compatibility with older files
+                elseif haskey(f, "raw")
+                    return f["raw"].params == params
                 end
                 return false
             end
@@ -171,7 +175,6 @@ function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
         if !isa(e, SimFileNotFoundError); rethrow(e); end
     end
 
-    # 1. New File Initialization
     if isempty(file_name)
         hash_val = calculate_hash(sim_data.params)
         timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS_sss")
@@ -179,60 +182,52 @@ function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
         if !isdir(save_data); mkpath(save_data); end
         
         file_name = joinpath(save_data, "$(timestamp)_$(hash_val).jld2")
-        mode = "w"
-        target_key = "raw"
+        
+        jldopen(file_name, "w") do file
+            file["raw"] = sim_data
+            
+            # --- WRITE FAST METADATA ---
+            file["native"] = sim_data isa ESimData ? :eulerian : :lagrangian
+            file["params"] = sim_data.params
+            file["stat_keys"] = collect(keys(sim_data.stats))
+        end
+        @info "Saved 'raw' to $(basename(file_name))"
     else
-        mode = "a+"
-        
-        # 2. Determine Key based on Base Type mapping
-        # Inside save_sim_data, replace the target_key block with this:
-        target_key = jldopen(file_name, "r") do file
+        jldopen(file_name, "a+") do file
             if haskey(file, "raw")
-                raw_data = file["raw"]
-                
-                if sim_data isa ESimData
-                    # If raw is Eulerian and the sizes match exactly, we are overwriting raw
-                    if raw_data isa ESimData && size(raw_data.u) == size(sim_data.u)
-                        return "raw"
-                    else
-                        # Otherwise, this is either L->E or an E->E resampling!
-                        return get_conv_key(size(sim_data.u))
+                if overwrite
+                    delete!(file, "raw")
+                    file["raw"] = sim_data
+                    
+                    # --- OVERWRITE FAST METADATA ---
+                    if haskey(file, "params"); delete!(file, "params"); end
+                    file["params"] = sim_data.params
+                    
+                    if haskey(file, "stat_keys"); delete!(file, "stat_keys"); end
+                    file["stat_keys"] = collect(keys(sim_data.stats))
+                    
+                    if haskey(file, "native"); delete!(file, "native"); end
+                    file["native"] = sim_data isa ESimData ? :eulerian : :lagrangian
+                    
+                    # Ruthlessly clear all stale conversion caches!
+                    for k in keys(file)
+                        if startswith(k, "conv_")
+                            delete!(file, k)
+                            @debug "Cleared outdated conversion cache: '$k'"
+                        end
                     end
-                elseif sim_data isa LSimData
-                    if raw_data isa LSimData
-                        return "raw"
-                    else
-                        return "conv_L" # E -> L conversion
-                    end
+                    
+                    @info "Overwrote existing 'raw' in $(basename(file_name)) and cleared all caches."
+                else
+                    @debug "'raw' already exists. Skipping save."
                 end
-            end
-            return "raw" # Fallback if file exists but is empty
-        end
-    end
-
-    # 3. Save the Data
-    jldopen(file_name, mode) do file
-        if haskey(file, target_key)
-            if overwrite
-                delete!(file, target_key)
-                file[target_key] = sim_data
-                @info "Overwrote existing '$target_key' in $(basename(file_name))"
-                
             else
-                @debug "'$target_key' already exists in $(basename(file_name)). Skipping save."
+                file["raw"] = sim_data
+                file["native"] = sim_data isa ESimData ? :eulerian : :lagrangian
+                file["params"] = sim_data.params
+                file["stat_keys"] = collect(keys(sim_data.stats))
+                @info "Saved 'raw' to $(basename(file_name))"
             end
-        else
-            file[target_key] = sim_data
-            @info "Saved '$target_key' to $(basename(file_name))"
-        end
-        
-        # --- Save native metadata instantly ---
-        if target_key == "raw"
-            native_str = sim_data isa ESimData ? :eulerian : :lagrangian
-            if haskey(file, "native")
-                delete!(file, "native")
-            end
-            file["native"] = native_str
         end
     end
 end
@@ -301,18 +296,25 @@ function load_sim_data(params::ParamDict, ::Val{:eulerian}, res::Tuple)
         resample_eulerian(raw_data, res)
     end
     
-    save_sim_data(conv_data; overwrite=true) 
+    # Directly cache the generated conversion into the file
+    jldopen(file_name, "a+") do file
+        # Safe check in case of thread race conditions
+        if !haskey(file, key)
+            file[key] = conv_data
+        end
+    end
+    
     return conv_data
 end
 
 function load_sim_data(params::ParamDict, ::Val{:lagrangian})
-    native = _get_native_type(get_file_name(params))
+    file_name = get_file_name(params)
+    native = _get_native_type(file_name)
     
     if native == :lagrangian
         return load_sim_data(params, Val(:raw))
     else
         # Directly load the L-conversion or generate it
-        file_name = get_file_name(params)
         has_conv = jldopen(file_name, "r") do file; haskey(file, "conv_L"); end
         
         if has_conv
@@ -321,7 +323,14 @@ function load_sim_data(params::ParamDict, ::Val{:lagrangian})
             @info "Lagrangian conversion not found. Generating on the fly..."
             raw_data = load_sim_data(params, Val(:raw))
             conv_data = convert_to_lagrangian(raw_data)
-            save_sim_data(conv_data; overwrite=true)
+            
+            # Directly cache the generated conversion into the file
+            jldopen(file_name, "a+") do file
+                if !haskey(file, "conv_L")
+                    file["conv_L"] = conv_data
+                end
+            end
+            
             return conv_data
         end
     end

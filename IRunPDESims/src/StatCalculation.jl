@@ -44,12 +44,13 @@ function calculate_all_stats!(sim_data::AbstractSimData, ref_func; force_overwri
     for (stat_name, kept_dims) in sim_data.domain.stat_registry
         if stat_name == :Solution; continue end
         if haskey(sim_data.stats,stat_name) && !force_overwrite; continue end
+        
         res = _calc_stat!(sim_data, u_ana, stat_name)
         if !isnothing(res)
             # Assigning natively as a Symbol using the typed StatDict
             sim_data.stats[stat_name] = res
+            stat_change = true # <--- MOVED INSIDE THE IF BLOCK
         end
-        stat_change = true
     end
     # 3. Cleanup and Save
     remove_nan_stats!(sim_data.stats)

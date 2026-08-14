@@ -177,6 +177,7 @@ function run_all_simulations(
     sim_config::SimulationConfig;
     force_overwrite::Bool = false,
     calculate_stats::Bool = false,
+    post_process::Bool = true,
     parallel::Bool = false
 )
     @info "Started Simulation Pipeline."
@@ -228,11 +229,36 @@ function run_all_simulations(
     # Pass 2: Calculate Statistics
     if calculate_stats
         @info "Pass 2: Calculating Stats"
-        p2 = Progress(num_tasks; desc="Post-processing...")
+        p2 = Progress(num_tasks; desc="Calculating Stats...")
         counter2 = Threads.Atomic{Int}(0)
         
+        # Standard required stats (ignores derived stats and :Solution)
+        standard_req_stats = filter(k -> k !== :Solution, collect(keys(STAT_REGISTRY)))
+        
         for params in all_tasks
-            # Directly load raw data and process it inline
+            # --- FAST METADATA CHECK ---
+            if !force_overwrite
+                file_path = try get_file_name(params) catch; "" end
+                if !isempty(file_path)
+                    needs_stats = jldopen(file_path, "r") do f
+                        if haskey(f, "stat_keys")
+                            saved_keys = f["stat_keys"]
+                            # Returns true if ANY required stat is missing
+                            return any(k -> !(k in saved_keys), standard_req_stats)
+                        end
+                        return true # Fallback if metadata is missing
+                    end
+                    
+                    # If all standard stats are present, instantly skip to the next file!
+                    if !needs_stats
+                        counter2[] += 1
+                        ProgressMeter.update!(p2, counter2[])
+                        continue
+                    end
+                end
+            end
+            
+            # --- SLOW PATH: Only loads if stats are actually missing ---
             sim_data = load_sim_data(params, Val(:raw))
             if !(sim_data isa NoSimData)  
                 calculate_all_stats!(sim_data, sim_config.reference_func; force_overwrite=force_overwrite)
@@ -242,8 +268,32 @@ function run_all_simulations(
         end
     end
     
+    # Pass 3: Custom Post-Processing
+    if post_process
+        @info "Pass 3: Custom Post-Processing"
+        p3 = Progress(num_tasks; desc="Post-processing...")
+        counter3 = Threads.Atomic{Int}(0)
+        
+        for params in all_tasks
+            sim_data = load_sim_data(params, Val(:raw))
+            if !(sim_data isa NoSimData)
+                
+                # Execute the custom function 
+                changed = sim_config.post_process_func(sim_data)
+                
+                # Overwrite on disk only if the user function returns true
+                if changed
+                    save_sim_data(sim_data; overwrite=true)
+                end
+                
+            end
+            counter3[] += 1
+            ProgressMeter.update!(p3, counter3[])
+        end
+    end
+    
     @info "Batch simulation run complete!"
-    return 
+    return
 end
 
 # ==============================================================================

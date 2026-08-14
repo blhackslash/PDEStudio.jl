@@ -76,19 +76,19 @@ mutable struct LSimData{D, DS, M, T} <: AbstractSimData{D, DS, M, T}
     stats::StatDict{M, T} 
 end
 
-mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}}
+mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}, P <: Function}
     simulation_func::F
     simulation_name::Symbol
     reference_func::A 
     reference_name::Union{Symbol, Nothing}
+    post_process_func::P
+    post_process_name::Union{Symbol, Nothing}
     shared_params::ParamDict
     methods_dict::MethodDict
     active_methods::Vector{Symbol}
     varied_params::VariedDict
 end
 
-# Accepts generic Dict and Vector arguments to preserve backwards compatibility,
-# then maps them strictly to Symbol types.
 function SimulationConfig(
     sim_func_name::Union{String, Symbol},  
     shared::Dict, 
@@ -96,12 +96,14 @@ function SimulationConfig(
     defaults::Vector;
     varied_params::Dict = create_varied_dict(),
     ref_func_name::Union{String, Symbol, Nothing} = nothing,
+    post_process_name::Union{String, Symbol, Nothing} = nothing
 )
     target_module = _TARGET_MODULE[]
     
-    # 1. Safe string conversion, then immediately to Symbol
+    # 1. Safe string conversion to Symbol
     ref_name_sym = isnothing(ref_func_name) ? nothing : Symbol(ref_func_name)
     sim_name_sym = Symbol(sim_func_name)
+    post_name_sym = isnothing(post_process_name) ? nothing : Symbol(post_process_name)
 
     # Convert generic dictionaries to enforced Symbol-keyed dictionaries
     shared_sym   = ParamDict(Symbol(k) => v for (k, v) in shared)
@@ -114,18 +116,21 @@ function SimulationConfig(
         end
     end
 
-    # 2. Resolve Simulation Function via Symbol
+    # 2. Resolve Dynamic Functions
     sim_f = resolve_dynamic_function(sim_name_sym)
     if isnothing(sim_f)
         error("Aborting: Could not resolve simulation function '$sim_name_sym' in module $target_module.")
     end
 
-    # 3. Resolve Reference Factory Function via Symbol (No more invokelatest!)
     ref_factory = resolve_dynamic_function(ref_name_sym)
     ref_f = isnothing(ref_factory) ? nothing : ref_factory(shared_sym)
+    
+    post_f = resolve_dynamic_function(post_name_sym)
+    post_func = isnothing(post_f) ? (data) -> false : post_f
 
-    return SimulationConfig{typeof(sim_f), typeof(ref_f)}(
-        sim_f, sim_name_sym, ref_f, ref_name_sym, shared_sym, methods_sym, defaults_sym, varied_sym
+    return SimulationConfig{typeof(sim_f), typeof(ref_f), typeof(post_func)}(
+        sim_f, sim_name_sym, ref_f, ref_name_sym, post_func, post_name_sym, 
+        shared_sym, methods_sym, defaults_sym, varied_sym
     )
 end
 
