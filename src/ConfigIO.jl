@@ -286,7 +286,16 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         end
     end
 
-    # 7. Construct and return the SimulationConfig
+    # THE FIX: 7. Extract Post Process Name explicitly from Config
+    post_name = nothing
+    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
+        csv_post = String(get(parsed_csv["Config"]["General"], "post_process_func", "none"))
+        if csv_post != "none" && !isempty(csv_post)
+            post_name = csv_post
+        end
+    end
+
+    # 8. Construct and return the SimulationConfig
     sim_func_str = String(parsed_csv["Config"]["General"]["simulation_func"])
     
     return SimulationConfig(
@@ -294,7 +303,9 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         shared_params,
         methods_dict,
         active_methods;
-        varied_params = varied_params, ref_func_name = ref_name
+        varied_params = varied_params, 
+        ref_func_name = ref_name,
+        post_process_name = post_name
     )
 end
 
@@ -521,6 +532,7 @@ function save_params_to_csv(
         
         add_row("Config", "General", "simulation_func", string(config.simulation_name))
         add_row("Config", "General", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
+        add_row("Config", "General", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
         add_row("Config", "General", "active_methods", manager.methods[])
 
         # NEW: Dimensions Scope
