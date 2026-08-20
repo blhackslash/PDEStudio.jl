@@ -578,6 +578,7 @@ function _setup_hierarchy_interactions!()
     manager.listeners[:Hierarchy_Text_Sync] = on(tb.stored_string) do s
         target_info = active_target_ref[]
         isnothing(target_info) && return
+        if manager.flags[:Layout][] || manager.flags[:Simulation][]; return end
         target_dict, key = target_info
         
         cat = menu_cat.selection[]
@@ -601,7 +602,6 @@ function _setup_hierarchy_interactions!()
                     end
                 end
             elseif cat === :labels
-                manager.triggers[:Layout][] += 1
                 
                 if scope === :variables
                     lbl_key = Symbol("$(key)_label")
@@ -613,6 +613,7 @@ function _setup_hierarchy_interactions!()
                 elseif scope === :methods
                     notify(manager.state[:Is_Activate_Mode])
                 end
+                manager.triggers[:UI][] += 1
             end
         catch e
             @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
@@ -622,6 +623,7 @@ function _setup_hierarchy_interactions!()
     manager.listeners[:Hierarchy_Toggle_Sync] = on(manager.widgets[:editor_toggle].clicks) do _
         target_info = active_target_ref[]
         isnothing(target_info) && return
+        if manager.flags[:Layout][] || manager.flags[:Simulation][]; return end
         target_dict, key = target_info
         
         cat = menu_cat.selection[]

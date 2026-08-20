@@ -13,26 +13,27 @@ include("StatFunctions.jl")
 function remove_nan_stats!(stats_dict::StatDict)
     keys_to_remove = Symbol[]
     for (name, val) in stats_dict
-        # Handle Nested Lagrangian Fields
-        if val isa Vector{<:Vector} 
-            is_all_nan = all(vec -> all(svec -> any(isnan, svec), vec), val)
-        # Handle Eulerian Tensors & Lagrangian Series
-        elseif val isa AbstractArray 
-            is_all_nan = all(svec -> any(isnan, svec), val)
-        # Handle Base Scalars
-        elseif val isa SVector 
-            is_all_nan = any(isnan, val)
-        else
-            is_all_nan = false
-        end
-        
-        if is_all_nan
+        if is_all_nan(val)
             @info "Removing statistic :$name because all values are NaN (no reference data)."
             push!(keys_to_remove, name)
         end
     end
     
     for k in keys_to_remove; delete!(stats_dict, k); end
+end
+function is_all_nan(val)
+    # Handle Nested Lagrangian Fields
+    if val isa Vector{<:Vector} 
+        return all(vec -> all(svec -> any(isnan, svec), vec), val)
+    # Handle Eulerian Tensors & Lagrangian Series
+    elseif val isa AbstractArray 
+        return all(svec -> any(isnan, svec), val)
+    # Handle Base Scalars
+    elseif val isa SVector 
+        return any(isnan, val)
+    else
+        return false
+    end
 end
 
 function calculate_all_stats!(sim_data::AbstractSimData, ref_func; force_overwrite = false, kwargs...)
@@ -43,15 +44,26 @@ function calculate_all_stats!(sim_data::AbstractSimData, ref_func; force_overwri
     stat_change = false
     for (stat_name, kept_dims) in sim_data.domain.stat_registry
         if stat_name == :Solution; continue end
-        if haskey(sim_data.stats,stat_name) && !force_overwrite; continue end
+        if haskey(sim_data.stats, stat_name) && !force_overwrite; continue end
         
         res = _calc_stat!(sim_data, u_ana, stat_name)
+        
         if !isnothing(res)
-            # Assigning natively as a Symbol using the typed StatDict
-            sim_data.stats[stat_name] = res
-            stat_change = true # <--- MOVED INSIDE THE IF BLOCK
+            if !is_all_nan(res)
+                # Valid stat calculated
+                sim_data.stats[stat_name] = res
+                stat_change = true
+            else
+                # If it evaluates to NaNs but previously existed (force_overwrite),
+                # we delete it to maintain consistency and flag the change.
+                if haskey(sim_data.stats, stat_name)
+                    delete!(sim_data.stats, stat_name)
+                    stat_change = true
+                end
+            end
         end
     end
+    
     # 3. Cleanup and Save
     remove_nan_stats!(sim_data.stats)
     save_sim_data(sim_data; overwrite=stat_change)

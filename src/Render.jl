@@ -209,48 +209,27 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
 
+    # THE FIX: Only extract and plot the base method, exactly like a heatmap!
     base_idx = get_base_method_index(ui_app, active_methods)
-    base_label = active_methods[base_idx]
+    label = active_methods[base_idx]
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
     lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app[:levels]) 
     rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
-
-    plotted_objects, labels_for_legend = [], String[]
     
-    base_cache = EulerianPlotCache()
-    base_cache.obs_x.val = xs_slices[base_idx]
-    base_cache.obs_y.val = ys_slices[base_idx]
-    base_cache.obs_u.val = us_slices[base_idx]
+    cache = EulerianPlotCache()
+    cache.obs_x.val = xs_slices[base_idx]
+    cache.obs_y.val = ys_slices[base_idx]
+    cache.obs_u.val = us_slices[base_idx]
 
-    cf = contourf!(ax, base_cache.obs_x, base_cache.obs_y, base_cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=rast_val) 
-    base_cache.primitives[:contour_f] = cf
-    cache_dict[base_label] = base_cache
+    cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=rast_val) 
+    
+    cache.primitives[:contour_f] = cf
+    cache_dict[label] = cache
 
-    base_color = Makie.to_colormap(ui_app[:color_map])[end] 
-    push!(plotted_objects, [Makie.PolyElement(color=base_color)])
-    push!(labels_for_legend, "$base_label (Base)")
-
-    for (i, label) in enumerate(active_methods)
-        if i == base_idx; continue; end
-        cache = EulerianPlotCache()
-        cache.obs_x.val = xs_slices[i]
-        cache.obs_y.val = ys_slices[i]
-        cache.obs_u.val = us_slices[i]
-        
-        color = ui_app[:colors][mod1(i, end)] 
-        lw = ui_app[:line_width] 
-        
-        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; color=color, linewidth=lw, labels=true)
-        cache.primitives[:contour_colors] = ct
-        cache_dict[label] = cache
-        
-        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
-        push!(labels_for_legend, frontend_key(label))
-    end
-
-    create_or_update_colorbar!(plot_layout, cf, cr_obs, frontend_key(base_label), plot_idx)
+    # Bind the colorbar cleanly
+    create_or_update_colorbar!(plot_layout, cf, cr_obs, frontend_key(label), plot_idx)
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:heatmap_surface}, plot_idx::Int)

@@ -51,6 +51,8 @@ function _handle_plot_trigger!(
         plot_x_slices = Dict{Int, Any}()
         plot_y_slices = Dict{Int, Any}()
 
+        manager.state[:Plot_Titles] = fill("", num_plots)
+
         for i in 1:num_plots
             manager.caches[i] = Dict{Symbol, _cache_type(Val(manager.mode[]))}()
             
@@ -69,7 +71,9 @@ function _handle_plot_trigger!(
             
             ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
             
-            default_title = is_compare ? "$(compare_labels[i]) | $ts" : ts 
+            manager.state[:Plot_Titles][i] = ts
+            
+            default_title = is_compare ? "$(compare_labels[i])" : ts
             
             x_str = frontend_key(x_sel[])
             y_str = frontend_key(y_sel[])
@@ -257,7 +261,9 @@ function _handle_data_trigger!(
     # THE FIX: Create pooling dictionaries for data triggers as well
     plot_x_slices = Dict{Int, Any}()
     plot_y_slices = Dict{Int, Any}()
-    
+
+    manager.state[:Plot_Titles] = fill("", num_plots)
+
     for i in 1:num_plots
         mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
         target_c_int = (is_compare && target == :component) ? i : c_sel[]
@@ -292,7 +298,10 @@ function _handle_data_trigger!(
         
         ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
         
-        default_title = is_compare ? compare_labels[i] : ts
+        manager.state[:Plot_Titles][i] = ts
+            
+        default_title = is_compare ? "$(compare_labels[i])" : ts
+
         axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
     end
     
@@ -338,8 +347,38 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
     ui_app = manager.ui[:plot_style]
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
 
+    target, _, old_compare_labels, _ = manager.state[:Compare_State]
+    is_compare = target != :none
     
+    dyn_compare_labels = copy(old_compare_labels)
+    if target == :methods
+        dyn_compare_labels = String[frontend_key(m) for m in manager.methods[]]
+    elseif target == :component
+        dyn_compare_labels = String[frontend_key(Symbol("component_$j")) for j in 1:length(axes)]
+    end
+
+    # THE FIX: Calculate Global Colorrange for Linked Colorbars
+    link_mode = manager.widgets[:compare_link].selection[]
+    is_linked_cb = link_mode in (:fully_coupled, :colorbar_only)
+    
+    global_u = Float64[]
+    if is_linked_cb
+        for i in 1:length(axes)
+            haskey(manager.caches, i) || continue
+            for cache in values(manager.caches[i])
+                append!(global_u, filter(isfinite, vec(cache.obs_u[])))
+            end
+        end
+    end
+    global_cr_obs = get_colorrange(ui_app, global_u)
+
     for (i, ax) in enumerate(axes)
+        if haskey(manager.state, :Plot_Titles) && i <= length(manager.state[:Plot_Titles])
+            ts = manager.state[:Plot_Titles][i]
+            default_title = is_compare && !isempty(dyn_compare_labels) && i <= length(dyn_compare_labels) ? "$(dyn_compare_labels[i])" : ts
+            ax.title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
+        end
+        
         _apply_axis_styles!(ax, T)
         apply_axis_limits_overrides!(ax)
         
@@ -350,6 +389,16 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         end
         
         if haskey(manager.caches, i)
+            # THE FIX: Calculate Local Colorrange
+            local_u = Float64[]
+            for cache in values(manager.caches[i])
+                append!(local_u, filter(isfinite, vec(cache.obs_u[])))
+            end
+            local_cr_obs = get_colorrange(ui_app, local_u)
+            
+            # Determine which range this specific subplot should obey
+            cr_obs = is_linked_cb ? global_cr_obs : local_cr_obs
+
             for (method_name, cache) in manager.caches[i]
                 m_idx = findfirst(isequal(method_name), manager.methods[])
                 isnothing(m_idx) && continue 
@@ -358,14 +407,15 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
                 c = !isnothing(colors) ? colors[mod1(m_idx, length(colors))] : :black
                 
                 for (key, prim) in cache.primitives
-                    apply_ui_style!(key, prim, ui_app, c)
+                    # Pass the computed cr_obs so the primitives can sync their levels!
+                    apply_ui_style!(key, prim, ui_app, c, cr_obs)
                 end
             end
             
             if has_colorbar
                 plot_obj = _find_first_drawable_primitive(manager.caches[i])
                 if !isnothing(plot_obj)
-                    cr_obs = haskey(plot_obj.attributes, :colorrange) ? plot_obj.colorrange : Observable((0.0, 1.0))
+                    # Push the mathematically perfect cr_obs to the colorbar
                     create_or_update_colorbar!(plot_layout, plot_obj, cr_obs, string(u_sel[]), i)
                 end
             end

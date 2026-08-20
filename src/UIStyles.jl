@@ -2,7 +2,7 @@
 # --- UIStyles.jl ---
 # ==============================================================================
 
-const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_f, :contour_surface)
+const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
 const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :padding, :log_scale, :dashed_lines, :levels, :rasterize, :legend_label)
 const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
@@ -133,7 +133,7 @@ const STYLE_DEPENDENCIES = Dict{Symbol, Vector{Symbol}}(
     
     :contour_colors          => [:colors, :levels, :line_width, :labels],
     :contour_cmap     => [:color_map, :color_range, :levels, :line_width, :labels, :bottom_margin, :method_index],
-    :contour_f        => [:color_map, :color_range, :levels, :method_index, :rasterize, :bottom_margin],
+    :contour_f        => [:color_map, :color_range, :levels, :method_index, :bottom_margin],
     :contour_surface  => [:colors, :levels, :line_width, :labels],
     :heatmap_flat          => [:color_map, :color_range, :rasterize, :bottom_margin, :method_index],
     :heatmap_surface          => [:color_map, :color_range, :rasterize, :method_index],
@@ -451,23 +451,33 @@ end
 # ==============================================================================
 # --- MODULAR UI MODIFIERS ---
 # ==============================================================================
-function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any)
+function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any, cr_obs::Observable = Observable((0.0, 1.0)))
     k = Symbol(prim_key)
     deps = get(STYLE_DEPENDENCIES, k, Symbol[])
     
     try
-        # THE FIX: Force conversion to Makie's strict observable types!
-        if :colors in deps
+        if :colors in deps && haskey(prim.attributes, :color)
             prim.color[] = Makie.to_color(color)
-        elseif :color_map in deps
+        elseif :color_map in deps && haskey(prim.attributes, :colormap)
             prim.colormap[] = Makie.to_colormap(ui_app[:color_map])
         end
         
-        if :line_width in deps
+        # THE FIX: Apply the extracted color limits dynamically
+        if :color_range in deps && haskey(prim.attributes, :colorrange)
+            prim.colorrange[] = cr_obs[]
+        end
+        
+        # THE FIX: Force contour lines to map exactly onto the active color limits
+        if :levels in deps && haskey(prim.attributes, :levels)
+            lvls = ui_app[:levels]
+            prim.levels[] = range(cr_obs[][1], cr_obs[][2], length=max(2, lvls))
+        end
+        
+        if :line_width in deps && haskey(prim.attributes, :linewidth)
             prim.linewidth[] = Float64(ui_app[:line_width])
         end
         
-        if :marker_size in deps
+        if :marker_size in deps && haskey(prim.attributes, :markersize)
             prim.markersize[] = Float32(ui_app[:marker_size])
         end
     catch e
