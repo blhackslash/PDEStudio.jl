@@ -469,7 +469,7 @@ function _setup_hierarchy_interactions!()
 
         if !isnothing(target_dict) && haskey(target_dict, key)
             active_target_ref[] = (target_dict, key)
-            val_str = string(target_dict[key])
+            val_str = _value_to_string_for_csv(target_dict[key])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
             
             # THE FIX: Dynamic Toggle/Apply Button!

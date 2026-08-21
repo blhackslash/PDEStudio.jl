@@ -158,7 +158,7 @@ function interpolate_to_grid!(
             rad_idx = radius_1d .* s_inv_dx
             
             min_idx = @. max(1, floor(Int, idx_float - rad_idx))
-            max_idx = @. min(grid_shape..., ceil(Int, idx_float + rad_idx))
+            max_idx = @. min(grid_shape, ceil(Int, idx_float + rad_idx))
             
             for cell_idx in CartesianIndices(ntuple(d -> min_idx[d]:max_idx[d], Val(DS)))
                 s_idx = SVector{DS, T}(Tuple(cell_idx))
