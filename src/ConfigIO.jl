@@ -11,9 +11,40 @@ function _apply_backend_keys(d::Dict)
     return new_d
 end
 
-function load_and_apply_csv!(filepath::AbstractString)
+function load_and_apply_csv!(filepath::String)
     @info "Loading configuration from CSV: $filepath"
     parsed = parse_csv_to_dict(filepath)
+    
+    # THE FIX: Check for bundled Julia scripts and include them sequentially!
+    if haskey(parsed, "Metadata") && haskey(parsed["Metadata"], "General") && haskey(parsed["Metadata"]["General"], "bundled_sources")
+        script_names = parsed["Metadata"]["General"]["bundled_sources"]
+        
+        # Fallback in case a single string was parsed instead of a Vector
+        if script_names isa AbstractString; script_names = [script_names]; end
+        
+        local config_obj = nothing
+        all_found = true
+        
+        for script_name in script_names
+            script_path = joinpath(dirname(filepath), script_name)
+            if isfile(script_path)
+                @info "Executing bundled source: $script_name"
+                # include() naturally returns the result of the last line in the file
+                config_obj = Base.include(get_target_module(),script_path) 
+            else
+                @warn "Bundled source missing: $script_path"
+                all_found = false
+            end
+        end
+        
+        # If the scripts ran and returned a valid config, load it and strip physics from the CSV
+        if all_found && typeof(config_obj) <: SimulationConfig
+            set_sim_config!(config_obj)
+            delete!(parsed, "Simulation")
+        elseif all_found
+            @warn "The last included source file did not return a SimulationConfig object."
+        end
+    end
     
     is_structural_change = false
     new_dims = manager.allowed_dims
@@ -46,44 +77,49 @@ end
 
 function load_and_apply_csv!(parsed::Dict)
     @info "Applying parsed CSV configuration..."
-    
-    # --- 1. FULL PROJECT DATA ---
-    if haskey(parsed, "Config")
-        cfg = parsed["Config"]
-        
-        # Load Dimensions (Acts as a failsafe if triggered directly)
-        if haskey(cfg, "Dimensions")
-            dims = cfg["Dimensions"]
-            if haskey(dims, "allowed_dims")
-                raw_dims = dims["allowed_dims"]
-                if raw_dims isa Tuple
-                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
-                elseif raw_dims isa Vector
-                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
-                elseif raw_dims isa AbstractString
-                    clean_str = replace(raw_dims, r"[\(\): ]" => "")
-                    manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
-                end
-            end
-            if haskey(dims, "max_params")
-                manager.max_params = Int(dims["max_params"])
-            end
-        end
-        
-        # Load Resolutions
-        if haskey(cfg, "Resolution_Base")
-            for (k, v) in cfg["Resolution_Base"]
-                manager.state[:Resolution_Base][Symbol(k)] = Int(v)
-            end
-        end
-        
-        if haskey(cfg, "Resolution_Ref")
-            for (k, v) in cfg["Resolution_Ref"]
-                manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
-            end
-        end
 
-        sim_func_str = get(parsed["Config"]["General"], "simulation_func", "none")
+    cfg = parsed["Config"]
+    
+    # Load Dimensions (Acts as a failsafe if triggered directly)
+    if haskey(cfg, "Dimensions")
+        dims = cfg["Dimensions"]
+        if haskey(dims, "allowed_dims")
+            raw_dims = dims["allowed_dims"]
+            if raw_dims isa Tuple
+                manager.allowed_dims = Tuple(Symbol.(raw_dims))
+            elseif raw_dims isa Vector
+                manager.allowed_dims = Tuple(Symbol.(raw_dims))
+            elseif raw_dims isa AbstractString
+                clean_str = replace(raw_dims, r"[\(\): ]" => "")
+                manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
+            end
+        end
+        if haskey(dims, "max_params")
+            manager.max_params = Int(dims["max_params"])
+        end
+    end
+    
+    # Load Resolutions
+    if haskey(cfg, "Resolution_Base")
+        for (k, v) in cfg["Resolution_Base"]
+            manager.state[:Resolution_Base][Symbol(k)] = Int(v)
+        end
+    end
+    
+    if haskey(cfg, "Resolution_Ref")
+        for (k, v) in cfg["Resolution_Ref"]
+            manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
+        end
+    end    
+    # --- 1. FULL PROJECT DATA ---
+    if haskey(parsed, "Simulation")
+
+
+        sim_cfg = get(get(parsed, "Simulation", Dict()), "Config", Dict())
+        old_cfg = get(get(parsed, "Config", Dict()), "General", Dict())
+        
+        sim_func_str = get(sim_cfg, "simulation_func", get(old_cfg, "simulation_func", "none"))
+        
         resolved_func = resolve_simulation_function(sim_func_str, nothing)
         if isnothing(resolved_func)
             @error "Aborting: Could not resolve simulation function '$sim_func_str'"
@@ -196,8 +232,8 @@ ensuring all backend keys are strongly typed as Symbols.
 function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 1. Extract Shared Parameters (Cast to Symbol keys)
     shared_params = Dict{Symbol, Any}()
-    if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "shared")
-        for (k, v) in parsed_csv["Simulation"]["shared"]
+    if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "Shared")
+        for (k, v) in parsed_csv["Simulation"]["Shared"]
             shared_params[Symbol(k)] = v
         end
     end
@@ -206,7 +242,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     methods_dict = Dict{Symbol, Dict{Symbol, Any}}()
     if haskey(parsed_csv, "Simulation")
         for (scope, params) in parsed_csv["Simulation"]
-            if scope != "shared"
+            if scope != "Shared" && scope != "Config"
                 m_sym = Symbol(scope)
                 methods_dict[m_sym] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in params)
             end
@@ -223,39 +259,28 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         @info "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
     end
 
-    # 4. Default Methods (Explicit override if available!)
+   sim_cfg = get(get(parsed_csv, "Simulation", Dict()), "Config", Dict())
+    old_cfg = get(get(parsed_csv, "Config", Dict()), "General", Dict())
+
+    # 4. Default Methods 
     active_methods = Symbol[]
     has_explicit_active = false
     
-    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General") && haskey(parsed_csv["Config"]["General"], "active_methods")
-        raw_active = parsed_csv["Config"]["General"]["active_methods"]
-        if raw_active isa AbstractVector
-            active_methods = Symbol.(raw_active)
-            has_explicit_active = true
-            
-            # Ensure every explicitly active method has at least an empty dict to prevent backend crashes
-            for m in active_methods
-                if !haskey(methods_dict, m)
-                    methods_dict[m] = Dict{Symbol, Any}()
-                end
-            end
+    raw_active = get(sim_cfg, "active_methods", get(old_cfg, "active_methods", nothing))
+    if raw_active isa AbstractVector
+        active_methods = Symbol.(raw_active)
+        has_explicit_active = true
+        for m in active_methods
+            if !haskey(methods_dict, m); methods_dict[m] = Dict{Symbol, Any}(); end
         end
-    end
-    
-    # Fallback for older CSVs without the explicitly saved active methods
-    if isempty(active_methods)
+    elseif isempty(active_methods)
         active_methods = collect(keys(methods_dict))
     end
     active_methods = sort_methods_robust(active_methods)
 
-    # 5. Extract Reference Name explicitly from Config
-    ref_name = nothing
-    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
-        csv_ref = String(get(parsed_csv["Config"]["General"], "reference_func", "none"))
-        if csv_ref != "none" && !isempty(csv_ref)
-            ref_name = csv_ref
-        end
-    end
+    # 5. Extract Reference Name
+    csv_ref = String(get(sim_cfg, "reference_func", get(old_cfg, "reference_func", "none")))
+    ref_name = (csv_ref != "none" && !isempty(csv_ref)) ? csv_ref : nothing
 
     # 6. Resolve the Analytical Solution Factory
     ref_func = nothing
@@ -286,17 +311,12 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         end
     end
 
-    # THE FIX: 7. Extract Post Process Name explicitly from Config
-    post_name = nothing
-    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "General")
-        csv_post = String(get(parsed_csv["Config"]["General"], "post_process_func", "none"))
-        if csv_post != "none" && !isempty(csv_post)
-            post_name = csv_post
-        end
-    end
+    # 7. Extract Post Process Name 
+    csv_post = String(get(sim_cfg, "post_process_func", get(old_cfg, "post_process_func", "none")))
+    post_name = (csv_post != "none" && !isempty(csv_post)) ? csv_post : nothing
 
     # 8. Construct and return the SimulationConfig
-    sim_func_str = String(parsed_csv["Config"]["General"]["simulation_func"])
+    sim_func_str = String(get(sim_cfg, "simulation_func", get(old_cfg, "simulation_func", "none")))
     
     return SimulationConfig(
         sim_func_str, 
@@ -462,6 +482,26 @@ function save_params_to_csv(
 
         # --- 1. CATEGORY: Metadata ---
         for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
+
+        # THE FIX: Bundle multiple source files sequentially!
+        config = manager.active_config
+        if hasproperty(config, :source_files) && !isempty(config.source_files)
+            bundled_names = String[]
+            for (i, src_path) in enumerate(config.source_files)
+                if isfile(src_path)
+                    bundled_name = "$(base_filename)_source_$i.jl"
+                    cp(src_path, joinpath(save_dir, bundled_name), force=true)
+                    push!(bundled_names, bundled_name)
+                else
+                    @warn "Source file not found and skipped: $src_path"
+                end
+            end
+            
+            if !isempty(bundled_names)
+                # Your `_value_to_string_for_csv` natively handles string vectors!
+                add_row("Metadata", "General", "bundled_sources", bundled_names)
+            end
+        end
         
         # --- NEW CATEGORY: Git (Scope = Repo Name) ---
         git_infos = get_all_git_infos(pwd())
@@ -515,7 +555,7 @@ function save_params_to_csv(
         config = manager.active_config
 
         for (k, v) in config.shared_params
-            add_row("Simulation", "shared", string(k), v)
+            add_row("Simulation", "Shared", string(k), v)
         end
         for m_name in manager.methods[]
             m_sym = Symbol(m_name)
@@ -530,10 +570,11 @@ function save_params_to_csv(
             add_row("Config", "Parameters", string(k), v)
         end
         
-        add_row("Config", "General", "simulation_func", string(config.simulation_name))
-        add_row("Config", "General", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
-        add_row("Config", "General", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
-        add_row("Config", "General", "active_methods", manager.methods[])
+        # THE FIX: Move core functions and methods into the Simulation category
+        add_row("Simulation", "Config", "simulation_func", string(config.simulation_name))
+        add_row("Simulation", "Config", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
+        add_row("Simulation", "Config", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
+        add_row("Simulation", "Config", "active_methods", manager.methods[])
 
         # NEW: Dimensions Scope
         add_row("Config", "Dimensions", "allowed_dims", manager.allowed_dims)

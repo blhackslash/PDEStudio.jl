@@ -11,7 +11,7 @@ export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode
 
 function dummy_simulation_function(args...); return nothing; end
 
-const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, (_ -> false), :none, ParamDict(), MethodDict(), Symbol[], VariedDict())
+const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, (_ -> false), :none, ParamDict(), MethodDict(), Symbol[], VariedDict(), String[])
 
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---

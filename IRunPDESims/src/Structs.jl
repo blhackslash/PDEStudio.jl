@@ -87,6 +87,7 @@ mutable struct SimulationConfig{F <: Function, A <: Union{Function, Nothing}, P 
     methods_dict::MethodDict
     active_methods::Vector{Symbol}
     varied_params::VariedDict
+    source_files::Vector{String}
 end
 
 function SimulationConfig(
@@ -96,7 +97,8 @@ function SimulationConfig(
     defaults::Vector;
     varied_params::Dict = create_varied_dict(),
     ref_func_name::Union{String, Symbol, Nothing} = nothing,
-    post_process_name::Union{String, Symbol, Nothing} = nothing
+    post_process_name::Union{String, Symbol, Nothing} = nothing,
+    source_files::Union{<:AbstractString, Vector{String}} = String[] # THE FIX: Optional input
 )
     target_module = _TARGET_MODULE[]
     
@@ -128,9 +130,11 @@ function SimulationConfig(
     post_f = resolve_dynamic_function(post_name_sym)
     post_func = isnothing(post_f) ? (data) -> false : post_f
 
+    src_files = source_files isa AbstractString ? [String(source_files)] : String.(source_files)
+
     return SimulationConfig{typeof(sim_f), typeof(ref_f), typeof(post_func)}(
         sim_f, sim_name_sym, ref_f, ref_name_sym, post_func, post_name_sym, 
-        shared_sym, methods_sym, defaults_sym, varied_sym
+        shared_sym, methods_sym, defaults_sym, varied_sym, src_files
     )
 end
 
