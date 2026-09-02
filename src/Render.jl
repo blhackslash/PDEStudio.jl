@@ -86,8 +86,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         c  = ui_app[:colors][mod1(m_idx, end)] 
         ls = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
         lw = ui_app[:line_width] 
+
+        raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
         
-        l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls)
+        l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls, rasterize=raster)
         cache.primitives[:lines_1d] = l
         cache_dict[label] = cache
         
@@ -115,8 +117,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
         color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
         lw    = ui_app[:line_width] 
+        raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
         
-        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app[:levels], color=color, linewidth=lw, labels=ui_app[:labels]) 
+        ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app[:levels], color=color, linewidth=lw, labels=ui_app[:labels], rasterize=raster) 
         
         cache.primitives[:contour_colors] = ct
         cache_dict[label] = cache
@@ -142,9 +145,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, us[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=rast_val) 
+    hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster) 
 
     cache.primitives[:heatmap_flat] = hm
     cache_dict[label] = cache
@@ -169,8 +172,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width]) 
+    l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width], rasterize=raster) 
     cache.primitives[:lines_2d] = l2d
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, l2d, cr_obs, frontend_key(label), plot_idx)
@@ -192,10 +196,11 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
     ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
         colormap=ui_app[:color_map], colorrange=cr_obs, 
-        levels=ui_app[:levels], linewidth=ui_app[:line_width], labels=ui_app[:labels] 
+        levels=ui_app[:levels], linewidth=ui_app[:line_width], labels=ui_app[:labels] , rasterize=raster
     )
     
     cache.primitives[:contour_cmap] = ct
@@ -216,14 +221,14 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
     lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app[:levels]) 
-    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
     
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
     cache.obs_u.val = us_slices[base_idx]
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=rast_val) 
+    cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=raster) 
     
     cache.primitives[:contour_f] = cf
     cache_dict[label] = cache
@@ -248,9 +253,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    rast_val = ui_app[:rasterize] == 0 ? false : ui_app[:rasterize] 
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=rast_val) 
+    sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster ) 
     cache.primitives[:heatmap_surface] = sf
     cache_dict[label] = cache
 end
@@ -270,12 +275,13 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
     
     pts_3d = lift(cache.obs_pts, cache.obs_u) do pts, us
         [Point3f(p[1], p[2], u) for (p, u) in zip(pts, us)]
     end
 
-    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
+    sc = scatter!(ax, pts_3d; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
     cache.primitives[:scatter_surface] = sc
     cache_dict[label] = cache
@@ -298,9 +304,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
         color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
         lw    = ui_app[:line_width] 
+        raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
         
         cs = contour3d!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
-                        levels=ui_app[:levels], color=color, linewidth=lw) 
+                        levels=ui_app[:levels], color=color, linewidth=lw, rasterize=raster) 
         
         cache.primitives[:contour_surface] = cs
         cache_dict[label] = cache
@@ -331,8 +338,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs) 
+    vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster) 
     
     cache.primitives[:volume_3d] = vol
     cache_dict[label] = cache
@@ -358,8 +366,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
-    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width]) 
+    l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width], rasterize=raster) 
     cache.primitives[:lines_3d] = l3d
     cache_dict[label] = cache
     create_or_update_colorbar!(plot_layout, l3d, cr_obs, frontend_key(label), plot_idx)
@@ -383,9 +392,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
 
     ct3d = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; 
-                    colormap=ui_app[:color_map], colorrange=cr_obs, levels=ui_app[:levels]) 
+                    colormap=ui_app[:color_map], colorrange=cr_obs, levels=ui_app[:levels], rasterize=raster) 
     
     cache.primitives[:contour_3d] = ct3d
     cache_dict[label] = cache
@@ -428,8 +438,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
     
-    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
+    sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
     cache.primitives[:scatter_2d] = sc
     cache_dict[label] = cache
@@ -469,8 +480,9 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
     
-    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
+    sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
     cache.primitives[:scatter_3d] = sc
     cache_dict[label] = cache
@@ -498,9 +510,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
+    raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
     
     obs_coord = is_eul ? cache.obs_x : cache.obs_pts
-    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1]) 
+    sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
     cache.primitives[:scatter_1d] = sc
     cache_dict[label] = cache
@@ -530,7 +543,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         ms  = ui_app[:marker_size] 
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
-        s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk)
+        s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk, rasterize=raster)
+        raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
         
         cache.primitives[:scatter_colors] = s
         cache_dict[label] = cache
@@ -563,9 +577,10 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         lw  = ui_app[:line_width] 
         mrk = ui_app[:markers][mod1(m_idx, end)] 
         ms  = ui_app[:marker_size] 
+        raster = manager.ui[:various][:rasterize] == 0 ? false : manager.ui[:various][:rasterize]
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
-        sl = scatterlines!(ax, obs_coord, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk)
+        sl = scatterlines!(ax, obs_coord, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk, rasterize=raster)
         
         cache.primitives[:scatter_lines] = sl
         cache_dict[label] = cache

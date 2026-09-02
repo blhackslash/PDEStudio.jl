@@ -12,7 +12,7 @@ export ParamDict, MethodDict, VariedDict, FixedDict
 export create_param_dict, create_method_dict, create_varied_dict, create_sim_data
 
 # Globals & Settings
-export set_save_path!, set_target_module!, get_save_path, get_target_module
+export set_save_path!, set_target_module!, get_save_path, get_target_module, enable_cache!
 export register_stat!, delete_stat!, add_stat!, get_kept_dims, get_kept_indices
 # Simulation & Data Pipeline
 export run_all_simulations, load_sim_data, save_sim_data, generate_method_tasks

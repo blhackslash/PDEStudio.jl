@@ -127,9 +127,9 @@ get_time_dim(domain::DomainInfo) = findfirst(==(domain.time_dim), domain.dim_key
 # --- ALGORITHM: DYNAMIC SCATTER ---
 function interpolate_to_grid!(
     ::Val{:scatter},
-    u_euler, w_euler, e_fields,
+    u_euler, w_euler, e_fields_tup,
     ldata::LSimData{D, DS, M, T}, 
-    field_keys, field_vals, field_nan_vals, nan_vec,
+    field_vals_tup, nan_vec,
     s_mins, s_maxs, s_dx, s_inv_dx, grid_shape
 ) where {D, DS, M, T}
     T_len = length(ldata.t)
@@ -145,7 +145,7 @@ function interpolate_to_grid!(
     # =========================================================================
     # TIME BATCH LOOP (Dynamic Scatter Algorithm)
     # =========================================================================
-    @batch for t_idx in 1:T_len
+    Threads.@threads for t_idx in 1:T_len
         x_step = ldata.x[t_idx]
         u_step = ldata.u[t_idx]
         N_p = length(x_step)
@@ -157,28 +157,36 @@ function interpolate_to_grid!(
             idx_float = (pos .- s_mins) .* s_inv_dx .+ 1.0
             rad_idx = radius_1d .* s_inv_dx
             
-            min_idx = @. max(1, floor(Int, idx_float - rad_idx))
-            max_idx = @. min(grid_shape, ceil(Int, idx_float + rad_idx))
+            # --- THE FIX: Pure static bounds checking (No macros, no broadcast) ---
+            min_idx = ntuple(d -> max(1, floor(Int, idx_float[d] - rad_idx[d])), Val(DS))
+            max_idx = ntuple(d -> min(grid_shape[d], ceil(Int, idx_float[d] + rad_idx[d])), Val(DS))
             
             for cell_idx in CartesianIndices(ntuple(d -> min_idx[d]:max_idx[d], Val(DS)))
                 s_idx = SVector{DS, T}(Tuple(cell_idx))
                 cell_pos = s_mins + s_dx .* (s_idx .- 1.0)
                 
-                dist2 = sum(abs2, cell_pos - pos)
+                # Element-wise diff keeps it allocation-free for SVector
+                dist2 = sum(abs2.(cell_pos .- pos)) 
+                
                 if dist2 <= radius
                     w = 1.0 / max(dist2, 1e-12) 
                     
                     if D > DS
-                        w_euler[cell_idx, t_idx] += w
-                        u_euler[cell_idx, t_idx] += u_step[p_idx] * w
-                        for i in 1:length(field_keys)
-                            e_fields[field_keys[i]][cell_idx, t_idx] += field_vals[i][t_idx][p_idx] * w
+                        # --- THE FIX: Fuse index to bypass `to_indices` overhead ---
+                        full_idx = CartesianIndex(Tuple(cell_idx)..., t_idx)
+                        
+                        w_euler[full_idx] += w
+                        u_euler[full_idx] += u_step[p_idx] * w
+                        
+                        # The compiler perfectly unrolls this Tuple loop!
+                        for i in 1:length(e_fields_tup)
+                            e_fields_tup[i][full_idx] += field_vals_tup[i][t_idx][p_idx] * w
                         end
                     else
                         w_euler[cell_idx] += w
                         u_euler[cell_idx] += u_step[p_idx] * w
-                        for i in 1:length(field_keys)
-                            e_fields[field_keys[i]][cell_idx] += field_vals[i][p_idx] * w
+                        for i in 1:length(e_fields_tup)
+                            e_fields_tup[i][cell_idx] += field_vals_tup[i][p_idx] * w
                         end
                     end
                 end
@@ -188,29 +196,30 @@ function interpolate_to_grid!(
         # Pass 2: Finalize averages for this time step
         @inbounds for cell_idx in CartesianIndices(grid_shape)
             if D > DS
-                w_sum = w_euler[cell_idx, t_idx]
+                full_idx = CartesianIndex(Tuple(cell_idx)..., t_idx)
+                w_sum = w_euler[full_idx]
                 if w_sum > 0.0
-                    u_euler[cell_idx, t_idx] /= w_sum
-                    for i in 1:length(field_keys)
-                        e_fields[field_keys[i]][cell_idx, t_idx] /= w_sum
+                    u_euler[full_idx] /= w_sum
+                    for i in 1:length(e_fields_tup)
+                        e_fields_tup[i][full_idx] /= w_sum
                     end
                 else
-                    u_euler[cell_idx, t_idx] = nan_vec
-                    for i in 1:length(field_keys)
-                        e_fields[field_keys[i]][cell_idx, t_idx] = field_nan_vals[i]
+                    u_euler[full_idx] = nan_vec
+                    for i in 1:length(e_fields_tup)
+                        e_fields_tup[i][full_idx] = nan_vec
                     end
                 end
             else
                 w_sum = w_euler[cell_idx]
                 if w_sum > 0.0
                     u_euler[cell_idx] /= w_sum
-                    for i in 1:length(field_keys)
-                        e_fields[field_keys[i]][cell_idx] /= w_sum
+                    for i in 1:length(e_fields_tup)
+                        e_fields_tup[i][cell_idx] /= w_sum
                     end
                 else
                     u_euler[cell_idx] = nan_vec
-                    for i in 1:length(field_keys)
-                        e_fields[field_keys[i]][cell_idx] = field_nan_vals[i]
+                    for i in 1:length(e_fields_tup)
+                        e_fields_tup[i][cell_idx] = nan_vec
                     end
                 end
             end
@@ -346,42 +355,37 @@ function convert_to_eulerian(
     # =========================================================================
     e_stats = StatDict{M, T}()
     field_keys = Symbol[]
-    field_nan_vals = Any[]
-    e_fields = Dict{Symbol, Array}()
+    
+    e_fields_vec = Array{SVector{M, T}, D}[]
+    typeof_field_vals = D > DS ? Vector{Vector{SVector{M, T}}} : Vector{SVector{M, T}}
+    field_vals_vec = typeof_field_vals[]
     
     for (k, v) in ldata.stats
         kept_dims = get_kept_dims(k, ldata.domain)
         
-        # If it's a Series (keeps only :t, or is static with no dims) -> Pass through!
         if kept_dims == [time_dim] || isempty(kept_dims)
             e_stats[k] = copy(v)
-            
-        # Otherwise, it must be a Field -> Prepare to scatter!
         else
             push!(field_keys, k)
-            
-            # Extract the correct element type
-            T_val = D > DS ? eltype(eltype(v)) : eltype(v)
-            f_zero = zero(T_val)
-            f_nan = f_zero .* NaN
-            
-            push!(field_nan_vals, f_nan)
-            e_fields[k] = fill(f_zero, e_shape...)
+            push!(e_fields_vec, fill(zero_vec, e_shape...))
+            push!(field_vals_vec, v)
         end
     end
-    
-    field_vals = [ldata.stats[k] for k in field_keys]
+
+    # --- THE FIX: Convert to Tuples so the compiler unrolls the inner loops ---
+    e_fields_tup = Tuple(e_fields_vec)
+    field_vals_tup = Tuple(field_vals_vec)
 
     # 4. Delegate spatial mesh generation to the modular interpolator
     interpolate_to_grid!(
-        Val(spatial_interp), u_euler, w_euler, e_fields, ldata, 
-        field_keys, field_vals, field_nan_vals, nan_vec, 
+        Val(spatial_interp), u_euler, w_euler, e_fields_tup, ldata, 
+        field_vals_tup, nan_vec, 
         s_mins, s_maxs, s_dx, s_inv_dx, grid_shape
     )
 
     # 5. Merge scattered fields back into the main stats dictionary
-    for k in field_keys
-        e_stats[k] = e_fields[k]
+    for i in 1:length(field_keys)
+        e_stats[field_keys[i]] = e_fields_vec[i]
     end
 
     edata = ESimData{D, DS, M, T}(ldata.params, e_domain, e_axes, u_euler, e_stats)

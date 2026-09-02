@@ -120,24 +120,24 @@ const LAGRANGIAN_PLOT_STYLE_OPTIONS = Dict{Symbol, Vector{Any}}(
 
 const STYLE_DEPENDENCIES = Dict{Symbol, Vector{Symbol}}(
     :lines_1d         => [:colors, :line_width, :line_styles, :dashed_lines, :reference],
-    :scatter_1d       => [:color_map, :color_range, :markers, :marker_size, :bottom_margin, :rasterize, :method_index],
+    :scatter_1d       => [:color_map, :color_range, :markers, :marker_size, :bottom_margin, :method_index],
     :scatter_colors   => [:colors, :markers, :marker_size],
     :scatter_lines    => [:colors, :line_width, :line_styles, :dashed_lines, :markers, :marker_size, :reference],
     
     :lines_2d         => [:color_map, :color_range, :line_width, :line_direction, :bottom_margin, :method_index],
     :lines_3d         => [:color_map, :color_range, :line_width, :line_direction, :bottom_margin, :method_index],
     
-    :scatter_2d       => [:color_map, :color_range, :markers, :marker_size, :bottom_margin, :rasterize, :method_index],
-    :scatter_surface  => [:color_map, :color_range, :markers, :marker_size, :rasterize, :method_index],
-    :scatter_3d       => [:color_map, :color_range, :markers, :marker_size, :rasterize, :method_index],
+    :scatter_2d       => [:color_map, :color_range, :markers, :marker_size, :bottom_margin, :method_index],
+    :scatter_surface  => [:color_map, :color_range, :markers, :marker_size, :method_index],
+    :scatter_3d       => [:color_map, :color_range, :markers, :marker_size, :method_index],
     
     :contour_colors          => [:colors, :levels, :line_width, :labels],
     :contour_cmap     => [:color_map, :color_range, :levels, :line_width, :labels, :bottom_margin, :method_index],
     :contour_f        => [:color_map, :color_range, :levels, :method_index, :bottom_margin],
     :contour_surface  => [:colors, :levels, :line_width, :labels],
-    :heatmap_flat          => [:color_map, :color_range, :rasterize, :bottom_margin, :method_index],
-    :heatmap_surface          => [:color_map, :color_range, :rasterize, :method_index],
-    :volume_3d           => [:color_map, :color_range, :rasterize, :method_index],
+    :heatmap_flat          => [:color_map, :color_range, :bottom_margin, :method_index],
+    :heatmap_surface          => [:color_map, :color_range, :method_index],
+    :volume_3d           => [:color_map, :color_range, :method_index],
     :contour_3d       => [:colors, :levels, :line_width, :method_index]
 )
 
@@ -194,7 +194,8 @@ function create_master_ui_dict()
         :save_formats         => ["png"], 
         :create_savefolder    => false,
         :animation_time       => 10.0, 
-        :animation_FPS        => 30, 
+        :animation_FPS        => 30,
+        :rasterize            => 3,
     )
     master[:outliers_extrema] = Dict{Symbol, Any}(
         :remove_outliers      => false, 
@@ -236,7 +237,6 @@ function create_master_ui_dict()
         :levels          => 15,
         :method_index    => 1,
         :bottom_margin   => 60,
-        :rasterize       => 2,
         :show_lines      => true,
         :show_scatter    => false,
         :dashed_lines    => false,
@@ -366,6 +366,7 @@ function apply_plot_preset!(::Val{:publication})
     set_ui_opt!(:plot_style, :dashed_lines, false)
     set_ui_opt!(:plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
     set_ui_opt!(:various, :save_formats, ["pdf", "svg"])
+    set_ui_opt!(:various, :rasterize, 5)
 
     apply_layout_options!(Dict(
         :legend_base => :top,

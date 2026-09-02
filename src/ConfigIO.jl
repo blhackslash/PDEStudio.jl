@@ -11,7 +11,7 @@ function _apply_backend_keys(d::Dict)
     return new_d
 end
 
-function load_and_apply_csv!(filepath::String)
+function load_and_apply_csv!(filepath::AbstractString)
     @info "Loading configuration from CSV: $filepath"
     parsed = parse_csv_to_dict(filepath)
     
