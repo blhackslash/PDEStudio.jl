@@ -77,40 +77,41 @@ end
 
 function load_and_apply_csv!(parsed::Dict)
     @info "Applying parsed CSV configuration..."
-
-    cfg = parsed["Config"]
-    
-    # Load Dimensions (Acts as a failsafe if triggered directly)
-    if haskey(cfg, "Dimensions")
-        dims = cfg["Dimensions"]
-        if haskey(dims, "allowed_dims")
-            raw_dims = dims["allowed_dims"]
-            if raw_dims isa Tuple
-                manager.allowed_dims = Tuple(Symbol.(raw_dims))
-            elseif raw_dims isa Vector
-                manager.allowed_dims = Tuple(Symbol.(raw_dims))
-            elseif raw_dims isa AbstractString
-                clean_str = replace(raw_dims, r"[\(\): ]" => "")
-                manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
+    if haskey(parsed, "Config")
+        cfg = parsed["Config"]
+        
+        # Load Dimensions (Acts as a failsafe if triggered directly)
+        if haskey(cfg, "Dimensions")
+            dims = cfg["Dimensions"]
+            if haskey(dims, "allowed_dims")
+                raw_dims = dims["allowed_dims"]
+                if raw_dims isa Tuple
+                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
+                elseif raw_dims isa Vector
+                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
+                elseif raw_dims isa AbstractString
+                    clean_str = replace(raw_dims, r"[\(\): ]" => "")
+                    manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
+                end
+            end
+            if haskey(dims, "max_params")
+                manager.max_params = Int(dims["max_params"])
             end
         end
-        if haskey(dims, "max_params")
-            manager.max_params = Int(dims["max_params"])
+        
+        # Load Resolutions
+        if haskey(cfg, "Resolution_Base")
+            for (k, v) in cfg["Resolution_Base"]
+                manager.state[:Resolution_Base][Symbol(k)] = Int(v)
+            end
         end
+        
+        if haskey(cfg, "Resolution_Ref")
+            for (k, v) in cfg["Resolution_Ref"]
+                manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
+            end
+        end    
     end
-    
-    # Load Resolutions
-    if haskey(cfg, "Resolution_Base")
-        for (k, v) in cfg["Resolution_Base"]
-            manager.state[:Resolution_Base][Symbol(k)] = Int(v)
-        end
-    end
-    
-    if haskey(cfg, "Resolution_Ref")
-        for (k, v) in cfg["Resolution_Ref"]
-            manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
-        end
-    end    
     # --- 1. FULL PROJECT DATA ---
     if haskey(parsed, "Simulation")
 

@@ -523,6 +523,20 @@ function _setup_hierarchy_interactions!()
             end
         elseif cat === :ui
             if scope === :presets
+                # THE FIX: Dynamically scan the disk for custom presets!
+                preset_dir = joinpath(get_save_path(), "Presets")
+                if isdir(preset_dir)
+                    for file in readdir(preset_dir)
+                        if endswith(lowercase(file), ".csv")
+                            sym_name = Symbol(splitext(file)[1])
+                            # Register it in the UI maps if it isn't there already
+                            if !haskey(manager.maps[:Presets], sym_name)
+                                manager.maps[:Presets][sym_name] = "Custom disk preset"
+                            end
+                        end
+                    end
+                end
+                
                 raw_keys = sort(collect(keys(manager.maps[:Presets])))
             else
                 raw_keys = sort(collect(keys(get(manager.ui, scope, Dict{Symbol, Any}()))))

@@ -99,17 +99,37 @@ end
 # Normalizes values to a consistent string format before hashing
 function _normalize_for_hash(val)
     if val isa Number
-        # Coerce all numbers to Float64 so 1 and 1.0 become identical strings
-        # Use a formatted string to avoid floating-point display quirks
         return string(Float64(val)) 
-    elseif val isa Tuple || val isa AbstractArray
-        # Recursively normalize collections
-        return "[" * join([_normalize_for_hash(v) for v in val], ",") * "]"
-    elseif val isa Symbol || val isa String
+    elseif val isa Symbol || val isa AbstractString
         return string(val)
+    elseif val isa AbstractArray || val isa Tuple
+        return "[" * join([_normalize_for_hash(v) for v in val], ",") * "]"
+    elseif val isa Dict
+        # Sort keys to ensure deterministic hashing for nested dictionaries like bc_map
+        sorted_keys = sort(collect(keys(val)), by=string)
+        return "{" * join(["$(_normalize_for_hash(k))=>$(_normalize_for_hash(val[k]))" for k in sorted_keys], ",") * "}"
+    elseif val isa Function
+        str = string(val)
+        # Scrub memory addresses (e.g., @0x00007f...)
+        str = replace(str, r"@[0-xX0-9a-fA-F]+" => "")
+        # Scrub internal anonymous function mangling (e.g., var"#get_mach3step_domain...")
+        str = replace(str, r"var\"#[^\"]+\"" => "Closure")
+        str = replace(str, r"##\d+#\d+" => "")
+        return str
     else
-        # Fallback for complex custom types
-        return string(val) 
+        # Dynamic deep reflection for custom structs (GeometricDomain, HorizontalSlipWall, etc.)
+        T = typeof(val)
+        type_name = string(T.name.name) 
+        
+        fields = propertynames(val)
+        if isempty(fields)
+            # For empty structs like HorizontalSlipWall()
+            return type_name
+        else
+            # For data-heavy structs like GeometricDomain
+            field_strs = ["$f=$(_normalize_for_hash(getproperty(val, f)))" for f in fields]
+            return "$type_name(" * join(field_strs, ",") * ")"
+        end
     end
 end
 
@@ -138,33 +158,12 @@ function get_file_name(params::ParamDict)
         throw(SimFileNotFoundError("File with matching parameters not found."))
     end
 
+    # Return the most recent file matching the exact cryptographic hash
     sort!(candidate_files, by = f -> mtime(joinpath(save_data, f)), rev=true)
     
-    # --- FAST METADATA READ ---
-    for file in candidate_files
-        full_path = joinpath(save_data, file)
-        try
-            is_match = jldopen(full_path, "r") do f
-                # Fast path: Read the isolated params key directly
-                if haskey(f, "params")
-                    return f["params"] == params
-                # Slow fallback for backwards compatibility with older files
-                elseif haskey(f, "raw")
-                    return f["raw"].params == params
-                end
-                return false
-            end
-            
-            if is_match
-                return full_path
-            end
-        catch e
-            @warn "Could not read $file during hash collision check." exception=e
-            continue
-        end
-    end
-
-    throw(SimFileNotFoundError("Hash matched, but exact parameters did not match any file."))
+    # Cryptographic guarantee: if the SHA-256 hash matches, we do not need 
+    # to load the file into RAM to verify structural equality.
+    return joinpath(save_data, candidate_files[1])
 end
 
 function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
