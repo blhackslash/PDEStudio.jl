@@ -788,7 +788,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         is_anim = false
         
         if isempty(ext)
-            formats = lowercase.(manager.ui[:various][:save_formats])
+            formats = lowercase.(manager.ui[:export][:save_formats])
             is_anim = "gif" in formats || "mp4" in formats
         else
             formats = [ext]
@@ -819,8 +819,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 active_ext = isempty(ext) ? "gif" : ext
                 fname = joinpath(save_path, base_name * "." * active_ext)
                 
-                duration = manager.ui[:various][:animation_time]
-                fps = manager.ui[:various][:animation_FPS]
+                duration = manager.ui[:export][:animation_time]
+                fps = manager.ui[:export][:animation_FPS]
                 rng = target_widget.range[]
                 n_frames = Int(duration * fps)
                 @info "Recording pristine '$target_name' animation to $fname..."
@@ -838,13 +838,20 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 for obs in export_obs; off(obs); end
             else
                 save_dir = joinpath(get_save_path(), "figures")
-                if manager.ui[:various][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
+                if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end # Updated scope
                 mkpath(save_dir)
 
                 for fmt in formats
                     full_path = joinpath(save_dir, base_name * ".$fmt")
-                    save(full_path, export_fig; backend=CairoMakie)
-                    @info "Pristine Image ($fmt) saved safely via CairoMakie!"
+                    
+                    # THE FIX: Apply the DPI multiplier exclusively for PNGs
+                    if fmt == "png"
+                        dpi_val = get(manager.ui[:export], :dpi, 300)
+                        save(full_path, export_fig; backend=CairoMakie, px_per_unit=dpi_val / 96.0)
+                    else
+                        save(full_path, export_fig; backend=CairoMakie)
+                    end
+                    @info "Image ($fmt) saved via CairoMakie!"
                 end
 
                 for obs in export_obs; off(obs); end
@@ -915,8 +922,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             target_widget = get_target_widget(target_name)
             is_animating[] = true
             
-            duration = manager.ui[:various][:animation_time]
-            fps = manager.ui[:various][:animation_FPS]
+            duration = manager.ui[:export][:animation_time]
+            fps = manager.ui[:export][:animation_FPS]
             rng = target_widget.range[]
             start_time = time()
             

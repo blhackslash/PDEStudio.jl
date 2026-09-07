@@ -20,6 +20,7 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :ui => "UI",
     :none => "Disabled",
     :outliers_extrema => "Outliers & Extrema",
+    :dpi => "DPI",
     
     # Plot Styles
     :lines_1d => "1D Lines",
@@ -190,12 +191,13 @@ function create_master_ui_dict()
         :marker_size => 15.0
     )  
     
-    master[:various] = Dict{Symbol, Any}(
+    master[:export] = Dict{Symbol, Any}(
         :save_formats         => ["png"], 
         :create_savefolder    => false,
         :animation_time       => 10.0, 
         :animation_FPS        => 30,
-        :rasterize            => 3,
+        :rasterize            => false,
+        :dpi                  => 300, # Added DPI setting for high-res PNGs
     )
     master[:outliers_extrema] = Dict{Symbol, Any}(
         :remove_outliers      => false, 
@@ -269,7 +271,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
     
     ui[:axis_general]       = deepcopy(master[:axis_general])
     ui[:labels]             = deepcopy(master[:labels])
-    ui[:various]            = deepcopy(master[:various])
+    ui[:export]            = deepcopy(master[:export])
     ui[:outliers_extrema]   = deepcopy(master[:outliers_extrema])
     ui[:hud]                = deepcopy(master[:hud])
     ui[:plot_style]         = deepcopy(master[:plot_style])
@@ -365,8 +367,7 @@ function apply_plot_preset!(::Val{:publication})
     set_ui_opt!(:plot_style, :line_width, 2.5)
     set_ui_opt!(:plot_style, :dashed_lines, false)
     set_ui_opt!(:plot_style, :line_styles, [:solid, (:dash, :dense), (:dot, :dense), :dash, :dot])
-    set_ui_opt!(:various, :save_formats, ["pdf", "svg"])
-    set_ui_opt!(:various, :rasterize, 5)
+    set_ui_opt!(:export, :save_formats, ["pdf", "svg", "png"])
 
     apply_layout_options!(Dict(
         :legend_base => :top,
