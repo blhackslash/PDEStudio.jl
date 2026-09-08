@@ -403,29 +403,40 @@ end
     _value_to_string_for_csv(v)
 
 A robust helper to convert a Julia object to a string for CSV saving.
-Explicitly strips type prefixes (like 'Any' or 'Vector{Float64}') from 
-containers to ensure they are saved as clean, parsable Julia expressions.
+It preserves explicit UI types (Symbols, Tuples) for safe 2-way Meta.parse recreation, 
+while aggressively condensing heavy physics closures and structs into clean strings.
 """
 function _value_to_string_for_csv(v)
     if isa(v, Symbol)
         return ":" * string(v)
-    end
-
-    if v == ""
+    elseif v == ""
         return "<empty>"
+    elseif isa(v, Function)
+        return "Closure"
+    elseif isa(v, Val)
+        return string(v)
+    elseif isa(v, AbstractArray)
+        return "[" * join([_value_to_string_for_csv(x) for x in v], ", ") * "]"
+    elseif isa(v, Tuple)
+        return "(" * join([_value_to_string_for_csv(x) for x in v], ", ") * ")"
+    elseif isa(v, Dict)
+        sorted_keys = sort(collect(keys(v)), by=string)
+        return "{" * join(["$(_value_to_string_for_csv(k))=>$(_value_to_string_for_csv(v[k]))" for k in sorted_keys], ", ") * "}"
+    elseif isa(v, Number) || isa(v, AbstractString) || isa(v, Type)
+        return string(v)
+    else
+        # Dynamic deep reflection for custom structs (matching the normalizer!)
+        T = typeof(v)
+        type_name = string(T.name.name) 
+        
+        fields = propertynames(v)
+        if isempty(fields)
+            return type_name
+        else
+            field_strs = ["$f=$(_value_to_string_for_csv(getproperty(v, f)))" for f in fields]
+            return "$type_name(" * join(field_strs, ", ") * ")"
+        end
     end
-
-    if isa(v, AbstractArray)
-        s = string(v)
-        return replace(s, r"^[a-zA-Z0-9_{}, ]*\[" => "[")
-    end
-    
-    if isa(v, Tuple)
-        s = string(v)
-        return replace(s, r"^[a-zA-Z0-9_{}, ]*\(" => "(")
-    end
-
-    return string(v)
 end
 
 function get_all_git_infos(start_path::String = ".")
@@ -566,6 +577,11 @@ function save_params_to_csv(
 
         if haskey(manager.maps, :Labels)
             for (k, v) in manager.maps[:Labels]
+                # THE FIX: Skip saving redundant default labels to keep the CSV clean!
+                if v == string(k)
+                    continue
+                end
+                
                 # Save the raw backend key as the parameter, and the user's label as the value
                 add_row("Scene", "Labels", string(k), v)
             end
@@ -665,6 +681,11 @@ function save_preset_to_csv(preset_name::Symbol, save_dir::String)
 
         if haskey(manager.maps, :Labels)
             for (k, v) in manager.maps[:Labels]
+                # THE FIX: Apply the same clean-up filter to Presets
+                if v == string(k)
+                    continue
+                end
+                
                 add_row("Scene", "Labels", string(k), v)
             end
         end

@@ -47,9 +47,27 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :t => "Time (T)",
 )
 
+const LABEL_TO_SYMBOL_MAP = Dict{String, Symbol}(v => k for (k, v) in SYMBOL_TO_LABEL_MAP)
+
 function backend_key(s::AbstractString)
-    s_clean = replace(strip(s), r"[\s-]+" => "_")
-    return Symbol(lowercase(s_clean))
+    s_strip = strip(s)
+    
+    # 1. O(1) Reverse lookup custom labels
+    if isdefined(Main, :manager) && haskey(manager.maps, :Labels_Reverse)
+        if haskey(manager.maps[:Labels_Reverse], s_strip)
+            return manager.maps[:Labels_Reverse][s_strip]
+        end
+    end
+    
+    # 2. O(1) Reverse lookup hardcoded frontend strings
+    if haskey(LABEL_TO_SYMBOL_MAP, s_strip)
+        return LABEL_TO_SYMBOL_MAP[s_strip]
+    end
+    
+    # 3. Algorithmic fallback
+    s_clean = replace(lowercase(s_strip), r"[^\w\s-]" => "") 
+    s_clean = replace(strip(s_clean), r"[\s-]+" => "_")
+    return Symbol(s_clean)
 end
 
 """
@@ -59,7 +77,14 @@ Registers a custom UI display name for a backend Symbol.
 Perfect for fixing method acronyms (e.g., `set_label!(:rk4, "RK4")`).
 """
 function set_label!(sym::Symbol, label::AbstractString)
-    manager.maps[:Labels][sym] = String(label)
+    str_label = String(label)
+    manager.maps[:Labels][sym] = str_label
+    
+    # THE FIX: Automatically maintain the dynamic reverse mapping
+    if !haskey(manager.maps, :Labels_Reverse)
+        manager.maps[:Labels_Reverse] = Dict{String, Symbol}()
+    end
+    manager.maps[:Labels_Reverse][str_label] = sym
 end
 
 function frontend_key(s::Symbol)
@@ -272,7 +297,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
     
     ui[:axis_general]       = deepcopy(master[:axis_general])
     ui[:labels]             = deepcopy(master[:labels])
-    ui[:export]            = deepcopy(master[:export])
+    ui[:export]             = deepcopy(master[:export])
     ui[:outliers_extrema]   = deepcopy(master[:outliers_extrema])
     ui[:hud]                = deepcopy(master[:hud])
     ui[:plot_style]         = deepcopy(master[:plot_style])

@@ -109,9 +109,18 @@ function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict
             isempty(opts) && continue
             
             valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
+            
+            # Match 1: Direct literal match
             idx = findfirst(v -> string(v) == string(val), valid_vals)
             
-            if isnothing(idx) && val isa String
+            # THE FIX: Match 2: Translate UI strings (e.g. "Contour Filled") back to Symbols (e.g. :contour_f)
+            if isnothing(idx) && val isa AbstractString
+                bk_val = backend_key(val)
+                idx = findfirst(v -> v == bk_val, valid_vals)
+            end
+            
+            # Match 3: Fallback startswith
+            if isnothing(idx) && val isa AbstractString
                 idx = findfirst(v -> startswith(string(v), val), valid_vals)
             end
             
@@ -744,15 +753,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return true
     end
     function build_pristine_export_figure()
-        bbox = plot_layout.layoutobservables.computedbbox[]
-        w, h = bbox.widths[1], bbox.widths[2]
-        w = max(w, 400); h = max(h, 300) # Fallback minimums
         
-        # THE FIX: Force dimensions to be even integers (Strictly required for FFmpeg MP4s)
-        w = round(Int, w); w += w % 2
-        h = round(Int, h); h += h % 2
-        
-        export_fig = Figure(size = (w, h)) 
+        export_fig = Figure() 
         export_layout = export_fig[1, 1] = GridLayout()
         
         ptype_sym = manager.widgets[:plot_style].selection[]
@@ -780,6 +782,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             end
         end
         
+        # It is safe to run it once to initialize the grid, but it won't run again!
         resize_to_layout!(export_fig)
         return export_fig, export_obs
     end
@@ -821,6 +824,9 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             
             # 2. BUILD PRISTINE EXPORT FIGURE (Takes exclusive control of manager.caches)
             export_fig, export_obs = build_pristine_export_figure()
+            dpi_val = get(manager.ui[:export], :dpi, 300)
+
+            manager.state[:Is_Exporting] = true
 
             if is_anim
                 save_path = joinpath(get_save_path(), "animations")
@@ -838,8 +844,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 n_frames = Int(duration * fps)
                 @info "Recording pristine '$target_name' animation to $fname..."
                 
-                # THE FIX: Apply the MP4 compression and DPI kwargs dynamically
-                record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps, compression=comp) do val
+                record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps, compression=comp, px_per_unit=dpi_val/96.0) do val
                     set_close_to!(target_widget, val)
                     yield() 
                 end
@@ -852,7 +857,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
                 mkpath(save_dir)
 
-                dpi_val = get(manager.ui[:export], :dpi, 300)
+                
                 for fmt in formats
                     full_path = joinpath(save_dir, base_name * ".$fmt")
                     if fmt == "png"
@@ -873,15 +878,19 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         catch e
             @error "Export Failed" exception=(e, catch_backtrace())
         finally
+            manager.state[:Is_Exporting] = false
+            
             manager.state[:Camera_Locked][] = was_locked
             if !was_locked
                 manager.state[:Camera_Cache] = Dict{Symbol, Any}()
             end
             
-            # 4. RESTORE MAIN WINDOW (Force a Layout rebuild to resurrect the main UI)
             @info "Restoring main UI..."
             manager.state[:Skip_Next_Camera_Extract] = true 
             manager.triggers[:Layout][] += 1
+            
+            # THE FIX: Force the OpenGL context to bring the main window back to life!
+            display(master_fig)
         end
     end
 

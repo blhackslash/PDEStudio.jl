@@ -426,7 +426,11 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         create_or_update_legend!(plot_layout, _collect_legend_elements(ui_app)...)
     end
     
-    resize_to_layout!(master_fig)
+    # THE FIX: Block dynamic resizing if the camera is currently rolling!
+    if !get(manager.state, :Is_Exporting, false)
+        resize_to_layout!(master_fig)
+    end
+    
     _enforce_camera_lock!(axes)
 end
 
