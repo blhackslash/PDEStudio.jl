@@ -196,8 +196,9 @@ function create_master_ui_dict()
         :create_savefolder    => false,
         :animation_time       => 10.0, 
         :animation_FPS        => 30,
-        :rasterize            => false,
-        :dpi                  => 300, # Added DPI setting for high-res PNGs
+        :rasterize            => 3,
+        :dpi                  => 300,
+        :mp4_compression      => 15, # THE FIX: Added high-quality MP4 compression (0 is lossless, 51 is worst)
     )
     master[:outliers_extrema] = Dict{Symbol, Any}(
         :remove_outliers      => false, 

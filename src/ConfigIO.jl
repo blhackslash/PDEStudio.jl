@@ -138,7 +138,27 @@ function load_and_apply_csv!(parsed::Dict)
     else
         @info "No simulation data found. Loading as a visual preset."
     end
-    
+
+    # THE FIX: PRE-INITIALIZE PLOT TYPE
+    # We must set the plot type before loading the UI overrides so the master templates
+    # are constructed with the correct dimensionality, preventing CSV overrides from being wiped.
+    layout_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
+        parsed["Scene"]["Layout"]
+    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
+        parsed["Layout"]["General"]
+    else
+        nothing
+    end
+
+    if !isnothing(layout_source)
+        for (k, v) in layout_source
+            if backend_key(string(k)) === :plot_style
+                switch_ui_plot_type!(Symbol(v))
+                break
+            end
+        end
+    end
+
     # --- 2. VISUAL PRESETS & STAGING ---
     if haskey(parsed, "UI")
         ui_overrides = _apply_backend_keys(parsed["UI"])
@@ -491,7 +511,14 @@ function save_params_to_csv(
             for (i, src_path) in enumerate(config.source_files)
                 if isfile(src_path)
                     bundled_name = "$(base_filename)_source_$i.jl"
-                    cp(src_path, joinpath(save_dir, bundled_name), force=true)
+                    dst_path = joinpath(save_dir, bundled_name)
+                    
+                    # THE FIX: Prevent crashing if the source and destination are the exact same file
+                    if abspath(src_path) != abspath(dst_path)
+                        cp(src_path, dst_path, force=true)
+                    else
+                        @info "Source file already exists at destination, skipping copy."
+                    end
                     push!(bundled_names, bundled_name)
                 else
                     @warn "Source file not found and skipped: $src_path"

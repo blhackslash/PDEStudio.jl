@@ -100,22 +100,27 @@ end
 function _normalize_for_hash(val)
     if val isa Number
         return string(Float64(val)) 
-    elseif val isa Symbol || val isa AbstractString
+        
+    elseif val isa Symbol || val isa AbstractString || val isa Type
         return string(val)
+        
+    # THE FIX: Explicitly catch Val objects to preserve their type parameters (e.g., Val{:sphere}())
+    elseif val isa Val
+        return string(val)
+        
     elseif val isa AbstractArray || val isa Tuple
         return "[" * join([_normalize_for_hash(v) for v in val], ",") * "]"
+        
     elseif val isa Dict
         # Sort keys to ensure deterministic hashing for nested dictionaries like bc_map
         sorted_keys = sort(collect(keys(val)), by=string)
         return "{" * join(["$(_normalize_for_hash(k))=>$(_normalize_for_hash(val[k]))" for k in sorted_keys], ",") * "}"
+        
     elseif val isa Function
-        str = string(val)
-        # Scrub memory addresses (e.g., @0x00007f...)
-        str = replace(str, r"@[0-xX0-9a-fA-F]+" => "")
-        # Scrub internal anonymous function mangling (e.g., var"#get_mach3step_domain...")
-        str = replace(str, r"var\"#[^\"]+\"" => "Closure")
-        str = replace(str, r"##\d+#\d+" => "")
-        return str
+        # THE FIX: Completely discard function names. They are just labels and break 
+        # upon refactoring. Treat all functions as identical pure closures.
+        return "Closure"
+        
     else
         # Dynamic deep reflection for custom structs (GeometricDomain, HorizontalSlipWall, etc.)
         T = typeof(val)
@@ -167,8 +172,21 @@ function get_file_name(params::ParamDict)
 end
 
 function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
+    # THE FIX: Condense the parameters into a human-readable, closure-free format!
+    # This prevents JLD2 serialization warnings and massively shrinks the file size.
+    condensed_params = Dict{Symbol, Any}()
+    for (k, v) in sim_data.params
+        condensed_params[k] = _normalize_for_hash(v)
+    end
+    
+    # Mutate the sim_data's params in place so the heavy objects are stripped out 
+    # before JLD2 attempts to save the 'raw' object to disk.
+    empty!(sim_data.params)
+    merge!(sim_data.params, condensed_params)
+
     file_name = ""
     try
+        # The hash calculation remains 100% identical because the normalizer is idempotent!
         file_name = get_file_name(sim_data.params)
     catch e
         if !isa(e, SimFileNotFoundError); rethrow(e); end
@@ -187,7 +205,7 @@ function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
             
             # --- WRITE FAST METADATA ---
             file["native"] = sim_data isa ESimData ? :eulerian : :lagrangian
-            file["params"] = sim_data.params
+            file["params"] = sim_data.params # Will now save the clean, stringified dictionary!
             file["stat_keys"] = collect(keys(sim_data.stats))
         end
         @info "Saved 'raw' to $(basename(file_name))"
@@ -538,3 +556,181 @@ function delete_sim_data(keys::Vector{Symbol}, vals::Vector)
     end
 end
 
+"""
+    rehash_sim_data(target_path::String; kwargs...)
+
+Recursively scans a directory (or processes a single file) for .jld2 simulation files,
+cleans the parameters using `_normalize_for_hash`, and saves under a new hash.
+
+Keyword Arguments:
+* `delete_old::Bool=true`: Removes the old file after a successful rehash.
+* `filter_pairs::Union{Dict{Symbol, Any}, Nothing}=nothing`: Only processes files containing these exact parameter matches (e.g., `Dict(:Ns => (500,))`).
+* `remove_keys::Vector{Symbol}=Symbol[]`: Deletes these keys from the parameter dictionary before rehashing.
+* `prompt_keys::Vector{Symbol}=Symbol[]`: Pauses on each matched file, prints current parameters, and prompts the user in the REPL to input values for these keys.
+"""
+function rehash_sim_data(
+    target_path::String; 
+    delete_old::Bool=true,
+    filter_pairs::Union{Dict{Symbol, <:Any}, Nothing}=nothing,
+    remove_keys::Vector{Symbol}=Symbol[],
+    prompt_keys::Vector{Symbol}=Symbol[]
+)
+    if isfile(target_path) && endswith(target_path, ".jld2")
+        _rehash_single_file(target_path, delete_old, filter_pairs, remove_keys, prompt_keys)
+    elseif isdir(target_path)
+        for (root, dirs, files) in walkdir(target_path)
+            for file in files
+                if endswith(file, ".jld2")
+                    _rehash_single_file(joinpath(root, file), delete_old, filter_pairs, remove_keys, prompt_keys)
+                end
+            end
+        end
+    else
+        @warn "Path is neither a .jld2 file nor a directory: $target_path"
+    end
+end
+
+function _rehash_single_file(file_path::String, delete_old::Bool, filter_pairs, remove_keys, prompt_keys)
+    local raw_data
+    try
+        jldopen(file_path, "r") do file
+            if !haskey(file, "raw")
+                return nothing
+            end
+            raw_data = file["raw"]
+        end
+    catch e
+        @warn "Failed to open $(basename(file_path))" exception=e
+        return
+    end
+
+    isnothing(raw_data) && return
+
+    # --- FILTERING ---
+    if !isnothing(filter_pairs)
+        skip = false
+        for (k, v) in filter_pairs
+            # Direct comparison (catches both stringified and raw values if typed correctly)
+            if !haskey(raw_data.params, k) || raw_data.params[k] != v
+                skip = true
+                break
+            end
+        end
+        skip && return
+    end
+    
+    @info "Processing matched file: $(basename(file_path))"
+
+    # --- REMOVAL ---
+    for k in remove_keys
+        if haskey(raw_data.params, k)
+            delete!(raw_data.params, k)
+            @info "  Removed obsolete key: $k"
+        end
+    end
+
+    # --- INTERACTIVE PROMPTING ---
+    if !isempty(prompt_keys)
+        println("\n--- Current Parameters for $(basename(file_path)) ---")
+        for (k, v) in raw_data.params
+            println("  $k => $(_normalize_for_hash(v))")
+        end
+        println("---------------------------------------------------")
+        
+        for pk in prompt_keys
+            print("Enter value for '$pk' (valid Julia expression, leave blank to skip): ")
+            val_str = strip(readline())
+            if !isempty(val_str)
+                try
+                    # Evaluate the user's string as native Julia code (e.g. typing [1, 2] creates a Vector)
+                    val = eval(Meta.parse(val_str))
+                    raw_data.params[pk] = val
+                    @info "  Injected: $pk = $val"
+                catch e
+                    @warn "  Failed to parse '$val_str'. Skipping '$pk'."
+                end
+            else
+                @info "  Skipped '$pk'."
+            end
+        end
+    end
+
+    # --- NORMALIZATION & HASHING ---
+    condensed_params = Dict{Symbol, Any}()
+    for (k, v) in raw_data.params
+        condensed_params[k] = _normalize_for_hash(v)
+    end
+    
+    empty!(raw_data.params)
+    merge!(raw_data.params, condensed_params)
+
+    new_hash = calculate_hash(raw_data.params)
+    
+    bname = basename(file_path)
+    m = match(r"^(.+)_([a-f0-9a-fA-F]+)\.jld2$", bname)
+    timestamp = !isnothing(m) ? m.captures[1] : Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS_sss")
+    
+    new_file_name = "$(timestamp)_$(new_hash).jld2"
+    new_file_path = joinpath(dirname(file_path), new_file_name)
+    
+    # --- SAFE FILE SWAP ---
+    temp_file = new_file_path * ".tmp"
+    try
+        jldopen(temp_file, "w") do file
+            file["raw"] = raw_data
+            file["native"] = raw_data isa ESimData ? :eulerian : :lagrangian
+            file["params"] = raw_data.params
+            file["stat_keys"] = collect(keys(raw_data.stats))
+        end
+        
+        is_same_file = abspath(file_path) == abspath(new_file_path)
+        
+        if delete_old && !is_same_file
+            rm(file_path, force=true)
+            @info "Rehashed and renamed: $bname -> $new_file_name\n"
+        elseif is_same_file
+            @info "Rehashed in-place (hash unchanged): $bname\n"
+        else
+            @info "Rehashed and copied (old file kept): $bname -> $new_file_name\n"
+        end
+        
+        mv(temp_file, new_file_path, force=true)
+        
+    catch e
+        @error "Failed to write $new_file_name" exception=e
+        rm(temp_file, force=true)
+    end
+end
+
+"""
+    get_clean_params(params::Dict)
+    get_clean_params(sim_data::AbstractSimData)
+
+Returns a dictionary where all values have been scrubbed by the idempotent 
+`_normalize_for_hash` function. Useful for debugging serialization signatures.
+"""
+function get_clean_params(params::Dict)
+    clean_dict = Dict{Symbol, Any}()
+    for (k, v) in params
+        clean_dict[k] = _normalize_for_hash(v)
+    end
+    return clean_dict
+end
+
+get_clean_params(sim_data) = get_clean_params(sim_data.params)
+
+"""
+    print_clean_params(data)
+
+Neatly prints the scrubbed parameters to the REPL in alphabetical order. 
+Accepts either a Parameter Dictionary or an AbstractSimData object.
+"""
+function print_clean_params(data)
+    clean_dict = get_clean_params(data)
+    println("\n--- Cleaned Parameters ---")
+    for (k, v) in sort(collect(clean_dict), by=x->string(x[1]))
+        println("  $k => $v")
+    end
+    println("--------------------------\n")
+    return clean_dict
+end

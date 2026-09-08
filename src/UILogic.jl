@@ -162,16 +162,19 @@ function apply_slider_options!(slider_options::Dict)
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
+                # Safely cache the desired CSV value
                 manager.state[:Slider_Cache][w_key] = Float64(desired_val)
                 manager.state[:Plot_Cache][key] = desired_val
                 
                 rng = widget.range[]
-                isempty(rng) && continue
                 
-                val = Float64(rng[1])
-                if desired_val isa Real
-                    val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
+                # THE FIX: If the range is a dummy placeholder, do NOT touch the widget!
+                # Touching it triggers an OnAny listener that overwrites our Cache with 0.0!
+                if isempty(rng) || rng == [0.0]
+                    continue
                 end
+                
+                val = clamp(Float64(desired_val), Float64(rng[1]), Float64(rng[end]))
                 set_close_to!(widget, val) 
             end
         end
@@ -741,10 +744,13 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return true
     end
     function build_pristine_export_figure()
-        # THE FIX: Match the pristine figure exactly to the cropped plot dimensions
         bbox = plot_layout.layoutobservables.computedbbox[]
         w, h = bbox.widths[1], bbox.widths[2]
         w = max(w, 400); h = max(h, 300) # Fallback minimums
+        
+        # THE FIX: Force dimensions to be even integers (Strictly required for FFmpeg MP4s)
+        w = round(Int, w); w += w % 2
+        h = round(Int, h); h += h % 2
         
         export_fig = Figure(size = (w, h)) 
         export_layout = export_fig[1, 1] = GridLayout()
@@ -806,10 +812,14 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         target_widget = is_anim ? get_target_widget(target_name) : nothing
         
-        # THE FIX: Tell the macro to let both windows render simultaneously
-        manager.state[:Bypass_Locks] = true
-        
         try
+            # 1. SHUT DOWN MAIN WINDOW (Prevents cache corruption and duplicate colorbars)
+            if haskey(manager.state, :Main_Render_Observers)
+                for obs in manager.state[:Main_Render_Observers]; off(obs); end
+                empty!(manager.state[:Main_Render_Observers])
+            end
+            
+            # 2. BUILD PRISTINE EXPORT FIGURE (Takes exclusive control of manager.caches)
             export_fig, export_obs = build_pristine_export_figure()
 
             if is_anim
@@ -821,54 +831,57 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 
                 duration = manager.ui[:export][:animation_time]
                 fps = manager.ui[:export][:animation_FPS]
+                comp = get(manager.ui[:export], :mp4_compression, 15)
+                dpi_val = get(manager.ui[:export], :dpi, 300)
+                
                 rng = target_widget.range[]
                 n_frames = Int(duration * fps)
                 @info "Recording pristine '$target_name' animation to $fname..."
-                # Because the locks are bypassed, moving the main window's slider
-                # WILL successfully animate the pristine figure in the background!
-                record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps) do val
+                
+                # THE FIX: Apply the MP4 compression and DPI kwargs dynamically
+                record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps, compression=comp) do val
                     set_close_to!(target_widget, val)
                     yield() 
                 end
-                display(master_fig)
+                
                 metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_path, metadata) 
                 @info "Pristine Animation Saved Successfully."
-                
-                for obs in export_obs; off(obs); end
             else
                 save_dir = joinpath(get_save_path(), "figures")
-                if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end # Updated scope
+                if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
                 mkpath(save_dir)
 
+                dpi_val = get(manager.ui[:export], :dpi, 300)
                 for fmt in formats
                     full_path = joinpath(save_dir, base_name * ".$fmt")
-                    
-                    # THE FIX: Apply the DPI multiplier exclusively for PNGs
                     if fmt == "png"
-                        dpi_val = get(manager.ui[:export], :dpi, 300)
-                        save(full_path, export_fig; backend=CairoMakie, px_per_unit=dpi_val / 96.0)
+                        save(full_path, export_fig; backend=CairoMakie, px_per_unit=dpi_val/96.0)
                     else
                         save(full_path, export_fig; backend=CairoMakie)
                     end
-                    @info "Image ($fmt) saved via CairoMakie!"
+                    @info "Pristine Image ($fmt) saved safely via CairoMakie!"
                 end
-
-                for obs in export_obs; off(obs); end
                 
                 metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_dir, metadata)
             end
+            
+            # 3. SHUT DOWN EXPORT LISTENERS
+            for obs in export_obs; off(obs); end
+            
         catch e
             @error "Export Failed" exception=(e, catch_backtrace())
         finally
-            # Restore the lock safety net!
-            manager.state[:Bypass_Locks] = false
-            
+            manager.state[:Camera_Locked][] = was_locked
             if !was_locked
-                manager.state[:Camera_Locked][] = false
                 manager.state[:Camera_Cache] = Dict{Symbol, Any}()
             end
+            
+            # 4. RESTORE MAIN WINDOW (Force a Layout rebuild to resurrect the main UI)
+            @info "Restoring main UI..."
+            manager.state[:Skip_Next_Camera_Extract] = true 
+            manager.triggers[:Layout][] += 1
         end
     end
 
