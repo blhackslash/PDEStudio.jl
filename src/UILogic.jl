@@ -481,7 +481,7 @@ function _setup_hierarchy_interactions!()
 
         if !isnothing(target_dict) && haskey(target_dict, key)
             active_target_ref[] = (target_dict, key)
-            val_str = _value_to_string_for_csv(target_dict[key])
+            val_str = val2str(target_dict[key])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
             
             # THE FIX: Dynamic Toggle/Apply Button!
@@ -614,7 +614,7 @@ function _setup_hierarchy_interactions!()
             if cat === :labels || (cat === :ui && scope === :presets)
                 target_dict[key] = string(s)
             else
-                target_dict[key] = smart_parse_csv_value(s)
+                target_dict[key] = str2val(s)
             end
             
             if cat === :simulation

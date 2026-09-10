@@ -31,6 +31,80 @@ function get_conv_key(res::Tuple)
     return "conv_E_" * join(res, "x")
 end
 
+# ==============================================================================
+# --- UNIFIED SERIALIZATION & PARSING ---
+# ==============================================================================
+
+"""
+    val2str(v; top_level::Bool=true)
+
+Recursively converts Julia objects into valid, evaluatable Julia code strings.
+Uses `top_level` to keep CSV formatting clean for standalone strings, while 
+applying strict `repr()` quoting to elements inside containers for type stability.
+"""
+function val2str(v; top_level::Bool=true)
+    if v == ""
+        return "<empty>"
+    elseif isa(v, Function)
+        return "Closure"
+    elseif isa(v, Val)
+        return string(v)
+    elseif isa(v, Symbol) 
+        return repr(v)
+    elseif isa(v, AbstractString)
+        # THE FIX: Drop the explicit quotes for top-level strings so the CSV writes them cleanly!
+        return top_level ? String(v) : repr(v)
+    elseif isa(v, Number) || isa(v, Type)
+        return string(v)
+    elseif isa(v, AbstractArray)
+        T = eltype(v)
+        prefix = T === Any ? "Any" : string(T)
+        # Pass top_level=false so inner strings get their protective quotes back
+        elements = join([val2str(x; top_level=false) for x in v], ", ")
+        return "$(prefix)[$elements]"
+    elseif isa(v, Tuple)
+        elements = join([val2str(x; top_level=false) for x in v], ", ")
+        return length(v) == 1 ? "($elements,)" : "($elements)"
+    elseif isa(v, Dict)
+        K, V = keytype(v), valtype(v)
+        sorted_keys = sort(collect(keys(v)), by=string)
+        elements = join(["$(val2str(k; top_level=false)) => $(val2str(v[k]; top_level=false))" for k in sorted_keys], ", ")
+        return "Dict{$K, $V}($elements)"
+    else
+        T = typeof(v)
+        type_name = string(T.name.name) 
+        fields = propertynames(v)
+        if isempty(fields)
+            return type_name
+        else
+            field_strs = ["$f=$(val2str(getproperty(v, f); top_level=false))" for f in fields]
+            return "$type_name(" * join(field_strs, ", ") * ")"
+        end
+    end
+end
+
+
+"""
+    str2val(val_str::AbstractString)
+
+Attempts to evaluate a string back into its native Julia type.
+Falls back to a plain string if it represents a custom struct or unquoted UI input.
+"""
+function str2val(val_str::AbstractString)
+    val_str = strip(val_str)
+    if val_str == "<empty>" || isempty(val_str)
+        return ""
+    end
+    
+    try
+        # Safely evaluates nicely formatted code: Symbol[:RK2], Dict{Int, Float64}(...), true, 42.0
+        return eval(Meta.parse(val_str))
+    catch e
+        # Fallback for custom structs (GeometricDomain(...)) or raw unquoted UI strings
+        return replace(val_str, r"^\"|\"$" => "")
+    end
+end
+
 """
     set_save_path!(path::String)
 
@@ -94,54 +168,10 @@ function get_save_path()::String
     return _SAVE_ROOT_PATH[]
 end
 
-
-
-# Normalizes values to a consistent string format before hashing
-function _normalize_for_hash(val)
-    if val isa Number
-        return string(Float64(val)) 
-        
-    elseif val isa Symbol || val isa AbstractString || val isa Type
-        return string(val)
-        
-    # THE FIX: Explicitly catch Val objects to preserve their type parameters (e.g., Val{:sphere}())
-    elseif val isa Val
-        return string(val)
-        
-    elseif val isa AbstractArray || val isa Tuple
-        return "[" * join([_normalize_for_hash(v) for v in val], ",") * "]"
-        
-    elseif val isa Dict
-        # Sort keys to ensure deterministic hashing for nested dictionaries like bc_map
-        sorted_keys = sort(collect(keys(val)), by=string)
-        return "{" * join(["$(_normalize_for_hash(k))=>$(_normalize_for_hash(val[k]))" for k in sorted_keys], ",") * "}"
-        
-    elseif val isa Function
-        # THE FIX: Completely discard function names. They are just labels and break 
-        # upon refactoring. Treat all functions as identical pure closures.
-        return "Closure"
-        
-    else
-        # Dynamic deep reflection for custom structs (GeometricDomain, HorizontalSlipWall, etc.)
-        T = typeof(val)
-        type_name = string(T.name.name) 
-        
-        fields = propertynames(val)
-        if isempty(fields)
-            # For empty structs like HorizontalSlipWall()
-            return type_name
-        else
-            # For data-heavy structs like GeometricDomain
-            field_strs = ["$f=$(_normalize_for_hash(getproperty(val, f)))" for f in fields]
-            return "$type_name(" * join(field_strs, ",") * ")"
-        end
-    end
-end
-
 function calculate_hash(params::ParamDict)
-    sorted_keys = sort(collect(keys(params)))
-    # Apply the normalizer to ensure type-agnostic hashing
-    stringToHash = join(map(key -> "$key => $(_normalize_for_hash(params[key]))", sorted_keys))
+    sorted_keys = sort(collect(keys(params)), by=string)
+    # Feed val2str directly into the hashing engine for a bulletproof signature
+    stringToHash = join(["$k => $(val2str(params[k]))" for k in sorted_keys], ", ")
     return bytes2hex(sha256(stringToHash))
 end
 # ==============================================================================
@@ -176,7 +206,7 @@ function save_sim_data(sim_data::AbstractSimData; overwrite::Bool = false)
     # This prevents JLD2 serialization warnings and massively shrinks the file size.
     condensed_params = Dict{Symbol, Any}()
     for (k, v) in sim_data.params
-        condensed_params[k] = _normalize_for_hash(v)
+        condensed_params[k] = str2val(val2str(v))
     end
     
     # Mutate the sim_data's params in place so the heavy objects are stripped out 
@@ -560,7 +590,7 @@ end
     rehash_sim_data(target_path::String; kwargs...)
 
 Recursively scans a directory (or processes a single file) for .jld2 simulation files,
-cleans the parameters using `_normalize_for_hash`, and saves under a new hash.
+cleans the parameters, and saves under a new hash.
 
 Keyword Arguments:
 * `delete_old::Bool=true`: Removes the old file after a successful rehash.
@@ -633,7 +663,7 @@ function _rehash_single_file(file_path::String, delete_old::Bool, filter_pairs, 
     if !isempty(prompt_keys)
         println("\n--- Current Parameters for $(basename(file_path)) ---")
         for (k, v) in raw_data.params
-            println("  $k => $(_normalize_for_hash(v))")
+            println("  $k => $(val2str(v))")
         end
         println("---------------------------------------------------")
         
@@ -658,7 +688,7 @@ function _rehash_single_file(file_path::String, delete_old::Bool, filter_pairs, 
     # --- NORMALIZATION & HASHING ---
     condensed_params = Dict{Symbol, Any}()
     for (k, v) in raw_data.params
-        condensed_params[k] = _normalize_for_hash(v)
+        condensed_params[k] = str2val(val2str(v))
     end
     
     empty!(raw_data.params)
@@ -706,13 +736,12 @@ end
     get_clean_params(params::Dict)
     get_clean_params(sim_data::AbstractSimData)
 
-Returns a dictionary where all values have been scrubbed by the idempotent 
-`_normalize_for_hash` function. Useful for debugging serialization signatures.
+Returns a dictionary where all values have been scrubbed by normalization function. Useful for debugging serialization signatures.
 """
 function get_clean_params(params::Dict)
     clean_dict = Dict{Symbol, Any}()
     for (k, v) in params
-        clean_dict[k] = _normalize_for_hash(v)
+        clean_dict[k] = str2val(val2str(v))
     end
     return clean_dict
 end

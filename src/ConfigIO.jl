@@ -350,45 +350,12 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     )
 end
 
-function smart_parse_csv_value(val_str::AbstractString)
-    val_str = strip(val_str)
-    
-    if val_str == "true"; return true; end
-    if val_str == "false"; return false; end
-    if val_str == "<empty>"; return ""; end
-    
-    # THE FIX: Safely parse standard Julia Types back into DataType objects
-    type_map = Dict{String, DataType}(
-        "Float16" => Float16, "Float32" => Float32, "Float64" => Float64, "BigFloat" => BigFloat,
-        "Int8" => Int8, "Int16" => Int16, "Int32" => Int32, "Int64" => Int64, "Int128" => Int128,
-        "ComplexF32" => ComplexF32, "ComplexF64" => ComplexF64, "Bool" => Bool
-    )
-    if haskey(type_map, val_str)
-        return type_map[val_str]
-    end
-    
-    v_int = tryparse(Int, val_str)
-    if !isnothing(v_int); return v_int; end
-    v_float = tryparse(Float64, val_str)
-    if !isnothing(v_float); return v_float; end
-    
-    if startswith(val_str, ":") || startswith(val_str, "[") || startswith(val_str, "(")
-        try
-            return eval(Meta.parse(val_str))
-        catch e
-            @warn "Failed to parse expression: $val_str"
-        end
-    end
-    
-    return replace(val_str, r"^\"|\"$" => "")
-end
-
 function parse_csv_to_dict(filepath::String)
     parsed = Dict{String, Dict{String, Dict{String, Any}}}()
     
     for row in CSV.Rows(filepath)
         cat, scope, param, val_str = String(row.Category), String(row.Scope), String(row.Parameter), String(row.Value)
-        val = smart_parse_csv_value(val_str)
+        val = str2val(val_str)
         
         if !haskey(parsed, cat); parsed[cat] = Dict{String, Dict{String, Any}}(); end
         if !haskey(parsed[cat], scope); parsed[cat][scope] = Dict{String, Any}(); end
@@ -397,46 +364,6 @@ function parse_csv_to_dict(filepath::String)
     end
     
     return parsed
-end
-
-"""
-    _value_to_string_for_csv(v)
-
-A robust helper to convert a Julia object to a string for CSV saving.
-It preserves explicit UI types (Symbols, Tuples) for safe 2-way Meta.parse recreation, 
-while aggressively condensing heavy physics closures and structs into clean strings.
-"""
-function _value_to_string_for_csv(v)
-    if isa(v, Symbol)
-        return ":" * string(v)
-    elseif v == ""
-        return "<empty>"
-    elseif isa(v, Function)
-        return "Closure"
-    elseif isa(v, Val)
-        return string(v)
-    elseif isa(v, AbstractArray)
-        return "[" * join([_value_to_string_for_csv(x) for x in v], ", ") * "]"
-    elseif isa(v, Tuple)
-        return "(" * join([_value_to_string_for_csv(x) for x in v], ", ") * ")"
-    elseif isa(v, Dict)
-        sorted_keys = sort(collect(keys(v)), by=string)
-        return "{" * join(["$(_value_to_string_for_csv(k))=>$(_value_to_string_for_csv(v[k]))" for k in sorted_keys], ", ") * "}"
-    elseif isa(v, Number) || isa(v, AbstractString) || isa(v, Type)
-        return string(v)
-    else
-        # Dynamic deep reflection for custom structs (matching the normalizer!)
-        T = typeof(v)
-        type_name = string(T.name.name) 
-        
-        fields = propertynames(v)
-        if isempty(fields)
-            return type_name
-        else
-            field_strs = ["$f=$(_value_to_string_for_csv(getproperty(v, f)))" for f in fields]
-            return "$type_name(" * join(field_strs, ", ") * ")"
-        end
-    end
 end
 
 function get_all_git_infos(start_path::String = ".")
@@ -509,7 +436,7 @@ function save_params_to_csv(
             push!(cats, string(cat))
             push!(scopes, string(scope))
             push!(params, string(p))
-            push!(vals, _value_to_string_for_csv(to_value(v)))
+            push!(vals, val2str(to_value(v)))
         end
 
         # --- 1. CATEGORY: Metadata ---
@@ -537,7 +464,7 @@ function save_params_to_csv(
             end
             
             if !isempty(bundled_names)
-                # Your `_value_to_string_for_csv` natively handles string vectors!
+                # Your `val2str` natively handles string vectors!
                 add_row("Metadata", "General", "bundled_sources", bundled_names)
             end
         end
@@ -652,7 +579,7 @@ function save_preset_to_csv(preset_name::Symbol, save_dir::String)
             push!(cats, string(cat))
             push!(scopes, string(scope))
             push!(params, string(p))
-            push!(vals, _value_to_string_for_csv(to_value(v)))
+            push!(vals, val2str(to_value(v)))
         end
 
         # --- 1. PRESET METADATA ---

@@ -17,7 +17,7 @@ export register_stat!, delete_stat!, add_stat!, get_kept_dims, get_kept_indices
 # Simulation & Data Pipeline
 export run_all_simulations, load_sim_data, save_sim_data, generate_method_tasks
 export does_sim_data_exist, delete_sim_data, rehash_sim_data, calculate_hash, print_clean_params
-export calculate_all_stats!, check_data, generate_reference_simdata
+export calculate_all_stats!, check_data, generate_reference_simdata, val2str, str2val
 
 # Utilities
 export get_ignore_keys, is_reference_method
