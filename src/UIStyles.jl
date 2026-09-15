@@ -4,7 +4,7 @@
 
 const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
-const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :padding, :log_scale, :dashed_lines, :levels, :rasterize, :legend_label)
+const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :padding, :log_scale, :dashed_lines, :levels, :rasterization_enabled, :rasterization_quality, :legend_label)
 const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
 const PLOT_AXIS_OPTIONS = (:x_axis, :y_axis, :z_axis, :u_axis, :component)
 const EXPLORATION_OPTIONS = (:anim_target, :component)
@@ -221,7 +221,8 @@ function create_master_ui_dict()
         :create_savefolder    => false,
         :animation_time       => 10.0, 
         :animation_FPS        => 30,
-        :rasterize            => 3,
+        :rasterization_enabled=> false,
+        :rasterization_quality=> 2,
         :dpi                  => 300,
         :mp4_compression      => 15, # THE FIX: Added high-quality MP4 compression (0 is lossless, 51 is worst)
     )

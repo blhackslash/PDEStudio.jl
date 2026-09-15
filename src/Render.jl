@@ -87,7 +87,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         ls = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
         lw = ui_app[:line_width] 
 
-        raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
         l = lines!(ax, cache.obs_x, cache.obs_u; color=c, linewidth=lw, linestyle=ls, rasterize=raster)
         cache.primitives[:lines_1d] = l
@@ -117,7 +117,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
         color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
         lw    = ui_app[:line_width] 
-        raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
         ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; levels=ui_app[:levels], color=color, linewidth=lw, labels=ui_app[:labels], rasterize=raster) 
         
@@ -145,7 +145,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, us[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     hm = heatmap!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster) 
 
@@ -172,7 +172,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     l2d = lines!(ax, cache.obs_x, cache.obs_y; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width], rasterize=raster) 
     cache.primitives[:lines_2d] = l2d
@@ -196,7 +196,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     ct = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
         colormap=ui_app[:color_map], colorrange=cr_obs, 
@@ -226,7 +226,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
     cache.obs_u.val = us_slices[base_idx]
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=raster) 
     
@@ -253,7 +253,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     sf = surface!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster ) 
     cache.primitives[:heatmap_surface] = sf
@@ -275,7 +275,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
     
     pts_3d = lift(cache.obs_pts, cache.obs_u) do pts, us
         [Point3f(p[1], p[2], u) for (p, u) in zip(pts, us)]
@@ -304,7 +304,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
         color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
         lw    = ui_app[:line_width] 
-        raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
         cs = contour3d!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
                         levels=ui_app[:levels], color=color, linewidth=lw, rasterize=raster) 
@@ -338,7 +338,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, u_data)
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     vol = volume!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; colormap=ui_app[:color_map], colorrange=cr_obs, rasterize=raster) 
     
@@ -366,7 +366,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     l3d = lines!(ax, cache.obs_x, cache.obs_y, cache.obs_z; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, linewidth=ui_app[:line_width], rasterize=raster) 
     cache.primitives[:lines_3d] = l3d
@@ -392,7 +392,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
 
     ct3d = contour!(ax, cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u; 
                     colormap=ui_app[:color_map], colorrange=cr_obs, levels=ui_app[:levels], rasterize=raster) 
@@ -438,7 +438,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
     
     sc = scatter!(ax, pts_2d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
@@ -480,7 +480,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, vals_1d[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
     
     sc = scatter!(ax, pts_3d; color=vals_1d, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
     
@@ -510,7 +510,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 
     valid_u = filter(isfinite, cache.obs_u[])
     cr_obs = get_colorrange(ui_app, valid_u)
-    raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
     
     obs_coord = is_eul ? cache.obs_x : cache.obs_pts
     sc = scatter!(ax, obs_coord, cache.obs_u; color=cache.obs_u, colormap=ui_app[:color_map], colorrange=cr_obs, markersize=ui_app[:marker_size], marker=ui_app[:markers][1], rasterize=raster) 
@@ -544,7 +544,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk, rasterize=raster)
-        raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
         cache.primitives[:scatter_colors] = s
         cache_dict[label] = cache
@@ -577,7 +577,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         lw  = ui_app[:line_width] 
         mrk = ui_app[:markers][mod1(m_idx, end)] 
         ms  = ui_app[:marker_size] 
-        raster = manager.ui[:export][:rasterize] == 0 ? false : manager.ui[:export][:rasterize]
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         sl = scatterlines!(ax, obs_coord, cache.obs_u; color=c, linewidth=lw, linestyle=ls, markersize=ms, marker=mrk, rasterize=raster)
