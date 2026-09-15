@@ -1,11 +1,11 @@
-module IPlotPDESols
+module PDEStudio
 
 # --- 1. Global Dependencies ---
 using Makie, CairoMakie, Reexport
 using Observables: ObserverFunction, onany
 using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
-@reexport using IRunPDESims 
+@reexport using PDECore
 
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation, set_resolution!
 

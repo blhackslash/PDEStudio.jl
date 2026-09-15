@@ -1012,7 +1012,7 @@ function _setup_chain_A!(::Val{:eulerian})
             
             for k in keys(sim_data.stats)
                 k === :Solution && continue
-                stat_dims = IRunPDESims.get_kept_dims(k, sim_data.domain)
+                stat_dims = PDECore.get_kept_dims(k, sim_data.domain)
                 if isempty(stat_dims)
                     for p in pd_first.active_param_keys
                         push!(valid_indep_axes, Symbol("$(String(k))|$p"))
@@ -1202,7 +1202,7 @@ function _setup_chain_B!(::Val{:eulerian})
             
             for k in keys(sim_data.stats)
                 k === :Solution && continue
-                kept_syms = IRunPDESims.get_kept_dims(k, sim_data.domain)
+                kept_syms = PDECore.get_kept_dims(k, sim_data.domain)
                 if issubset(active_physical_axes, kept_syms)
                     push!(valid_fields, menu_opt(k))
                 end
@@ -1238,7 +1238,7 @@ function _setup_chain_B!(::Val{:lagrangian})
             
             for k in keys(l_data.stats)
                 k === :Solution && continue
-                kept_syms = IRunPDESims.get_kept_dims(k, l_data.domain)
+                kept_syms = PDECore.get_kept_dims(k, l_data.domain)
                 if issubset(spatial_keys, kept_syms)
                     push!(valid_fields, menu_opt(k))     # THE FIX: Use menu_opt
                 end

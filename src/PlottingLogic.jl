@@ -157,7 +157,7 @@ function _handle_slider_trigger!(u_sel)
     
     target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
     base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
-    kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(IRunPDESims.get_kept_dims(base_stat, sim_data.domain))
+    kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(PDECore.get_kept_dims(base_stat, sim_data.domain))
 
     manager.locks[:PlotData] = true
     try

@@ -2,8 +2,8 @@ function _get_template_domain(sim_config::SimulationConfig)
     for m_name in sim_config.active_methods
         if is_reference_method(m_name); continue; end
         
-        base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
-        ik = IRunPDESims.get_ignore_keys(sim_config.methods_dict, m_name)
+        base_params = PDECore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
+        ik = PDECore.get_ignore_keys(sim_config.methods_dict, m_name)
         
         tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)); ignore_keys=ik)
         
@@ -120,7 +120,7 @@ end
 
 function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_config::SimulationConfig)
     active_keys, active_values = analyze_configuration(sim_config)
-    ignore_keys = IRunPDESims.get_ignore_keys(sim_config.methods_dict, method_name)
+    ignore_keys = PDECore.get_ignore_keys(sim_config.methods_dict, method_name)
     
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
@@ -136,7 +136,7 @@ function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_confi
         _recombine_tuples!(params)
         
         sim_data = if is_reference && !isnothing(domain)
-            IRunPDESims.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
+            PDECore.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
         
         elseif !isnothing(domain) # THE FIX: Explicitly protect domain.dim_keys
             try 
@@ -243,7 +243,7 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         tensor = get(sim_data.stats, u_key, nothing)
         isnothing(tensor) && continue
         
-        tensor_dim_syms = Tuple(IRunPDESims.get_kept_dims(u_key, sim_data.domain))
+        tensor_dim_syms = Tuple(PDECore.get_kept_dims(u_key, sim_data.domain))
         
         in_bounds = true
         
@@ -331,7 +331,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
-            base_params = IRunPDESims.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
+            base_params = PDECore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
             new_data = create_plot_data(m_name, base_params, sim_config)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
