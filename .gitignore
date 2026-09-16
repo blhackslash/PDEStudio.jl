@@ -33,3 +33,5 @@ Manifest.toml
 *.png
 *.csv
 *.gif
+
+docs/build/
