@@ -4,7 +4,17 @@
 """
     create_controls(layout::GridLayout)
 
-Purely builds the UI widgets inside the provided sub-layout.
+Constructs the primary control panel inside the provided Makie `GridLayout`. 
+
+This top-level builder orchestrates the creation of all interactive UI blocks:
+1. File operations (Load CSV, drag-and-drop zones, exports, presets).
+2. Execution triggers (Run Simulation, Apply Layout, Update Plot).
+3. The hierarchical state editor for live parameter tuning.
+4. Active method toggles.
+5. Static plot configuration menus and dimensional sliders.
+6. Camera locking and animation playback controls.
+
+It finalizes construction by injecting the persistent default layout states from the `manager.state` cache.
 """
 function create_controls(layout::GridLayout)
     rowgap!(layout, 15) 
@@ -76,6 +86,12 @@ function create_controls(layout::GridLayout)
     apply_exploration_options!(manager.state[:Exploration_Cache])
 end
 
+"""
+    create_method_controls!(layout::GridLayout)
+
+Builds the localized UI block responsible for toggling active simulation methods.
+Provides a mode button and a dropdown menu dynamically populated by the active `SimulationConfig`.
+"""
 function create_method_controls!(layout::GridLayout)
     manager.widgets[:mode_button]   = Button(layout[1, 1], label = "Mode: Activate", buttoncolor = :lightgreen, width=nothing)
     manager.widgets[:method_toggle] = Menu(layout[1, 2:3], options = [menu_opt(:methods)], prompt = "Methods...")
@@ -88,6 +104,16 @@ end
 # ==============================================================================
 # --- 2. STATIC PLOT CONTROLS BUILDER ---
 # ==============================================================================
+"""
+    build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout)
+
+Constructs the dense grid of dropdown menus and interactive sliders used to configure the visualization.
+
+# Structure
+- **Layout Options:** Controls structural layout features requiring a manual apply step (e.g., base plot style, sizing, legend positioning, and multi-column comparison modes). The available plot styles dynamically adjust based on whether the `PlotManager` is in `:eulerian` or `:lagrangian` mode.
+- **Plot Options:** Independent axis selectors, animation targets, and vector component selectors that automatically trigger data synchronization loops.
+- **Sliders:** Dynamically generates a scalable array of Makie `Slider` widgets bound directly to the active simulation's `varied_params` and domain dimensions.
+"""
 function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout)
     
     cr = 1
@@ -214,8 +240,15 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
 end
 
 # ==============================================================================
-# --- 4. HIERARCHICAL EDITOR BUILDER ---
+# --- 3. HIERARCHICAL EDITOR BUILDER ---
 # ==============================================================================
+"""
+    create_hierarchical_param_controls!(layout::GridLayout)
+
+Builds the interactive UI for the hierarchical parameter editor.
+
+This component allows users to dynamically traverse the active nested dictionary state (Categories -> Scopes -> Parameters). It connects a cascaded set of dropdown menus to a Makie `Textbox`, enabling two-way editing of simulation parameters, axis labels, and underlying UI properties via the `val2str` and `str2val` compilation bridge.
+"""
 function create_hierarchical_param_controls!(layout::GridLayout)
     
     Label(layout[1, 1:4], "Parameter & UI Editor:", fontsize=16, font=:bold, color=:royalblue)

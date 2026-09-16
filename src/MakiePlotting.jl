@@ -1,10 +1,20 @@
 # ==============================================================================
 # --- PLOT MODE DISPATCHES (Replacing if manager.mode[] == ...) ---
 # ==============================================================================
+"""
+    _cache_type(::Val{Mode})
+
+A dispatch helper that returns the appropriate `AbstractPlotCache` type based on the active visualization mode (e.g., `EulerianPlotCache` or `LagrangianPlotCache`).
+"""
 _cache_type(::Val{:eulerian}) = EulerianPlotCache
 _cache_type(::Val{:lagrangian}) = LagrangianPlotCache
 
-# THE FIX: Safely check the first element instead of querying the type itself!
+"""
+    _get_component_num_plots(::Val{Mode}, target_tensor)
+
+Dynamically analyzes a multi-component mathematical tensor and returns the number of sub-components required for plotting. 
+Safely handles empty arrays and deeply nested vector-of-vector structures inherent to Lagrangian particle tracks.
+"""
 function _get_component_num_plots(::Val{:eulerian}, target_tensor)
     isempty(target_tensor) && return 1
     first_elem = first(target_tensor)
@@ -22,6 +32,12 @@ function _get_component_num_plots(::Val{:lagrangian}, target_tensor)
     end
 end
 
+"""
+    _get_active_title_indices(::Val{Mode}, x_sel, y_sel, z_sel, sim_data)
+
+Parses the active plot axis observables and returns a vector of indices corresponding to their physical dimensions in the `sim_data`. 
+Used to generate dynamic plot titles and axis labels.
+"""
 function _get_active_title_indices(::Val{:eulerian}, x_sel, y_sel, z_sel, sim_data)
     active_plot_axes_syms = filter(s -> !isnothing(s) && s != :None, [x_sel[], y_sel[], z_sel[]])
     return [findfirst(isequal(occursin("|", string(ax)) ? Symbol(split(string(ax), "|")[2]) : ax), manager.plot_vars) for ax in active_plot_axes_syms]
@@ -34,6 +50,12 @@ end
 _get_time_vals(::Val{:eulerian}, sim_data, t_dim) = isnothing(t_dim) ? [0.0] : sim_data.axes[t_dim]
 _get_time_vals(::Val{:lagrangian}, sim_data, t_dim) = sim_data.t
 
+"""
+    _is_spatial_dim(::Val{Mode}, dim_sym, sim_data, kept_syms)
+
+Evaluates whether a given dimension symbol represents a strict spatial coordinate based on the underlying `DomainInfo` and active visualization mode.
+Returns a tuple `(is_spatial, is_disabled)`.
+"""
 _is_spatial_dim(::Val{:eulerian}, dim_sym, sim_data, kept_syms) = (false, !(dim_sym in kept_syms))
 function _is_spatial_dim(::Val{:lagrangian}, dim_sym, sim_data, kept_syms)
     is_spatial = dim_sym != sim_data.domain.time_dim
@@ -53,6 +75,13 @@ end
 # --- GENERAL HELPER FUNCTIONS ---
 # ==============================================================================
 
+"""
+    set_sim_config!(config::SimulationConfig)
+
+The primary injection point for connecting a `PDECore` physics configuration to the `PDEStudio` interactive UI. 
+
+This function unpacks the `SimulationConfig`, maps the dynamic parameter sweeps to the available UI sliders, builds the backend-to-frontend symbolic translation dictionaries, and triggers a full layout regeneration to reflect the new physics.
+"""
 function set_sim_config!(config::SimulationConfig)
     manager.active_config = config
     manager.flags[:Simulation][] = true 
@@ -119,6 +148,11 @@ function set_sim_config!(config::SimulationConfig)
     notify(manager.state[:Is_Activate_Mode])
 end
 
+"""
+    set_sim_config!(csv_name::String)
+
+A convenience wrapper that searches local standard directories (e.g., `figures`, `animations`, `Experiments`) for a given CSV filename. If found, it parses the file and applies the configuration via `load_and_apply_csv!`.
+"""
 function set_sim_config!(csv_name::String)
     filename = endswith(lowercase(csv_name), ".csv") ? csv_name : csv_name * ".csv"
     
@@ -154,6 +188,12 @@ function set_sim_config!(csv_name::String)
     load_and_apply_csv!(filepath)
 end
 
+"""
+    reset_plotter!()
+
+Safely resets the Makie rendering engine. 
+It systematically closes the active display screen, clears the `Figure` cache, and explicitly detaches all reactive `ObserverFunction` listeners to prevent memory leaks and ghost updates during hot reloads.
+"""
 function reset_plotter!()
     fig = manager.ui_state[:master_fig]
     
@@ -191,6 +231,12 @@ function reset_plotter!()
     @info "Plotter state completely cleared!"
 end
 
+"""
+    launch_plotter()
+
+Initializes the main `PDEStudio` interactive interface. 
+It constructs the foundational Makie `Figure`, partitions the layout into a control panel and a plot area, wires up the core reactive listeners, and displays the window. Returns the active `Makie.Figure` object.
+"""
 function launch_plotter()
 
     reset_plotter!()
@@ -213,6 +259,13 @@ end
 # ==============================================================================
 # --- 3. LAYOUT & RENDER HANDLERS ---
 # ==============================================================================
+"""
+    setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
+
+Bootstraps the top-level trigger listeners responsible for layout management. 
+
+This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing base plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
+"""
 function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     if manager.state[:plot_window_initialized][]; return; end
     manager.state[:plot_window_initialized][] = true
@@ -307,6 +360,16 @@ end
 # --- MAIN TOP-LEVEL RENDER LIFT ---
 # ==============================================================================
 
+"""
+    setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T}) where T
+
+The highly orchestrated reactive pipeline that binds UI slider movements directly to the Makie rendering primitives.
+
+# Pipeline Architecture
+1. **Initialize Layout:** Constructs the specific axes, sub-plots, and colorbars required by the active plot style `T`.
+2. **The Waterfall:** Establishes a strict cascade of hierarchical locks (`:Plot` -> `:Slider` -> `:PlotData` -> `:UI`) to ensure that heavy data-fetching routines only execute once per frame, preventing race conditions and UI stuttering during rapid user interaction.
+3. **Cache Synchronization:** Ensures that any manual adjustments made by the user are persistently synced to the global state cache for robust serialization.
+"""
 function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T}) where T
     
     # 1. Initialize complete layout structure and unpack necessary state handles

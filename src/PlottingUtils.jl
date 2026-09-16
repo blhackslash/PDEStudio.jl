@@ -1,10 +1,19 @@
+"""
+    allMethodNames(config::SimulationConfig)
+
+Returns a list of all method names defined within the active `SimulationConfig`, sorted strictly by priority using `sort_methods_robust`.
+"""
 function allMethodNames(config::SimulationConfig)
     return sort_methods_robust(collect(keys(config.methods_dict)))
 end
 
-# =============================================================================
-# THE FIX: Robust Priority Sorting
-# =============================================================================
+"""
+    sort_methods_robust(methods::Vector{Symbol})
+
+Sorts an array of method symbols, guaranteeing that analytical baselines or exact reference solutions are evaluated and drawn first. 
+
+Keywords matching `analytic`, `reference`, `exact`, `baseline`, or `true` are given priority rank `0`, ensuring they appear at the bottom of Z-index stacks (behind numerical overlays) and at the top of Legends.
+"""
 function sort_methods_robust(methods::Vector{Symbol})
     priority_keys = ["analytic", "reference", "exact", "baseline", "true"]
     
@@ -19,6 +28,10 @@ end
 
 """
     generate_dynamic_title(plot_dims::Tuple, dim_names::Vector{Symbol}, sel_vals, sim_data)
+
+Dynamically constructs a plot title reflecting the exact position within a multi-dimensional parameter sweep.
+
+Iterates through all registered UI axes. If a dimension is actively mapped to a spatial or parameter axis (found in `plot_dims`), it labels it `[Axis]`. Otherwise, it prints the exact fixed slider value (e.g., `T = 0.500 | N = 100`).
 """
 function generate_dynamic_title(
     plot_dims::Tuple, 
@@ -52,6 +65,12 @@ function generate_dynamic_title(
 end
 
 
+"""
+    plot_reference_lines!(ax::Axis, exponents::Vector; label, color, line_style, kwargs...)
+
+Draws analytical reference slopes dynamically anchored to the current axis limits. 
+Crucial for verifying numerical convergence rates visually. Automatically spans the exact bounding box of the active viewport, respecting logarithmic scaling.
+"""
 function plot_reference_lines!(
     ax::Axis,
     exponents::Vector;
@@ -98,8 +117,9 @@ end
 """
     get_colorrange(ui_app::Dict, u_data::AbstractArray)
 
-Extracts the colorrange from the UI dict, or calculates it dynamically from the data 
-if set to "default". Always returns an Observable Tuple of Float64 so it can bind to Makie.
+Extracts the exact color range bounds from the UI dictionary or dynamically calculates the global `[min, max]` extrema if the user has requested automatic default scaling. 
+
+Always returns a Makie-compatible `Observable{Tuple{Float64, Float64}}`.
 """
 function get_colorrange(ui_app::Dict, u_data::AbstractArray)
     cr_val = ui_app[:color_range] 
@@ -114,6 +134,11 @@ function get_colorrange(ui_app::Dict, u_data::AbstractArray)
     end
 end
 
+"""
+    apply_axis_limits_overrides!(ax)
+
+Overrides Makie's automatic axis scaling with rigid, user-defined boundary limits set via the hierarchical UI editor. Bypassed if the global Camera Lock is actively tracking a manual pan/zoom state.
+"""
 function apply_axis_limits_overrides!(ax)
     
     if get(manager.state, :Camera_Locked, Observable(false))[]
@@ -145,6 +170,13 @@ function apply_axis_limits_overrides!(ax)
     end
 end
 
+"""
+    delete_plots_by_label!(ax::Axis, label_to_delete::String)
+
+A targeted garbage collector for Makie scenes. 
+Iterates through all drawn primitives on an axis and deletes any object whose `label` attribute exactly matches `label_to_delete`. 
+Used to instantly clear and redraw HUDs, outlier markers, and extrema lines without destroying the primary data surfaces.
+"""
 function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     plots_to_delete = [p for p in ax.scene.plots if haskey(p,:label) && p.label[] == label_to_delete]
     
@@ -157,6 +189,13 @@ function delete_plots_by_label!(ax::Axis, label_to_delete::String)
     return false
 end
 
+"""
+    set_axis_limits_manager!(ax::Axis, xs, us)
+
+Safely computes and applies the optimal bounding box for a 2D axis. 
+
+Handles extreme edge cases (like purely horizontal/vertical lines) by applying dynamic padding factors. It also proactively catches negative values before activating `log10` scales to prevent the Makie rendering engine from fatally crashing on domain errors.
+"""
 function set_axis_limits_manager!(ax::Axis, xs, us)
     
     ui_x = manager.ui[:x_axis]
@@ -205,6 +244,12 @@ function set_axis_limits_manager!(ax::Axis, xs, us)
     return
 end
 
+"""
+    calculate_layout_dictionary(num_plots, cols_req, link_mode, has_legend, is_detached, halign, valign, has_colorbar)
+
+A pure mathematical layout engine. 
+Calculates the exact matrix coordinate mapping `(row, column)` for N subplots, intelligently routing space for dynamic grid comparisons, detached external legends, and global vs. local colorbars based on the active axis linking modes.
+"""
 function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::Symbol, has_legend::Bool, is_detached::Bool, halign::Symbol, valign::Symbol, has_colorbar::Bool)
     cols = min(num_plots, cols_req)
     rows = ceil(Int, num_plots / cols)
@@ -268,6 +313,13 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
     end
     return layout_dict
 end
+
+"""
+    _parse_legend_position()
+
+Parses the UI dropdown logic to determine the precise Makie anchoring coordinates for the legend block. 
+Returns `(is_detached, halign, valign)`.
+"""
 function _parse_legend_position()
     base_align = manager.widgets[:legend_base].selection[]
     add_align  = manager.widgets[:legend_add].selection[]
@@ -294,6 +346,11 @@ function _parse_legend_position()
     return (is_detached, halign, valign)
 end
 
+"""
+    create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector)
+
+Destroys any existing legend within the layout and builds a fresh, accurately positioned Makie `Legend` block matching the exact styles (colors, line widths, markers) of the currently drawn primitives.
+"""
 function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vector, labels::Vector)
     
     for c in copy(plot_layout.content)
@@ -335,6 +392,11 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     end
 end
 
+"""
+    create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs, default_label::String, plot_idx::Int=1)
+
+Builds and binds a Makie `Colorbar` to a specific plot primitive, securely linking its colormap and `color_range_obs` bounds to the global UI state.
+"""
 function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_range_obs, default_label::String, plot_idx::Int=1)
     
     ui_stl = manager.ui[:plot_style]
@@ -373,6 +435,11 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_
     end
 end
 
+"""
+    calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
+
+Computes the mathematically perfect padding around raw data limits, safely handling both linear and logarithmic coordinate spaces.
+"""
 function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is_log_scale::Bool)
     min_raw, max_raw = raw_limits
     if isnothing(min_raw) || isnothing(max_raw) || !isfinite(min_raw) || !isfinite(max_raw)
@@ -391,6 +458,11 @@ function calculate_padded_axis_range(raw_limits::Tuple, padding_factor::Real, is
     end
 end
 
+"""
+    _safe_extrema(data_slices)
+
+Calculates the absolute minimum and maximum boundaries across a collection of data slices, gracefully filtering out `NaN` and `Inf` values inserted by outlier masking logic.
+"""
 function _safe_extrema(data_slices)
     mins, maxs = Float64[], Float64[]
     for slice in data_slices
@@ -404,6 +476,11 @@ function _safe_extrema(data_slices)
     return (minimum(mins), maximum(maxs))
 end
 
+"""
+    plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d_axis)
+
+Analyzes the active slices to locate the absolute max/min spikes across the domain and overlays dashed targeting lines from the X-axis directly to the extrema coordinates.
+"""
 function plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d_axis)
     # Clear old extrema lines
     delete_plots_by_label!(ax, "Extrema_Max")
@@ -450,6 +527,12 @@ end
 
 plot_extrema_lines_manager!(ax::Axis3, args...) = nothing
 
+"""
+    apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
+
+Processes raw scalar data arrays based on Interquartile Range (IQR) thresholding. 
+Can visually mark statistical outliers with heavy crosses on the plot, completely remove them by injecting `NaN`s, or both, ensuring heavily spiked data does not ruin the global colormap scaling.
+"""
 function apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
     # 1. Always clear the old markers first
     delete_plots_by_label!(ax, "Outlier")
@@ -526,6 +609,11 @@ end
 # Safety fallback for Axis3
 apply_outlier_mask(ax::Axis3, data_tuples, valid_methods, is_3d_axis) = data_tuples
 
+"""
+    _find_outlier_indices(y_data::AbstractVector, threshold::Real)
+
+Calculates the Q1 and Q3 quartiles of a dataset to determine the Interquartile Range (IQR). Returns the exact indices of elements falling outside `Q1 - threshold * IQR` and `Q3 + threshold * IQR`.
+"""
 function _find_outlier_indices(y_data::AbstractVector, threshold::Real)
     if length(y_data) < 5; return Int[]; end
     finite_y_data = filter(isfinite, y_data)
@@ -544,6 +632,11 @@ function _find_outlier_indices(matrix::AbstractMatrix, threshold::Real)
     return CartesianIndices(matrix)[linear_outlier_indices]
 end
 
+"""
+    set_axis_styles!(ax, def_x, def_y, def_title)
+
+Maps the deep hierarchical UI dictionary (fonts, label padding, grid visibility, axis ticks, scale offsets) directly onto a native Makie `Axis` or `Axis3` object.
+"""
 function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::String)
     
     gen = manager.ui[:axis_general]
@@ -603,6 +696,11 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
     end
 end
 
+"""
+    plot_HUD!(ax::Axis)
+
+Injects arbitrary user-defined shapes (scatter points, connected polygons, tracking lines) in relative screen-space coordinates (0.0, 1.0) directly on top of the active plot axes to highlight specific regions of interest.
+"""
 function plot_HUD!(ax::Axis)
     # THE FIX: Always clear the previous HUD before drawing or exiting
     delete_plots_by_label!(ax, "HUD")
@@ -644,6 +742,7 @@ end
 
 plot_HUD!(ax::Axis3) = nothing
 
+
 function _apply_axis_styles!(ax, T::Symbol)
     x = frontend_key(manager.widgets[:x_axis].selection[])
     y = frontend_key(manager.widgets[:y_axis].selection[])
@@ -677,6 +776,11 @@ function _find_first_drawable_primitive(cache_dict)
     return nothing
 end
 
+"""
+    _collect_legend_elements(ui_app::Dict)
+
+Scans the active `PlotCache` and constructs the precise array of `Makie.LineElement`, `Makie.MarkerElement`, and `Makie.PolyElement` prototypes needed to render a visually accurate legend block.
+"""
 function _collect_legend_elements(ui_app::Dict)
     
     plotted_objects = []
@@ -731,6 +835,11 @@ function _collect_legend_elements(ui_app::Dict)
     return plotted_objects, labels_for_legend
 end
 
+"""
+    extract_and_store_camera_state!(plot_layout::GridLayout)
+
+Scrapes the precise mathematical bounding boxes, Azimuth, and Elevation angles from all actively drawn Makie axes and locks them into the persistent `Camera_Cache`. Used for exporting perfectly aligned animation frames.
+"""
 function extract_and_store_camera_state!(plot_layout::GridLayout)
     cam_opts = Dict{Symbol, Any}()
     axes = [c.content for c in plot_layout.content if c.content isa Axis || c.content isa Axis3]
@@ -752,6 +861,12 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
     manager.state[:Camera_Cache] = cam_opts
 end
 
+"""
+    _enforce_camera_lock!(axes::Vector)
+
+Overrides the automatic scaling of a newly drawn plot to forcibly match the bounding box stored in the `Camera_Cache`. 
+If the camera is not globally locked by the user, the cache is instantly cleared after application to allow auto-scaling to resume on the next frame.
+"""
 function _enforce_camera_lock!(axes::Vector)
     
     is_locked = get(manager.state, :Camera_Locked, Observable(false))[]

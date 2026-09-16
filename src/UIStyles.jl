@@ -49,6 +49,12 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
 
 const LABEL_TO_SYMBOL_MAP = Dict{String, Symbol}(v => k for (k, v) in SYMBOL_TO_LABEL_MAP)
 
+"""
+    backend_key(s::AbstractString)
+
+Safely resolves a human-readable UI label back into its corresponding internal `Symbol`. 
+It first checks dynamic user-defined labels, falls back to the hardcoded `LABEL_TO_SYMBOL_MAP`, and finally uses a regular expression to algorithmic cast unknown strings into lowercase, snake-case symbols.
+"""
 function backend_key(s::AbstractString)
     s_strip = strip(s)
     
@@ -74,7 +80,7 @@ end
     set_label!(sym::Symbol, label::AbstractString)
 
 Registers a custom UI display name for a backend Symbol. 
-Perfect for fixing method acronyms (e.g., `set_label!(:rk4, "RK4")`).
+Perfect for fixing method acronyms (e.g., `set_label!(:rk4, "RK4")`). It also automatically generates a reverse lookup entry to ensure `backend_key` resolves correctly.
 """
 function set_label!(sym::Symbol, label::AbstractString)
     str_label = String(label)
@@ -87,6 +93,11 @@ function set_label!(sym::Symbol, label::AbstractString)
     manager.maps[:Labels_Reverse][str_label] = sym
 end
 
+"""
+    frontend_key(s::Symbol)
+
+Translates an internal variable or method `Symbol` into a clean, human-readable string suitable for dropdown menus, Makie axis labels, or legend entries.
+"""
 function frontend_key(s::Symbol)
     # 1. Check User-Defined dynamic labels first
     if haskey(manager.maps, :Labels) && haskey(manager.maps[:Labels], s)
@@ -104,8 +115,7 @@ end
 """
     menu_opt(sym::Symbol)
 
-Helper function that uses `frontend_key` to automatically generate 
-a formatted Makie dropdown tuple: `("Nice String", :backend_key)`.
+Helper function that uses `frontend_key` to automatically generate a formatted Makie dropdown tuple: `("Nice String", :backend_key)`.
 """
 menu_opt(sym::Symbol) = (frontend_key(sym), sym)
 
@@ -182,7 +192,8 @@ const PRESET_DESCRIPTIONS = Dict{Symbol, String}(
 """
     create_master_ui_dict()
 
-Creates the definitive Master Dictionary containing EVERY possible UI option natively.
+Creates the definitive Master Dictionary containing every possible UI option natively. 
+This establishes the default state (font sizes, grid visibility, axis paddings, colors) and serves as the structural baseline before any user CSVs are applied.
 """
 function create_master_ui_dict()
     master = Dict{Symbol, Dict{Symbol, Any}}()
@@ -277,6 +288,13 @@ function create_master_ui_dict()
 end
 
 const MASTER_UI_DICT = create_master_ui_dict()
+
+"""
+    switch_ui_plot_type!(plot_type::Symbol)
+
+Safely orchestrates the visual transition when users switch the fundamental plot dimensionality (e.g., swapping from 1D Lines to 2D Heatmaps). 
+It actively tracks the current dimensionality `PLOT_DIM_MAP[plot_type]`. If a structural shift occurs (e.g., 2D to 3D), it completely reconstructs the X, Y, and Z axis dictionaries from `MASTER_UI_DICT` to prevent 1D margins from corrupting a 3D bounding box, while deliberately preserving universal settings (like fonts and HUD points).
+"""
 function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
@@ -336,7 +354,13 @@ function switch_ui_plot_type!(plot_type::Symbol)
     end
 end
 
-function set_plot_presets!()
+"""
+    set_plot_preset!()
+
+A global reset routine. 
+It purges the actively mutated `manager.ui` dictionary, forces a hard reload of all base layout options and exploration variables, and triggers a `:Layout` rebuild to return the studio to a pristine default state.
+"""
+function set_plot_preset!()
     # 1. Clear the UI dictionary completely (switch_ui_plot_type! will build the specific defaults)
     empty!(manager.ui)
     
@@ -357,6 +381,11 @@ function set_plot_presets!()
     return
 end
 
+"""
+    set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
+
+Directly mutates the active `manager.ui` dictionary. Used exclusively as an internal routing wrapper during CSV preset parsing.
+"""
 function set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
     # Directly mutates the active UI dictionary
     if !haskey(manager.ui, scope)
@@ -368,7 +397,7 @@ end
 """
     apply_plot_preset!(::Val{:preset_name})
 
-Dispatched function to define a plot preset.
+A dispatched hook defining explicit aesthetic profiles (e.g., `:publication`, `:heatmap`, `:darkmode`). By overloading this method, you can execute a batch of custom `set_ui_opt!` instructions to dramatically alter the UI in a single click.
 """
 function apply_plot_preset!(::Val{T}) where T
     @warn "Unknown plot preset ignored: $T"
@@ -451,7 +480,13 @@ end
 # --- THE ORCHESTRATOR ---
 # ==============================================================================
 
-function set_plot_presets!(name::Symbol)
+"""
+    set_plot_preset!(name::Symbol)
+
+The public entry point for loading themes. 
+It checks if the requested `name` exists as a hardcoded `apply_plot_preset!` dispatch. If not, it falls back to scanning the local `/Presets` directory for custom `name.csv` user templates and invokes `load_and_apply_csv!` directly.
+"""
+function set_plot_preset!(name::Symbol)
     # 1. Check for Hardcoded functions
     if haskey(PRESET_DESCRIPTIONS, name)
         
@@ -480,6 +515,12 @@ end
 # ==============================================================================
 # --- MODULAR UI MODIFIERS ---
 # ==============================================================================
+"""
+    apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any, cr_obs::Observable = Observable((0.0, 1.0)))
+
+The runtime style applicator. 
+It queries the strict `STYLE_DEPENDENCIES` matrix to determine exactly which attributes (e.g., line width, colormaps, color limits) the given Makie primitive `prim` fundamentally supports. It then safely binds those values in-place directly from the UI dictionary `ui_app`, averting `MethodError`s on incompatible primitives.
+"""
 function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_app::Dict, color::Any, cr_obs::Observable = Observable((0.0, 1.0)))
     k = Symbol(prim_key)
     deps = get(STYLE_DEPENDENCIES, k, Symbol[])

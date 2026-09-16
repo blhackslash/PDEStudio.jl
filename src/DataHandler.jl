@@ -1,3 +1,9 @@
+"""
+    _get_template_domain(sim_config::SimulationConfig)
+
+Retrieves the mathematical domain metadata by loading the raw data of the first valid non-reference method. 
+This bypasses resolution requirements (`Val(:raw)`) to quickly establish the dimensional layout before full tensor allocation.
+"""
 function _get_template_domain(sim_config::SimulationConfig)
     for m_name in sim_config.active_methods
         if is_reference_method(m_name); continue; end
@@ -23,6 +29,12 @@ function _get_template_domain(sim_config::SimulationConfig)
     return nothing
 end
 
+"""
+    analyze_configuration(sim_config::SimulationConfig)
+
+Extracts and sorts the active parameter keys and their corresponding sweep values from the simulation's varied parameters. 
+Returns a tuple of `(active_keys, active_values)` used to map the Cartesian sweep grid.
+"""
 function analyze_configuration(sim_config::SimulationConfig)
     all_varied = sim_config.varied_params
     active_keys = Symbol[]
@@ -37,8 +49,8 @@ end
 """
     validate_plot_dimensions(sim_data::AbstractSimData)
 
-Checks if the dimension keys of the loaded simulation data are a subset of 
-the currently allowed UI dimensions.
+Validates that the spatial and temporal dimensions of the loaded simulation data natively fit within the allowed UI dimensions. 
+Returns `false` and drops the data if the dimensional structures are incompatible.
 """
 function validate_plot_dimensions(sim_data::AbstractSimData)
     allowed = manager.allowed_dims
@@ -54,8 +66,7 @@ end
 """
     get_active_slider_indices(sim_data::AbstractSimData)
 
-Returns a boolean array indicating which of the fixed UI sliders should be enabled 
-for the loaded data.
+Generates a boolean mask mapping which fixed UI sliders should be enabled based on the loaded dataset's actual dimensions.
 """
 function get_active_slider_indices(sim_data::AbstractSimData)
     allowed = manager.allowed_dims
@@ -66,7 +77,7 @@ end
 """
     map_sliders_to_tensor(sim_data::AbstractSimData)
 
-Maps the fixed UI slider indices to the dynamic dimension indices of the underlying tensor.
+Maps the physical UI slider layout to the arbitrary internal dimension indices of the underlying simulation tensor.
 """
 function map_sliders_to_tensor(sim_data::AbstractSimData)
     allowed = manager.allowed_dims
@@ -74,12 +85,22 @@ function map_sliders_to_tensor(sim_data::AbstractSimData)
     return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
 end
 
+"""
+    _get_first_valid(pd::PlotSweepData)
+
+Safely extracts the first non-`nothing` simulation object from a multi-dimensional sweep data array.
+"""
 function _get_first_valid(pd)
     isempty(pd.data) && return nothing
     valid_data = filter(!isnothing, pd.data)
     return isempty(valid_data) ? nothing : first(valid_data)
 end
 
+"""
+    _recombine_tuples!(params::Dict)
+
+Parses flat dictionary keys with indexed suffixes (e.g., `name__1`, `name__2`) and recombines them into proper Julia `Tuple`s within the dictionary.
+"""
 function _recombine_tuples!(params::Dict)
     tuple_groups = Dict{Symbol, Vector{Pair{Int, Any}}}()
     keys_to_remove = Symbol[]
@@ -118,6 +139,12 @@ end
 # --- MAIN TENSOR CREATION ROUTINE (Unified) ---
 # ==============================================================================
 
+"""
+    create_plot_data(method_name::Symbol, base_params::ParamDict, sim_config::SimulationConfig)
+
+The primary tensor assembly routine. 
+Calculates the full Cartesian sweep grid, dispatches Eulerian or Lagrangian loading mechanisms, handles analytical reference injections, and packages the result into a `PlotSweepData` cache.
+"""
 function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_config::SimulationConfig)
     active_keys, active_values = analyze_configuration(sim_config)
     ignore_keys = PDECore.get_ignore_keys(sim_config.methods_dict, method_name)
@@ -165,6 +192,12 @@ end
 # ==============================================================================
 # --- DATA EXTRACTION (On-The-Fly Cross-Plotting) ---
 # ==============================================================================
+"""
+    extract_eulerian_data(...)
+
+The core slicing engine for Eulerian grids. 
+Dynamically resolves axis substitutes (e.g., plotting runtime over a varied spatial resolution parameter), performs point-by-point bounds-checking, and collapses high-dimensional data into flat arrays suitable for Makie primitives.
+"""
 function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, active_plot_axes::Vector{Symbol}, u_key::Symbol, target_c)
     valid_sims = filter(!isnothing, pd.data)
     isempty(valid_sims) && return nothing
@@ -285,6 +318,12 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
     
     return Tuple(plot_axes_data), u_out
 end
+
+"""
+    extract_lagrangian_data(...)
+
+Extracts Lagrangian particle fields by locating the closest requested UI time step and mapping raw coordinates into native Makie `Point` types.
+"""
 function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plot_vars, u_key::Symbol, target_c)
     sim_data = pd.data[param_indices...]
     isnothing(sim_data) && return nothing
@@ -327,6 +366,12 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     return pts, u_flat
 end
 
+"""
+    update_plot_data_collection!(plot_data_dict, sim_config, active_methods; force_reload=false)
+
+Synchronizes the global plot data dictionary against the currently active simulation methods. 
+Assembles missing tensors into `PlotSweepData` caches and prunes inactive ones from memory.
+"""
 function update_plot_data_collection!(plot_data_dict, sim_config, active_methods; force_reload=false)
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
@@ -342,6 +387,12 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     end
     return plot_data_dict
 end
+
+"""
+    fetch_pipeline_tuples(::Val{:eulerian}, ...)
+
+Consolidates extracted Eulerian axes and scalar fields across all active methods into a unified tuple structure `(ax_cols..., u_col)` for the rendering pipeline.
+"""
 function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
     active_plot_axes_syms = filter(s -> !isnothing(s) && s !== :none, [x_sel[], y_sel[], z_sel[]])
     ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
@@ -369,7 +420,11 @@ function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_par
     return Tuple([ax_cols..., u_col]), valid_methods
 end
 
-# Helper: Lagrangian Extraction Dispatch
+"""
+    fetch_pipeline_tuples(::Val{:lagrangian}, ...)
+
+Consolidates extracted Lagrangian point clouds and values across all active methods into a standardized `(pts_col, u_col)` tuple for the rendering pipeline.
+"""
 function fetch_pipeline_tuples(::Val{:lagrangian}, data, local_methods, _build_param_indices, mutated_sel_vals, x_sel, y_sel, z_sel, u_sel, target_c_int)
     
     pts_col = Any[]

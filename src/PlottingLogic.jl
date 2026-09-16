@@ -1,6 +1,13 @@
 # ==============================================================================
 # --- WORKER FUNCTIONS FOR PURE LOGIC ---
 # ==============================================================================
+"""
+    _handle_layout_trigger!(rebuild_func::Function)
+
+Safely resolves layout-altering UI interactions (like adding subplots for comparisons or changing the base plot geometry). 
+
+If a valid `SimulationConfig` is active, it triggers a background data cache refresh via `update_plot_data_collection!` before invoking the provided `rebuild_func` (which destroys the old Makie layout and rebuilds the grid and primitives).
+"""
 function _handle_layout_trigger!(rebuild_func::Function)
     curr_config = manager.active_config
 
@@ -13,6 +20,13 @@ function _handle_layout_trigger!(rebuild_func::Function)
     rebuild_func()
 end
 
+"""
+    _handle_data_fetch_trigger!()
+
+Re-evaluates the active `SimulationConfig` and updates the `PlotManager`'s internal memory cache. 
+
+Triggered when the underlying simulation parameters change fundamentally (e.g., a new method is activated or a sweep is requested). It notifies the `manager.plot_data` observable to alert downstream render listeners to fetch the new memory references.
+"""
 function _handle_data_fetch_trigger!()
     curr_config = manager.active_config
     if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
@@ -21,6 +35,17 @@ function _handle_data_fetch_trigger!()
     notify(manager.plot_data)
 end
 
+"""
+    _handle_plot_trigger!(...)
+
+The core rendering engine payload. It is triggered when new visual primitives must be drawn (e.g., switching from 2D Heatmaps to 3D Surfaces).
+
+# Data Flow:
+1. Validates that the active axis selectors (X, Y, Z, U) provide enough dimensionality for the requested plot type `T`.
+2. Resolves multi-plot grid targets (e.g., comparing methods side-by-side) and allocates fresh `AbstractPlotCache` objects.
+3. Invokes the data extraction pipeline (`fetch_pipeline_tuples`) to flatten the N-dimensional data into primitives based on the slider positions.
+4. Generates dynamic titles, applies axis limit linking, and mounts the objects onto the Makie `GridLayout`.
+"""
 function _handle_plot_trigger!(
     ::Val{T}, plot_layout, axes, num_plots, compare_labels,
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
@@ -138,6 +163,13 @@ function _handle_plot_trigger!(
     return true
 end
 
+"""
+    _handle_slider_trigger!(u_sel)
+
+Analyzes the active N-dimensional data space and dynamically recalculates the `min`/`max` ranges of all UI sliders.
+
+It guarantees that as users change fields (e.g., switching from Density to Momentum), the slider widgets instantly scale to the global bounds of the newly targeted field across all active simulation methods. It locks the `:PlotData` cascade while remapping to prevent accidental race conditions during evaluation.
+"""
 function _handle_slider_trigger!(u_sel)
     data = manager.plot_data[]
     isempty(data) && return false
@@ -237,6 +269,13 @@ function _handle_slider_trigger!(u_sel)
     return true
 end
 
+"""
+    _handle_data_trigger!(...)
+
+A highly optimized update path used when the layout geometry and primitive types remain identical, but the internal numeric data needs to change (e.g., dragging a time slider or swapping parameter limits).
+
+Instead of destroying and rebuilding the Makie `Axis`, this function extracts the new slice data via `fetch_pipeline_tuples` and directly mutates the active `Observable` buffers inside the `PlotManager` cache, achieving instant, tear-free rendering.
+"""
 function _handle_data_trigger!(
     ::Val{T}, axes, num_plots, compare_labels,
     x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs,
@@ -342,6 +381,13 @@ function _handle_data_trigger!(
     return true
 end
 
+"""
+    _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
+
+The final step in the render pipeline cascade. 
+
+Applies superficial aesthetic overrides (e.g., colormaps, line widths, marker styles, legend positioning) without recalculating or extracting underlying numeric data. It computes global/local color ranges for linked plots and finally resizes the `Figure` to fit the newly generated layout constraints.
+"""
 function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorbar, u_sel) where T
 
     ui_app = manager.ui[:plot_style]
@@ -438,6 +484,11 @@ end
 # --- RENDER PIPELINE HELPERS ---
 # ==============================================================================
 
+"""
+    _mutate_compare_vals(current_sels, idx)
+
+Helper function for multi-column comparison grids. Intercepts the global slider positions and substitutes the specific value required by the current subplot `idx` (e.g., assigning a specific time step to column 2).
+"""
 function _mutate_compare_vals(current_sels, idx)
     t_val, t_idx, c_labels, c_vals = manager.state[:Compare_State]
     mutated = collect(current_sels)
@@ -447,6 +498,11 @@ function _mutate_compare_vals(current_sels, idx)
     return mutated
 end
 
+"""
+    _build_param_indices(pd, mutated_vals)
+
+Transforms continuous floating-point UI slider values into strict integer array indices to query the active `PlotSweepData` tensor using nearest-neighbor bounds checking.
+"""
 function _build_param_indices(pd, mutated_vals)
     n_params = length(pd.active_param_keys)
     return ntuple(d -> begin
@@ -456,6 +512,13 @@ function _build_param_indices(pd, mutated_vals)
     end, n_params)
 end
 
+"""
+    _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
+
+Analyzes the active `PlotManager` states to determine the exact grid dimensions, spanning constraints, and component requirements (e.g., Colorbars, Legends) before any plot primitives are instantiated. 
+
+Returns a structured dictionary allocating specific Makie objects to concrete row/col coordinates.
+"""
 function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     w = manager.widgets

@@ -1,13 +1,22 @@
 # =============================================================================
 # --- Render.jl ---
 # =============================================================================
+"""
+    get_base_method_index(ui_app::Dict, active_methods::Vector{Symbol})
 
+Determines which active numerical method acts as the foundational "base" layer for complex 2D/3D primitives (like heatmaps or volume renders) where overlying multiple fields is visually impossible. Falls back to the first method if none is explicitly targeted.
+"""
 function get_base_method_index(ui_app::Dict, active_methods::Vector{Symbol})
     isempty(active_methods) && return 1
     raw_idx = get(ui_app, :base_method_idx, 1) 
     return clamp(raw_idx, 1, length(active_methods))
 end
 
+"""
+    _unwrap_1tuples(data)
+
+Safely unwraps deeply nested arrays of 1-element tuples (common when isolating single variables from complex vector states) into a flat `Vector{Float64}` required by Makie's native 1D drawing routines.
+"""
 function _unwrap_1tuples(data)
     if !isempty(data) && (first(data) isa Tuple || first(data) isa AbstractVector) && length(first(data)) == 1
         return Float64[d[1] for d in data]
@@ -18,6 +27,12 @@ end
 # -----------------------------------------------------------------------------
 # GRID FLATTENING HELPERS (NaN Separators for Connected Lines)
 # -----------------------------------------------------------------------------
+"""
+    build_2d_lines_grid(xs, ys, us, dir::Symbol)
+
+Flattens a dense 2D Eulerian grid into a single, contiguous 1D array of coordinates by interlacing `NaN` separators. 
+This mathematical trick forces Makie's `lines!` function to draw hundreds of independent, parallel slices (either `:vertical` or `:horizontal`) in a single ultra-fast render call without creating a dense mesh.
+"""
 function build_2d_lines_grid(xs, ys, us, dir::Symbol)
     X, Y, U = Float64[], Float64[], Float64[]
     Nx, Ny = length(xs), length(ys)
@@ -38,6 +53,11 @@ function build_2d_lines_grid(xs, ys, us, dir::Symbol)
     return X, Y, U
 end
 
+"""
+    build_3d_lines_grid(xs, ys, zs, us, dir::Symbol)
+
+Expands the `NaN` separator trick to 3D Eulerian tensors, constructing massive point clouds of independent line segments projected along a specific primary viewing axis (`:vertical`, `:depth`, or `:horizontal`).
+"""
 function build_3d_lines_grid(xs, ys, zs, us, dir::Symbol)
     X, Y, Z, U = Float64[], Float64[], Float64[], Float64[]
     Nx, Ny, Nz = length(xs), length(ys), length(zs)
@@ -68,9 +88,28 @@ function build_3d_lines_grid(xs, ys, zs, us, dir::Symbol)
 end
 
 # -----------------------------------------------------------------------------
+# PRIMITIVE INITIALIZERS 
+# -----------------------------------------------------------------------------
+# Note: The following docstring applies generally to all `initialize_base_plot!` dispatches.
+
+
+#function initialize_base_plot! end # Documenting the generic interface
+
+# -----------------------------------------------------------------------------
 # 1D PRIMITIVES
 # -----------------------------------------------------------------------------
+"""
+    initialize_base_plot!(plot_layout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{PlotStyle}, plot_idx)
 
+The fundamental dispatch bridge between numeric arrays and graphical representations. 
+
+For each supported `PlotStyle` (e.g., `:lines_1d`, `:heatmap_flat`, `:scatter_surface`), this function:
+1. Allocates a fresh `EulerianPlotCache` or `LagrangianPlotCache`.
+2. Binds the initial numeric slices (from `data_tuples`) to Makie `Observable`s.
+3. Extracts visual styles (colors, line widths, marker sizes, rasterization settings) from the UI dictionary.
+4. Instantiates the low-level Makie primitive (e.g., `lines!`, `contour3d!`, `volume!`).
+5. Stores the primitive references back into the global cache for subsequent color/style syncing and legend generation.
+"""
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:lines_1d}, plot_idx::Int)
     
     xs_slices, us_slices = data_tuples
@@ -595,7 +634,12 @@ initialize_base_plot!(kwargs...) = @warn "Could not find requested Plotting Styl
 # =============================================================================
 # TIER 3 DATA INJECTION HELPERS (Perfectly Forked)
 # =============================================================================
+"""
+    sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D})
 
+The high-performance data update gateway. 
+When a user scrubs a slider (like time), this function bypasses the heavy initialization routines. It takes the freshly sliced `data_tuples`, identifies whether the target is a `LagrangianPlotCache` or an `EulerianPlotCache`, and delegates to the appropriate dimensionality dispatch `Val(D)` to overwrite the underlying Makie Observables in place.
+"""
 function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D}) where D
     first_cache = isempty(cache_dict) ? nothing : first(values(cache_dict))
     
@@ -614,6 +658,11 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D}) 
     end
 end
 
+"""
+    _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{1})
+
+Mutates 1-dimensional Eulerian `Observable`s in place. Unwraps tuples and pushes new X/U arrays directly to the GPU.
+"""
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{1})
     xs_slices, us_slices = data_tuples
     for (m_idx, label) in enumerate(active_methods)
@@ -625,6 +674,11 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
     end
 end
 
+"""
+    _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
+
+Mutates 2-dimensional Eulerian `Observable`s. Intelligently checks the primitive type stored in the cache; if the plot is utilizing the `NaN` separator trick (`:lines_2d`), it recompiles the flat 1D grid before notifying the observers.
+"""
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{2})
     
     xs_slices, ys_slices, us_slices = data_tuples
@@ -648,6 +702,11 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
     end
 end
 
+"""
+    _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
+
+Mutates 3-dimensional Eulerian `Observable`s. Handles both dense volume grids and sparse `NaN`-separated line projections (`:lines_3d`) based on the cached primitive type.
+"""
 function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{3})
     
     xs_slices, ys_slices, zs_slices, us_slices = data_tuples

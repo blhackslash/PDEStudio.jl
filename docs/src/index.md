@@ -50,8 +50,8 @@ The studio is built for publication-quality output. It provides a dedicated expo
 ## 📦 Basic Workflow
 
 ```julia
+using PDECore
 using PDEStudio
-using GLMakie
 
 # 1. Define your backend physics (PDECore)
 my_config = SimulationConfig(...)
@@ -59,11 +59,6 @@ my_config = SimulationConfig(...)
 # 2. Launch the interactive studio
 fig = launch_plotter()
 
-# 3. Display the interactive studio
-display(fig)
-
-# 4. Bind the physics to the UI and explore
+# 3. Bind the physics to the UI and explore
 set_sim_config!(my_config)
 ```
-
-

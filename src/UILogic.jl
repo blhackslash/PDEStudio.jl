@@ -4,10 +4,12 @@ const _RANK_1 = ("analytic", "reference", "exact", "baseline", "true")
 """
     menu_option_rank(opt::Tuple)
 
-Custom sorting ranker for Makie dropdown tuples.
-Rank 0: Defaults / Disabled / Main Prompts
-Rank 1: Analytical / Reference methods
-Rank 2: Standard alphabetical sorting
+Custom sorting algorithm for Makie dropdown menus. 
+
+# Hierarchy
+1. **Rank 0:** Structural fallbacks (e.g., `:none`, "Methods..."), reserved default keys (like `:shared` or `:presets`), and any keys strictly belonging to the active simulation parameter array (`manager.plot_vars`).
+2. **Rank 1:** Mathematical baselines. Strings containing keywords like "analytic", "reference", or "exact" are floated to the top of standard data options.
+3. **Rank 2:** Standard alphabetical sorting for everything else.
 """
 function menu_option_rank(opt)
     label_str = string(opt[1])
@@ -32,9 +34,9 @@ end
 """
     update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
 
-Safely updates a Makie Menu's options, forces a WebGL buffer sync to prevent crashes,
-and preserves the current selection or falls back to a prioritized list.
-Assumes all options are `(Label, Value)` tuples and automatically sorts them by priority.
+Safely updates the options of a Makie `Menu` widget. 
+
+Because rapidly swapping underlying tuples in a GLMakie backend can trigger WebGL buffer crashes or infinite `onany` recursion loops, this function mathematically verifies if an update is strictly necessary. If options do change, it gracefully preserves the user's active selection. If that selection is no longer valid, it attempts to bind to the first available element in the `fallbacks` array before defaulting to index `1`.
 """
 function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_notify=false)
     curr = menu_widget.selection[]
@@ -92,6 +94,15 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
         notify(menu_widget.selection)
     end
 end
+
+"""
+    apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
+
+Orchestrates the massive state synchronization that occurs when a CSV preset is loaded.
+
+1. **Persistent Update:** Unconditionally overwrites the background dictionary cache (`manager.state[cache_key]`) with the loaded values.
+2. **Widget Synchronization:** If the corresponding Makie widget currently exists in the layout, it safely updates its observable. It uses a three-tier matching system to resolve loaded UI strings (e.g., `"Contour Filled"`) back to their functional backend `Symbol`s (e.g., `:contour_f`).
+"""
 function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
     isempty(new_options) && return
 
@@ -145,6 +156,11 @@ function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict
     end
 end
 
+"""
+    extract_options(option_keys::Tuple)
+
+Scrapes the current `selection[]` observables from all widgets matching the provided `option_keys` tuple. Returns a strongly typed `Dict{Symbol, Any}`.
+"""
 function extract_options(option_keys::Tuple)
     opts = Dict{Symbol, Any}()
     for k in option_keys
@@ -155,6 +171,12 @@ function extract_options(option_keys::Tuple)
     return opts
 end
 
+"""
+    apply_slider_options!(slider_options::Dict)
+
+Specifically manages the application of loaded parameter constraints to Makie `Slider`s. 
+Because sliders automatically trigger data-fetching loops, this function safely clamps the target values to the sliders' natively allowable ranges and bypasses updates if the slider is holding a dummy `[0.0]` state.
+"""
 function apply_slider_options!(slider_options::Dict)
     isempty(slider_options) && return
     
@@ -190,6 +212,12 @@ function apply_slider_options!(slider_options::Dict)
     end
 end
 
+"""
+    extract_slider_options()
+
+Extracts the exact numeric floating-point values from every dynamic parameter slider currently rendered in the UI. 
+Maps the internal UI widget keys back to their core physics variable symbols via `manager.maps[:Reverse]`.
+"""
 function extract_slider_options()
     opts = Dict{Symbol, Any}()
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
@@ -229,6 +257,12 @@ end
 # --- INTERACTION CONTROLLER ---
 # ==============================================================================
 
+"""
+    setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mode::Val{T}) where T
+
+The master conductor for the reactive UI. 
+It establishes the state machine watching for structural or numeric changes, binds the physical button clicks, sets up the hierarchical parameter editor logic, and configures the dependent dropdown chains (Chains A, B, and C) that automatically prune invalid options when users change visualization paradigms.
+"""
 function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mode::Val{T}) where T
     _setup_run_and_drop_interactions!(master_fig)
     _setup_method_interactions!()
@@ -246,6 +280,12 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mod
     notify(manager.methods)
 end
 
+"""
+    _setup_button_state_machine!()
+
+Wires up the global traffic lights of the UI. 
+It constantly monitors the `:Layout` and `:Plot` caches. When it detects a discrepancy between the cache and the currently rendered scene, it flags the corresponding boolean observables and turns the "Update Plot" or "Apply Layout" buttons bright yellow, signaling to the user that a manual synchronization click is required.
+"""
 function _setup_button_state_machine!()
     w = manager.widgets
     
@@ -310,6 +350,12 @@ function _setup_button_state_machine!()
     end
 end
 
+"""
+    _setup_run_and_drop_interactions!(master_fig::Figure)
+
+Connects the drag-and-drop file listener to the main Makie `Figure` window. 
+Also handles the staging logic: if a loaded CSV contains structural changes (like an increase in allowed dimensions), it temporarily stores the configuration, turns the execution buttons orange, and prepares to completely reboot the UI via `launch_plotter()` upon the next "Run" click.
+"""
 function _setup_run_and_drop_interactions!(master_fig::Figure)
     load_btn = manager.widgets[:load_config_button]
     run_btn  = manager.widgets[:run_button]
@@ -386,6 +432,11 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 end
 
+"""
+    _setup_method_interactions!()
+
+Handles the "Activate/Deactivate" method toggles. It intercepts clicks, directly mutates the active arrays within the `SimulationConfig`, and instantly flags the `:Simulation` lock to require a fresh backend numerical evaluation.
+"""
 function _setup_method_interactions!()
     mode_btn = manager.widgets[:mode_button]
     menu_mth = manager.widgets[:method_toggle]
@@ -444,6 +495,12 @@ function _setup_method_interactions!()
     end
 end
 
+"""
+    _setup_hierarchy_interactions!()
+
+Connects the triple-dropdown hierarchical editor. 
+Uses a cascaded dependency map: selecting a `Category` dynamically populates the available `Scope`s, which in turn populate the specific `Parameter`s. It binds the selected parameter's memory address to the `Textbox` via `val2str`, and handles parsing user text input back into RAM using `str2val`.
+"""
 function _setup_hierarchy_interactions!()
     menu_cat   = manager.widgets[:editor_cat]
     menu_scope = manager.widgets[:editor_scope]
@@ -660,7 +717,7 @@ function _setup_hierarchy_interactions!()
                 if key === :create_new
                     @info "Fill in a filename below and click 'Save Defs' to write to disk."
                 else
-                    set_plot_presets!(key)
+                    set_plot_preset!(key)
                 end
                 return
             end
@@ -685,6 +742,13 @@ function _setup_hierarchy_interactions!()
     end
 end
 
+"""
+    _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout)
+
+The standalone sub-routine managing figure and animation serialization. 
+
+It handles the generation of a pristine, headless `Figure` copy of the active axes to ensure that UI artifacts (like slider handles or un-applied states) are never rendered into the final exported `.png` or `.mp4`.
+"""
 function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout)
     saveBox = manager.widgets[:export_text]
     btn_play = manager.widgets[:play_anim_button]
@@ -924,7 +988,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
     
     manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_presets_button].clicks) do _
-        set_plot_presets!()
+        set_plot_preset!()
         manager.triggers[:UI][] += 1
     end
 
@@ -960,6 +1024,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 end
 
+"""
+    _get_active_sim_data(plot_data_dict)
+
+Helper function that grabs the first structurally valid (non-null) `AbstractSimData` object from the current sweep cache.
+"""
 function _get_active_sim_data(plot_data_dict)
     isempty(plot_data_dict) && return nothing, nothing
     pd_first = first(values(plot_data_dict))
@@ -973,6 +1042,13 @@ end
 # --- CHAIN A: Base Setup & Anim/Compare Targeting ---
 # ==============================================================================
 
+"""
+    _setup_chain_A!(::Val{:eulerian})
+
+The primary dropdown cascade for Eulerian data. 
+
+When a base plot style (e.g., `:heatmap`) is selected, it immediately populates the style modifier menu (e.g., `:heatmap_surface`, `:heatmap_flat`). It then queries the underlying tensor's dimensions and filters the available Animation, Compare, and X/Y/Z Axis dropdown targets to ensure users cannot attempt to animate non-existent physical domains.
+"""
 function _setup_chain_A!(::Val{:eulerian})
     w = manager.widgets
     x_sel = w[:x_axis].selection
@@ -1093,6 +1169,13 @@ function _setup_chain_A!(::Val{:eulerian})
     end
 end
 
+"""
+    _setup_chain_A!(::Val{:lagrangian})
+
+The primary dropdown cascade for Lagrangian data. 
+
+Recognizes that point clouds do not have fixed Eulerian bounding boxes. It forces the base plot to `:scatter`, automatically locks the available X/Y/Z axes based strictly on the dimensionality of the scattered vectors (e.g., forcing X and Y for a 2D particle track), and explicitly injects the scalar `:time` dimension as the default animation target.
+"""
 function _setup_chain_A!(::Val{:lagrangian})
     w = manager.widgets
     
@@ -1168,7 +1251,13 @@ end
 # ==============================================================================
 # --- CHAIN B: Dependent Field & Active Axis Triggers ---
 # ==============================================================================
+"""
+    _setup_chain_B!(::Val{:eulerian})
 
+The secondary UI cascade. 
+
+It listens to the exact spatial axes the user has currently selected (e.g., X and Y). It then iterates through all mathematically generated error metrics and custom statistics in the backend registry. If a statistic does not possess the physical dimensions required to be plotted across X and Y (e.g., a purely scalar mass conservation stat), it is automatically pruned from the `U-Axis (Dep)` field selector.
+"""
 function _setup_chain_B!(::Val{:eulerian})
     w = manager.widgets
     x_sel, y_sel, z_sel = w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection
@@ -1217,6 +1306,11 @@ function _setup_chain_B!(::Val{:eulerian})
     end
 end
 
+"""
+    _setup_chain_B!(::Val{:lagrangian})
+
+The Lagrangian variant of Chain B. Because particles lack rigid meshes, it filters the available dependent fields strictly based on matching the spatial keys of the underlying domain.
+"""
 function _setup_chain_B!(::Val{:lagrangian})
     w = manager.widgets
     active_axes_obs = manager.state[:Active_Axes]
@@ -1265,6 +1359,13 @@ end
 # --- CHAIN C: Unified Component Extraction ---
 # ==============================================================================
 
+"""
+    _setup_chain_C!(mode::Val{T}) where T
+
+The tertiary UI cascade. 
+
+Monitors the selected `U-Axis (Dep)` field. If the user selects a multidimensional state vector (e.g., a fluid momentum vector with 3 components), it calculates the exact tensor depth and generates an appropriate number of "Component X" targets in the UI, allowing the user to scrub through the layers of the state vector.
+"""
 function _setup_chain_C!(mode::Val{T}) where T
     w = manager.widgets
     manager.listeners[:Chain_C] = onany(w[:u_axis].selection, manager.plot_data) do u_val, plot_data_dict

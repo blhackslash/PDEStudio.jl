@@ -7,7 +7,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using PDECore
 
-export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_presets!, force_simulation, set_resolution!
+export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 
 function dummy_simulation_function(args...); return nothing; end
 
@@ -21,8 +21,19 @@ const LOCK_HIERARCHY = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, 
 # ==============================================================================
 # --- MAKIE RENDERING CACHES ---
 # ==============================================================================
+"""
+    AbstractPlotCache
+
+The abstract base type for managing Makie rendering buffers.
+"""
 abstract type AbstractPlotCache end
 
+"""
+    EulerianPlotCache <: AbstractPlotCache
+
+Stores the active `Observable` memory buffers and instantiated Makie primitives for a specific Eulerian rendering method. 
+Holds strongly typed coordinate limits (`obs_x`, `obs_y`, `obs_z`) and the scalar field data (`obs_u`) alongside a dictionary tracking the drawn primitives (e.g., `:lines_2d`, `:contour_f`).
+"""
 mutable struct EulerianPlotCache <: AbstractPlotCache
     obs_x::Observable{Any}
     obs_y::Observable{Any}
@@ -32,6 +43,12 @@ mutable struct EulerianPlotCache <: AbstractPlotCache
 end
 EulerianPlotCache() = EulerianPlotCache(Observable{Any}(Float64[]), Observable{Any}(Float64[]), Observable{Any}(Float64[]), Observable{Any}(Float64[]), Dict{Symbol, Any}())
 
+"""
+    LagrangianPlotCache <: AbstractPlotCache
+
+Stores the active `Observable` memory buffers for Lagrangian particle tracking. 
+Bypasses rigid grid dimensions in favor of raw coordinate point clouds (`obs_pts`) and their associated scalar values (`obs_u`).
+"""
 mutable struct LagrangianPlotCache <: AbstractPlotCache
     obs_pts::Observable{Any} 
     obs_u::Observable{Any}
@@ -44,12 +61,25 @@ LagrangianPlotCache() = LagrangianPlotCache(Observable{Any}([]), Observable{Any}
 # ==============================================================================
 abstract type AbstractPlotData end
 
+"""
+    PlotSweepData{N} <: AbstractPlotData
+
+A wrapper mapping an N-dimensional parameter sweep to its corresponding `PDECore` simulation data.
+Stores the actual Cartesian tensor of `AbstractSimData` objects alongside the exact keys and values of the active parameter grid.
+"""
 struct PlotSweepData{N} <: AbstractPlotData
     data::Array{Union{Nothing, AbstractSimData}, N} 
     active_param_keys::Vector{Symbol}
     active_param_values::Vector{Vector{Any}}
 end
 
+"""
+    PlotManager
+
+The central reactive state machine governing the `PDEStudio` interface. 
+
+It encapsulates all UI widget references, active configuration payloads, UI state dictionaries, and the critical hierarchical trigger locks (`locks`, `flags`, `triggers`) that prevent asynchronous race conditions between the headless backend and the Makie frontend.
+"""
 mutable struct PlotManager 
     ui::Dict{Symbol, Dict{Symbol, Any}}     
     widgets::Dict{Symbol, Any}              
@@ -96,11 +126,21 @@ end
 
 const manager = PlotManager()
 
+"""
+    set_max_params!(n::Int)
+
+Globally configures the maximum number of custom `VariedDict` sweep parameters the UI will allocate sliders for. Triggers a complete UI reset.
+"""
 function set_max_params!(n::Int)
     reset_plotter!()
     manager.max_params = n
 end
 
+"""
+    set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
+
+Defines the foundational mathematical dimensions the studio expects to render (e.g., `(:x, :y, :t)`). Adapts the base UI slider banks accordingly and completely resets the plotter to apply the new physical boundaries.
+"""
 function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
 
     reset_plotter!()
@@ -108,17 +148,32 @@ function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
     @info "Plotter UI configured for dimensions: $dims"
 end
 
+"""
+    get_base_variables()
+
+Returns a vector of the foundational mathematical dimensions currently allowed by the studio.
+"""
 get_base_variables() = collect(manager.allowed_dims)
 
 # ==============================================================================
 # --- DIMENSIONAL RESOLUTION MANAGEMENT ---
 # ==============================================================================
 
+"""
+    set_resolution!(dim::Symbol, val::Int; is_ref::Bool=false)
+
+Dynamically sets the internal interpolation and rendering resolution for a specific spatial or temporal dimension. Can target either the numerical baseline grid or the highly-resolved analytical reference grid.
+"""
 function set_resolution!(dim::Symbol, val::Int; is_ref::Bool=false)
     target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
     target[dim] = val
 end
 
+"""
+    get_resolution(dim::Symbol; is_ref::Bool=false)
+
+Retrieves the active UI resolution for a given dimension, automatically falling back to sensible defaults (200 for numerical, 400 for analytical) if the dimension was dynamically generated during a sweep.
+"""
 function get_resolution(dim::Symbol; is_ref::Bool=false)
     target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
     # Fallback default if a completely new dimension is requested dynamically
@@ -128,13 +183,19 @@ end
 """
     build_res_tuple(dim_keys::AbstractVector{Symbol}; is_ref::Bool=false)
 
-Dynamically generates the `NTuple{D, Int}` required by the backend, ensuring 
-the resolutions are ordered exactly according to the backend's expected `dim_keys`.
+Dynamically generates the `NTuple{D, Int}` required by the backend, ensuring the spatial and temporal resolutions are ordered exactly according to the backend's expected `dim_keys` tuple.
 """
 function build_res_tuple(dim_keys::Union{AbstractVector{Symbol},Tuple{Vararg{Symbol}}}; is_ref::Bool=false)
     return Tuple(get_resolution(d; is_ref=is_ref) for d in dim_keys)
 end
 
+"""
+    @with_lock(lock_name, expr)
+
+A critical concurrency macro that safely evaluates an expression while respecting the global `LOCK_HIERARCHY` (`:Simulation -> :Data -> :Layout -> :Plot -> :Slider -> :PlotData -> :UI`). 
+
+It prevents reactive race conditions by blocking lower-tier UI triggers from firing while heavy upstream numeric fetches or layout rebuilds are actively executing. Contains a bypass explicitly designed for pristine headless figure exports.
+"""
 macro with_lock(lock_name, expr)
     return quote
         local lname = $(esc(lock_name))
@@ -177,8 +238,11 @@ include("UILogic.jl")
 include("Render.jl")
 include("ConfigIO.jl")
 
+"""
+    get_base_layout_options()
 
-# FIX: Return lowercased, suffix-free symbols for layout options
+Returns the default structural layout dictionary. Dynamically switches between continuous Eulerian line plots and Lagrangian scatter plots depending on the active `manager.mode`.
+"""
 function get_base_layout_options()
     # THE FIX: Check the mode dynamically!
     is_lag = manager.mode[] == :lagrangian
@@ -196,9 +260,27 @@ function get_base_layout_options()
     )
 end
 
+"""
+    set_mode!(mode::Symbol)
+
+Switches the fundamental operation mode of the UI (e.g., `:eulerian` or `:lagrangian`). This alters which primitive engines are loaded and triggers a complete state purge.
+"""
 set_mode!(mode::Symbol) = (manager.mode[] = mode)
+
+"""
+    force_simulation()
+
+Manually pushes an asynchronous trigger to the `:Simulation` observable, forcing the backend to re-evaluate the active `SimulationConfig`.
+"""
 force_simulation() = notify(manager.triggers[:Simulation])
 
+"""
+    simulation_trigger()
+
+The primary asynchronous worker mapped to the `:Simulation` lock. 
+
+It safely checks the validity of the current `SimulationConfig`, executes the headless numerical loops via `PDECore.run_all_simulations`, caches the updated multi-dimensional arrays, and hands the payload over to the `:Layout` lock to begin mapping the UI.
+"""
 function simulation_trigger() 
     @with_lock :Simulation begin
         
@@ -235,6 +317,13 @@ function simulation_trigger()
     manager.triggers[:Data][] += 1
 end
 
+"""
+    reset_manager!()
+
+Performs a deep purge of the entire `PlotManager` architecture. 
+
+It empties all UI dictionaries, safely clears reactive `on` and `onany` listeners to prevent dangling references, reconstructs the base observable trigger tree, and repopulates the hierarchical default styles from the master templates.
+"""
 function reset_manager!()
     
     empty!(manager.ui); empty!(manager.widgets)
@@ -302,7 +391,7 @@ function reset_manager!()
     manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)
 
     # Set plot defaults
-    set_plot_presets!()
+    set_plot_preset!()
 
     # Initialize the default creation text
     manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."

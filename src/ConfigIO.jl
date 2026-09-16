@@ -1,3 +1,9 @@
+"""
+    _apply_backend_keys(d::Dict)
+
+Recursively iterates through a dictionary, converting all string keys into their strictly typed backend `Symbol` equivalents using `backend_key`.
+This guarantees type stability when passing UI-generated dictionaries into the core simulation loops.
+"""
 function _apply_backend_keys(d::Dict)
     new_d = Dict{Symbol, Any}()
     for (k, v) in d
@@ -11,6 +17,13 @@ function _apply_backend_keys(d::Dict)
     return new_d
 end
 
+"""
+    load_and_apply_csv!(filepath::String)
+
+Reads a configuration CSV from disk, orchestrating the file load and structural checks. 
+
+It handles the execution of any bundled Julia source files to reconstruct the `SimulationConfig`, checks if the loaded configuration requires modifying the fundamental UI layout (dimensions or max parameters), and safely stages the data if structural limits change. Returns `true` if a structural UI rebuild is required.
+"""
 function load_and_apply_csv!(filepath::String)
     @info "Loading configuration from CSV: $filepath"
     parsed = parse_csv_to_dict(filepath)
@@ -75,6 +88,13 @@ function load_and_apply_csv!(filepath::String)
     return is_structural_change
 end
 
+"""
+    load_and_apply_csv!(parsed::Dict)
+
+Applies a parsed and structural-verified configuration dictionary directly to the interactive `PlotManager` state. 
+
+This safely injects saved dimensions, resolutions, visual UI overrides, layout presets, and camera tracking angles into the reactive Makie pipeline, forcing a synchronized redraw of the plotting window.
+"""
 function load_and_apply_csv!(parsed::Dict)
     @info "Applying parsed CSV configuration..."
     if haskey(parsed, "Config")
@@ -247,8 +267,9 @@ end
 """
     csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
 
-Converts a parsed nested CSV dictionary into a properly formatted `SimulationConfig`,
-ensuring all backend keys are strongly typed as Symbols.
+Converts a loosely typed nested CSV dictionary into a rigorously formatted `PDECore.SimulationConfig`.
+
+This function manages the translation of string-based category scopes into strongly typed `ParamDict`, `MethodDict`, and `VariedDict` structures. It also safely looks up and links analytical reference and post-processing functions from the target module's namespace.
 """
 function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     # 1. Extract Shared Parameters (Cast to Symbol keys)
@@ -350,6 +371,12 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     )
 end
 
+"""
+    parse_csv_to_dict(filepath::String)
+
+Reads an RFC 4180 standard CSV file and structures it into a nested `Dict` hierarchy: `[Category][Scope][Parameter]`.
+It relies on `str2val` to securely parse and execute strings back into native Julia types (like `Vector` or `Symbol`).
+"""
 function parse_csv_to_dict(filepath::String)
     parsed = Dict{String, Dict{String, Dict{String, Any}}}()
     
@@ -366,6 +393,12 @@ function parse_csv_to_dict(filepath::String)
     return parsed
 end
 
+"""
+    get_all_git_infos(start_path::String = ".")
+
+Recursively searches the filesystem from `start_path` to map local Git repositories. 
+Returns metadata containing the commit hash, summary, and total commit count for research reproducibility tracking.
+"""
 function get_all_git_infos(start_path::String = ".")
     git_infos = Dict{String, Dict{String, Any}}()
     
@@ -391,6 +424,12 @@ function get_all_git_infos(start_path::String = ".")
     return git_infos
 end
 
+"""
+    get_julia_info(git_repo_names::Vector{String})
+
+Queries the active Julia `Pkg` environment to log the exact system version and track dependencies.
+It focuses specifically on top-level project dependencies and the sub-dependencies of tracked local Git repositories to guarantee exact environmental matching upon reload.
+"""
 function get_julia_info(git_repo_names::Vector{String})
     info = Dict{String, Dict{String, Any}}()
     info["System"] = Dict{String, Any}("Julia_Version" => string(VERSION))
@@ -421,6 +460,13 @@ function get_julia_info(git_repo_names::Vector{String})
     return info
 end
 
+"""
+    save_params_to_csv(base_filename::String, save_dir::String, metadata_general::Dict)
+
+The primary serialization engine. It extracts the full active state of the `PlotManager`—including the `SimulationConfig`, interactive camera angles, custom UI styles, and execution scripts—and exports it to a strictly typed, human-readable CSV.
+
+Returns `true` on a successful, non-crashing write operation.
+"""
 function save_params_to_csv(
     base_filename::String,
     save_dir::String,
@@ -568,7 +614,12 @@ function save_params_to_csv(
     end
 end
 
-# In ConfigIO.jl
+"""
+    save_preset_to_csv(preset_name::Symbol, save_dir::String)
+
+A lightweight serialization pipeline that exclusively extracts visual settings (Layout, Camera, Legend, UI Theme) without saving internal PDE physics parameters. 
+Used to generate reusable aesthetic templates.
+"""
 function save_preset_to_csv(preset_name::Symbol, save_dir::String)
     csv_filename = joinpath(save_dir, string(preset_name) * ".csv")
     
