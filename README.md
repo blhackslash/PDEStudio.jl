@@ -2,9 +2,11 @@
 
 **PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend designed for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. 
 
-Built directly on top of its core numerical dependency, **PDECore.jl**, this framework transforms strictly typed simulation data into responsive 1D, 2D, and 3D visualizations. It features a hierarchical UI editor, robust CSV-based preset management, and a flexible rendering engine capable of handling both Eulerian grids and Lagrangian particle systems on the fly.
+Built directly on top of its core numerical dependency, it transforms strictly typed simulation data into responsive 1D, 2D, and 3D visualizations. It features a hierarchical UI editor, robust CSV-based preset management, and a flexible rendering engine capable of handling both Eulerian grids and Lagrangian particle systems on the fly.
 
-> **Note:** This package serves exclusively as the graphical user interface and visualization engine, and relies entirely on **PDECore.jl** to run. For headless deployments, cluster computing, or purely numerical workflows, see the core simulation package: **PDECore.jl**.
+> **Note on PDECore:** `PDECore.jl` is fully integrated and reexported by the studio. You do **not** need to import `PDECore` separately in your scripts; simply `using PDEStudio` gives you access to the entire numerical backend alongside the visualization suite.
+
+> **Backend Independent:** PDEStudio is completely backend agnostic. You can use `GLMakie` for high-performance local desktop visualization, or `WGLMakie` (powered by `Bonito`) to serve interactive plots directly to a web browser, making it perfect for remote server deployments.
 
 ---
 
@@ -30,7 +32,7 @@ The studio is built around a centralized, reactive state manager that links your
 
 ---
 
-## 📽️ Exporting & Animations
+## 🎬 Exporting & Animations
 
 The studio is built for publication-quality output. It provides a dedicated export pipeline decoupled from the active UI rendering limits.
 
@@ -39,21 +41,21 @@ The studio is built for publication-quality output. It provides a dedicated expo
 
 ---
 
-## 🚀 Main API Functions
+## 🛠️ Main API Functions
 
 *   **`launch_plotter()`:** Initializes the main Makie window, builds the unified control panel, and prepares the reactive render listeners.
-*   **`set_sim_config!(config::SimulationConfig)`:** Binds a configured `PDECore.jl` simulation setup to the UI, allowing you to tweak parameters and execute headless runs directly from the studio.
+*   **`set_sim_config!(config::SimulationConfig)`:** Binds a configured physics simulation setup to the UI, allowing you to tweak parameters and execute headless runs directly from the studio.
 *   **`reset_plotter!()`:** Safely detaches all reactive listeners, clears the cache, and destroys the active window without requiring a Julia restart.
 
 ---
 
-## 📦 Basic Workflow
+## 🚀 Basic Workflow
 
 ```julia
 using PDEStudio
-using GLMakie
+using GLMakie # Or WGLMakie for browser rendering
 
-# 1. Define your backend physics (PDECore)
+# 1. Define your backend physics (PDECore is reexported)
 my_config = SimulationConfig(...)
 
 # 2. Launch the interactive studio
@@ -66,4 +68,45 @@ display(fig)
 set_sim_config!(my_config)
 ```
 
+---
 
+## ⚙️ Advanced Workflow (Custom Macros & Web Servers)
+
+For power users managing extensive experiment libraries or running simulations on remote servers, PDEStudio can be wrapped in custom macros for rapid deployment. 
+
+Below is an advanced implementation pattern that configures a `Bonito` web server for `WGLMakie`, automatically resolves configuration paths, backs up executed configurations for reproducibility, and injects the physics directly into the studio in a single macro call.
+
+```julia
+using PDEStudio
+using WGLMakie
+using Bonito
+
+# 1. Configure the Web Server for Remote Viewing
+Bonito.configure_server!(
+    listen_url = "0.0.0.0",
+    listen_port = 9384
+)
+WGLMakie.activate!()
+
+# 2. Build a one-click macro to load, archive, and plot your experiments
+macro plot(name)
+    return quote
+        # Launch studio
+        fig = Base.invokelatest(() -> launch_plotter())
+        
+        # Resolve path and archive the config 
+        path = joinpath(@__DIR__, "Configs", $(esc(name)) * ".jl")
+        cp(path, joinpath(@__DIR__, "Archive", $(esc(name)) * "_backup.jl"), force=true)
+        
+        # Load physics and trigger rendering
+        config = include(path) 
+        set_sim_config!(config)
+        force_simulation()
+        
+        fig
+    end
+end
+
+# Usage: 
+# julia> @plot "Euler2D_Shock"
+```
