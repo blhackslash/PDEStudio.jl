@@ -5,13 +5,11 @@ using PDEStudio
 makedocs(
     sitename = "PDEStudio.jl",
     modules = [PDEStudio],
-    remotes = nothing,
-    checkdocs = :exports, # Tell Documenter to ignore unlisted private functions
+    checkdocs = :exports, 
     format = Documenter.HTML(
-        # Set this if you link between pages without '.html'
-        prettyurls = true,
-        # Informs Documenter that the site lives under /PDECore/
-        canonical = "https://docs.blackslash.win/PDEStudio/"
+        prettyurls = get(ENV, "CI", "false") == "true",
+        canonical = "https://blhackslash.github.io/PDEStudio.jl/",
+        assets = String[],
     ),
     pages = [
         "Home" => "index.md",
@@ -31,4 +29,10 @@ makedocs(
         ],
         "API Reference" => "api.md",
     ]
+)
+
+deploydocs(
+    repo = "github.com/blhackslash/PDEStudio.jl.git",
+    devbranch = "main",
+    push_preview = true,
 )
