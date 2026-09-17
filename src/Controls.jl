@@ -204,7 +204,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     # =========================================================================
     # --- SLIDERS ---
     # =========================================================================
-    slider_row = 0
+    slider_row = 1
     
     for i in 1:manager.max_params 
         p_key = Symbol("param_$i")
@@ -236,7 +236,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     colsize!(slider_layout, 1, Fixed(80))    
     colsize!(slider_layout, 2, Relative(0.7)) 
     colsize!(slider_layout, 3, Fixed(60))
-    for r in 1:(slider_row-1); rowgap!(slider_layout, r, 5); end
+    rowgap!(slider_layout, 5)
 end
 
 # ==============================================================================
