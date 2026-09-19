@@ -203,7 +203,8 @@ end
             end
         end
     end
-# =========================================================================
+    
+    # =========================================================================
     # --- COMPARE MECHANISM (Surface Plot) ---
     # =========================================================================
     @testset "Compare Mechanism (Surface Plot)" begin
@@ -373,13 +374,155 @@ end
         click_button!(:save_presets_button)
         
         # Verify the preset file was written to the specific Presets directory
-        preset_path = joinpath(PDEStudioCore.get_save_path(), "Presets", preset_name * ".csv")
+        preset_path = joinpath(get_save_path(), "Presets", preset_name * ".csv")
         @test isfile(preset_path)
         
         # Verify the description was parsed and saved to the backend maps
         sym_name = Symbol(preset_name)
         @test haskey(manager.maps[:Presets], sym_name)
         @test manager.maps[:Presets][sym_name] == "A rigorous test preset for the UI pipeline"
+    end
+
+    # =========================================================================
+    # --- INBUILT PRESETS (API & UI) ---
+    # =========================================================================
+    @testset "Inbuilt Presets & Global Reset" begin
+        # 0. Clean Slate
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+
+        shared = create_param_dict(:cfl => 0.5, :N => 20)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
+        config = SimulationConfig("advection_solver_1d", shared, methods, [:upwind])
+        set_sim_config!(config)
+        
+        click_button!(:run_button)
+
+        # 1. Test via Direct API Function Call
+        set_plot_preset!(:publication)
+        yield()
+        @test manager.ui[:labels][:title] == ""
+        @test manager.ui[:plot_style][:line_width] == 2.5
+        
+        set_plot_preset!(:heatmap)
+        yield()
+        @test manager.state[:Layout_Cache][:base_plot] == :heatmap
+        @test manager.state[:Layout_Cache][:plot_style] == :heatmap_flat
+        
+        set_plot_preset!(:compact3d)
+        yield()
+        @test manager.ui[:z_axis][:label_offset] == 15.0
+        
+        set_plot_preset!(:nolabels)
+        yield()
+        @test manager.ui[:labels][:x_label] == ""
+        @test manager.ui[:labels][:y_label] == ""
+
+        # 2. Test via the Hierarchical UI Editor
+        click_menu!(manager.widgets[:editor_cat], :ui)
+        click_menu!(manager.widgets[:editor_scope], :presets)
+        
+        # Select a dummy preset first to reset the observer state
+        click_menu!(manager.widgets[:editor_key], :publication)
+        yield()
+        
+        click_menu!(manager.widgets[:base_plot], :lines)
+        click_menu!(manager.widgets[:plot_style], :lines_1d)
+        
+        click_menu!(manager.widgets[:x_axis], :x)
+        click_menu!(manager.widgets[:y_axis], :none)
+        click_menu!(manager.widgets[:z_axis], :none)
+        click_button!(:layout_apply)
+        # Now select :darkmode so the change event guarantees a fresh trigger
+        click_menu!(manager.widgets[:editor_key], :darkmode)
+        yield()
+        
+        @test manager.widgets[:editor_toggle].label[] == "Apply"
+        
+        click_button!(:editor_toggle)
+        yield()
+        
+        @test manager.ui[:plot_style][:colors] == [:cyan, :magenta, :yellow, :white]
+        
+        # 3. Test the Global Reset Mechanism
+        click_button!(:clear_presets_button)
+        yield()
+        
+        # Verify the UI successfully restored the master default templates rather than being bare empty
+        @test haskey(manager.ui, :plot_style)
+        @test manager.ui[:plot_style][:line_width] == 3.0 # Master default value
+    end
+    # =========================================================================
+    # --- PLOTTING UTILS (HUD, Outliers & Reference Lines) ---
+    # =========================================================================
+    @testset "Plotting Utilities: HUD, Outliers & Reference Lines" begin
+        # 0. Clean Slate & 1D Scatter Setup
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+
+        shared = create_param_dict(:cfl => 0.5, :N => 50)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
+        config = SimulationConfig("advection_solver_1d", shared, methods, [:upwind])
+        set_sim_config!(config)
+        
+        click_button!(:run_button)
+
+        # Set up a 1D Scatter plot configuration
+        click_menu!(manager.widgets[:base_plot], :scatter)
+        click_menu!(manager.widgets[:plot_style], :scatter_1d)
+        click_menu!(manager.widgets[:x_axis], :x)
+        click_menu!(manager.widgets[:y_axis], :none)
+        click_menu!(manager.widgets[:z_axis], :none)
+        click_button!(:layout_apply)
+        yield()
+
+        # 1. Test HUD Injection (`plot_HUD!`)
+        manager.ui[:hud][:visible] = true
+        manager.ui[:hud][:mode] = "lines"
+        manager.ui[:hud][:points] = Any[(0.1, 0.1), (0.9, 0.9)]
+        manager.ui[:hud][:close_loop] = false
+        
+        click_button!(:plot_button)
+        # Safely filter layout content for actual Axis objects, skipping UI buttons and menus
+        ax = for c in fig.content
+                if c isa Axis; return c
+                elseif hasproperty(c,:content)
+                    if c.content isa Axis; return c.content end
+                end
+            end
+
+        # Verify a HUD primitive was created and tagged with label="HUD"
+        hud_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "HUD"]
+        @test !isempty(hud_plots)
+
+        # 2. Test Reference Lines (`plot_reference_lines!`)
+        ref_lines = plot_reference_lines!(ax, [-1.0, -2.0]; label="Convergence Ref")
+        click_button(:plot_button)
+
+        @test length(ref_lines) == 2
+        # Verify they are correctly attached to the axis scene
+        @test any(p -> haskey(p, :label) && p.label[] == "Convergence Ref", ax.scene.plots)
+
+        # 3. Test Extrema & Outliers Manager (`plot_extrema_lines_manager!` & `apply_outlier_mask`)
+        manager.ui[:outliers_extrema][:track_max] = true
+        manager.ui[:outliers_extrema][:track_min] = true
+        manager.ui[:outliers_extrema][:mark_outliers] = true
+        manager.ui[:outliers_extrema][:remove_outliers] = true
+        manager.ui[:outliers_extrema][:outlier_threshold] = 1.0
+
+        # Trigger layout update to force outlier filtering and extrema marker passes through the pipeline
+        click_button!(:layout_apply)
+        yield()
+
+        # Verify outlier markers or extrema line segments were successfully injected into the scene
+        extrema_max_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "Extrema_Max"]
+        #outlier_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "Outlier"]
+        
+        # Depending on data profile, at least one tracking feature should populate
+        @test !isempty(extrema_max_plots)
+
     end
     reset_plotter!()
 end
