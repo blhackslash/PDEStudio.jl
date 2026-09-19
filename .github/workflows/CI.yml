@@ -44,6 +44,7 @@ jobs:
           julia --color=yes -e '
             using Pkg
             Pkg.add(url="https://github.com/blhackslash/PDEStudioCore.jl.git")
+            '
       - uses: julia-actions/julia-buildpkg@v1
       
       # 2. Wrap the runtest action in xvfb-run
