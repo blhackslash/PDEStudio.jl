@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1.10'
+          # - '1.10' temporarily disabled (URL dependence)
           - '1.12'
           - '1' # Tests latest stable (e.g. 1.13)
         os:
@@ -39,12 +39,7 @@ jobs:
       # 1. Install virtual display server for GLMakie headless testing
       - name: Install Xvfb
         run: sudo apt-get update && sudo apt-get install -y xvfb
-      - name: Install unregistered dependencies
-        run: |
-          julia --color=yes -e '
-            using Pkg
-            Pkg.add(url="https://github.com/blhackslash/PDEStudioCore.jl.git")
-            '
+
       - uses: julia-actions/julia-buildpkg@v1
       
       # 2. Wrap the runtest action in xvfb-run
