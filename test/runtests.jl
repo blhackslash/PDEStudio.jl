@@ -3,7 +3,7 @@ using GLMakie
 using WGLMakie
 using Test
 using StaticArrays
-import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS
+import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS, plot_reference_lines!, plot_HUD!
 
 # 1. Register the namespace so PDEStudioCore can dynamically resolve these functions
 PDEStudioCore.set_target_module!(@__MODULE__)
@@ -121,6 +121,7 @@ end
     set_stat_preset!("hyperbolic")
     set_save_path!(mktempdir())
     @test isnothing(reset_manager!())
+    set_mode!(:eulerian)
 
     GLMakie.activate!()
 
@@ -456,6 +457,9 @@ end
     # =========================================================================
     # --- PLOTTING UTILS (HUD, Outliers & Reference Lines) ---
     # =========================================================================
+    # =========================================================================
+    # --- PLOTTING UTILS (HUD, Outliers & Reference Lines) ---
+    # =========================================================================
     @testset "Plotting Utilities: HUD, Outliers & Reference Lines" begin
         # 0. Clean Slate & 1D Scatter Setup
         reset_plotter!()
@@ -478,51 +482,98 @@ end
         click_button!(:layout_apply)
         yield()
 
-        # 1. Test HUD Injection (`plot_HUD!`)
+        # Safely extract the active Makie Axis from the figure
+        ax = nothing
+        for c in fig.content
+            if c isa Axis
+                ax = c
+                break
+            elseif hasproperty(c, :content) && c.content isa Axis
+                ax = c.content
+                break
+            end
+        end
+
+        # 1. Test HUD Injection (Direct Local Call)
         manager.ui[:hud][:visible] = true
         manager.ui[:hud][:mode] = "lines"
         manager.ui[:hud][:points] = Any[(0.1, 0.1), (0.9, 0.9)]
         manager.ui[:hud][:close_loop] = false
         
-        click_button!(:plot_button)
-        # Safely filter layout content for actual Axis objects, skipping UI buttons and menus
-        ax = for c in fig.content
-                if c isa Axis; return c
-                elseif hasproperty(c,:content)
-                    if c.content isa Axis; return c.content end
-                end
-            end
+        plot_HUD!(ax)
+        yield()
 
-        # Verify a HUD primitive was created and tagged with label="HUD"
         hud_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "HUD"]
         @test !isempty(hud_plots)
 
-        # 2. Test Reference Lines (`plot_reference_lines!`)
+        # 2. Test Reference Lines (Direct Local Call)
         ref_lines = plot_reference_lines!(ax, [-1.0, -2.0]; label="Convergence Ref")
-        click_button(:plot_button)
-
+        yield()
+        
         @test length(ref_lines) == 2
-        # Verify they are correctly attached to the axis scene
         @test any(p -> haskey(p, :label) && p.label[] == "Convergence Ref", ax.scene.plots)
 
-        # 3. Test Extrema & Outliers Manager (`plot_extrema_lines_manager!` & `apply_outlier_mask`)
+        # 3. Test Extrema & Outliers Manager via Pipeline
         manager.ui[:outliers_extrema][:track_max] = true
         manager.ui[:outliers_extrema][:track_min] = true
         manager.ui[:outliers_extrema][:mark_outliers] = true
-        manager.ui[:outliers_extrema][:remove_outliers] = true
-        manager.ui[:outliers_extrema][:outlier_threshold] = 1.0
+        manager.ui[:outliers_extrema][:remove_outliers] = false 
+        
+        # A threshold of 0.0 guarantees any point outside the 25th-75th percentile is flagged
+        manager.ui[:outliers_extrema][:outlier_threshold] = 0.0
 
-        # Trigger layout update to force outlier filtering and extrema marker passes through the pipeline
-        click_button!(:layout_apply)
+        # Trigger a plot rebuild so the backend pipeline applies the outlier masks
+        click_button!(:plot_button)
         yield()
 
-        # Verify outlier markers or extrema line segments were successfully injected into the scene
         extrema_max_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "Extrema_Max"]
-        #outlier_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "Outlier"]
+        outlier_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "Outlier"]
         
-        # Depending on data profile, at least one tracking feature should populate
         @test !isempty(extrema_max_plots)
+        @test !isempty(outlier_plots)
+    end
+    # =========================================================================
+    # --- LAGRANGIAN RENDER PIPELINE ---
+    # =========================================================================
+    @testset "Lagrangian Render Pipeline" begin
+        # 0. Clean Slate
+        reset_plotter!()
+        set_mode!(:lagrangian)
 
+        fig = launch_plotter()
+        display(fig)
+
+        # 1. Setup Config with 3D data space (x, t, param_1)
+        shared = create_param_dict(:cfl => 0.5, :N => 20)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
+        varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
+        
+        config = SimulationConfig(
+            "advection_solver_1d", shared, methods, [:upwind];
+            varied_params = varied
+        )
+        
+        run_all_simulations(config; force_overwrite=true)
+        set_sim_config!(config)
+        
+        click_button!(:run_button)
+
+        # The UI should automatically lock the base plot to scatter for Lagrangian data
+        @test manager.widgets[:base_plot].selection[] == :scatter
+
+        # --- Test 1D Lagrangian ---
+        click_menu!(manager.widgets[:x_axis], :x)
+        click_menu!(manager.widgets[:y_axis], :none)
+        click_menu!(manager.widgets[:z_axis], :none)
+        click_menu!(manager.widgets[:plot_style], :scatter_1d)
+        
+        click_button!(:layout_apply)
+        yield()
+        
+        @test manager.state[:Active_Plot_Type] == :scatter_1d
+        @test haskey(manager.caches[1][:upwind].primitives, :scatter_1d)
+        # Verify the backend correctly allocated a Lagrangian cache
+        @test typeof(manager.caches[1][:upwind]).name.name == :LagrangianPlotCache
     end
     reset_plotter!()
 end
