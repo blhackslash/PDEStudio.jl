@@ -72,7 +72,6 @@ function _handle_plot_trigger!(
     if !isempty(manager.methods[])
         sel_vals = [to_value(obs) for obs in selector_obs]
 
-        # THE FIX: Create pooling dictionaries for global max/min accumulation
         plot_x_slices = Dict{Int, Any}()
         plot_y_slices = Dict{Int, Any}()
 
@@ -109,7 +108,6 @@ function _handle_plot_trigger!(
             axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
             
             if !is_3d_axis
-                # THE FIX: Gracefully unwrap Point2f arrays so the Axis limits work perfectly
                 if manager.mode[] == :lagrangian
                     pts_slices = data_tuples[1]
                     if !isempty(pts_slices) && eltype(pts_slices[1]) <: Point2f
@@ -117,7 +115,7 @@ function _handle_plot_trigger!(
                         plot_y_slices[i] = [[p[2] for p in s] for s in pts_slices]
                     else
                         plot_x_slices[i] = pts_slices
-                        plot_y_slices[i] = data_tuples[end] # For 1D, Y limits are the U data!
+                        plot_y_slices[i] = data_tuples[end]
                     end
                 else
                     plot_x_slices[i] = data_tuples[1]
@@ -126,7 +124,6 @@ function _handle_plot_trigger!(
             end
         end
 
-        # THE FIX: Apply aggregated axis limits globally if linked!
         if !is_3d_axis
             link_mode = manager.widgets[:compare_link].selection[]
             is_linked = link_mode in (:fully_coupled, :axes_only)
@@ -189,7 +186,7 @@ function _handle_slider_trigger!(u_sel)
     
     target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
     base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
-    kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(PDECore.get_kept_dims(base_stat, sim_data.domain))
+    kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(PDEStudioCore.get_kept_dims(base_stat, sim_data.domain))
 
     manager.locks[:PlotData] = true
     try
@@ -230,7 +227,6 @@ function _handle_slider_trigger!(u_sel)
                 if i <= n_params 
                     vals = pd.active_param_values[i]
                 else
-                    # THE FIX: Use our safe helper function instead of manually filtering!
                     s_data = _get_first_valid(pd)
                     isnothing(s_data) && continue
                     
@@ -297,7 +293,7 @@ function _handle_data_trigger!(
     sel_vals = [to_value(obs) for obs in selector_obs]
     sim_data = _get_first_valid(first(values(data)))
     
-    # THE FIX: Create pooling dictionaries for data triggers as well
+    # Create pooling dictionaries for data triggers
     plot_x_slices = Dict{Int, Any}()
     plot_y_slices = Dict{Int, Any}()
 
@@ -315,7 +311,6 @@ function _handle_data_trigger!(
         plot_extrema_lines_manager!(axes[i], data_tuples, valid_methods, is_3d_axis)
 
         if !is_3d_axis
-            # THE FIX: Gracefully unwrap Point2f arrays so the Axis limits work perfectly
             if manager.mode[] == :lagrangian
                 pts_slices = data_tuples[1]
                 if !isempty(pts_slices) && eltype(pts_slices[1]) <: Point2f
@@ -323,7 +318,7 @@ function _handle_data_trigger!(
                     plot_y_slices[i] = [[p[2] for p in s] for s in pts_slices]
                 else
                     plot_x_slices[i] = pts_slices
-                    plot_y_slices[i] = data_tuples[end] # For 1D, Y limits are the U data!
+                    plot_y_slices[i] = data_tuples[end]
                 end
             else
                 plot_x_slices[i] = data_tuples[1]
@@ -344,7 +339,6 @@ function _handle_data_trigger!(
         axes[i].title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
     end
     
-    # THE FIX: Accumulate global axes max limits and set globally
     if !is_3d_axis
         link_mode = manager.widgets[:compare_link].selection[]
         is_linked = link_mode in (:fully_coupled, :axes_only)
@@ -403,7 +397,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         dyn_compare_labels = String[frontend_key(Symbol("component_$j")) for j in 1:length(axes)]
     end
 
-    # THE FIX: Calculate Global Colorrange for Linked Colorbars
+    # Calculate Global Colorrange for Linked Colorbars
     link_mode = manager.widgets[:compare_link].selection[]
     is_linked_cb = link_mode in (:fully_coupled, :colorbar_only)
     
@@ -435,14 +429,13 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         end
         
         if haskey(manager.caches, i)
-            # THE FIX: Calculate Local Colorrange
+            # Calculate Local Colorrange
             local_u = Float64[]
             for cache in values(manager.caches[i])
                 append!(local_u, filter(isfinite, vec(cache.obs_u[])))
             end
             local_cr_obs = get_colorrange(ui_app, local_u)
             
-            # Determine which range this specific subplot should obey
             cr_obs = is_linked_cb ? global_cr_obs : local_cr_obs
 
             for (method_name, cache) in manager.caches[i]
@@ -453,7 +446,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
                 c = !isnothing(colors) ? colors[mod1(m_idx, length(colors))] : :black
                 
                 for (key, prim) in cache.primitives
-                    # Pass the computed cr_obs so the primitives can sync their levels!
+                    # Pass the computed cr_obs
                     apply_ui_style!(key, prim, ui_app, c, cr_obs)
                 end
             end
@@ -472,7 +465,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
         create_or_update_legend!(plot_layout, _collect_legend_elements(ui_app)...)
     end
     
-    # THE FIX: Block dynamic resizing if the camera is currently rolling!
+    # Block dynamic resizing if backend is recording
     if !get(manager.state, :Is_Exporting, false)
         resize_to_layout!(master_fig)
     end

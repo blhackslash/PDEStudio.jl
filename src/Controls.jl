@@ -130,7 +130,6 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     
     base_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines), menu_opt(:scatter), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)] : Any[menu_opt(:scatter)]
     
-    # THE FIX: Dynamically set the initial plot style options based on mode!
     style_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines_1d), menu_opt(:lines_2d), menu_opt(:lines_3d)] : Any[menu_opt(:scatter_1d), menu_opt(:scatter_2d), menu_opt(:scatter_surface), menu_opt(:scatter_3d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]
 
     # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
@@ -139,7 +138,6 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr,3], "Legend Base", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    # THE FIX: Explicitly set the starting selection!
     start_base = manager.mode[] == :eulerian ? :lines : :scatter
     manager.widgets[:base_plot]   = Menu(menu_layout[cr,1], options = base_opts, default = frontend_key(start_base))
     
@@ -177,7 +175,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     Label(menu_layout[cr, 1:3], "Plot Options", fontsize=16, font=:bold, color=:darkred)
     push!(gaps, 5); cr += 1
 
-    # --- ROW BLOCK 5: Independent Axes ---
+    # --- ROW BLOCK 4: Independent Axes ---
     Label(menu_layout[cr,1], "X-Axis", font=:bold)
     Label(menu_layout[cr,2], "Y-Axis", font=:bold)
     Label(menu_layout[cr,3], "Z-Axis", font=:bold)
@@ -188,7 +186,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     manager.widgets[:z_axis] = Menu(menu_layout[cr,3], options = Any[menu_opt(:none)])
     push!(gaps, 10); cr += 1
 
-    # --- ROW BLOCK 6: Rest ---
+    # --- ROW BLOCK 5: Rest ---
     Label(menu_layout[cr,1], "U-Axis (Dep)", font=:bold)
     Label(menu_layout[cr,2], "Anim Target", font=:bold, color=:darkorange)
     Label(menu_layout[cr,3], "Component", font=:bold)
@@ -220,7 +218,6 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
     end
 
     for p_sym in get_base_variables()
-        # THE FIX: Make the base labels dynamic Observables and store them!
         lbl_key = Symbol("$(p_sym)_label")
         lbl_text = Observable("$(frontend_key(p_sym)):")
         manager.widgets[lbl_key] = lbl_text

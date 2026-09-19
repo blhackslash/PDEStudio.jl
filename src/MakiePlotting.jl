@@ -1,6 +1,6 @@
-# ==============================================================================
-# --- PLOT MODE DISPATCHES (Replacing if manager.mode[] == ...) ---
-# ==============================================================================
+# =============================
+# --- PLOT MODE DISPATCHES ---
+# =============================
 """
     _cache_type(::Val{Mode})
 
@@ -78,7 +78,7 @@ end
 """
     set_sim_config!(config::SimulationConfig)
 
-The primary injection point for connecting a `PDECore` physics configuration to the `PDEStudio` interactive UI. 
+The primary injection point for connecting a `PDEStudioCore` physics configuration to the `PDEStudio` interactive UI. 
 
 This function unpacks the `SimulationConfig`, maps the dynamic parameter sweeps to the available UI sliders, builds the backend-to-frontend symbolic translation dictionaries, and triggers a full layout regeneration to reflect the new physics.
 """
@@ -99,11 +99,9 @@ function set_sim_config!(config::SimulationConfig)
     
     # Ensure the config is updated if it was empty
     config.active_methods = active_m
-    manager.methods[] = copy(active_m) # Keep this observable for the layout plot loops
+    manager.methods[] = copy(active_m)
 
-    # =========================================================================
-    # THE FIX: Build UI mappings immediately so CSV loading and layout triggers can use them!
-    # =========================================================================
+    # Build UI mappings immediately so CSV loading and layout triggers can use them
     real_params = Symbol.(sort(collect(keys(config.varied_params))))
     param_map = Dict{Symbol, Symbol}()
     reverse_map = Dict{Symbol, Symbol}()
@@ -138,7 +136,6 @@ function set_sim_config!(config::SimulationConfig)
     manager.maps[:Param] = param_map
     manager.maps[:Reverse] = reverse_map
     manager.plot_vars = [real_params; get_base_variables()]
-    # =========================================================================
 
     if haskey(manager.widgets, :editor_cat)
         notify(manager.widgets[:editor_cat].selection)
@@ -256,9 +253,9 @@ function launch_plotter()
     return master_fig 
 end
 
-# ==============================================================================
-# --- 3. LAYOUT & RENDER HANDLERS ---
-# ==============================================================================
+# =================================
+# --- LAYOUT & RENDER HANDLERS ---
+# =================================
 """
     setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
 
@@ -270,12 +267,11 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     if manager.state[:plot_window_initialized][]; return; end
     manager.state[:plot_window_initialized][] = true
 
-    # THE FIX: Store observers globally so we can pause them during export
+    # Store observers globally
     manager.state[:Main_Render_Observers] = ObserverFunction[]
 
     function rebuild_plot_layout!()
         if get(manager.state, :Camera_Locked, Observable(false))[]
-            # THE FIX: Don't extract the dying axes if we just loaded a perfect CSV cache!
             if get(manager.state, :Skip_Next_Camera_Extract, false)
                 manager.state[:Skip_Next_Camera_Extract] = false
             else
@@ -290,7 +286,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
             sim_data = _get_first_valid(first(values(manager.plot_data[])))
         end
 
-        # THE FIX: Safely clear old observers
+        # Safely clear old observers
         if haskey(manager.state, :Main_Render_Observers)
             for obs in manager.state[:Main_Render_Observers]; off(obs); end
             empty!(manager.state[:Main_Render_Observers])
@@ -398,9 +394,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
 
     manager.listeners[:PlotData_Sync_Widget] = onany(c_sel, selector_obs...) do _...
         
-        # ====================================================================
-        # THE FIX: Sync manual slider drags into the persistent caches!
-        # ====================================================================
+        # Sync manual slider drags into the persistent caches
         rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
         for k in manager.plot_vars
             w_key = haskey(rev_map, k) ? rev_map[k] : k 
@@ -409,11 +403,10 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
                 if widget isa Makie.Slider
                     val = widget.value[]
                     manager.state[:Slider_Cache][w_key] = Float64(val)
-                    manager.state[:Plot_Cache][k] = val # Assign by the pure variable symbol
+                    manager.state[:Plot_Cache][k] = val
                 end
             end
         end
-        # ====================================================================
 
         if manager.flags[:Plot][] || manager.flags[:Layout][] || manager.flags[:Simulation][]
             return

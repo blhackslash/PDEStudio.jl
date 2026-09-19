@@ -2,11 +2,12 @@
 
 **PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend designed for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. 
 
-Built directly on top of its core numerical dependency, it transforms strictly typed simulation data into responsive 1D, 2D, and 3D visualizations. It features a hierarchical UI editor, robust CSV-based preset management, and a flexible rendering engine capable of handling both Eulerian grids and Lagrangian particle systems on the fly.
+Built directly on top of its core numerical backend `PDEStudioCore`, it transforms strictly typed simulation data into responsive 1D, 2D, and 3D visualizations. It features a hierarchical UI editor, robust CSV-based preset management, and a flexible rendering engine capable of handling both Eulerian grids and Lagrangian particle systems on the fly.
 
-> **Note on PDECore:** `PDECore.jl` is fully integrated and reexported by the studio. You do **not** need to import `PDECore` separately in your scripts; simply `using PDEStudio` gives you access to the entire numerical backend alongside the visualization suite.
+Because of the complexity of PDE simulations, they often have to be run on servers. The package has two main options how to handle the remote deployment:
+> **Headless Mode:** Because the backend `PDEStudioCore` for running and saving simulations is fully autonomous, it can be used to create `PDEStudio`-compatible data on the server which can then be moved for local exploration using `GLMakie`. This yields the best performance but can lead to significant data transfers.
 
-> **Backend Independent:** PDEStudio is completely backend agnostic. You can use `GLMakie` for high-performance local desktop visualization, or `WGLMakie` (powered by `Bonito`) to serve interactive plots directly to a web browser, making it perfect for remote server deployments.
+> **Web Mode:** Because `PDEStudio` is completely backend agnostic, you can use `WGLMakie` (powered by `Bonito`) to serve interactive plots directly to a web browser from the server. Note that this will reduce the data transfer significantly but also has a noticable impact to the performance and latency.
 
 ---
 
@@ -55,7 +56,7 @@ The studio is built for publication-quality output. It provides a dedicated expo
 using PDEStudio
 using GLMakie # Or WGLMakie for browser rendering
 
-# 1. Define your backend physics (PDECore is reexported)
+# 1. Define your backend physics (PDEStudioCore is reexported)
 my_config = SimulationConfig(...)
 
 # 2. Launch the interactive studio

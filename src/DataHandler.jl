@@ -8,8 +8,8 @@ function _get_template_domain(sim_config::SimulationConfig)
     for m_name in sim_config.active_methods
         if is_reference_method(m_name); continue; end
         
-        base_params = PDECore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
-        ik = PDECore.get_ignore_keys(sim_config.methods_dict, m_name)
+        base_params = PDEStudioCore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
+        ik = PDEStudioCore.get_ignore_keys(sim_config.methods_dict, m_name)
         
         tasks, _ = generate_method_tasks(base_params, collect(keys(sim_config.varied_params)), collect(values(sim_config.varied_params)); ignore_keys=ik)
         
@@ -19,7 +19,6 @@ function _get_template_domain(sim_config::SimulationConfig)
                 raw_data = load_sim_data(tasks[1], Val(:raw))
                 return raw_data.domain
             catch e
-                # THE FIX: Stop failing silently!
                 @warn "Failed to load template domain for $m_name." exception=(e, catch_backtrace())
                 continue
             end
@@ -147,7 +146,7 @@ Calculates the full Cartesian sweep grid, dispatches Eulerian or Lagrangian load
 """
 function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_config::SimulationConfig)
     active_keys, active_values = analyze_configuration(sim_config)
-    ignore_keys = PDECore.get_ignore_keys(sim_config.methods_dict, method_name)
+    ignore_keys = PDEStudioCore.get_ignore_keys(sim_config.methods_dict, method_name)
     
     tasks, grid_indices = generate_method_tasks(base_params, active_keys, active_values; ignore_keys=ignore_keys)
     isempty(tasks) && return nothing
@@ -163,9 +162,9 @@ function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_confi
         _recombine_tuples!(params)
         
         sim_data = if is_reference && !isnothing(domain)
-            PDECore.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
+            PDEStudioCore.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
         
-        elseif !isnothing(domain) # THE FIX: Explicitly protect domain.dim_keys
+        elseif !isnothing(domain)
             try 
                 if mode === Val(:eulerian)
                     load_sim_data(params, mode, build_res_tuple(domain.dim_keys; is_ref=false)) 
@@ -276,12 +275,11 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
         tensor = get(sim_data.stats, u_key, nothing)
         isnothing(tensor) && continue
         
-        tensor_dim_syms = Tuple(PDECore.get_kept_dims(u_key, sim_data.domain))
+        tensor_dim_syms = Tuple(PDEStudioCore.get_kept_dims(u_key, sim_data.domain))
         
         in_bounds = true
         
-        # THE FIX: If there are no spatial dimensions, it's a pure scalar stat. 
-        # Bypass spatial unpacking completely!
+        # If there are no spatial dimensions, it's a pure scalar stat. 
         if isempty(tensor_dim_syms)
             u_raw = tensor isa AbstractArray ? first(tensor) : tensor
         else
@@ -294,7 +292,6 @@ function extract_eulerian_data(pd::PlotSweepData, param_indices, sel_vals, plot_
                     if idx > size(tensor, d); in_bounds = false; return 1; end
                     return idx
                 else
-                    # Direct Symbol-to-Symbol lookup!
                     var_idx = findfirst(isequal(dim_sym), plot_vars) 
                     if isnothing(var_idx); in_bounds = false; return 1; end
                     
@@ -351,7 +348,6 @@ function extract_lagrangian_data(pd::PlotSweepData, param_indices, sel_vals, plo
     
     u_flat = target_c isa Integer ? map(v -> Float64(v[target_c]), u_raw) : map(v -> Float64(v[1]), u_raw)
     
-    # THE FIX: Map natively to Makie Point types!
     x_step = sim_data.x[t_idx]
     DS = length(x_step[1])
     
@@ -376,7 +372,7 @@ function update_plot_data_collection!(plot_data_dict, sim_config, active_methods
     if force_reload; empty!(plot_data_dict); end
     for m_name in active_methods
         if !haskey(plot_data_dict, m_name)
-            base_params = PDECore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
+            base_params = PDEStudioCore.assemble_params(sim_config.shared_params, sim_config.methods_dict, m_name)
             new_data = create_plot_data(m_name, base_params, sim_config)
             if !isnothing(new_data); plot_data_dict[m_name] = new_data; end
         end
@@ -398,11 +394,9 @@ function fetch_pipeline_tuples(::Val{:eulerian}, data, local_methods, _build_par
     ax_cols = [Any[] for _ in 1:length(active_plot_axes_syms)]
     u_col = Any[]
     
-    # FIX: Initialize as a Symbol array
     valid_methods = Symbol[] 
 
     for m_name in local_methods
-        # FIX: Check the data dictionary natively using the Symbol
         !haskey(data, m_name) && continue
         pd = data[m_name]
         p_idx = _build_param_indices(pd, mutated_sel_vals)

@@ -40,7 +40,7 @@ function generate_dynamic_title(
     sim_data::Union{Nothing, AbstractSimData} = nothing
 )
     title_parts = String[]
-    base_vars = get_base_variables() # Gets (:x, :y, :z, :t)
+    base_vars = get_base_variables()
     
     for i in 1:length(dim_names)
         name_sym = dim_names[i]
@@ -219,7 +219,7 @@ function set_axis_limits_manager!(ax::Axis, xs, us)
     new_xscale = use_log_x ? log10 : identity
     new_yscale = use_log_y ? log10 : identity
 
-    # FIX: Calculate and apply the valid padded limits BEFORE changing the scale!
+    # Calculate and apply the valid padded limits before changing the scale
     is_locked = get(manager.state, :Camera_Locked, Observable(false))[]
     
     if !is_locked
@@ -332,7 +332,6 @@ function _parse_legend_position()
     
     target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] : manager.widgets[:compare_target].selection[]
     
-    # THE FIX: Use lowercase :none and :methods!
     if target != :none && target != :methods && !is_detached
         return (true, :center, :top)
     end
@@ -571,7 +570,7 @@ function apply_outlier_mask(ax::Axis, data_tuples, valid_methods, is_3d_axis)
                 end
                 linesegments!(ax, segments; color=(c, 0.6), linewidth=2.0, linestyle=:dash, label="Outlier")
                 
-            elseif eltype(xs) <: Point2f # THE FIX: Native 2D Lagrangian Point Cloud
+            elseif eltype(xs) <: Point2f # Native 2D Lagrangian Point Cloud
                 pts = Point2f[xs[idx] for idx in out_idx]
                 scatter!(ax, pts; color=c, marker=:xcross, markersize=15, label="Outlier")
                 
@@ -702,7 +701,7 @@ end
 Injects arbitrary user-defined shapes (scatter points, connected polygons, tracking lines) in relative screen-space coordinates (0.0, 1.0) directly on top of the active plot axes to highlight specific regions of interest.
 """
 function plot_HUD!(ax::Axis)
-    # THE FIX: Always clear the previous HUD before drawing or exiting
+    # Always clear the previous HUD before drawing or exiting
     delete_plots_by_label!(ax, "HUD")
     
     ui_hud = manager.ui[:hud]
@@ -724,7 +723,7 @@ function plot_HUD!(ax::Axis)
         ls    = ui_hud[:line_style] 
         ms    = ui_hud[:marker_size] 
 
-        # THE FIX: Add label="HUD" to all primitives so they can be targeted and deleted
+        # Add label="HUD" to all primitives so they can be targeted and deleted
         if mode == "scatter"
             scatter!(ax, x_pct, y_pct; color=color, markersize=ms, space=:relative, label="HUD")
         elseif mode == "scatterlines"
@@ -755,8 +754,6 @@ function _apply_axis_styles!(ax, T::Symbol)
     if ax isa Axis
         def_y = dim == 1 ? u : y
         set_axis_styles!(ax, x, def_y, def_title)
-        
-        # THE FIX: Actually call the HUD drawing function!
         plot_HUD!(ax)
     elseif ax isa Axis3
         def_z = dim == 2 ? u : z
@@ -800,7 +797,6 @@ function _collect_legend_elements(ui_app::Dict)
             group = []
             is_base = false
             
-            # THE FIX: Map the backend method symbol to its UI string immediately!
             method_label_str = frontend_key(method_name)
             
             for (pkey, prim) in prims
@@ -894,8 +890,7 @@ function _enforce_camera_lock!(axes::Vector)
             end
         end
         
-        # FIX: If it wasn't permanently locked by the user, this was a temporary staged state.
-        # Clear it out so auto-scaling resumes on the next data update!
+        # If it wasn't permanently locked by the user, clear the camera again
         if !is_locked
             empty!(manager.state[:Camera_Cache])
         end

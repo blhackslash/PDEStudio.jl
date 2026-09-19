@@ -24,11 +24,10 @@ Reads a configuration CSV from disk, orchestrating the file load and structural 
 
 It handles the execution of any bundled Julia source files to reconstruct the `SimulationConfig`, checks if the loaded configuration requires modifying the fundamental UI layout (dimensions or max parameters), and safely stages the data if structural limits change. Returns `true` if a structural UI rebuild is required.
 """
-function load_and_apply_csv!(filepath::String)
+function load_and_apply_csv!(filepath::AbstractString)
     @info "Loading configuration from CSV: $filepath"
     parsed = parse_csv_to_dict(filepath)
     
-    # THE FIX: Check for bundled Julia scripts and include them sequentially!
     if haskey(parsed, "Metadata") && haskey(parsed["Metadata"], "General") && haskey(parsed["Metadata"]["General"], "bundled_sources")
         script_names = parsed["Metadata"]["General"]["bundled_sources"]
         
@@ -42,7 +41,6 @@ function load_and_apply_csv!(filepath::String)
             script_path = joinpath(dirname(filepath), script_name)
             if isfile(script_path)
                 @info "Executing bundled source: $script_name"
-                # include() naturally returns the result of the last line in the file
                 config_obj = Base.include(get_target_module(),script_path) 
             else
                 @warn "Bundled source missing: $script_path"
@@ -78,7 +76,6 @@ function load_and_apply_csv!(filepath::String)
     end
     
     if is_structural_change
-        # THE FIX: Stage the parsed dict AND the new limits so the button knows exactly what to do!
         manager.state[:CSV_Cache] = (new_dims, new_max, parsed)
         @info "Structural limits changed! Configuration staged."
     else
@@ -159,9 +156,7 @@ function load_and_apply_csv!(parsed::Dict)
         @info "No simulation data found. Loading as a visual preset."
     end
 
-    # THE FIX: PRE-INITIALIZE PLOT TYPE
-    # We must set the plot type before loading the UI overrides so the master templates
-    # are constructed with the correct dimensionality, preventing CSV overrides from being wiped.
+    # Pre-initialize plot type
     layout_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
         parsed["Scene"]["Layout"]
     elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
@@ -267,7 +262,7 @@ end
 """
     csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
 
-Converts a loosely typed nested CSV dictionary into a rigorously formatted `PDECore.SimulationConfig`.
+Converts a loosely typed nested CSV dictionary into a rigorously formatted `PDEStudioCore.SimulationConfig`.
 
 This function manages the translation of string-based category scopes into strongly typed `ParamDict`, `MethodDict`, and `VariedDict` structures. It also safely looks up and links analytical reference and post-processing functions from the target module's namespace.
 """
@@ -377,7 +372,7 @@ end
 Reads an RFC 4180 standard CSV file and structures it into a nested `Dict` hierarchy: `[Category][Scope][Parameter]`.
 It relies on `str2val` to securely parse and execute strings back into native Julia types (like `Vector` or `Symbol`).
 """
-function parse_csv_to_dict(filepath::String)
+function parse_csv_to_dict(filepath::AbstractString)
     parsed = Dict{String, Dict{String, Dict{String, Any}}}()
     
     for row in CSV.Rows(filepath)
@@ -488,7 +483,6 @@ function save_params_to_csv(
         # --- 1. CATEGORY: Metadata ---
         for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
 
-        # THE FIX: Bundle multiple source files sequentially!
         config = manager.active_config
         if hasproperty(config, :source_files) && !isempty(config.source_files)
             bundled_names = String[]
@@ -497,7 +491,6 @@ function save_params_to_csv(
                     bundled_name = "$(base_filename)_source_$i.jl"
                     dst_path = joinpath(save_dir, bundled_name)
                     
-                    # THE FIX: Prevent crashing if the source and destination are the exact same file
                     if abspath(src_path) != abspath(dst_path)
                         cp(src_path, dst_path, force=true)
                     else
@@ -510,7 +503,6 @@ function save_params_to_csv(
             end
             
             if !isempty(bundled_names)
-                # Your `val2str` natively handles string vectors!
                 add_row("Metadata", "General", "bundled_sources", bundled_names)
             end
         end
@@ -550,7 +542,7 @@ function save_params_to_csv(
 
         if haskey(manager.maps, :Labels)
             for (k, v) in manager.maps[:Labels]
-                # THE FIX: Skip saving redundant default labels to keep the CSV clean!
+                # Skip saving redundant default labels to keep the CSV clean
                 if v == string(k)
                     continue
                 end
@@ -587,17 +579,17 @@ function save_params_to_csv(
             add_row("Config", "Parameters", string(k), v)
         end
         
-        # THE FIX: Move core functions and methods into the Simulation category
+        # Save function names
         add_row("Simulation", "Config", "simulation_func", string(config.simulation_name))
         add_row("Simulation", "Config", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
         add_row("Simulation", "Config", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
         add_row("Simulation", "Config", "active_methods", manager.methods[])
 
-        # NEW: Dimensions Scope
+        # Dimensions Scope
         add_row("Config", "Dimensions", "allowed_dims", manager.allowed_dims)
         add_row("Config", "Dimensions", "max_params", manager.max_params)
 
-        # NEW: Dynamic Resolutions
+        # Dynamic Resolutions
         for (dim, res) in manager.state[:Resolution_Base]
             add_row("Config", "Resolution_Base", string(dim), res)
         end
@@ -659,7 +651,6 @@ function save_preset_to_csv(preset_name::Symbol, save_dir::String)
 
         if haskey(manager.maps, :Labels)
             for (k, v) in manager.maps[:Labels]
-                # THE FIX: Apply the same clean-up filter to Presets
                 if v == string(k)
                     continue
                 end

@@ -5,7 +5,7 @@ using Makie, CairoMakie, Reexport
 using Observables: ObserverFunction, onany
 using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
-@reexport using PDECore
+@reexport using PDEStudioCore
 
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 
@@ -64,7 +64,7 @@ abstract type AbstractPlotData end
 """
     PlotSweepData{N} <: AbstractPlotData
 
-A wrapper mapping an N-dimensional parameter sweep to its corresponding `PDECore` simulation data.
+A wrapper mapping an N-dimensional parameter sweep to its corresponding `PDEStudioCore` simulation data.
 Stores the actual Cartesian tensor of `AbstractSimData` objects alongside the exact keys and values of the active parameter grid.
 """
 struct PlotSweepData{N} <: AbstractPlotData
@@ -97,7 +97,6 @@ mutable struct PlotManager
     active_config::SimulationConfig
     plot_data::Observable{Dict{Symbol, AbstractPlotData}}
 
-    # Unified Encapsulated Globals
     mode::Observable{Symbol}
     ui_state::Dict{Symbol, Any}
 
@@ -201,7 +200,6 @@ macro with_lock(lock_name, expr)
         local lname = $(esc(lock_name))
         local locks = manager.locks
         
-        # THE FIX: Allow pristine figures to bypass locks during headless exports!
         if get(manager.state, :Bypass_Locks, false)
             $(esc(expr))
         elseif !locks[lname]
@@ -244,7 +242,7 @@ include("ConfigIO.jl")
 Returns the default structural layout dictionary. Dynamically switches between continuous Eulerian line plots and Lagrangian scatter plots depending on the active `manager.mode`.
 """
 function get_base_layout_options()
-    # THE FIX: Check the mode dynamically!
+
     is_lag = manager.mode[] == :lagrangian
     
     return Dict{Symbol, Any}(
@@ -279,7 +277,7 @@ force_simulation() = notify(manager.triggers[:Simulation])
 
 The primary asynchronous worker mapped to the `:Simulation` lock. 
 
-It safely checks the validity of the current `SimulationConfig`, executes the headless numerical loops via `PDECore.run_all_simulations`, caches the updated multi-dimensional arrays, and hands the payload over to the `:Layout` lock to begin mapping the UI.
+It safely checks the validity of the current `SimulationConfig`, executes the headless numerical loops via `PDEStudioCore.run_all_simulations`, caches the updated multi-dimensional arrays, and hands the payload over to the `:Layout` lock to begin mapping the UI.
 """
 function simulation_trigger() 
     @with_lock :Simulation begin
@@ -303,8 +301,6 @@ function simulation_trigger()
         
         @info "Running Simulation and Mapping UI..."
 
-        # THE FIX: Mapping is already handled by set_sim_config! 
-        # We just need to update the plot data.
         manager.locks[:Layout] = true
         try
             update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = true)
@@ -340,7 +336,6 @@ function reset_manager!()
     end
     empty!(manager.listeners)
     
-    # FIX: Correctly initialize empty states as Symbol vectors/dicts
     manager.methods.val = Symbol[]
     manager.active_config = DUMMY_CONFIG
     manager.plot_data.val = Dict{Symbol, AbstractPlotData}()
@@ -375,17 +370,13 @@ function reset_manager!()
 
     manager.state[:Compare_State] = (:none, nothing, String[], Any[])
 
-    # NEW: Generic Dimensional Resolution Tracking
     manager.state[:Resolution_Base] = Dict{Symbol, Int}()
     manager.state[:Resolution_Ref]  = Dict{Symbol, Int}()
     
-    # Auto-populate defaults based on the active allowed dimensions
     for d in manager.allowed_dims
-        # Optional: Provide a slightly lower default for time if desired
         manager.state[:Resolution_Base][d] = d === :t ? 50 : 200
         manager.state[:Resolution_Ref][d]  = d === :t ? 100 : 400
     end
-    # ---------------------------------------------
 
     manager.maps[:Labels] = Dict{Symbol, String}()
     manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)

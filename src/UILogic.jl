@@ -16,7 +16,6 @@ function menu_option_rank(opt)
     val = length(opt) > 1 ? opt[2] : nothing
     
     # Rank 0: Main prompts and ":none" fallbacks 
-    # (Catches "Methods...", "-", and the resolved UI label for :none)
     if val in manager.plot_vars || val in _RANK_0
         return (0, label_str)
     end
@@ -51,7 +50,6 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
     is_eq = length(old_arr) == length(new_arr)
     if is_eq
         for (o, n) in zip(old_arr, new_arr)
-            # THE FIX: Check if either the Label (o[1]) or the Value (o[2]) changed
             if o[1] != n[1] || o[2] != n[2]
                 is_eq = false
                 break
@@ -124,7 +122,7 @@ function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict
             # Match 1: Direct literal match
             idx = findfirst(v -> string(v) == string(val), valid_vals)
             
-            # THE FIX: Match 2: Translate UI strings (e.g. "Contour Filled") back to Symbols (e.g. :contour_f)
+            # Match 2: Translate UI strings (e.g. "Contour Filled") back to Symbols (e.g. :contour_f)
             if isnothing(idx) && val isa AbstractString
                 bk_val = backend_key(val)
                 idx = findfirst(v -> v == bk_val, valid_vals)
@@ -199,8 +197,7 @@ function apply_slider_options!(slider_options::Dict)
                 
                 rng = widget.range[]
                 
-                # THE FIX: If the range is a dummy placeholder, do NOT touch the widget!
-                # Touching it triggers an OnAny listener that overwrites our Cache with 0.0!
+                # If the range is a dummy placeholder, do not touch the widget
                 if isempty(rng) || rng == [0.0]
                     continue
                 end
@@ -226,7 +223,7 @@ function extract_slider_options()
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider
-                opts[k] = widget.value[]  # Assign purely by the variable's symbol
+                opts[k] = widget.value[] 
             end
         end
     end
@@ -312,7 +309,7 @@ function _setup_button_state_machine!()
         end
     end
     
-    # 3. Exploration Watcher (Updates Cache, but doesn't flag a hard reset!)
+    # 3. Exploration Watcher (Updates Cache, but doesn't flag a hard reset)
     exp_obs = [w[k].selection for k in EXPLORATION_OPTIONS if haskey(w, k)]
     manager.listeners[:Watch_Exploration] = onany(exp_obs...) do _...
         merge!(manager.state[:Exploration_Cache], extract_exploration_options())
@@ -442,7 +439,7 @@ function _setup_method_interactions!()
     menu_mth = manager.widgets[:method_toggle]
     is_activate_mode = manager.state[:Is_Activate_Mode]
     
-    # THE FIX: A helper function to manually sync the menu directly from the config
+    # A helper function to manually sync the menu directly from the config
     function sync_menu()
         config = manager.active_config
         isnothing(config) && return 
@@ -484,7 +481,7 @@ function _setup_method_interactions!()
             filter!(x -> x != sel, new_staged)
         end
         
-        # THE FIX: Directly mutate the config!
+        # Directly mutate the config!
         config.active_methods = new_staged
         manager.flags[:Simulation][] = true
         menu_mth.i_selected[] = 1
@@ -541,7 +538,6 @@ function _setup_hierarchy_interactions!()
             val_str = val2str(target_dict[key])
             tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
             
-            # THE FIX: Dynamic Toggle/Apply Button!
             if cat === :ui && scope === :presets
                 manager.widgets[:editor_toggle].label[] = "Apply"
                 manager.widgets[:editor_toggle].buttoncolor[] = :lightgreen
@@ -566,7 +562,6 @@ function _setup_hierarchy_interactions!()
                 end
             end
         elseif cat === :ui
-            # THE FIX: Inject Presets as the default UI scope
             push!(new_scopes, ("Presets", :presets))
             for k in sort(collect(keys(manager.ui)))
                 push!(new_scopes, menu_opt(k))
@@ -592,15 +587,30 @@ function _setup_hierarchy_interactions!()
             end
         elseif cat === :ui
             if scope === :presets
-                # THE FIX: Dynamically scan the disk for custom presets!
+                # Dynamically scan the disk for custom presets!
                 preset_dir = joinpath(get_save_path(), "Presets")
                 if isdir(preset_dir)
                     for file in readdir(preset_dir)
                         if endswith(lowercase(file), ".csv")
                             sym_name = Symbol(splitext(file)[1])
-                            # Register it in the UI maps if it isn't there already
                             if !haskey(manager.maps[:Presets], sym_name)
-                                manager.maps[:Presets][sym_name] = "Custom disk preset"
+                                filepath = joinpath(preset_dir, file)
+                                desc = "Custom disk preset"
+                                try
+                                    df = CSV.read(filepath, DataFrame; stringtype=String)
+                                    row_mask = (df.Category .== "Metadata") .&
+                                            (df.Scope .== "Preset") .&
+                                            (df.Parameter .== "description")
+                                    if any(row_mask)
+                                        val = first(df.Value[row_mask])
+                                        if !ismissing(val) && !isempty(strip(val))
+                                            desc = String(strip(val))
+                                        end
+                                    end
+                                catch
+                                    # Gracefully falls back to default if file is unreadable or malformed
+                                end
+                                manager.maps[:Presets][sym_name] = desc
                             end
                         end
                     end
@@ -768,7 +778,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    # THE FIX: Couple the button directly to the observable!
+    # Couple the button directly to the observable
     manager.listeners[:Camera_State_Sync] = on(manager.state[:Camera_Locked]) do is_locked
         if is_locked
             btn_lock.label[] = "Camera: Locked"
@@ -846,7 +856,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             end
         end
         
-        # It is safe to run it once to initialize the grid, but it won't run again!
         resize_to_layout!(export_fig)
         return export_fig, export_obs
     end
@@ -857,16 +866,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         base_name, ext = splitext(raw_filename)
         ext = lowercase(replace(ext, "." => ""))
         
-        formats = String[]
-        is_anim = false
+        # Safely extract the selected static formats from the UI export dictionary
+        formats = get(manager.ui[:export], :save_formats, String[])
         
-        if isempty(ext)
-            formats = lowercase.(manager.ui[:export][:save_formats])
-            is_anim = "gif" in formats || "mp4" in formats
-        else
-            formats = [ext]
-            is_anim = ext == "gif" || ext == "mp4"
-        end
+        # --- Pre-Export Validation ---
+        supported_anim_exts = ["mp4", "gif", "webm"]
+        is_anim = lowercase(ext) in supported_anim_exts
 
         target_name = anim_target_obs[] 
         if is_anim
@@ -879,6 +884,13 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         target_widget = is_anim ? get_target_widget(target_name) : nothing
         
+        # Strip out and warn about any animation formats mistakenly put in the UI formats list
+        invalid_formats = filter(f -> lowercase(f) in supported_anim_exts, formats)
+        if !isempty(invalid_formats)
+            @warn "Animation formats $invalid_formats found in the export settings are ignored. To export an animation, explicitly add the extension (e.g., '.mp4') directly in the filename textbox."
+            filter!(f -> !(lowercase(f) in supported_anim_exts), formats)
+        end
+
         try
             # 1. SHUT DOWN MAIN WINDOW (Prevents cache corruption and duplicate colorbars)
             if haskey(manager.state, :Main_Render_Observers)
@@ -892,17 +904,17 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
             manager.state[:Is_Exporting] = true
 
+            # --- ANIMATION EXPORT ---
             if is_anim
                 save_path = joinpath(get_save_path(), "animations")
                 mkpath(save_path)
                 
-                active_ext = isempty(ext) ? "gif" : ext
-                fname = joinpath(save_path, base_name * "." * active_ext)
+                # Strictly use the explicitly provided extension
+                fname = joinpath(save_path, base_name * "." * lowercase(ext))
                 
                 duration = manager.ui[:export][:animation_time]
                 fps = manager.ui[:export][:animation_FPS]
                 comp = get(manager.ui[:export], :mp4_compression, 15)
-                dpi_val = get(manager.ui[:export], :dpi, 300)
                 
                 rng = target_widget.range[]
                 n_frames = Int(duration * fps)
@@ -916,12 +928,13 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_path, metadata) 
                 @info "Pristine Animation Saved Successfully."
-            else
+                
+            # --- STATIC FRAME EXPORT ---
+            elseif !isempty(formats)
                 save_dir = joinpath(get_save_path(), "figures")
                 if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
                 mkpath(save_dir)
 
-                
                 for fmt in formats
                     full_path = joinpath(save_dir, base_name * ".$fmt")
                     if fmt == "png"
@@ -934,6 +947,9 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 
                 metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_dir, metadata)
+                
+            else
+                @warn "No valid static formats selected and no animation extension provided. Export bypassed."
             end
             
             # 3. SHUT DOWN EXPORT LISTENERS
@@ -953,7 +969,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             manager.state[:Skip_Next_Camera_Extract] = true 
             manager.triggers[:Layout][] += 1
             
-            # THE FIX: Force the OpenGL context to bring the main window back to life!
+            # Force the OpenGL context to bring the main window back to life
             display(master_fig)
         end
     end
@@ -1088,7 +1104,7 @@ function _setup_chain_A!(::Val{:eulerian})
             
             for k in keys(sim_data.stats)
                 k === :Solution && continue
-                stat_dims = PDECore.get_kept_dims(k, sim_data.domain)
+                stat_dims = PDEStudioCore.get_kept_dims(k, sim_data.domain)
                 if isempty(stat_dims)
                     for p in pd_first.active_param_keys
                         push!(valid_indep_axes, Symbol("$(String(k))|$p"))
@@ -1108,7 +1124,7 @@ function _setup_chain_A!(::Val{:eulerian})
                 end
             end
             
-            # THE FIX: Dynamically set the fallback to the time dimension!
+            # Dynamically set the fallback to the time dimension
             t_dim = sim_data.domain.time_dim
             anim_fallbacks = !isnothing(t_dim) ? [t_dim, :none] : [:none]
             
@@ -1119,7 +1135,7 @@ function _setup_chain_A!(::Val{:eulerian})
                 push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
-                # THE FIX: Use menu_opt instead of string()
+                # Use menu_opt instead of string()
                 push!(compare_opts, menu_opt(Symbol(p_key)))
             end
             update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
@@ -1179,7 +1195,7 @@ Recognizes that point clouds do not have fixed Eulerian bounding boxes. It force
 function _setup_chain_A!(::Val{:lagrangian})
     w = manager.widgets
     
-    # THE FIX: Ensure the base menu is locked to Scatter when in Lagrangian mode!
+    # Ensure the base menu is locked to Scatter when in Lagrangian mode
     base_opts = Any[menu_opt(:scatter)]
     update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:scatter], force_notify=false)
 
@@ -1201,7 +1217,6 @@ function _setup_chain_A!(::Val{:lagrangian})
             sy = D >= 2 ? spatial_keys[2] : :y
             sz = D >= 3 ? spatial_keys[3] : :z
             
-            # THE FIX: Use menu_opt instead of string()
             update_menu_safe!(w[:x_axis], Any[menu_opt(sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
                 update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_1d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]; fallbacks=[:scatter_1d], force_notify=false)
@@ -1225,7 +1240,7 @@ function _setup_chain_A!(::Val{:lagrangian})
                 end
             end
             
-            # THE FIX: Explicitly add time to Lagrangian anim options and set it as the default
+            # Explicitly add time to Lagrangian anim options and set it as the default
             t_dim = l_data.domain.time_dim
             if !isnothing(t_dim)
                 push!(anim_options, menu_opt(t_dim))
@@ -1240,7 +1255,6 @@ function _setup_chain_A!(::Val{:lagrangian})
                 push!(compare_opts, menu_opt(:time))
             end
             for p_key in pd_first.active_param_keys
-                # THE FIX: Use menu_opt instead of string()
                 push!(compare_opts, menu_opt(Symbol(p_key)))
             end
             update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
@@ -1291,7 +1305,7 @@ function _setup_chain_B!(::Val{:eulerian})
             
             for k in keys(sim_data.stats)
                 k === :Solution && continue
-                kept_syms = PDECore.get_kept_dims(k, sim_data.domain)
+                kept_syms = PDEStudioCore.get_kept_dims(k, sim_data.domain)
                 if issubset(active_physical_axes, kept_syms)
                     push!(valid_fields, menu_opt(k))
                 end
@@ -1327,14 +1341,14 @@ function _setup_chain_B!(::Val{:lagrangian})
 
             valid_fields = Any[]
             if issubset(spatial_keys, l_data.domain.dim_keys)
-                push!(valid_fields, menu_opt(:Solution)) # THE FIX: Use menu_opt
+                push!(valid_fields, menu_opt(:Solution))
             end
             
             for k in keys(l_data.stats)
                 k === :Solution && continue
-                kept_syms = PDECore.get_kept_dims(k, l_data.domain)
+                kept_syms = PDEStudioCore.get_kept_dims(k, l_data.domain)
                 if issubset(spatial_keys, kept_syms)
-                    push!(valid_fields, menu_opt(k))     # THE FIX: Use menu_opt
+                    push!(valid_fields, menu_opt(k))
                 end
             end
             sort!(valid_fields, by = x -> x[1])
@@ -1381,12 +1395,10 @@ function _setup_chain_C!(mode::Val{T}) where T
             c_options = Any[]
             for i in 1:comp_max
                 sym = Symbol("component_$i")
-                # Auto-initialize the label if it doesn't exist yet
                 if !haskey(manager.maps[:Labels], sym)
                     manager.maps[:Labels][sym] = "Component $i"
                 end
                 
-                # THE FIX: Push the frontend_key mapped string to the UI menu
                 push!(c_options, (frontend_key(sym), i))
             end
             update_menu_safe!(w[:component], c_options; fallbacks=[1])

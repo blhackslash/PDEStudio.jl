@@ -86,7 +86,7 @@ function set_label!(sym::Symbol, label::AbstractString)
     str_label = String(label)
     manager.maps[:Labels][sym] = str_label
     
-    # THE FIX: Automatically maintain the dynamic reverse mapping
+    # Automatically maintain the dynamic reverse mapping
     if !haskey(manager.maps, :Labels_Reverse)
         manager.maps[:Labels_Reverse] = Dict{String, Symbol}()
     end
@@ -235,7 +235,7 @@ function create_master_ui_dict()
         :rasterization_enabled=> false,
         :rasterization_quality=> 2,
         :dpi                  => 300,
-        :mp4_compression      => 15, # THE FIX: Added high-quality MP4 compression (0 is lossless, 51 is worst)
+        :mp4_compression      => 15,
     )
     master[:outliers_extrema] = Dict{Symbol, Any}(
         :remove_outliers      => false, 
@@ -299,7 +299,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
 
-    # THE FIX: Track the active state and calculate dimensionality shifts!
+    # Track the active state and calculate dimensionality shifts
     old_plot_type = get(manager.state, :Active_Plot_Type, :none)
     if old_plot_type == plot_type && !isempty(ui)
         return 
@@ -339,7 +339,7 @@ function switch_ui_plot_type!(plot_type::Symbol)
     for (scope, dict) in cached_ui
         scope in internal_templates && continue 
         
-        # THE FIX: Only wipe the axis customizations if the dimensionality fundamentally changed!
+        # Only wipe the axis customizations if the dimensionality fundamentally changed
         if dim_changed && scope in (:x_axis, :y_axis, :z_axis)
             continue
         end
@@ -532,12 +532,10 @@ function apply_ui_style!(prim_key::Union{Symbol, AbstractString}, prim::Any, ui_
             prim.colormap[] = Makie.to_colormap(ui_app[:color_map])
         end
         
-        # THE FIX: Apply the extracted color limits dynamically
         if :color_range in deps && haskey(prim.attributes, :colorrange)
             prim.colorrange[] = cr_obs[]
         end
         
-        # THE FIX: Force contour lines to map exactly onto the active color limits
         if :levels in deps && haskey(prim.attributes, :levels)
             lvls = ui_app[:levels]
             prim.levels[] = range(cr_obs[][1], cr_obs[][2], length=max(2, lvls))

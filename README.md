@@ -1,61 +1,37 @@
 # PDEStudio.jl
 
-**PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend designed for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. 
+[![Build Status](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml)
+[![Coverage](https://codecov.io/gh/blhackslash/PDEStudio.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blhackslash/PDEStudio.jl)
+[![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://blhackslash.github.io/PDEStudio.jl/dev/)
 
-Built directly on top of its core numerical dependency, it transforms strictly typed simulation data into responsive 1D, 2D, and 3D visualizations. It features a hierarchical UI editor, robust CSV-based preset management, and a flexible rendering engine capable of handling both Eulerian grids and Lagrangian particle systems on the fly.
+**PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend engineered for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. It serves as the visual counterpart to the autonomous numerical backend, [PDEStudioCore.jl](https://github.com/blhackslash/PDEStudioCore.jl).
 
-> **Note on PDECore:** `PDECore.jl` is fully integrated and reexported by the studio. You do **not** need to import `PDECore` separately in your scripts; simply `using PDEStudio` gives you access to the entire numerical backend alongside the visualization suite.
+The studio seamlessly handles both Eulerian grids and Lagrangian particle systems, dynamically adapting its primitives to support 1D, 2D, and 3D visualization. It features a hierarchical UI editor, robust cryptographic CSV serialization for state preservation, and an independent export pipeline for publication-quality static frames and animations.
 
-> **Backend Independent:** PDEStudio is completely backend agnostic. You can use `GLMakie` for high-performance local desktop visualization, or `WGLMakie` (powered by `Bonito`) to serve interactive plots directly to a web browser, making it perfect for remote server deployments.
+Because PDE simulations often require dedicated compute servers, `PDEStudio.jl` supports two primary deployment strategies:
+*   **Local Exploration (`GLMakie`):** Run the autonomous `PDEStudioCore` backend headlessly on a server, transfer the resulting serialized data, and explore it locally with maximum performance.
+*   **Remote Web Server (`WGLMakie`):** Serve interactive plots directly from the compute node to your web browser via `Bonito`, trading a slight latency increase for massive reductions in data transfer overhead.
 
----
+## Installation
 
-## 🎨 Interactive Architecture
+```julia
+using Pkg
+Pkg.add("PDEStudio")
+```
 
-The studio is built around a centralized, reactive state manager that links your live simulation memory directly to the Makie render loop. 
+*Note: For the full interactive experience, you must also install a Makie backend of your choice (e.g., `GLMakie` or `WGLMakie`).*
 
-*   **Eulerian & Lagrangian Support:** Automatically adapts rendering primitives—seamlessly switching from grid-based volume renders and heatmaps to point-based 3D scatter and surface plots based on the active backend data type.
-*   **Hierarchical Editor:** Exposes backend parameters (physics, grid resolutions, UI styles, and export settings) in a unified, strictly typed control panel.
-*   **Dynamic Layouts:** Automatically handles complex multi-column comparisons, decoupled axes, and detached legends without wiping the plot state.
+## Documentation
 
----
+For comprehensive guides on the reactive UI architecture, layout synchronization, parameter sweeping, and advanced server deployment macros, please refer to the **[Official Documentation](https://blhackslash.github.io/PDEStudio.jl/dev/)**.
 
-## 💾 Serialization & Presets
-
-**PDEStudio.jl** features a robust, two-way cryptographic serialization pipeline built on the CSV RFC 4180 standard.
-
-| Feature | Description |
-| :--- | :--- |
-| **State Preservation** | Saves the exact state of your UI, camera angles, and physics parameters to highly readable CSV files. |
-| **Type-Stable Parsing** | Leverages Julia's Abstract Syntax Tree (AST) to securely parse configuration files, ensuring arrays, symbols, and nested dictionaries are recreated with perfect type stability. |
-| **Drag-and-Drop** | Instantly recreate complex simulation states by dropping a previously exported CSV directly into the UI text prompt. |
-
----
-
-## 🎬 Exporting & Animations
-
-The studio is built for publication-quality output. It provides a dedicated export pipeline decoupled from the active UI rendering limits.
-
-*   **Static Frames:** Export high-DPI figures in `.png`, `.pdf`, or `.svg` formats with customizable rasterization qualities for heavy 3D plots.
-*   **Animations:** Generate smooth `.mp4` videos with locked camera tracking, custom frame rates, and automated layout synchronization to prevent visual tearing between frames.
-
----
-
-## 🛠️ Main API Functions
-
-*   **`launch_plotter()`:** Initializes the main Makie window, builds the unified control panel, and prepares the reactive render listeners.
-*   **`set_sim_config!(config::SimulationConfig)`:** Binds a configured physics simulation setup to the UI, allowing you to tweak parameters and execute headless runs directly from the studio.
-*   **`reset_plotter!()`:** Safely detaches all reactive listeners, clears the cache, and destroys the active window without requiring a Julia restart.
-
----
-
-## 🚀 Basic Workflow
+## Basic Workflow
 
 ```julia
 using PDEStudio
-using GLMakie # Or WGLMakie for browser rendering
+using GLMakie # Switch to WGLMakie for browser rendering
 
-# 1. Define your backend physics (PDECore is reexported)
+# 1. Define your backend physics (PDEStudioCore is reexported)
 my_config = SimulationConfig(...)
 
 # 2. Launch the interactive studio
@@ -66,47 +42,4 @@ display(fig)
 
 # 4. Bind the physics to the UI and explore
 set_sim_config!(my_config)
-```
-
----
-
-## ⚙️ Advanced Workflow (Custom Macros & Web Servers)
-
-For power users managing extensive experiment libraries or running simulations on remote servers, PDEStudio can be wrapped in custom macros for rapid deployment. 
-
-Below is an advanced implementation pattern that configures a `Bonito` web server for `WGLMakie`, automatically resolves configuration paths, backs up executed configurations for reproducibility, and injects the physics directly into the studio in a single macro call.
-
-```julia
-using PDEStudio
-using WGLMakie
-using Bonito
-
-# 1. Configure the Web Server for Remote Viewing
-Bonito.configure_server!(
-    listen_url = "0.0.0.0",
-    listen_port = 9384
-)
-WGLMakie.activate!()
-
-# 2. Build a one-click macro to load, archive, and plot your experiments
-macro plot(name)
-    return quote
-        # Launch studio
-        fig = Base.invokelatest(() -> launch_plotter())
-        
-        # Resolve path and archive the config 
-        path = joinpath(@__DIR__, "Configs", $(esc(name)) * ".jl")
-        cp(path, joinpath(@__DIR__, "Archive", $(esc(name)) * "_backup.jl"), force=true)
-        
-        # Load physics and trigger rendering
-        config = include(path) 
-        set_sim_config!(config)
-        force_simulation()
-        
-        fig
-    end
-end
-
-# Usage: 
-# julia> @plot "Euler2D_Shock"
 ```

@@ -93,8 +93,6 @@ end
 # Note: The following docstring applies generally to all `initialize_base_plot!` dispatches.
 
 
-#function initialize_base_plot! end # Documenting the generic interface
-
 # -----------------------------------------------------------------------------
 # 1D PRIMITIVES
 # -----------------------------------------------------------------------------
@@ -122,7 +120,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
         cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
         
-        c  = ui_app[:colors][mod1(m_idx, end)] 
+        c  = Makie.to_color(ui_app[:colors][mod1(m_idx, end)])
         ls = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
         lw = ui_app[:line_width] 
 
@@ -154,7 +152,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u.val = us_slices[m_idx]
 
-        color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
+        color = Makie.to_color(ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))])
         lw    = ui_app[:line_width] 
         raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
@@ -253,7 +251,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
 
-    # THE FIX: Only extract and plot the base method, exactly like a heatmap!
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
     
@@ -272,7 +269,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     cache.primitives[:contour_f] = cf
     cache_dict[label] = cache
 
-    # Bind the colorbar cleanly
     create_or_update_colorbar!(plot_layout, cf, cr_obs, frontend_key(label), plot_idx)
 end
 
@@ -341,7 +337,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[m_idx]
         cache.obs_u.val = us_slices[m_idx]
 
-        color = ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))] 
+        color = Makie.to_color(ui_app[:colors][mod1(m_idx, length(ui_app[:colors]))])
         lw    = ui_app[:line_width] 
         raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
         
@@ -577,13 +573,15 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
             cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
 
-        c   = ui_app[:colors][mod1(m_idx, end)] 
+        c   = Makie.to_color(ui_app[:colors][mod1(m_idx, end)])
         mrk = ui_app[:markers][mod1(m_idx, end)] 
         ms  = ui_app[:marker_size] 
         
+        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
+
         obs_coord = is_eul ? cache.obs_x : cache.obs_pts
         s = scatter!(ax, obs_coord, cache.obs_u; color=c, markersize=ms, marker=mrk, rasterize=raster)
-        raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
+        
         
         cache.primitives[:scatter_colors] = s
         cache_dict[label] = cache
@@ -611,7 +609,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
             cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
         end
         
-        c   = ui_app[:colors][mod1(m_idx, end)] 
+        c   = Makie.to_color(ui_app[:colors][mod1(m_idx, end)])
         ls  = ui_app[:dashed_lines] ? ui_app[:line_styles][mod1(m_idx, end)] : nothing 
         lw  = ui_app[:line_width] 
         mrk = ui_app[:markers][mod1(m_idx, end)] 
