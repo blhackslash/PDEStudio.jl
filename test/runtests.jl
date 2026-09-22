@@ -577,3 +577,6 @@ end
     end
     reset_plotter!()
 end
+@testset "README Test file" begin
+    @test include("../examples/advection_1d.jl")
+end
