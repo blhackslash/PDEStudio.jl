@@ -114,7 +114,7 @@ config = SimulationConfig(
     varied_params = varied_params
 )
 
-# 4. Run the Pipeline! (optional, is run by the Studio automatically)
+# 4. Run the Pipeline (optional, is run by the Studio automatically)
 set_save_path!(joinpath(@__DIR__, "results"))
 run_all_simulations(config, parallel=true, calculate_stats=true)
 ```
