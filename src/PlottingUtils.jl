@@ -113,13 +113,12 @@ function plot_reference_lines!(
     end
     return plotted_lines
 end
-
 """
     get_colorrange(ui_app::Dict, u_data::AbstractArray)
 
 Extracts the exact color range bounds from the UI dictionary or dynamically calculates the global `[min, max]` extrema if the user has requested automatic default scaling. 
 
-Always returns a Makie-compatible `Observable{Tuple{Float64, Float64}}`.
+Always returns a `Makie.Vec2f` wrapped in an Observable to prevent ComputePipeline strict typing crashes during contourf level recalculations.
 """
 function get_colorrange(ui_app::Dict, u_data::AbstractArray)
     cr_val = ui_app[:color_range] 
@@ -128,9 +127,11 @@ function get_colorrange(ui_app::Dict, u_data::AbstractArray)
         valid_u = filter(isfinite, vec(u_data))
         l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
         if l_u == h_u; h_u += 1e-6; end
-        return Observable((l_u, h_u))
+        
+        # Use Makie.Vec2f to perfectly match ComputePipeline's expected output type
+        return Observable(Makie.Vec2f(l_u, h_u))
     else
-        return Observable(Tuple(Float64.(cr_val)))
+        return Observable(Makie.Vec2f(cr_val[1], cr_val[2]))
     end
 end
 

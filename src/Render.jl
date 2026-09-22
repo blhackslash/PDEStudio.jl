@@ -246,26 +246,32 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
 end
 
 function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data_tuples, x_key, y_key, z_key, u_key, title_str, ::Val{:contour_f}, plot_idx::Int)
-    
+
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
 
     base_idx = get_base_method_index(ui_app, active_methods)
     label = active_methods[base_idx]
-    
+
     valid_u = filter(isfinite, us_slices[base_idx])
     cr_obs = get_colorrange(ui_app, valid_u)
+    
     lvl_range = range(cr_obs[][1], cr_obs[][2], length=ui_app[:levels]) 
     
     cache = EulerianPlotCache()
     cache.obs_x.val = xs_slices[base_idx]
     cache.obs_y.val = ys_slices[base_idx]
     cache.obs_u.val = us_slices[base_idx]
-    raster = manager.ui[:export][:rasterization_enabled] ?  manager.ui[:export][:rasterization_quality] : false
-
-    cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; colormap=ui_app[:color_map], levels=lvl_range, rasterize=raster) 
     
+    raster = manager.ui[:export][:rasterization_enabled] ? manager.ui[:export][:rasterization_quality] : false
+
+    cf = contourf!(ax, cache.obs_x, cache.obs_y, cache.obs_u; 
+                   colormap=ui_app[:color_map], 
+                   colorrange=cr_obs, 
+                   levels=lvl_range, 
+                   rasterize=raster) 
+
     cache.primitives[:contour_f] = cf
     cache_dict[label] = cache
 

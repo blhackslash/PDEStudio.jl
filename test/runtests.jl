@@ -575,8 +575,8 @@ end
         # Verify the backend correctly allocated a Lagrangian cache
         @test typeof(manager.caches[1][:upwind]).name.name == :LagrangianPlotCache
     end
+    @testset "README Test file" begin
+        @test include("../examples/advection_1d.jl") === false
+    end
     reset_plotter!()
-end
-@testset "README Test file" begin
-    @test include("../examples/advection_1d.jl")
 end
