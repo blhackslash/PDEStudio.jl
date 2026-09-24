@@ -17,7 +17,7 @@ Because PDEStudio acts as a direct bridge to a highly-typed numerical backend, t
 The first dropdown dictates which part of the studio's memory you are editing. The behavior of the UI changes drastically depending on your selection:
 
 #### 1. Simulation
-This category exposes your `PDECore` physics parameters. You can edit the `Shared` parameter pool or drill down into specific method overrides. 
+This category exposes your `PDEStudioCore` physics parameters. You can edit the `Shared` parameter pool or drill down into specific method overrides. 
 *   **Trigger Behavior:** Because changing physics alters the mathematical truth of the data, modifying anything in this category will immediately lock the plot and turn the `Run Simulation` button yellow. You must re-run the simulation to see your changes.
 
 #### 2. UI
