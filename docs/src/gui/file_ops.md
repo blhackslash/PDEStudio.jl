@@ -29,5 +29,5 @@ By default, clicking **Export** will save the figure using the formats defined i
 
 It is important to understand the difference between the **Export** button and the **Save Presets** button.
 
-*   **Export:** Captures the *entire* state of the studio. It saves the image/video, but also generates a comprehensive `.csv` file alongside it containing your complete `PDECore` physics parameters, exact git-commit hashes, and Julia environment versions for total academic reproducibility.
+*   **Export:** Captures the *entire* state of the studio. It saves the image/video, but also generates a comprehensive `.csv` file alongside it containing your complete `PDEStudioCore` physics parameters, exact git-commit hashes, and Julia environment versions for total academic reproducibility.
 *   **Save Presets:** Exclusively saves your *visual aesthetics* (colormaps, line widths, legend positions, camera angles) to a lightweight template file. It ignores the mathematical parameters, allowing you to load this visual theme later and apply it to a completely different physical simulation.
