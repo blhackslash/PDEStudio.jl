@@ -2,11 +2,11 @@
 
 [![Build Status](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml)
 [![Coverage](https://codecov.io/gh/blhackslash/PDEStudio.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blhackslash/PDEStudio.jl)
-[![Dev Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://blhackslash.github.io/PDEStudio.jl/dev/)
+[![Stable Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://blhackslash.github.io/PDEStudio.jl/)
 
 **PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend engineered for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. It serves as the visual counterpart to the autonomous numerical backend, [PDEStudioCore.jl](https://github.com/blhackslash/PDEStudioCore.jl).
 
-The studio seamlessly handles both Eulerian grids and Lagrangian particle systems, dynamically adapting its primitives to support 1D, 2D, and 3D visualization. It features a hierarchical UI editor, robust cryptographic CSV serialization for state preservation, and an independent export pipeline for publication-quality static frames and animations.
+The studio seamlessly handles both Eulerian grids and Lagrangian particle systems, dynamically adapting its primitives to support 1D, 2D, and 3D visualization. It features a hierarchical UI editor, robust CSV serialization for state preservation, and an independent export pipeline for publication-quality static frames and animations.
 
 Because PDE simulations often require dedicated compute servers, `PDEStudio.jl` supports two primary deployment strategies:
 *   **Local Exploration (`GLMakie`):** Run the autonomous `PDEStudioCore` backend headlessly on a server, transfer the resulting serialized data, and explore it locally with maximum performance.
@@ -142,3 +142,7 @@ force_simulation()
 ```
 
 ### 4. Explore your simulation data in the Studio!
+
+---
+
+Portions of this codebase and documentation were drafted with the assistance of large language models (LLMs). All code has been human-reviewed, verified, and tested. If you notice any inaccuracies or unexpected behavior, please open an issue.
