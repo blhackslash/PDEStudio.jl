@@ -1,5 +1,6 @@
 # PDEStudio.jl
 
+[![DOI](https://zenodo.org/badge/1374801372.svg)](https://doi.org/10.5281/zenodo.22962032)
 [![Build Status](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/blhackslash/PDEStudio.jl/actions/workflows/CI.yml)
 [![Coverage](https://codecov.io/gh/blhackslash/PDEStudio.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blhackslash/PDEStudio.jl)
 [![Stable Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://blhackslash.github.io/PDEStudio.jl/)
