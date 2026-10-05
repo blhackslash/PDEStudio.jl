@@ -9,4 +9,3 @@ WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 
 [sources]
 PDEStudio = {path = ".."}
-PDEStudioCore = {path = "/home/pajung/.julia/dev/PDEStudioCore"}
