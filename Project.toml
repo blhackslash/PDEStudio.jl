@@ -1,6 +1,6 @@
 name = "PDEStudio"
 uuid = "9dcd72ad-f481-4c48-9703-3c94083dcfc3"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Pascal Jung <dev@blackslash.win>"]
 
 [deps]
