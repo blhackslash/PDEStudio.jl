@@ -162,7 +162,9 @@ function create_plot_data(method_name::Symbol, base_params::ParamDict, sim_confi
         _recombine_tuples!(params)
         
         sim_data = if is_reference && !isnothing(domain)
-            PDEStudioCore.generate_reference_simdata(sim_config.reference_func, params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
+            reference_func = resolve_dynamic_function(sim_config.reference_name)
+            PDEStudioCore.generate_reference_simdata(reference_func(base_params), params, domain, build_res_tuple(domain.dim_keys; is_ref=true), mode)
+        
         
         elseif !isnothing(domain)
             try 

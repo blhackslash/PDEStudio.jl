@@ -126,13 +126,14 @@ end
     GLMakie.activate!()
 
     shared = create_param_dict(:cfl => 0.5, :N => 200, :sim_func_name => :advection_solver_1d)
-    methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),:lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
+    methods = create_method_dict(:analytical_solution => create_param_dict(), :upwind => create_param_dict(:scheme => "upwind"),:lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
     # Creating a parameter sweep adds a 3rd dimension (x, t, cfl) for the 3D plot tests
     varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
 
     config = SimulationConfig(
-        shared, methods, [:upwind,:lax_friedrichs];
-        varied_params = varied
+        shared, methods, [ :upwind,:lax_friedrichs, :analytical_solution,];
+        varied_params = varied,
+        ref_func_name = :exact_advection_factory
     )
     
     fig = launch_plotter()
