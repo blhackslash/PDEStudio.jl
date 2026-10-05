@@ -57,6 +57,7 @@ jobs:
           file: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: blhackslash/PDEStudio.jl
+          fail_ci_if_error: false 
 
   docs:
     name: Documentation
@@ -66,6 +67,7 @@ jobs:
       actions: write
       contents: write
       statuses: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
 

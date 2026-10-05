@@ -9,9 +9,7 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 
-function dummy_simulation_function(args...); return nothing; end
-
-const DUMMY_CONFIG = SimulationConfig(dummy_simulation_function, :none, nothing, :none, (_ -> false), :none, ParamDict(), MethodDict(), Symbol[], VariedDict(), String[])
+const DUMMY_CONFIG = SimulationConfig(nothing, nothing, ParamDict(), MethodDict(), Symbol[], VariedDict(), String[])
 
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---
@@ -283,7 +281,7 @@ function simulation_trigger()
     @with_lock :Simulation begin
         
         curr_config = manager.active_config
-        (isnothing(curr_config) || curr_config.simulation_func === dummy_simulation_function) && return
+        (isnothing(curr_config) || curr_config == DUMMY_CONFIG) && return
 
         active_methods = curr_config.active_methods
         

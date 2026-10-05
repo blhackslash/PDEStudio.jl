@@ -132,26 +132,14 @@ function load_and_apply_csv!(parsed::Dict)
     # --- 1. FULL PROJECT DATA ---
     if haskey(parsed, "Simulation")
 
-
-        sim_cfg = get(get(parsed, "Simulation", Dict()), "Config", Dict())
         old_cfg = get(get(parsed, "Config", Dict()), "General", Dict())
-        
-        sim_func_str = get(sim_cfg, "simulation_func", get(old_cfg, "simulation_func", "none"))
-        
-        resolved_func = resolve_simulation_function(sim_func_str, nothing)
-        if isnothing(resolved_func)
-            @error "Aborting: Could not resolve simulation function '$sim_func_str'"
-            return
-        end
-        
-        new_config = csv_to_simulation_config(parsed, resolved_func)
-        
-        for (key,cache_dict) in manager.caches
-            empty!(cache_dict)
-        end
-        
-        set_sim_config!(new_config)
-        @info "Project configuration buffered! Press 'Run Simulation' to compute and apply."
+        new_config = csv_to_simulation_config(parsed)
+            for (key,cache_dict) in manager.caches
+                empty!(cache_dict)
+            end
+            
+            set_sim_config!(new_config)
+            @info "Project configuration buffered! Press 'Run Simulation' to compute and apply."
     else
         @info "No simulation data found. Loading as a visual preset."
     end
@@ -258,15 +246,14 @@ function load_and_apply_csv!(parsed::Dict)
         apply_exploration_options!(_apply_backend_keys(exp_source))
     end
 end
-
 """
-    csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
+    csv_to_simulation_config(parsed_csv::Dict)
 
 Converts a loosely typed nested CSV dictionary into a rigorously formatted `PDEStudioCore.SimulationConfig`.
 
-This function manages the translation of string-based category scopes into strongly typed `ParamDict`, `MethodDict`, and `VariedDict` structures. It also safely looks up and links analytical reference and post-processing functions from the target module's namespace.
+This function manages the translation of string-based category scopes into strongly typed `ParamDict`, `MethodDict`, and `VariedDict` structures. Because the config now relies on symbolic function names, dynamic function resolution is deferred to the execution engine.
 """
-function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
+function csv_to_simulation_config(parsed_csv::Dict)
     # 1. Extract Shared Parameters (Cast to Symbol keys)
     shared_params = Dict{Symbol, Any}()
     if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "Shared")
@@ -296,7 +283,7 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
         @info "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
     end
 
-   sim_cfg = get(get(parsed_csv, "Simulation", Dict()), "Config", Dict())
+    sim_cfg = get(get(parsed_csv, "Simulation", Dict()), "Config", Dict())
     old_cfg = get(get(parsed_csv, "Config", Dict()), "General", Dict())
 
     # 4. Default Methods 
@@ -313,50 +300,33 @@ function csv_to_simulation_config(parsed_csv::Dict, sim_func::Function)
     elseif isempty(active_methods)
         active_methods = collect(keys(methods_dict))
     end
-    active_methods = sort_methods_robust(active_methods)
 
     # 5. Extract Reference Name
     csv_ref = String(get(sim_cfg, "reference_func", get(old_cfg, "reference_func", "none")))
     ref_name = (csv_ref != "none" && !isempty(csv_ref)) ? csv_ref : nothing
 
-    # 6. Resolve the Analytical Solution Factory
-    ref_func = nothing
+    # 6. Handle Reference Method Injection (No dynamic resolving needed!)
     if !isnothing(ref_name)
-        safe_ref_name = lowercase(replace(strip(ref_name), r"[\s-]+" => "_"))
+        ns = Symbol(ref_name)
         
-        ref_factory = try
-            resolve_reference_function(safe_ref_name)
-        catch
-            nothing
+        if !haskey(methods_dict, ns)
+            methods_dict[ns] = Dict{Symbol, Any}()
         end
         
-        if !isnothing(ref_factory)
-            ref_func = ref_factory(shared_params)
-            ns = Symbol(ref_name)
-            
-            if !haskey(methods_dict, ns)
-                methods_dict[ns] = Dict{Symbol, Any}()
-            end
-            
-            # Only force the reference method to be active if we didn't get an explicit list from the CSV
-            if !(ns in active_methods) && !has_explicit_active
-                push!(active_methods, ns)
-                active_methods = sort_methods_robust(active_methods)
-            end
-        else
-            @warn "Failed to resolve reference function: $safe_ref_name"
+        # Only force the reference method to be active if we didn't get an explicit list from the CSV
+        if !(ns in active_methods) && !has_explicit_active
+            push!(active_methods, ns)
         end
     end
+    
+    # Sort methods robustly after any reference injection
+    active_methods = sort_methods_robust(active_methods)
 
     # 7. Extract Post Process Name 
     csv_post = String(get(sim_cfg, "post_process_func", get(old_cfg, "post_process_func", "none")))
     post_name = (csv_post != "none" && !isempty(csv_post)) ? csv_post : nothing
-
-    # 8. Construct and return the SimulationConfig
-    sim_func_str = String(get(sim_cfg, "simulation_func", get(old_cfg, "simulation_func", "none")))
     
     return SimulationConfig(
-        sim_func_str, 
         shared_params,
         methods_dict,
         active_methods;
@@ -580,7 +550,6 @@ function save_params_to_csv(
         end
         
         # Save function names
-        add_row("Simulation", "Config", "simulation_func", string(config.simulation_name))
         add_row("Simulation", "Config", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
         add_row("Simulation", "Config", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
         add_row("Simulation", "Config", "active_methods", manager.methods[])

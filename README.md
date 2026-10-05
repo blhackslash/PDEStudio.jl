@@ -93,6 +93,7 @@ shared_params = create_param_dict(
     :c => 1.0,
     :T => 2.0,
     :cfl => .5, # Define the default to be overwritten by the varied parameters
+    :sim_func_name => :advection_1d,
 )
 
 # Define the methods (these inject the :scheme parameter into the solver)
@@ -107,8 +108,7 @@ varied_params = create_varied_dict(
 )
 
 # 3. Create the Configuration
-config = SimulationConfig(
-    :advection_1d,            # Pass the function name
+config = SimulationConfig(           # Pass the function name
     shared_params,
     methods,
     [:upwind, :lax_friedrichs];

@@ -11,7 +11,7 @@ If a valid `SimulationConfig` is active, it triggers a background data cache ref
 function _handle_layout_trigger!(rebuild_func::Function)
     curr_config = manager.active_config
 
-    if !isnothing(curr_config) && curr_config.simulation_func !== dummy_simulation_function
+    if curr_config != DUMMY_CONFIG
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
     
@@ -29,7 +29,7 @@ Triggered when the underlying simulation parameters change fundamentally (e.g., 
 """
 function _handle_data_fetch_trigger!()
     curr_config = manager.active_config
-    if curr_config.simulation_func != "none" && !isnothing(curr_config.simulation_func)
+    if curr_config != DUMMY_CONFIG
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
     notify(manager.plot_data)

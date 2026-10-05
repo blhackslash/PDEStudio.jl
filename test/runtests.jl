@@ -125,13 +125,13 @@ end
 
     GLMakie.activate!()
 
-    shared = create_param_dict(:cfl => 0.5, :N => 200)
+    shared = create_param_dict(:cfl => 0.5, :N => 200, :sim_func_name => :advection_solver_1d)
     methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),:lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
     # Creating a parameter sweep adds a 3rd dimension (x, t, cfl) for the 3D plot tests
     varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
 
     config = SimulationConfig(
-        "advection_solver_1d", shared, methods, [:upwind,:lax_friedrichs];
+        shared, methods, [:upwind,:lax_friedrichs];
         varied_params = varied
     )
     
@@ -215,7 +215,7 @@ end
         display(fig)
 
         # 1. Setup the more complex config with 2 Methods and a Parameter Sweep
-        shared = create_param_dict(:cfl => 0.5, :N => 200)
+        shared = create_param_dict(:cfl => 0.5, :N => 200, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(
             :upwind => create_param_dict(:scheme => "upwind"),
             :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs")
@@ -223,7 +223,7 @@ end
         varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
     
         compare_config = SimulationConfig(
-            "advection_solver_1d", shared, methods, [:upwind, :lax_friedrichs];
+            shared, methods, [:upwind, :lax_friedrichs];
             varied_params = varied
         )
         
@@ -331,9 +331,9 @@ end
         fig = launch_plotter()
         display(fig)
 
-        shared = create_param_dict(:cfl => 0.5, :N => 20)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
-        config = SimulationConfig("advection_solver_1d", shared, methods, [:upwind])
+        config = SimulationConfig(shared, methods, [:upwind])
         set_sim_config!(config)
         
         click_button!(:run_button)
@@ -393,9 +393,9 @@ end
         fig = launch_plotter()
         display(fig)
 
-        shared = create_param_dict(:cfl => 0.5, :N => 20)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
-        config = SimulationConfig("advection_solver_1d", shared, methods, [:upwind])
+        config = SimulationConfig(shared, methods, [:upwind])
         set_sim_config!(config)
         
         click_button!(:run_button)
@@ -466,9 +466,9 @@ end
         fig = launch_plotter()
         display(fig)
 
-        shared = create_param_dict(:cfl => 0.5, :N => 50)
+        shared = create_param_dict(:cfl => 0.5, :N => 50, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
-        config = SimulationConfig("advection_solver_1d", shared, methods, [:upwind])
+        config = SimulationConfig(shared, methods, [:upwind])
         set_sim_config!(config)
         
         click_button!(:run_button)
@@ -544,12 +544,12 @@ end
         display(fig)
 
         # 1. Setup Config with 3D data space (x, t, param_1)
-        shared = create_param_dict(:cfl => 0.5, :N => 20)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
         varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
         
         config = SimulationConfig(
-            "advection_solver_1d", shared, methods, [:upwind];
+            shared, methods, [:upwind];
             varied_params = varied
         )
         
