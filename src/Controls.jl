@@ -112,7 +112,7 @@ Constructs the dense grid of dropdown menus and interactive sliders used to conf
 # Structure
 - **Layout Options:** Controls structural layout features requiring a manual apply step (e.g., base plot style, sizing, legend positioning, and multi-column comparison modes). The available plot styles dynamically adjust based on whether the `PlotManager` is in `:eulerian` or `:lagrangian` mode.
 - **Plot Options:** Independent axis selectors, animation targets, and vector component selectors that automatically trigger data synchronization loops.
-- **Sliders:** Dynamically generates a scalable array of Makie `Slider` widgets bound directly to the active simulation's `varied_params` and domain dimensions.
+- **Sliders:** Dynamically generates a scalable array of Makie `Slider` widgets bound directly to the active simulation's swept parameters (`config.varied`) and domain dimensions.
 """
 function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::GridLayout)
     
@@ -213,7 +213,8 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
         sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
         manager.widgets[p_key] = sl
         
-        Label(slider_layout[slider_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), sl.value), halign=:left)
+        # Non-numeric sweeps use index sliders; the label shows the selected value instead of the index.
+        Label(slider_layout[slider_row, 3], lift(v -> _slider_value_text(p_key, v), sl.value), halign=:left)
         slider_row += 1
     end
 
@@ -226,7 +227,7 @@ function build_static_plot_controls!(menu_layout::GridLayout, slider_layout::Gri
         sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
         manager.widgets[p_sym] = sl
         
-        Label(slider_layout[slider_row, 3], lift(v -> v isa AbstractFloat ? @sprintf("%.3f", v) : string(v), sl.value), halign=:left)
+        Label(slider_layout[slider_row, 3], lift(_fmt_value, sl.value), halign=:left)
         slider_row += 1
     end
     

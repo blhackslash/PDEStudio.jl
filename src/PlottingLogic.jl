@@ -11,7 +11,7 @@ If a valid `SimulationConfig` is active, it triggers a background data cache ref
 function _handle_layout_trigger!(rebuild_func::Function)
     curr_config = manager.active_config
 
-    if curr_config != DUMMY_CONFIG
+    if !isnothing(curr_config)
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
     
@@ -29,7 +29,7 @@ Triggered when the underlying simulation parameters change fundamentally (e.g., 
 """
 function _handle_data_fetch_trigger!()
     curr_config = manager.active_config
-    if curr_config != DUMMY_CONFIG
+    if !isnothing(curr_config)
         update_plot_data_collection!(manager.plot_data[], curr_config, manager.methods[]; force_reload = false)
     end
     notify(manager.plot_data)
@@ -170,91 +170,48 @@ It guarantees that as users change fields (e.g., switching from Density to Momen
 function _handle_slider_trigger!(u_sel)
     data = manager.plot_data[]
     isempty(data) && return false
-    
+
     w = manager.widgets
     active_axes = manager.state[:Active_Axes][]
     u_val = u_sel[]
-    anim_val = w[:anim_target].selection[]
 
-    target, target_idx, _, _ = manager.state[:Compare_State]
-    pd_first, sim_data = _get_active_sim_data(data)
-    isnothing(sim_data) && return
+    _, target_idx, _, _ = manager.state[:Compare_State]
+    _, sim_data = _get_active_sim_data(data)
+    isnothing(sim_data) && return false
 
     dim_names = manager.plot_vars
-    total_dims = length(dim_names)
-    n_params = total_dims - length(get_base_variables())
-    
-    target_field = (isnothing(u_val) || u_val == :none) ? :Solution : u_val
-    base_stat = occursin("|", string(target_field)) ? Symbol(split(string(target_field), "|")[1]) : target_field
-    kept_syms = base_stat == :Solution ? Tuple(sim_data.domain.dim_keys) : Tuple(PDEStudioCore.get_kept_dims(base_stat, sim_data.domain))
+    n_params = length(dim_names) - length(get_base_variables())
+
+    target_field = (isnothing(u_val) || u_val === :none) ? :Solution : u_val
+    base_stat = Symbol(first(_split_axis_symbol(target_field)))
+    kept_syms = Tuple(get_kept_dims(base_stat, sim_data.domain))  # :Solution keeps every dimension
+    slider_cache = manager.state[:Slider_Cache]
+    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
 
     manager.locks[:PlotData] = true
     try
-        for i in 1:total_dims
-            dim_sym = dim_names[i]
-            dim_str = String(dim_sym)
-            
-            is_axis = i in active_axes
-            is_compare = (target_idx == i) 
-            is_anim = dim_sym == anim_val
-            
-            is_spatial = false
-            is_physically_disabled = false
-            
-            if i > n_params
-                is_spatial, is_physically_disabled = _is_spatial_dim(Val(manager.mode[]), dim_sym, sim_data, kept_syms)
-            end
-            
-            widget_key = i > n_params ? Symbol(dim_str) : get(manager.maps[:Reverse], dim_sym, Symbol("param_$i"))
+        for (i, dim_sym) in enumerate(dim_names)
+            widget_key = i > n_params ? dim_sym : get(rev_map, dim_sym, Symbol("param_$i"))
             haskey(w, widget_key) || continue
             ctrl = w[widget_key]
-            
-            slider_cache = manager.state[:Slider_Cache]
+
             if length(ctrl.range[]) > 1
                 slider_cache[widget_key] = Float64(ctrl.value[])
             end
-            
-            if is_axis || is_spatial || is_physically_disabled || is_compare
+
+            is_spatial, is_physically_disabled = i > n_params ?
+                _is_spatial_dim(Val(manager.mode[]), dim_sym, sim_data, kept_syms) : (false, false)
+
+            if i in active_axes || is_spatial || is_physically_disabled || target_idx == i
                 if ctrl.range[] != [0.0]
-                    ctrl.range[] = [0.0] 
+                    ctrl.range[] = [0.0]
                 end
                 continue
             end
-            
-            g_min, g_max = Inf, -Inf
-            for pd in values(data)
-                vals = nothing
-                if i <= n_params 
-                    vals = pd.active_param_values[i]
-                else
-                    s_data = _get_first_valid(pd)
-                    isnothing(s_data) && continue
-                    
-                    vals = _get_dim_vals(Val(manager.mode[]), s_data, dim_sym)
-                end
-            
-                if !isnothing(vals) && !isempty(vals)
-                    l, h = extrema(vals)
-                    g_min = min(l, g_min)  
-                    g_max = max(h, g_max)
-                end
-            end
-            
-            if isinf(g_min); g_min = 0.0; g_max = 1.0; end
-            old_val = get(slider_cache, widget_key, Float64(ctrl.value[]))
-            
-            new_range = [0.0]
-            if i <= n_params
-                all_vals = Any[]
-                for pd in values(data)
-                    append!(all_vals, pd.active_param_values[i])
-                end
-                new_range = isempty(all_vals) ? [0.0] : sort(unique(identity.(all_vals)))
-            else
-                new_range = g_min == g_max ? [g_min] : range(g_min, g_max, length=100)
-            end
-            
+
+            new_range = i <= n_params ? _param_slider_range(data, i) : _dim_slider_range(data, dim_sym)
             if ctrl.range[] != new_range
+                old_val = get(slider_cache, widget_key, Float64(ctrl.value[]))
                 ctrl.range[] = new_range
                 set_close_to!(ctrl, old_val)
             end
@@ -263,6 +220,35 @@ function _handle_slider_trigger!(u_sel)
         manager.locks[:PlotData] = false
     end
     return true
+end
+
+# Slider positions of the i-th swept parameter: the sorted values (numeric) or their indices (non-numeric).
+function _param_slider_range(data, i::Int)
+    all_vals = Any[]
+    for pd in values(data)
+        i <= length(pd.active_param_values) && append!(all_vals, pd.active_param_values[i])
+    end
+    isempty(all_vals) && return [0.0]
+    _is_numeric_sweep(all_vals) && return sort(unique(identity.(all_vals)))
+    n = length(first(values(data)).active_param_values[i])
+    return collect(1:max(n, 1))
+end
+
+# Slider positions of a physical dimension: 100 steps across the extent of all loaded datasets.
+function _dim_slider_range(data, dim_sym::Symbol)
+    g_min, g_max = Inf, -Inf
+    mode = Val(manager.mode[])
+    for pd in values(data), s_data in pd.data
+        isnothing(s_data) && continue
+        vals = _get_dim_vals(mode, s_data, dim_sym)
+        if !isnothing(vals) && !isempty(vals)
+            l, h = extrema(vals)
+            g_min = min(l, g_min)
+            g_max = max(h, g_max)
+        end
+    end
+    isinf(g_min) && return [0.0]
+    return g_min == g_max ? [g_min] : range(g_min, g_max, length = 100)
 end
 
 """
@@ -455,7 +441,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
                 plot_obj = _find_first_drawable_primitive(manager.caches[i])
                 if !isnothing(plot_obj)
                     # Push the mathematically perfect cr_obs to the colorbar
-                    create_or_update_colorbar!(plot_layout, plot_obj, cr_obs, string(u_sel[]), i)
+                    create_or_update_colorbar!(plot_layout, plot_obj, cr_obs, frontend_key(u_sel[]), i)
                 end
             end
         end
@@ -498,11 +484,7 @@ Transforms continuous floating-point UI slider values into strict integer array 
 """
 function _build_param_indices(pd, mutated_vals)
     n_params = length(pd.active_param_keys)
-    return ntuple(d -> begin
-        val = mutated_vals[d]
-        vals = pd.active_param_values[d]
-        isempty(vals) ? 1 : findmin(v -> abs(v - val), vals)[2]
-    end, n_params)
+    return ntuple(d -> _param_index(pd.active_param_values[d], mutated_vals[d]), n_params)
 end
 
 """
@@ -517,9 +499,10 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     w = manager.widgets
     rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
     
+    # Parameters without a slider (more swept parameters than `max_params`) stay at their first value.
     selector_obs = map(manager.plot_vars) do n
         w_key = haskey(rev_map, n) ? rev_map[n] : n
-        w[w_key].value
+        haskey(w, w_key) ? w[w_key].value : Observable{Any}(_fallback_selector_value(n))
     end
 
     x_sel, y_sel = w[:x_axis].selection, w[:y_axis].selection
@@ -544,32 +527,40 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
             elseif target == :component
                 target_tensor = get(sim_data.stats, u_sel[], sim_data.stats[:Solution])
                 num_plots = _get_component_num_plots(Val(manager.mode[]), target_tensor)
-                
+
                 compare_labels = String[]
                 for i in 1:num_plots
                     sym = Symbol("component_$i")
                     push!(compare_labels, frontend_key(sym))
                 end
                 compare_vals = collect(1:num_plots)
-            elseif target == :Time
-                t_dim = findfirst(==(sim_data.domain.time_dim), sim_data.domain.dim_keys) 
-                t_vals = _get_time_vals(Val(manager.mode[]), sim_data, t_dim)
-                
-                num_plots = length(t_vals)
-                compare_labels = ["t = $(round(t, sigdigits=4))" for t in t_vals]
-                compare_vals = t_vals
+            elseif target === :time
+                t_dim = sim_data.domain.time_dim
+                if !isnothing(t_dim)
+                    t_vals = _get_time_vals(Val(manager.mode[]), sim_data, findfirst(==(t_dim), sim_data.domain.dim_keys))
+                    compare_vals = collect(t_vals[_compare_picks(length(t_vals))])
+                    compare_labels = ["$(t_dim) = $(_fmt_compare(t))" for t in compare_vals]
+                    num_plots = length(compare_vals)
+                end
             elseif target in manager.plot_vars
                 idx = findfirst(isequal(target), manager.plot_vars)
-                vals = pd_first.active_param_values[idx]
-                num_plots = length(vals)
-                compare_labels = ["$(string(target)) = $(v isa Int ? v : round(v, sigdigits=4))" for v in vals]
-                compare_vals = vals
+                if idx <= length(pd_first.active_param_values)
+                    vals = pd_first.active_param_values[idx]
+                    picks = _compare_picks(length(vals))
+                    compare_labels = ["$(frontend_key(target)) = $(_fmt_compare(v))" for v in vals[picks]]
+                    # Non-numeric sweeps are addressed by index (like their sliders).
+                    compare_vals = _is_numeric_sweep(vals) ? collect(vals[picks]) : collect(picks)
+                    num_plots = length(compare_vals)
+                end
             end
         end
     end
-    
-    if target == :none || num_plots == 0; num_plots = 1; target = :none; end
-    is_det, halign, valign = _parse_legend_position()
+
+    # Fall back to a single plot if the comparison cannot be resolved (e.g. no data loaded yet).
+    if target == :none || num_plots == 0 || length(compare_labels) < num_plots
+        num_plots = 1; target = :none; compare_labels = String[]; compare_vals = Any[]
+    end
+    is_det, halign, valign = _parse_legend_position(target)  # the new target (Compare_State is stored below)
     
     has_legend = T in LEGEND_SUPPORTED_PLOTS && target != :methods
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
@@ -599,7 +590,13 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         linkaxes!(axes...)
     end
     
-    target_idx = target == :Time ? (isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)) : findfirst(isequal(target), manager.plot_vars)
+    target_idx = if target === :time
+        isnothing(sim_data) ? nothing : findfirst(isequal(sim_data.domain.time_dim), manager.plot_vars)
+    elseif target in (:none, :methods, :component)
+        nothing
+    else
+        findfirst(isequal(target), manager.plot_vars)
+    end
 
     manager.state[:Compare_State] = (target, target_idx, compare_labels, compare_vals)
 

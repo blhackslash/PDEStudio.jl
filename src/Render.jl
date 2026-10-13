@@ -4,12 +4,17 @@
 """
     get_base_method_index(ui_app::Dict, active_methods::Vector{Symbol})
 
-Determines which active numerical method acts as the foundational "base" layer for complex 2D/3D primitives (like heatmaps or volume renders) where overlying multiple fields is visually impossible. Falls back to the first method if none is explicitly targeted.
+Determines which active method is drawn by single-method primitives (heatmaps, surfaces, volumes, …) where overlaying
+several fields is impossible, and returns its index in `active_methods`. The UI option `method_index` counts the
+numerical methods first and the reference methods after them, so the default (`1`) shows a numerical method even
+though references are listed first.
 """
-function get_base_method_index(ui_app::Dict, active_methods::Vector{Symbol})
+function get_base_method_index(ui_app::Dict, active_methods::AbstractVector)
     isempty(active_methods) && return 1
-    raw_idx = get(ui_app, :base_method_idx, 1) 
-    return clamp(raw_idx, 1, length(active_methods))
+    order = vcat(findall(m -> !is_reference_method(m), active_methods), findall(is_reference_method, active_methods))
+    raw_idx = get(ui_app, :method_index, 1)
+    raw_idx isa Integer || (raw_idx = 1)
+    return order[clamp(raw_idx, 1, length(order))]
 end
 
 """
@@ -464,7 +469,8 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_y.val = ys_slices[base_idx]
         cache.obs_u.val = us_slices[base_idx]
         
-        pts_2d = lift(cache.obs_x, cache.obs_y) do xs, ys
+        # Depends on obs_u as well: data updates only notify obs_u (see sync_data_to_cache!).
+        pts_2d = lift(cache.obs_x, cache.obs_y, cache.obs_u) do xs, ys, _
             vec([Point2f(xs[i], ys[j]) for i in eachindex(xs), j in eachindex(ys)])
         end
         vals_1d = lift(vec, cache.obs_u)
@@ -506,7 +512,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.obs_z.val = zs_slices[base_idx]
         cache.obs_u.val = us_slices[base_idx]
         
-        pts_3d = lift(cache.obs_x, cache.obs_y, cache.obs_z) do xs, ys, zs
+        pts_3d = lift(cache.obs_x, cache.obs_y, cache.obs_z, cache.obs_u) do xs, ys, zs, _
             vec([Point3f(xs[i], ys[j], zs[k]) for i in eachindex(xs), j in eachindex(ys), k in eachindex(zs)])
         end
         vals_1d = lift(vec, cache.obs_u)
@@ -633,16 +639,35 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     end
 end
 
-initialize_base_plot!(kwargs...) = @warn "Could not find requested Plotting Style!"
+initialize_base_plot!(args...; kwargs...) = @warn "Could not find requested Plotting Style!"
 
 # =============================================================================
 # TIER 3 DATA INJECTION HELPERS (Perfectly Forked)
 # =============================================================================
+
+# Sets an observable's value without notifying; returns whether the value changed.
+function _stage!(obs::Observable, new_val)
+    changed = !isequal(obs.val, new_val)
+    obs.val = new_val
+    return changed
+end
+
+# Notifies the coordinate observables that changed (e.g. a different grid size when sweeping N, or
+# moving particles), then always the data observable last, so every primitive sees consistent inputs.
+function _notify_staged!(changed_coords, obs_u::Observable)
+    for obs in changed_coords
+        notify(obs)
+    end
+    notify(obs_u)
+    return nothing
+end
+
 """
     sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D})
 
 The high-performance data update gateway. 
 When a user scrubs a slider (like time), this function bypasses the heavy initialization routines. It takes the freshly sliced `data_tuples`, identifies whether the target is a `LagrangianPlotCache` or an `EulerianPlotCache`, and delegates to the appropriate dimensionality dispatch `Val(D)` to overwrite the underlying Makie Observables in place.
+Coordinates are only re-sent when they changed; the data observable is always notified.
 """
 function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D}) where D
     first_cache = isempty(cache_dict) ? nothing : first(values(cache_dict))
@@ -652,10 +677,10 @@ function sync_data_to_cache!(cache_dict, active_methods, data_tuples, ::Val{D}) 
         for (m_idx, label) in enumerate(active_methods)
             haskey(cache_dict, label) || continue
             cache = cache_dict[label]
-            
-            cache.obs_pts.val = _unwrap_1tuples(pts_slices[m_idx])
-            cache.obs_u.val   = _unwrap_1tuples(us_slices[m_idx])
-            notify(cache.obs_u)
+            changed = Observable[]
+            _stage!(cache.obs_pts, _unwrap_1tuples(pts_slices[m_idx])) && push!(changed, cache.obs_pts)
+            cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
+            _notify_staged!(changed, cache.obs_u)
         end        
     elseif first_cache isa EulerianPlotCache
         _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, Val(D))
@@ -672,9 +697,10 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
     for (m_idx, label) in enumerate(active_methods)
         haskey(cache_dict, label) || continue
         cache = cache_dict[label]
-        cache.obs_x.val = _unwrap_1tuples(xs_slices[m_idx])
+        changed = Observable[]
+        _stage!(cache.obs_x, _unwrap_1tuples(xs_slices[m_idx])) && push!(changed, cache.obs_x)
         cache.obs_u.val = _unwrap_1tuples(us_slices[m_idx])
-        notify(cache.obs_u)
+        _notify_staged!(changed, cache.obs_u)
     end
 end
 
@@ -694,15 +720,14 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
         if haskey(cache.primitives, :lines_2d)
             dir = get(ui_app, :line_direction, :horizontal) 
             X, Y, U = build_2d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx], dir)
-            cache.obs_x.val = X
-            cache.obs_y.val = Y
-            cache.obs_u.val = U
         else
-            cache.obs_x.val = xs_slices[m_idx]
-            cache.obs_y.val = ys_slices[m_idx]
-            cache.obs_u.val = us_slices[m_idx]
+            X, Y, U = xs_slices[m_idx], ys_slices[m_idx], us_slices[m_idx]
         end
-        notify(cache.obs_u)
+        changed = Observable[]
+        _stage!(cache.obs_x, X) && push!(changed, cache.obs_x)
+        _stage!(cache.obs_y, Y) && push!(changed, cache.obs_y)
+        cache.obs_u.val = U
+        _notify_staged!(changed, cache.obs_u)
     end
 end
 
@@ -723,16 +748,17 @@ function _sync_eulerian_data_to_cache!(cache_dict, active_methods, data_tuples, 
         if haskey(cache.primitives, :lines_3d)
             dir = get(ui_app, :line_direction, :horizontal) 
             X, Y, Z, U = build_3d_lines_grid(xs_slices[m_idx], ys_slices[m_idx], zs_slices[m_idx], us_slices[m_idx], dir)
-            cache.obs_x.val = X
-            cache.obs_y.val = Y
-            cache.obs_z.val = Z
-            cache.obs_u.val = U
+        elseif haskey(cache.primitives, :scatter_3d)
+            X, Y, Z, U = xs_slices[m_idx], ys_slices[m_idx], zs_slices[m_idx], us_slices[m_idx]
         else
-            cache.obs_x.val = extrema(xs_slices[m_idx])
-            cache.obs_y.val = extrema(ys_slices[m_idx])
-            cache.obs_z.val = extrema(zs_slices[m_idx])
-            cache.obs_u.val = us_slices[m_idx]
+            # Volume-like primitives take the extent of each axis.
+            X, Y, Z, U = extrema(xs_slices[m_idx]), extrema(ys_slices[m_idx]), extrema(zs_slices[m_idx]), us_slices[m_idx]
         end
-        notify(cache.obs_u)
+        changed = Observable[]
+        _stage!(cache.obs_x, X) && push!(changed, cache.obs_x)
+        _stage!(cache.obs_y, Y) && push!(changed, cache.obs_y)
+        _stage!(cache.obs_z, Z) && push!(changed, cache.obs_z)
+        cache.obs_u.val = U
+        _notify_staged!(changed, cache.obs_u)
     end
 end

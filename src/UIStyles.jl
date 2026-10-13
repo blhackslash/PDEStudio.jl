@@ -4,7 +4,7 @@
 
 const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
-const REPLOT_OPTIONS = (:use_color_map, :line_direction, :base_method_idx, :padding, :log_scale, :dashed_lines, :levels, :rasterization_enabled, :rasterization_quality, :legend_label)
+const REPLOT_OPTIONS = (:use_color_map, :line_direction, :method_index, :padding, :log_scale, :dashed_lines, :levels, :rasterization_enabled, :rasterization_quality, :legend_label)
 const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
 const PLOT_AXIS_OPTIONS = (:x_axis, :y_axis, :z_axis, :u_axis, :component)
 const EXPLORATION_OPTIONS = (:anim_target, :component)
@@ -47,50 +47,14 @@ const SYMBOL_TO_LABEL_MAP = Dict{Symbol, String}(
     :t => "Time (T)",
 )
 
-const LABEL_TO_SYMBOL_MAP = Dict{String, Symbol}(v => k for (k, v) in SYMBOL_TO_LABEL_MAP)
-
-"""
-    backend_key(s::AbstractString)
-
-Safely resolves a human-readable UI label back into its corresponding internal `Symbol`. 
-It first checks dynamic user-defined labels, falls back to the hardcoded `LABEL_TO_SYMBOL_MAP`, and finally uses a regular expression to algorithmic cast unknown strings into lowercase, snake-case symbols.
-"""
-function backend_key(s::AbstractString)
-    s_strip = strip(s)
-    
-    # 1. O(1) Reverse lookup custom labels
-    if isdefined(Main, :manager) && haskey(manager.maps, :Labels_Reverse)
-        if haskey(manager.maps[:Labels_Reverse], s_strip)
-            return manager.maps[:Labels_Reverse][s_strip]
-        end
-    end
-    
-    # 2. O(1) Reverse lookup hardcoded frontend strings
-    if haskey(LABEL_TO_SYMBOL_MAP, s_strip)
-        return LABEL_TO_SYMBOL_MAP[s_strip]
-    end
-    
-    # 3. Algorithmic fallback
-    s_clean = replace(lowercase(s_strip), r"[^\w\s-]" => "") 
-    s_clean = replace(strip(s_clean), r"[\s-]+" => "_")
-    return Symbol(s_clean)
-end
-
 """
     set_label!(sym::Symbol, label::AbstractString)
 
-Registers a custom UI display name for a backend Symbol. 
-Perfect for fixing method acronyms (e.g., `set_label!(:rk4, "RK4")`). It also automatically generates a reverse lookup entry to ensure `backend_key` resolves correctly.
+Registers a custom UI display name for a backend Symbol (e.g. `set_label!(:rk4, "RK4")`). Labels only change what
+is displayed; files always store the backend names.
 """
 function set_label!(sym::Symbol, label::AbstractString)
-    str_label = String(label)
-    manager.maps[:Labels][sym] = str_label
-    
-    # Automatically maintain the dynamic reverse mapping
-    if !haskey(manager.maps, :Labels_Reverse)
-        manager.maps[:Labels_Reverse] = Dict{String, Symbol}()
-    end
-    manager.maps[:Labels_Reverse][str_label] = sym
+    return manager.maps[:Labels][sym] = String(label)
 end
 
 """
@@ -111,11 +75,12 @@ function frontend_key(s::Symbol)
     words = split(String(s), "_")
     return join(map(titlecase, words), " ")
 end
+frontend_key(s) = string(s)  # numbers, `nothing`, … (e.g. menu values that are not symbols)
 
 """
     menu_opt(sym::Symbol)
 
-Helper function that uses `frontend_key` to automatically generate a formatted Makie dropdown tuple: `("Nice String", :backend_key)`.
+Helper function that uses `frontend_key` to automatically generate a formatted Makie dropdown tuple: `("Nice String", :key)`.
 """
 menu_opt(sym::Symbol) = (frontend_key(sym), sym)
 
@@ -298,6 +263,10 @@ It actively tracks the current dimensionality `PLOT_DIM_MAP[plot_type]`. If a st
 function switch_ui_plot_type!(plot_type::Symbol)
     master = MASTER_UI_DICT
     ui = manager.ui
+    if !haskey(PLOT_DIM_MAP, plot_type)
+        @warn "Unknown plot style :$plot_type ignored."
+        return
+    end
 
     # Track the active state and calculate dimensionality shifts
     old_plot_type = get(manager.state, :Active_Plot_Type, :none)
@@ -361,11 +330,16 @@ A global reset routine.
 It purges the actively mutated `manager.ui` dictionary, forces a hard reload of all base layout options and exploration variables, and triggers a `:Layout` rebuild to return the studio to a pristine default state.
 """
 function set_plot_preset!()
-    # 1. Clear the UI dictionary completely (switch_ui_plot_type! will build the specific defaults)
+    # 1. Clear the UI dictionary completely and rebuild the defaults of the active plot style right away,
+    #    so `manager.ui` is never left empty (UI triggers read it before the next layout rebuild).
     empty!(manager.ui)
-    
+    base_layout = get_base_layout_options()
+    plot_type = get(manager.state, :Active_Plot_Type, base_layout[:plot_style])
+    delete!(manager.state, :Active_Plot_Type)
+    switch_ui_plot_type!(haskey(PLOT_DIM_MAP, plot_type) ? plot_type : base_layout[:plot_style])
+
     # 2. Reset Layout and Sliders safely
-    apply_layout_options!(get_base_layout_options())
+    apply_layout_options!(base_layout)
     empty!(manager.state[:Slider_Cache])
     
     # 3. Reset Camera
@@ -481,35 +455,38 @@ end
 # ==============================================================================
 
 """
-    set_plot_preset!(name::Symbol)
+    set_plot_preset!(name)
 
-The public entry point for loading themes. 
-It checks if the requested `name` exists as a hardcoded `apply_plot_preset!` dispatch. If not, it falls back to scanning the local `/Presets` directory for custom `name.csv` user templates and invokes `load_and_apply_csv!` directly.
+The public entry point for loading visual themes.
+It checks if the requested `name` exists as a hardcoded `apply_plot_preset!` dispatch. If not, it loads the custom
+`<save path>/Presets/<name>.csv` template. Only the visual part of a file is applied (scene, UI styles, labels,
+exploration); simulation parameters and bundled source files are ignored, so a visual preset never changes the physics.
 """
-function set_plot_preset!(name::Symbol)
+function set_plot_preset!(name::Union{Symbol, AbstractString})
+    name = Symbol(name)
     # 1. Check for Hardcoded functions
     if haskey(PRESET_DESCRIPTIONS, name)
-        
+
         apply_plot_preset!(Val(name))
         manager.triggers[:Layout][] += 1
         @info "Applied hardcoded preset: $name"
-    else
-        # 2. Check Disk CSVs
-        preset_path = joinpath(get_save_path(), "Presets", "$(name).csv")
-        if isfile(preset_path)
-            load_and_apply_csv!(preset_path)
-            
-            parsed = parse_csv_to_dict(preset_path)
-            if haskey(parsed, "Metadata") && haskey(parsed["Metadata"], "Preset")
-                manager.maps[:Presets][name] = get(parsed["Metadata"]["Preset"], "description", "Custom disk preset")
-            end
-            
-            manager.triggers[:Layout][] += 1
-            @info "Applied custom disk preset: $name"
-        else
-            @warn "Preset '$name' not found in Disk or Hardcoded styles."
-        end
+        return true
     end
+
+    # 2. Check Disk CSVs (saved presets use lower-case file names)
+    preset_path = _preset_file(preset_dir(), name)
+    if isnothing(preset_path)
+        @warn "Preset '$name' not found in Disk or Hardcoded styles."
+        return false
+    end
+
+    parsed, raw = _read_csv(preset_path)
+    visual = Dict(k => v for (k, v) in parsed if k in VISUAL_CSV_CATEGORIES)
+    load_and_apply_csv!(visual, raw)
+    manager.maps[:Presets][name] = _preset_description(raw, "Custom disk preset")
+    manager.triggers[:Layout][] += 1
+    @info "Applied custom disk preset: $name"
+    return true
 end
 
 # ==============================================================================

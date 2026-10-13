@@ -69,16 +69,16 @@ methods = create_method_dict(
 )
 
 # Parameter sweeps: Test both methods across different CFL limits
-varied_params = create_varied_dict(
+varied = create_varied_dict(
     :cfl => [0.3, 0.5, 0.8, 1.0]
 )
 
-# 3. Create the Configuration
-config = SimulationConfig(           # Pass the function name
+# 3. Create the Configuration: shared parameters, all methods, the active methods (`defaults`) and the sweep
+config = SimulationConfig(
     shared_params,
     methods,
     [:upwind, :lax_friedrichs];
-    varied_params = varied_params
+    varied = varied,
 )
 
 # 4. Run the Pipeline! (optional, is run by the Studio automatically)
@@ -97,6 +97,4 @@ display(fig)
 set_sim_config!(config)
 
 # Force the initial calculation (optional, can also be done in the GUI)
-force_simulation() 
-
-
+force_simulation()

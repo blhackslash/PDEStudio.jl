@@ -4,26 +4,83 @@
 Returns a list of all method names defined within the active `SimulationConfig`, sorted strictly by priority using `sort_methods_robust`.
 """
 function allMethodNames(config::SimulationConfig)
-    return sort_methods_robust(collect(keys(config.methods_dict)))
+    return sort_methods_robust(collect(keys(config.methods)))
 end
 
 """
-    sort_methods_robust(methods::Vector{Symbol})
+    sort_methods_robust(methods::AbstractVector)
 
-Sorts an array of method symbols, guaranteeing that analytical baselines or exact reference solutions are evaluated and drawn first. 
+Sorts method names, guaranteeing that analytical baselines or exact reference solutions are evaluated and drawn first.
 
-Keywords matching `analytic`, `reference`, `exact`, `baseline`, or `true` are given priority rank `0`, ensuring they appear at the bottom of Z-index stacks (behind numerical overlays) and at the top of Legends.
+Reference methods (as recognised by `PDEStudioCore.is_reference_method`, e.g. `:analytic`, `:exact_solution`) get priority rank `0`,
+ensuring they appear at the bottom of Z-index stacks (behind numerical overlays) and at the top of Legends.
 """
-function sort_methods_robust(methods::Vector{Symbol})
-    priority_keys = ["analytic", "reference", "exact", "baseline", "true"]
-    
-    function method_rank(m::String)
-        lm = lowercase(m)
-        rank = any(k -> occursin(k, lm), priority_keys) ? 0 : 1
-        return (rank, m)
+function sort_methods_robust(methods::AbstractVector)
+    syms = Symbol[Symbol(m) for m in methods]
+    return sort(syms, by = m -> (is_reference_method(m) ? 0 : 1, string(m)))
+end
+
+# ------------------------------------------------------------------------------
+# Value formatting & comparison helpers
+# ------------------------------------------------------------------------------
+
+# Maximum number of subplots a "compare over time / parameter" layout creates (values are subsampled evenly).
+const MAX_COMPARE_PLOTS = 12
+
+_fmt_value(v) = v isa AbstractFloat ? @sprintf("%.3f", v) : string(v)
+_fmt_compare(v) = v isa AbstractFloat ? string(round(v, sigdigits = 4)) : string(v)
+
+# Evenly spread indices into 1:n, at most MAX_COMPARE_PLOTS of them.
+function _compare_picks(n::Int)
+    n <= MAX_COMPARE_PLOTS && return collect(1:n)
+    @info "Comparing $MAX_COMPARE_PLOTS of $n values (evenly spaced)."
+    return unique(round.(Int, range(1, n, length = MAX_COMPARE_PLOTS)))
+end
+
+# Value of a selector that has no slider widget: the first swept value (or its index for non-numeric sweeps).
+function _fallback_selector_value(name::Symbol)
+    config = manager.active_config
+    if !isnothing(config) && haskey(config.varied, name) && !isempty(config.varied[name])
+        vals = config.varied[name]
+        return _is_numeric_sweep(vals) ? first(vals) : 1
     end
-    
-    return Symbol.(sort(String.(methods), by=method_rank))
+    return 0.0
+end
+
+# ------------------------------------------------------------------------------
+# Export formats
+# ------------------------------------------------------------------------------
+
+# Extensions typed into the filename box: an animation format records an animation, a static format exports exactly
+# that format, anything else is part of the name.
+const ANIMATION_EXPORT_FORMATS = ("mp4", "gif", "webm", "mkv")
+const STATIC_EXPORT_FORMATS = ("png", "pdf", "svg", "eps", "jpg", "jpeg")
+
+"""
+    _export_formats(setting)
+
+Normalises the `save_formats` export setting (a vector, tuple or single entry, with or without leading dots) to a
+list of lower-case static formats. Animation formats (which must be typed into the filename instead) and unknown
+formats are dropped with a warning.
+"""
+function _export_formats(setting)
+    items = (setting isa AbstractVector || setting isa Tuple) ? collect(setting) : [setting]
+    fmts = String[lowercase(lstrip(strip(string(f)), '.')) for f in items if !isnothing(f)]
+    anim = filter(in(ANIMATION_EXPORT_FORMATS), fmts)
+    isempty(anim) || @warn "Animation formats $anim in the export settings are ignored. To export an animation, add the extension (e.g. '.mp4') to the filename instead."
+    unknown = filter(f -> !(f in STATIC_EXPORT_FORMATS) && !(f in ANIMATION_EXPORT_FORMATS) && !isempty(f), fmts)
+    isempty(unknown) || @warn "Unknown export formats $unknown are ignored. Supported: $(join(STATIC_EXPORT_FORMATS, ", "))."
+    return unique!(filter(in(STATIC_EXPORT_FORMATS), fmts))
+end
+
+# Text next to a slider: the swept value for non-numeric parameters, the formatted number otherwise.
+function _slider_value_text(widget_key::Symbol, v)
+    param = get(get(manager.maps, :Param, Dict{Symbol, Symbol}()), widget_key, nothing)
+    if !isnothing(param)
+        i = findfirst(isequal(param), manager.plot_vars)
+        isnothing(i) || return _fmt_value(_param_display_value(i, v))
+    end
+    return _fmt_value(v)
 end
 
 """
@@ -41,23 +98,23 @@ function generate_dynamic_title(
 )
     title_parts = String[]
     base_vars = get_base_variables()
-    
+    n_params = length(dim_names) - length(base_vars)
+
     for i in 1:length(dim_names)
         name_sym = dim_names[i]
-        
+
         # Skip base variables that do not physically exist in this simulation
         if !isnothing(sim_data) && (name_sym in base_vars) && !(name_sym in sim_data.domain.dim_keys)
             continue
         end
-        
+
         name = titlecase(string(name_sym))
-        
+
         if i in plot_dims
             push!(title_parts, "$name = [Axis]")
-        else
-            val = sel_vals[i]
-            val_str = val isa AbstractFloat ? @sprintf("%.3f", val) : string(val)
-            push!(title_parts, "$name = $val_str")
+        elseif i <= length(sel_vals)
+            val = i <= n_params ? _param_display_value(i, sel_vals[i]) : sel_vals[i]
+            push!(title_parts, "$name = $(_fmt_value(val))")
         end
     end
     
@@ -316,12 +373,13 @@ function calculate_layout_dictionary(num_plots::Int, cols_req::Int, link_mode::S
 end
 
 """
-    _parse_legend_position()
+    _parse_legend_position(target = <active compare target>)
 
 Parses the UI dropdown logic to determine the precise Makie anchoring coordinates for the legend block. 
 Returns `(is_detached, halign, valign)`.
 """
-function _parse_legend_position()
+function _parse_legend_position(target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] :
+                                         manager.widgets[:compare_target].selection[])
     base_align = manager.widgets[:legend_base].selection[]
     add_align  = manager.widgets[:legend_add].selection[]
     
@@ -330,8 +388,6 @@ function _parse_legend_position()
     end
     
     is_detached = (add_align == :detached)
-    
-    target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] : manager.widgets[:compare_target].selection[]
     
     if target != :none && target != :methods && !is_detached
         return (true, :center, :top)
@@ -497,7 +553,7 @@ function plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d
     colors = get(ui_stl, :colors, [:black])
     lw = haskey(ui_stl, :line_width) ? (ui_stl[:line_width] / 2) : 2.0 
 
-    if length(data_tuples) >= 2 
+    if length(data_tuples) == 2  # 1D data only (x, u)
         xs_all = data_tuples[1]
         us_all = data_tuples[end]
         
@@ -505,6 +561,7 @@ function plot_extrema_lines_manager!(ax::Axis, data_tuples, valid_methods, is_3d
             x_data, u_data = xs_all[m_idx], us_all[m_idx]
 
             (eltype(x_data) <: Point) && continue
+            (x_data isa AbstractVector && u_data isa AbstractVector) || continue
 
             valid_pairs = filter(p -> isfinite(p[2]), collect(zip(x_data, u_data)))
             isempty(valid_pairs) && continue

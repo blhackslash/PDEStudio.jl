@@ -1,391 +1,525 @@
-"""
-    _apply_backend_keys(d::Dict)
+# ==============================================================================
+# --- CSV serialisation of the studio state ---
+# ==============================================================================
+#
+# Every file is a table `Category, Scope, Parameter, Value`; values are written with `val2str` and read back
+# with the safe literal parser `str2val` (no code is evaluated). Categories:
+#   Metadata    General (export info, bundled sources) / Preset (description, type, mode)
+#   Git, Julia  reproducibility information (full exports)
+#   Scene       Plot, Layout, Camera, Labels, Exploration
+#   UI          one scope per `manager.ui` scope
+#   Simulation  Shared, Sweep, Config (methods, defaults, reference, postprocess), one scope per method
+#   Config      Dimensions, Resolution_Base, Resolution_Ref (structure of the studio)
+# Keys are the backend names (`animation_FPS`, `sim_func_name`); display labels never appear in files.
 
-Recursively iterates through a dictionary, converting all string keys into their strictly typed backend `Symbol` equivalents using `backend_key`.
-This guarantees type stability when passing UI-generated dictionaries into the core simulation loops.
-"""
-function _apply_backend_keys(d::Dict)
-    new_d = Dict{Symbol, Any}()
-    for (k, v) in d
-        clean_k = backend_key(string(k))
-        if v isa Dict
-            new_d[clean_k] = _apply_backend_keys(v)
-        else
-            new_d[clean_k] = v
+# ------------------------------------------------------------------------------
+# Writing
+# ------------------------------------------------------------------------------
+
+struct _CSVRows
+    cats::Vector{String}
+    scopes::Vector{String}
+    params::Vector{String}
+    vals::Vector{String}
+end
+_CSVRows() = _CSVRows(String[], String[], String[], String[])
+
+function add_row!(rows::_CSVRows, cat, scope, param, value)
+    push!(rows.cats, string(cat))
+    push!(rows.scopes, string(scope))
+    push!(rows.params, string(param))
+    push!(rows.vals, val2str(to_value(value)))
+    return rows
+end
+
+function _write_rows(path::AbstractString, rows::_CSVRows)
+    mkpath(dirname(abspath(path)))
+    CSV.write(path, DataFrame(Category = rows.cats, Scope = rows.scopes, Parameter = rows.params, Value = rows.vals))
+    return path
+end
+
+_sorted_pairs(d) = sort!(collect(d), by = p -> string(first(p)))
+
+function _add_scene_rows!(rows::_CSVRows)
+    # The persistent caches hold the state even when no window is open; open widgets take precedence.
+    plot_opts = merge(copy(manager.state[:Plot_Cache]), extract_plot_options())
+    for (k, v) in _sorted_pairs(plot_opts)
+        add_row!(rows, "Scene", "Plot", k, v)
+    end
+    layout_opts = merge(copy(manager.state[:Layout_Cache]), extract_layout_options())
+    for (k, v) in _sorted_pairs(layout_opts)
+        add_row!(rows, "Scene", "Layout", k, v)
+    end
+    for (k, v) in _sorted_pairs(get(manager.state, :Camera_Cache, Dict{Symbol, Any}()))
+        add_row!(rows, "Scene", "Camera", k, v)
+    end
+    for (k, v) in _sorted_pairs(get(manager.maps, :Labels, Dict{Symbol, String}()))
+        v == string(k) && continue  # skip redundant default labels
+        add_row!(rows, "Scene", "Labels", k, v)
+    end
+    exp_opts = merge(copy(manager.state[:Exploration_Cache]), extract_exploration_options())
+    for (k, v) in _sorted_pairs(exp_opts)
+        add_row!(rows, "Scene", "Exploration", k, v)
+    end
+    return rows
+end
+
+function _add_ui_rows!(rows::_CSVRows)
+    for (scope, dict) in _sorted_pairs(manager.ui)
+        for (k, v) in _sorted_pairs(dict)
+            add_row!(rows, "UI", scope, k, v)
         end
     end
-    return new_d
+    return rows
+end
+
+const _RESERVED_SIM_SCOPES = ("Shared", "Sweep", "Config")
+
+# Text parameters that would read back as something else ("1e3", "Float64", "Nothing") are written quoted, so a
+# simulation parameter keeps its type (and its data-file hash) through a CSV round trip.
+_csv_text(v) = (v isa AbstractString && !isempty(v) && !isequal(_parse_csv_value(v), v)) ? repr(String(v)) : v
+
+"""
+    _add_simulation_rows!(rows, config::SimulationConfig)
+
+Writes the simulation category of a configuration: shared parameters, every method's parameters, the method list,
+the active methods (`defaults`), the reference and post-processing function names, and the sweep (`Simulation, Sweep`).
+"""
+function _add_simulation_rows!(rows::_CSVRows, config::SimulationConfig)
+    for (k, v) in _sorted_pairs(config.shared)
+        add_row!(rows, "Simulation", "Shared", k, _csv_text(v))
+    end
+    method_names = sort!(collect(keys(config.methods)))
+    for m in method_names
+        if string(m) in _RESERVED_SIM_SCOPES
+            @warn "Method :$m clashes with a reserved CSV scope; its parameters are not saved."
+            continue
+        end
+        for (k, v) in _sorted_pairs(config.methods[m])
+            add_row!(rows, "Simulation", m, k, _csv_text(v))
+        end
+    end
+    add_row!(rows, "Simulation", "Config", "methods", method_names)
+    add_row!(rows, "Simulation", "Config", "defaults", config.defaults)
+    add_row!(rows, "Simulation", "Config", "reference", isnothing(config.reference) ? "none" : string(config.reference))
+    add_row!(rows, "Simulation", "Config", "postprocess", isnothing(config.postprocess) ? "none" : string(config.postprocess))
+    for (k, v) in _sorted_pairs(config.varied)
+        add_row!(rows, "Simulation", "Sweep", k, v)
+    end
+    return rows
+end
+
+# ------------------------------------------------------------------------------
+# Reading
+# ------------------------------------------------------------------------------
+
+function _parse_csv_value(s::AbstractString)
+    txt = strip(String(s))
+    txt == "Nothing" && return nothing  # `val2str(nothing)` writes "Nothing"
+    return str2val(txt)
 end
 
 """
-    load_and_apply_csv!(filepath::String)
+    _read_csv(filepath)
 
-Reads a configuration CSV from disk, orchestrating the file load and structural checks. 
+Reads a studio CSV into two nested dictionaries `[Category][Scope][Parameter]`: the parsed values and the raw cell
+texts (used where text must stay text, e.g. labels and string-valued UI options).
+"""
+function _read_csv(filepath::AbstractString)
+    parsed = Dict{String, Dict{String, Dict{String, Any}}}()
+    raw = Dict{String, Dict{String, Dict{String, String}}}()
+    for row in CSV.Rows(filepath)
+        # CSV.Rows yields lazy string types; plain `String`s are needed by the parser (and as dict keys)
+        cat = String(coalesce(row.Category, ""))
+        scope = String(coalesce(row.Scope, ""))
+        param = String(coalesce(row.Parameter, ""))
+        val_str = String(coalesce(row.Value, ""))
+        (isempty(cat) || isempty(param)) && continue
+        get!(Dict{String, Any}, get!(Dict{String, Dict{String, Any}}, parsed, cat), scope)[param] = _parse_csv_value(val_str)
+        get!(Dict{String, String}, get!(Dict{String, Dict{String, String}}, raw, cat), scope)[param] = val_str
+    end
+    return parsed, raw
+end
 
-It handles the execution of any bundled Julia source files to reconstruct the `SimulationConfig`, checks if the loaded configuration requires modifying the fundamental UI layout (dimensions or max parameters), and safely stages the data if structural limits change. Returns `true` if a structural UI rebuild is required.
+"""
+    parse_csv_to_dict(filepath::AbstractString)
+
+Reads an RFC 4180 CSV file into a nested `Dict` hierarchy `[Category][Scope][Parameter]`, parsing every value with the
+safe literal parser `str2val` (vectors, tuples, symbols, numbers, …). No code is evaluated.
+"""
+parse_csv_to_dict(filepath::AbstractString) = first(_read_csv(filepath))
+
+# The raw cell text of an entry ("<empty>" is the empty string), or `nothing`.
+function _raw_value(raw, cat, scope, key)
+    isnothing(raw) && return nothing
+    r = get(get(get(raw, string(cat), Dict()), string(scope), Dict()), string(key), nothing)
+    isnothing(r) && return nothing
+    return r == "<empty>" ? "" : String(r)
+end
+
+# The MASTER_UI_DICT template of a UI scope; the axis scopes depend on the active plot type (see switch_ui_plot_type!).
+function _ui_template_scope(scope::Symbol)
+    scope === :z_axis && return :z_axis_3d
+    scope in (:x_axis, :y_axis) || return scope
+    ptype = get(manager.state, :Active_Plot_Type, :none)
+    one_d = get(PLOT_DIM_MAP, ptype, 1) == 1 && !is_surface(ptype)
+    return Symbol(scope, one_d ? "_1d" : "_nd")
+end
+
+function _ui_template_value(scope::Symbol, key::Symbol)
+    haskey(manager.ui, scope) && haskey(manager.ui[scope], key) && return manager.ui[scope][key]
+    template = _ui_template_scope(scope)
+    haskey(MASTER_UI_DICT, template) && return get(MASTER_UI_DICT[template], key, nothing)
+    return nothing
+end
+
+# Text-valued options stay text, even if the text looks like a number, symbol or type ("1e3", "Float64", ...).
+function _coerce_ui_value(scope::Symbol, key::Symbol, value, raw_value)
+    template = _ui_template_value(scope, key)
+    if template isa AbstractString && !(value isa AbstractString)
+        return isnothing(raw_value) ? val2str(value) : raw_value
+    end
+    return value
+end
+
+function _parse_dims(raw)
+    raw isa Tuple && return Tuple(Symbol(d) for d in raw)
+    raw isa AbstractVector && return Tuple(Symbol(d) for d in raw)
+    raw isa Symbol && return (raw,)
+    @warn "Ignoring invalid allowed_dims $(repr(raw)); expected a tuple of symbols such as (:x, :t)."
+    return manager.allowed_dims
+end
+
+_scene_source(parsed::Dict, name::String) = get(get(parsed, "Scene", Dict()), name, nothing)
+
+_has_visual_data(parsed::Dict) = haskey(parsed, "Scene") || haskey(parsed, "UI")
+
+_keysyms(d) = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in d)
+
+# ------------------------------------------------------------------------------
+# Bundled source files
+# ------------------------------------------------------------------------------
+
+"""
+    _run_bundled_sources(parsed, filepath)
+
+Includes the source files bundled with an exported CSV into the target module (this executes their code).
+Returns `(config, bundled, origins)`: the `SimulationConfig` returned by the last file (or `nothing`), the absolute
+paths of the bundled copies (`""` for missing files) and the original paths they were copied from (if recorded).
+"""
+function _run_bundled_sources(parsed::Dict, filepath::AbstractString)
+    meta = get(get(parsed, "Metadata", Dict()), "General", Dict())
+    names = get(meta, "bundled_sources", nothing)
+    names isa AbstractString && (names = isempty(names) ? String[] : [names])
+    (names isa AbstractVector && !isempty(names)) || return nothing, String[], String[]
+    origins = get(meta, "source_origins", String[])
+    origins = origins isa AbstractVector ? String[string(o) for o in origins] : String[]
+
+    dir = dirname(abspath(filepath))
+    bundled = String[]
+    last_result = nothing
+    all_found = true
+    for name in names
+        candidates = (joinpath(dir, basename(string(name))), string(name))
+        idx = findfirst(isfile, candidates)
+        if isnothing(idx)
+            @warn "Bundled source missing: $(candidates[1])"
+            push!(bundled, "")
+            all_found = false
+            continue
+        end
+        path = abspath(candidates[idx])
+        @info "Executing bundled source: $(basename(path))"
+        last_result = Base.include(get_target_module(), path)
+        push!(bundled, path)
+    end
+    config = all_found && last_result isa SimulationConfig ? last_result : nothing
+    return config, bundled, origins
+end
+
+# Points the sources of a configuration at existing files, using the bundled copies for missing originals.
+function _relocate_sources(sources::AbstractVector, bundled::Vector{String}, origins::Vector{String})
+    out = String[]
+    for src in sources
+        if isfile(src)
+            push!(out, abspath(src))
+            continue
+        end
+        i = findfirst(==(abspath(src)), origins)
+        if !isnothing(i) && i <= length(bundled) && !isempty(bundled[i])
+            push!(out, bundled[i])
+        else
+            @warn "Source file $src not found; it is removed from the configuration."
+        end
+    end
+    return out
+end
+
+# ------------------------------------------------------------------------------
+# Loading
+# ------------------------------------------------------------------------------
+
+"""
+    load_and_apply_csv!(filepath::AbstractString)
+
+Reads a configuration CSV from disk and applies it.
+
+It executes any bundled Julia source files (which may define solvers and return a `SimulationConfig`), checks whether
+the file needs different structural UI limits (allowed dimensions, number of parameter sliders) and stages the data
+until *Run Simulation* if the open window has to be rebuilt. Returns `true` if such a structural rebuild is pending.
 """
 function load_and_apply_csv!(filepath::AbstractString)
     @info "Loading configuration from CSV: $filepath"
-    parsed = parse_csv_to_dict(filepath)
-    
-    if haskey(parsed, "Metadata") && haskey(parsed["Metadata"], "General") && haskey(parsed["Metadata"]["General"], "bundled_sources")
-        script_names = parsed["Metadata"]["General"]["bundled_sources"]
-        
-        # Fallback in case a single string was parsed instead of a Vector
-        if script_names isa AbstractString; script_names = [script_names]; end
-        
-        local config_obj = nothing
-        all_found = true
-        
-        for script_name in script_names
-            script_path = joinpath(dirname(filepath), script_name)
-            if isfile(script_path)
-                @info "Executing bundled source: $script_name"
-                config_obj = Base.include(get_target_module(),script_path) 
-            else
-                @warn "Bundled source missing: $script_path"
-                all_found = false
-            end
-        end
-        
-        # If the scripts ran and returned a valid config, load it and strip physics from the CSV
-        if all_found && typeof(config_obj) <: SimulationConfig
-            set_sim_config!(config_obj)
-            delete!(parsed, "Simulation")
-        elseif all_found
-            @warn "The last included source file did not return a SimulationConfig object."
+    delete!(manager.state, :CSV_Cache)  # a newer file replaces a staged one
+    parsed, raw = _read_csv(filepath)
+    bundled_config, bundled, origins = _run_bundled_sources(parsed, filepath)
+    sources = isnothing(bundled_config) ? filter(!isempty, bundled) :
+              _relocate_sources(bundled_config.sources, bundled, origins)
+
+    new_dims, new_max = manager.allowed_dims, manager.max_params
+    dims = get(get(parsed, "Config", Dict()), "Dimensions", nothing)
+    if !isnothing(dims)
+        haskey(dims, "allowed_dims") && (new_dims = _parse_dims(dims["allowed_dims"]))
+        get(dims, "max_params", nothing) isa Real && (new_max = Int(dims["max_params"]))
+    end
+    # Make room for every swept parameter of the loaded configuration.
+    n_varied = isnothing(bundled_config) ? length(get(get(parsed, "Simulation", Dict()), "Sweep", Dict())) :
+               length(bundled_config.varied)
+    new_max = max(new_max, n_varied)
+
+    if new_dims != manager.allowed_dims || new_max != manager.max_params
+        if !get(manager.ui_state, :is_open, false)
+            # No window yet: the limits can be applied directly.
+            manager.allowed_dims = new_dims
+            manager.max_params = new_max
+            _sync_resolution_dims!()
+        else
+            manager.state[:CSV_Cache] = (dims = new_dims, max_params = new_max, parsed = parsed, raw = raw,
+                                         config = bundled_config, sources = sources)
+            @info "Structural limits changed! Configuration staged; press 'Run Simulation' to rebuild the studio."
+            return true
         end
     end
-    
-    is_structural_change = false
-    new_dims = manager.allowed_dims
-    new_max = manager.max_params
-    
-    if haskey(parsed, "Config") && haskey(parsed["Config"], "Dimensions")
-        dims = parsed["Config"]["Dimensions"]
-        if haskey(dims, "allowed_dims")
-            new_dims = dims["allowed_dims"]
-        end
-        if haskey(dims, "max_params")
-            new_max = Int(dims["max_params"])
-        end
-        
-        if new_dims != manager.allowed_dims || new_max != manager.max_params
-            is_structural_change = true
-        end
+
+    load_and_apply_csv!(parsed, raw; config = bundled_config, sources = sources)
+    return false
+end
+
+function _bind_loaded_config!(config::SimulationConfig)
+    for (_, cache_dict) in manager.caches
+        empty!(cache_dict)
     end
-    
-    if is_structural_change
-        manager.state[:CSV_Cache] = (new_dims, new_max, parsed)
-        @info "Structural limits changed! Configuration staged."
-    else
-        load_and_apply_csv!(parsed)
-    end
-    
-    return is_structural_change
+    set_sim_config!(config)
+    @info "Project configuration buffered! Press 'Run Simulation' to compute and apply."
+    return config
 end
 
 """
-    load_and_apply_csv!(parsed::Dict)
+    load_and_apply_csv!(parsed::Dict, raw = nothing; config = nothing, sources = String[])
 
-Applies a parsed and structural-verified configuration dictionary directly to the interactive `PlotManager` state. 
-
-This safely injects saved dimensions, resolutions, visual UI overrides, layout presets, and camera tracking angles into the reactive Makie pipeline, forcing a synchronized redraw of the plotting window.
+Applies a parsed (and structurally verified) configuration to the studio: display resolutions, the simulation
+configuration (`config` if given, e.g. returned by a bundled source, otherwise built from the `Simulation` category),
+the plot style, UI overrides, layout, axes and slider positions, camera, labels and exploration options.
+`raw` holds the raw cell texts (see `_read_csv`); `sources` replaces the configuration's source files.
 """
-function load_and_apply_csv!(parsed::Dict)
+function load_and_apply_csv!(parsed::Dict, raw = nothing; config = nothing, sources = String[])
     @info "Applying parsed CSV configuration..."
-    if haskey(parsed, "Config")
-        cfg = parsed["Config"]
-        
-        # Load Dimensions (Acts as a failsafe if triggered directly)
-        if haskey(cfg, "Dimensions")
-            dims = cfg["Dimensions"]
-            if haskey(dims, "allowed_dims")
-                raw_dims = dims["allowed_dims"]
-                if raw_dims isa Tuple
-                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
-                elseif raw_dims isa Vector
-                    manager.allowed_dims = Tuple(Symbol.(raw_dims))
-                elseif raw_dims isa AbstractString
-                    clean_str = replace(raw_dims, r"[\(\): ]" => "")
-                    manager.allowed_dims = Tuple(Symbol.(split(clean_str, ",")))
-                end
-            end
-            if haskey(dims, "max_params")
-                manager.max_params = Int(dims["max_params"])
-            end
+    cfg = get(parsed, "Config", Dict())
+    for (scope, target) in (("Resolution_Base", :Resolution_Base), ("Resolution_Ref", :Resolution_Ref))
+        for (k, v) in get(cfg, scope, Dict())
+            v isa Real && (manager.state[target][Symbol(k)] = Int(v))
         end
-        
-        # Load Resolutions
-        if haskey(cfg, "Resolution_Base")
-            for (k, v) in cfg["Resolution_Base"]
-                manager.state[:Resolution_Base][Symbol(k)] = Int(v)
-            end
-        end
-        
-        if haskey(cfg, "Resolution_Ref")
-            for (k, v) in cfg["Resolution_Ref"]
-                manager.state[:Resolution_Ref][Symbol(k)] = Int(v)
-            end
-        end    
     end
-    # --- 1. FULL PROJECT DATA ---
-    if haskey(parsed, "Simulation")
 
-        old_cfg = get(get(parsed, "Config", Dict()), "General", Dict())
+    # --- 1. SIMULATION ---
+    if !isnothing(config)
+        isempty(sources) || (config.sources = sources)
+        _bind_loaded_config!(config)
+    elseif haskey(parsed, "Simulation")
         new_config = csv_to_simulation_config(parsed)
-            for (key,cache_dict) in manager.caches
-                empty!(cache_dict)
-            end
-            
-            set_sim_config!(new_config)
-            @info "Project configuration buffered! Press 'Run Simulation' to compute and apply."
+        isempty(sources) || (new_config.sources = sources)
+        _bind_loaded_config!(new_config)
     else
         @info "No simulation data found. Loading as a visual preset."
     end
 
-    # Pre-initialize plot type
-    layout_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
-        parsed["Scene"]["Layout"]
-    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
-        parsed["Layout"]["General"]
-    else
-        nothing
-    end
+    _has_visual_data(parsed) || return nothing
 
+    # --- 2. PLOT STYLE FIRST (builds the matching UI templates) ---
+    layout_source = _scene_source(parsed, "Layout")
     if !isnothing(layout_source)
         for (k, v) in layout_source
-            if backend_key(string(k)) === :plot_style
+            if k == "plot_style" && v isa Union{Symbol, AbstractString}
                 switch_ui_plot_type!(Symbol(v))
                 break
             end
         end
     end
 
-    # --- 2. VISUAL PRESETS & STAGING ---
-    if haskey(parsed, "UI")
-        ui_overrides = _apply_backend_keys(parsed["UI"])
-        for (scope, dict) in ui_overrides
-            for (k, v) in dict
-                set_ui_opt!(scope, k, v)
-            end
+    # --- 3. UI OVERRIDES ---
+    for (scope_str, dict) in get(parsed, "UI", Dict())
+        scope = Symbol(scope_str)
+        for (k_str, v) in dict
+            key = Symbol(k_str)
+            set_ui_opt!(scope, key, _coerce_ui_value(scope, key, v, _raw_value(raw, "UI", scope_str, k_str)))
         end
     end
-    
-    # --- LOAD SCENE: LAYOUT ---
-    if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Layout")
-        apply_layout_options!(_apply_backend_keys(parsed["Scene"]["Layout"]))
-    elseif haskey(parsed, "Layout") && haskey(parsed["Layout"], "General") 
-        apply_layout_options!(_apply_backend_keys(parsed["Layout"]["General"]))
+
+    # --- 4. LAYOUT ---
+    if !isnothing(layout_source)
+        apply_layout_options!(_keysyms(layout_source))
     end
 
-    # --- LOAD SCENE: PLOT ---
-    plot_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Plot")
-        parsed["Scene"]["Plot"]
-    elseif haskey(parsed, "Plot") && haskey(parsed["Plot"], "General") 
-        parsed["Plot"]["General"]
-    else
-        nothing
-    end
-
+    # --- 5. PLOT (axes, field, component and slider positions) ---
+    plot_source = _scene_source(parsed, "Plot")
     if !isnothing(plot_source)
-        plot_dict = Dict{Symbol, Any}()
-        for (k, v) in plot_source
-            bk = backend_key(k)
-            if bk in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
-                plot_dict[bk] = v
-            else
-                plot_dict[Symbol(k)] = v 
-            end
-        end
-        apply_plot_options!(plot_dict)
+        apply_plot_options!(_keysyms(plot_source))
     end
 
-    # --- LOAD SCENE: CAMERA ---
-    cam_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Camera")
-        parsed["Scene"]["Camera"]
-    elseif haskey(parsed, "Camera") && haskey(parsed["Camera"], "General") 
-        parsed["Camera"]["General"]
-    else
-        nothing
-    end
-
+    # --- 6. CAMERA ---
+    cam_source = _scene_source(parsed, "Camera")
     if !isnothing(cam_source) && !isempty(cam_source)
         manager.state[:Camera_Cache] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
-        
         manager.state[:Camera_Locked][] = true
         manager.state[:Skip_Next_Camera_Extract] = true
     else
         manager.state[:Camera_Cache] = Dict{Symbol, Any}()
         manager.state[:Camera_Locked][] = false
     end
-    
-    # --- LOAD SCENE: LABELS ---
-    labels_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Labels")
-        parsed["Scene"]["Labels"]
-    else
-        nothing
-    end
 
+    # --- 7. LABELS (kept as text) ---
+    labels_source = _scene_source(parsed, "Labels")
     if !isnothing(labels_source)
         for (k, v) in labels_source
-            set_label!(Symbol(k), string(v))
+            set_label!(Symbol(k), something(_raw_value(raw, "Scene", "Labels", k), string(v)))
         end
     end
-    
-    # --- LOAD SCENE: EXPLORATION ---
-    exp_source = if haskey(parsed, "Scene") && haskey(parsed["Scene"], "Exploration")
-        parsed["Scene"]["Exploration"]
-    elseif haskey(parsed, "Exploration") && haskey(parsed["Exploration"], "General") 
-        parsed["Exploration"]["General"]
-    else
-        nothing
-    end
 
+    # --- 8. EXPLORATION ---
+    exp_source = _scene_source(parsed, "Exploration")
     if !isnothing(exp_source)
-        apply_exploration_options!(_apply_backend_keys(exp_source))
+        apply_exploration_options!(_keysyms(exp_source))
     end
-end
-"""
-    csv_to_simulation_config(parsed_csv::Dict)
-
-Converts a loosely typed nested CSV dictionary into a rigorously formatted `PDEStudioCore.SimulationConfig`.
-
-This function manages the translation of string-based category scopes into strongly typed `ParamDict`, `MethodDict`, and `VariedDict` structures. Because the config now relies on symbolic function names, dynamic function resolution is deferred to the execution engine.
-"""
-function csv_to_simulation_config(parsed_csv::Dict)
-    # 1. Extract Shared Parameters (Cast to Symbol keys)
-    shared_params = Dict{Symbol, Any}()
-    if haskey(parsed_csv, "Simulation") && haskey(parsed_csv["Simulation"], "Shared")
-        for (k, v) in parsed_csv["Simulation"]["Shared"]
-            shared_params[Symbol(k)] = v
-        end
-    end
-
-    # 2. Extract Methods (Cast to Symbol keys)
-    methods_dict = Dict{Symbol, Dict{Symbol, Any}}()
-    if haskey(parsed_csv, "Simulation")
-        for (scope, params) in parsed_csv["Simulation"]
-            if scope != "Shared" && scope != "Config"
-                m_sym = Symbol(scope)
-                methods_dict[m_sym] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in params)
-            end
-        end
-    end
-
-    # 3. Extract Varied Parameters from the Config Category (Cast to Symbol keys)
-    varied_params = Dict{Symbol, Vector{Any}}()
-    if haskey(parsed_csv, "Config") && haskey(parsed_csv["Config"], "Parameters")
-        for (k, v) in parsed_csv["Config"]["Parameters"]
-            varied_params[Symbol(k)] = v
-        end
-    else
-        @info "No 'Config -> Parameters' found in CSV. Simulation will have no varied parameters."
-    end
-
-    sim_cfg = get(get(parsed_csv, "Simulation", Dict()), "Config", Dict())
-    old_cfg = get(get(parsed_csv, "Config", Dict()), "General", Dict())
-
-    # 4. Default Methods 
-    active_methods = Symbol[]
-    has_explicit_active = false
-    
-    raw_active = get(sim_cfg, "active_methods", get(old_cfg, "active_methods", nothing))
-    if raw_active isa AbstractVector
-        active_methods = Symbol.(raw_active)
-        has_explicit_active = true
-        for m in active_methods
-            if !haskey(methods_dict, m); methods_dict[m] = Dict{Symbol, Any}(); end
-        end
-    elseif isempty(active_methods)
-        active_methods = collect(keys(methods_dict))
-    end
-
-    # 5. Extract Reference Name
-    csv_ref = String(get(sim_cfg, "reference_func", get(old_cfg, "reference_func", "none")))
-    ref_name = (csv_ref != "none" && !isempty(csv_ref)) ? csv_ref : nothing
-
-    # 6. Handle Reference Method Injection (No dynamic resolving needed!)
-    if !isnothing(ref_name)
-        ns = Symbol(ref_name)
-        
-        if !haskey(methods_dict, ns)
-            methods_dict[ns] = Dict{Symbol, Any}()
-        end
-        
-        # Only force the reference method to be active if we didn't get an explicit list from the CSV
-        if !(ns in active_methods) && !has_explicit_active
-            push!(active_methods, ns)
-        end
-    end
-    
-    # Sort methods robustly after any reference injection
-    active_methods = sort_methods_robust(active_methods)
-
-    # 7. Extract Post Process Name 
-    csv_post = String(get(sim_cfg, "post_process_func", get(old_cfg, "post_process_func", "none")))
-    post_name = (csv_post != "none" && !isempty(csv_post)) ? csv_post : nothing
-    
-    return SimulationConfig(
-        shared_params,
-        methods_dict,
-        active_methods;
-        varied_params = varied_params, 
-        ref_func_name = ref_name,
-        post_process_name = post_name
-    )
+    return nothing
 end
 
-"""
-    parse_csv_to_dict(filepath::String)
+# ------------------------------------------------------------------------------
+# Simulation category <-> SimulationConfig
+# ------------------------------------------------------------------------------
 
-Reads an RFC 4180 standard CSV file and structures it into a nested `Dict` hierarchy: `[Category][Scope][Parameter]`.
-It relies on `str2val` to securely parse and execute strings back into native Julia types (like `Vector` or `Symbol`).
+_function_name(::Nothing) = nothing
+_function_name(v::Symbol) = v === :none ? nothing : v
+_function_name(v::Function) = nameof(v)
+function _function_name(v::AbstractString)
+    s = strip(v)
+    return (isempty(s) || lowercase(s) == "none") ? nothing : Symbol(s)
+end
+_function_name(v) = Symbol(string(v))
+
 """
-function parse_csv_to_dict(filepath::AbstractString)
-    parsed = Dict{String, Dict{String, Dict{String, Any}}}()
-    
-    for row in CSV.Rows(filepath)
-        cat, scope, param, val_str = String(row.Category), String(row.Scope), String(row.Parameter), String(row.Value)
-        val = str2val(val_str)
-        
-        if !haskey(parsed, cat); parsed[cat] = Dict{String, Dict{String, Any}}(); end
-        if !haskey(parsed[cat], scope); parsed[cat][scope] = Dict{String, Any}(); end
-        
-        parsed[cat][scope][param] = val
+    csv_to_simulation_config(parsed_csv::Dict; base = nothing)
+
+Converts the simulation category of a parsed CSV into a `PDEStudioCore.SimulationConfig`: shared parameters, methods,
+active methods (`defaults`), the sweep (`Simulation, Sweep`) and the reference / post-processing function names.
+
+With a `base` configuration, the CSV is applied as a patch: only the entries present in the file change, everything else
+(including the source files) is taken from `base`.
+"""
+function csv_to_simulation_config(parsed_csv::Dict; base::Union{Nothing, SimulationConfig} = nothing)
+    sim = get(parsed_csv, "Simulation", Dict{String, Any}())
+    cfg = get(sim, "Config", Dict{String, Any}())
+
+    shared      = isnothing(base) ? ParamDict() : copy(base.shared)
+    methods     = isnothing(base) ? MethodDict() : MethodDict(k => copy(v) for (k, v) in base.methods)
+    varied      = isnothing(base) ? VariedDict() : copy(base.varied)
+    defaults    = isnothing(base) ? Symbol[] : copy(base.defaults)
+    reference   = isnothing(base) ? nothing : base.reference
+    postprocess = isnothing(base) ? nothing : base.postprocess
+    sources     = isnothing(base) ? String[] : copy(base.sources)
+
+    # 1. Shared parameters and method overrides
+    for (k, v) in get(sim, "Shared", Dict{String, Any}())
+        shared[Symbol(k)] = v
     end
-    
-    return parsed
+    for (scope, params) in sim
+        scope in _RESERVED_SIM_SCOPES && continue
+        method = get!(ParamDict, methods, Symbol(scope))
+        for (k, v) in params
+            method[Symbol(k)] = v
+        end
+    end
+    method_names = get(cfg, "methods", nothing)
+    if method_names isa AbstractVector
+        for m in method_names
+            get!(ParamDict, methods, Symbol(m))  # methods without parameters have no rows of their own
+        end
+    end
+
+    # 2. The sweep
+    for (k, v) in get(sim, "Sweep", Dict{String, Any}())
+        varied[Symbol(k)] = v isa AbstractVector ? collect(v) : Any[v]
+    end
+
+    # 3. Active methods and function names
+    raw_defaults = get(cfg, "defaults", nothing)
+    if raw_defaults isa AbstractVector
+        defaults = Symbol[Symbol(m) for m in raw_defaults]
+    elseif raw_defaults isa Union{Symbol, AbstractString}
+        defaults = [Symbol(raw_defaults)]
+    end
+    haskey(cfg, "reference") && (reference = _function_name(cfg["reference"]))
+    haskey(cfg, "postprocess") && (postprocess = _function_name(cfg["postprocess"]))
+    for m in defaults
+        get!(ParamDict, methods, m)
+    end
+    isempty(defaults) && (defaults = collect(keys(methods)))
+
+    return SimulationConfig(shared, methods, sort_methods_robust(defaults);
+                            varied = varied, reference = reference, postprocess = postprocess, sources = sources)
+end
+
+# ------------------------------------------------------------------------------
+# Reproducibility information
+# ------------------------------------------------------------------------------
+
+function _find_git_repos!(out::Vector{String}, dir::String, depth::Int, max_depth::Int)
+    isdir(joinpath(dir, ".git")) && push!(out, dir)
+    depth >= max_depth && return out
+    entries = try
+        readdir(dir)
+    catch
+        return out
+    end
+    for name in entries
+        (startswith(name, ".") || name in ("build", "node_modules", "docs")) && continue
+        path = joinpath(dir, name)
+        (isdir(path) && !islink(path)) && _find_git_repos!(out, path, depth + 1, max_depth)
+    end
+    return out
 end
 
 """
-    get_all_git_infos(start_path::String = ".")
+    get_all_git_infos(start_path::String = "."; max_depth = 3)
 
-Recursively searches the filesystem from `start_path` to map local Git repositories. 
-Returns metadata containing the commit hash, summary, and total commit count for research reproducibility tracking.
+Searches the filesystem below `start_path` (at most `max_depth` levels, skipping hidden, `build`, `node_modules` and
+`docs` folders) for local Git repositories. Returns the commit hash, summary, and total commit count of each for
+research reproducibility tracking.
 """
-function get_all_git_infos(start_path::String = ".")
+function get_all_git_infos(start_path::String = "."; max_depth::Int = 3)
     git_infos = Dict{String, Dict{String, Any}}()
-    
-    for (root, dirs, files) in walkdir(abspath(start_path))
-        if ".git" in dirs
-            try
-                repo = LibGit2.GitRepo(root)
-                commit = LibGit2.peel(LibGit2.GitCommit, LibGit2.head(repo))
-                
-                repo_name = basename(root)
-                git_infos[repo_name] = Dict{String, Any}(
-                    "git_commit_hash" => string(LibGit2.GitHash(commit)),
-                    "git_commit_summary" => LibGit2.summary(commit),
-                    "git_commit_count" => try parse(Int, readchomp(`git -C $root rev-list --count HEAD`)) catch; -1 end
-                )
-            catch e
-            end
+    for root in _find_git_repos!(String[], abspath(start_path), 0, max_depth)
+        try
+            repo = LibGit2.GitRepo(root)
+            commit = LibGit2.peel(LibGit2.GitCommit, LibGit2.head(repo))
+            git_infos[basename(root)] = Dict{String, Any}(
+                "git_commit_hash" => string(LibGit2.GitHash(commit)),
+                "git_commit_summary" => LibGit2.summary(commit),
+                "git_commit_count" => try parse(Int, readchomp(`git -C $root rev-list --count HEAD`)) catch; -1 end
+            )
+        catch
+            # Not a valid repository (or no commits yet): skipped.
         end
-        
-        filter!(d -> !(d in [".git", "build", "node_modules", ".vscode", "docs"]), dirs)
     end
-    
     return git_infos
 end
 
@@ -398,9 +532,9 @@ It focuses specifically on top-level project dependencies and the sub-dependenci
 function get_julia_info(git_repo_names::Vector{String})
     info = Dict{String, Dict{String, Any}}()
     info["System"] = Dict{String, Any}("Julia_Version" => string(VERSION))
-    
+
     deps = Pkg.dependencies()
-    
+
     top_deps = Dict{String, Any}()
     for (uuid, pkg) in deps
         if pkg.is_direct_dep
@@ -408,7 +542,7 @@ function get_julia_info(git_repo_names::Vector{String})
         end
     end
     info["Main_Project"] = top_deps
-    
+
     for (uuid, pkg) in deps
         if pkg.name in git_repo_names
             sub_deps = Dict{String, Any}()
@@ -425,148 +559,78 @@ function get_julia_info(git_repo_names::Vector{String})
     return info
 end
 
-"""
-    save_params_to_csv(base_filename::String, save_dir::String, metadata_general::Dict)
+# ------------------------------------------------------------------------------
+# Full exports and visual presets
+# ------------------------------------------------------------------------------
 
-The primary serialization engine. It extracts the full active state of the `PlotManager`—including the `SimulationConfig`, interactive camera angles, custom UI styles, and execution scripts—and exports it to a strictly typed, human-readable CSV.
-
-Returns `true` on a successful, non-crashing write operation.
 """
-function save_params_to_csv(
-    base_filename::String,
-    save_dir::String,
-    metadata_general::Dict
-)::Bool
-    
+    save_params_to_csv(base_filename::AbstractString, save_dir::AbstractString, metadata_general::Dict)
+
+The primary serialization engine. It writes the full state of the studio—the `SimulationConfig`, scene (axes,
+sliders, layout, camera, labels, exploration), UI styles, structural limits and display resolutions—plus Git and
+Julia environment information to `<save_dir>/<base_filename>.csv`. The configuration's source files are copied next
+to the CSV (`<name>_source_<i>.jl`) so the export can be reloaded elsewhere.
+
+Returns `true` on a successful write.
+"""
+function save_params_to_csv(base_filename::AbstractString, save_dir::AbstractString, metadata_general::Dict)::Bool
     csv_filename = joinpath(save_dir, base_filename * ".csv")
-    
-    try
-        cats, scopes, params, vals = String[], String[], String[], String[]
+    csv_dir = dirname(abspath(csv_filename))
 
-        function add_row(cat, scope, p, v)
-            push!(cats, string(cat))
-            push!(scopes, string(scope))
-            push!(params, string(p))
-            push!(vals, val2str(to_value(v)))
-        end
+    try
+        rows = _CSVRows()
 
         # --- 1. CATEGORY: Metadata ---
-        for (k, v) in metadata_general; add_row("Metadata", "General", k, v); end
+        for (k, v) in _sorted_pairs(metadata_general)
+            add_row!(rows, "Metadata", "General", k, v)
+        end
 
         config = manager.active_config
-        if hasproperty(config, :source_files) && !isempty(config.source_files)
-            bundled_names = String[]
-            for (i, src_path) in enumerate(config.source_files)
+        if !isnothing(config) && !isempty(config.sources)
+            bundled_names, origins = String[], String[]
+            for (i, src_path) in enumerate(config.sources)
                 if isfile(src_path)
-                    bundled_name = "$(base_filename)_source_$i.jl"
-                    dst_path = joinpath(save_dir, bundled_name)
-                    
-                    if abspath(src_path) != abspath(dst_path)
-                        cp(src_path, dst_path, force=true)
-                    else
-                        @info "Source file already exists at destination, skipping copy."
-                    end
+                    bundled_name = "$(basename(base_filename))_source_$i.jl"
+                    dst_path = joinpath(csv_dir, bundled_name)
+                    mkpath(csv_dir)
+                    abspath(src_path) == abspath(dst_path) || cp(src_path, dst_path; force = true)
                     push!(bundled_names, bundled_name)
+                    push!(origins, abspath(src_path))
                 else
                     @warn "Source file not found and skipped: $src_path"
                 end
             end
-            
             if !isempty(bundled_names)
-                add_row("Metadata", "General", "bundled_sources", bundled_names)
+                add_row!(rows, "Metadata", "General", "bundled_sources", bundled_names)
+                add_row!(rows, "Metadata", "General", "source_origins", origins)
             end
         end
-        
-        # --- NEW CATEGORY: Git (Scope = Repo Name) ---
+
+        # --- 2. Git (Scope = Repo Name) & Julia (Scope = Main Project or Local Sub-Package) ---
         git_infos = get_all_git_infos(pwd())
-        for (repo_name, info) in git_infos
-            for (k, v) in info; add_row("Git", repo_name, k, v); end
+        for (repo_name, info) in _sorted_pairs(git_infos)
+            for (k, v) in _sorted_pairs(info); add_row!(rows, "Git", repo_name, k, v); end
+        end
+        for (scope, info) in _sorted_pairs(get_julia_info(collect(keys(git_infos))))
+            for (k, v) in _sorted_pairs(info); add_row!(rows, "Julia", scope, k, v); end
         end
 
-        # --- NEW CATEGORY: Julia (Scope = Main Project or Local Sub-Package) ---
-        repo_names = collect(keys(git_infos))
-        julia_infos = get_julia_info(repo_names)
-        for (scope, info) in julia_infos
-            for (k, v) in info; add_row("Julia", scope, k, v); end
+        # --- 3. Scene & UI ---
+        _add_scene_rows!(rows)
+        _add_ui_rows!(rows)
+
+        # --- 4. Simulation & Config ---
+        isnothing(config) || _add_simulation_rows!(rows, config)
+        add_row!(rows, "Config", "Dimensions", "allowed_dims", manager.allowed_dims)
+        add_row!(rows, "Config", "Dimensions", "max_params", manager.max_params)
+        for (dim, res) in _sorted_pairs(manager.state[:Resolution_Base])
+            add_row!(rows, "Config", "Resolution_Base", dim, res)
+        end
+        for (dim, res) in _sorted_pairs(manager.state[:Resolution_Ref])
+            add_row!(rows, "Config", "Resolution_Ref", dim, res)
         end
 
-        # --- 2. CATEGORY: Scene ---
-        plot_opts = extract_plot_options()
-        for (k, v) in plot_opts
-            if k in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
-                add_row("Scene", "Plot", frontend_key(k), v)
-            else
-                add_row("Scene", "Plot", string(k), v) # Preserve exact parameter names
-            end
-        end
-        
-        layout_opts = extract_layout_options()
-        for (k, v) in layout_opts
-            add_row("Scene", "Layout", frontend_key(k), v)
-        end
-        
-        cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
-        for (k, v) in cam_opts
-            add_row("Scene", "Camera", string(k), v)
-        end
-
-        if haskey(manager.maps, :Labels)
-            for (k, v) in manager.maps[:Labels]
-                # Skip saving redundant default labels to keep the CSV clean
-                if v == string(k)
-                    continue
-                end
-                
-                # Save the raw backend key as the parameter, and the user's label as the value
-                add_row("Scene", "Labels", string(k), v)
-            end
-        end
-
-        # --- 3. CATEGORY: UI ---
-        for (scope, dict) in manager.ui
-            f_scope = frontend_key(scope)
-            for (k, v) in dict
-                add_row("UI", f_scope, frontend_key(k), v)
-            end
-        end
-
-        # --- 4. CATEGORY: Simulation & Config ---
-        config = manager.active_config
-
-        for (k, v) in config.shared_params
-            add_row("Simulation", "Shared", string(k), v)
-        end
-        for m_name in manager.methods[]
-            m_sym = Symbol(m_name)
-            if haskey(config.methods_dict, m_sym)
-                for (k, v) in config.methods_dict[m_sym]
-                    add_row("Simulation", m_name, string(k), v)
-                end
-            end
-        end
-
-        for (k, v) in config.varied_params
-            add_row("Config", "Parameters", string(k), v)
-        end
-        
-        # Save function names
-        add_row("Simulation", "Config", "reference_func", isnothing(config.reference_name) ? "none" : string(config.reference_name))
-        add_row("Simulation", "Config", "post_process_func", isnothing(config.post_process_name) ? "none" : string(config.post_process_name))
-        add_row("Simulation", "Config", "active_methods", manager.methods[])
-
-        # Dimensions Scope
-        add_row("Config", "Dimensions", "allowed_dims", manager.allowed_dims)
-        add_row("Config", "Dimensions", "max_params", manager.max_params)
-
-        # Dynamic Resolutions
-        for (dim, res) in manager.state[:Resolution_Base]
-            add_row("Config", "Resolution_Base", string(dim), res)
-        end
-        for (dim, res) in manager.state[:Resolution_Ref]
-            add_row("Config", "Resolution_Ref", string(dim), res)
-        end
-
-        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        _write_rows(csv_filename, rows)
         @info "Metadata and Parameters saved to $csv_filename"
         return true
     catch e
@@ -576,71 +640,22 @@ function save_params_to_csv(
 end
 
 """
-    save_preset_to_csv(preset_name::Symbol, save_dir::String)
+    save_preset_to_csv(preset_name::Symbol, save_dir::AbstractString)
 
-A lightweight serialization pipeline that exclusively extracts visual settings (Layout, Camera, Legend, UI Theme) without saving internal PDE physics parameters. 
-Used to generate reusable aesthetic templates.
+A lightweight serialization pipeline that exclusively writes the visual state (scene, camera, labels, exploration
+and UI styles) without any simulation parameters. Used to generate reusable aesthetic templates; see `save_plot_preset`.
 """
-function save_preset_to_csv(preset_name::Symbol, save_dir::String)
+function save_preset_to_csv(preset_name::Symbol, save_dir::AbstractString)
     csv_filename = joinpath(save_dir, string(preset_name) * ".csv")
-    
+
     try
-        cats, scopes, params, vals = String[], String[], String[], String[]
-
-        function add_row(cat, scope, p, v)
-            push!(cats, string(cat))
-            push!(scopes, string(scope))
-            push!(params, string(p))
-            push!(vals, val2str(to_value(v)))
-        end
-
-        # --- 1. PRESET METADATA ---
+        rows = _CSVRows()
         desc = get(manager.maps[:Presets], preset_name, "User custom preset")
-        add_row("Metadata", "Preset", "description", desc)
-
-        # --- 2. SCENE ---
-        plot_opts = extract_plot_options()
-        for (k, v) in plot_opts
-            if k in (:x_axis, :y_axis, :z_axis, :u_axis, :c)
-                add_row("Scene", "Plot", frontend_key(k), v)
-            else
-                add_row("Scene", "Plot", string(k), v) 
-            end
-        end
-        
-        layout_opts = extract_layout_options()
-        for (k, v) in layout_opts
-            add_row("Scene", "Layout", frontend_key(k), v)
-        end
-        
-        cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
-        for (k, v) in cam_opts
-            add_row("Scene", "Camera", string(k), v)
-        end
-
-        if haskey(manager.maps, :Labels)
-            for (k, v) in manager.maps[:Labels]
-                if v == string(k)
-                    continue
-                end
-                
-                add_row("Scene", "Labels", string(k), v)
-            end
-        end
-        
-        exp_opts = extract_exploration_options()
-        for (k, v) in exp_opts
-            add_row("Scene", "Exploration", frontend_key(k), v)
-        end
-        # --- 3. UI ---
-        for (scope, dict) in manager.ui
-            f_scope = frontend_key(scope)
-            for (k, v) in dict
-                add_row("UI", f_scope, frontend_key(k), v)
-            end
-        end
-
-        CSV.write(csv_filename, DataFrame(Category=cats, Scope=scopes, Parameter=params, Value=vals))
+        add_row!(rows, "Metadata", "Preset", "description", desc)
+        add_row!(rows, "Metadata", "Preset", "type", "visual")
+        _add_scene_rows!(rows)
+        _add_ui_rows!(rows)
+        _write_rows(csv_filename, rows)
         @info "Preset saved to $csv_filename"
         return true
     catch e

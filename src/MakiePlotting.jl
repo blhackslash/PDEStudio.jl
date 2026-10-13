@@ -16,13 +16,16 @@ Dynamically analyzes a multi-component mathematical tensor and returns the numbe
 Safely handles empty arrays and deeply nested vector-of-vector structures inherent to Lagrangian particle tracks.
 """
 function _get_component_num_plots(::Val{:eulerian}, target_tensor)
+    target_tensor isa SVector && return length(target_tensor)  # scalar statistic
     isempty(target_tensor) && return 1
     first_elem = first(target_tensor)
     return (first_elem isa AbstractArray || first_elem isa Tuple) ? length(first_elem) : 1
 end
 
 function _get_component_num_plots(::Val{:lagrangian}, target_tensor)
-    if target_tensor isa AbstractVector && eltype(target_tensor) <: AbstractVector
+    if target_tensor isa SVector
+        return length(target_tensor)
+    elseif target_tensor isa AbstractVector && eltype(target_tensor) <: AbstractVector && !(eltype(target_tensor) <: SVector)
         # Drill down: Timestep 1 -> Particle 1 -> SVector length
         return (isempty(target_tensor) || isempty(target_tensor[1])) ? 1 : length(target_tensor[1][1])
     elseif target_tensor isa AbstractVector
@@ -76,113 +79,133 @@ end
 # ==============================================================================
 
 """
-    set_sim_config!(config::SimulationConfig)
+    set_sim_config!(config::SimulationConfig; snapshot = true)
 
-The primary injection point for connecting a `PDEStudioCore` physics configuration to the `PDEStudio` interactive UI. 
+The primary injection point for connecting a `PDEStudioCore` physics configuration to the `PDEStudio` interactive UI.
 
-This function unpacks the `SimulationConfig`, maps the dynamic parameter sweeps to the available UI sliders, builds the backend-to-frontend symbolic translation dictionaries, and triggers a full layout regeneration to reflect the new physics.
+This function unpacks the `SimulationConfig`, maps the dynamic parameter sweeps to the available UI sliders, builds the backend-to-frontend symbolic translation dictionaries, and flags the simulation for a (re)run.
+With `snapshot = true` (the default) a copy of `config` is kept as the baseline that *Reset Simulation* (see [`reset_sim_config!`](@ref)) returns to.
 """
-function set_sim_config!(config::SimulationConfig)
+function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     manager.active_config = config
-    manager.flags[:Simulation][] = true 
-    
+    delete!(manager.state, :CSV_Cache)  # a staged (structural) CSV is superseded by this configuration
+    haskey(manager.flags, :Simulation) && (manager.flags[:Simulation][] = true)
+
     if haskey(manager.maps, :Labels)
-        for m_sym in keys(config.methods_dict)
+        for m_sym in keys(config.methods)
             if m_sym !== :shared && !haskey(manager.maps[:Labels], m_sym)
-                manager.maps[:Labels][m_sym] = is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym)
+                set_label!(m_sym, is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym))
             end
         end
     end
-    
-    # Use active_methods
-    active_m = isempty(config.active_methods) ? filter(k -> k !== :shared, collect(keys(config.methods_dict))) : filter(k -> k !== :shared, copy(config.active_methods))
-    
-    # Ensure the config is updated if it was empty
-    config.active_methods = active_m
+
+    # Without explicit defaults, every method of the configuration is active (references first, then by name).
+    active_m = sort_methods_robust(isempty(config.defaults) ? collect(keys(config.methods)) : unique(config.defaults))
+    filter!(k -> k !== :shared, active_m)
+    config.defaults = active_m
+    snapshot && (manager.state[:Base_Config] = deepcopy(config))
     manager.methods[] = copy(active_m)
 
     # Build UI mappings immediately so CSV loading and layout triggers can use them
-    real_params = Symbol.(sort(collect(keys(config.varied_params))))
-    param_map = Dict{Symbol, Symbol}()
-    reverse_map = Dict{Symbol, Symbol}()
-    
-    i = 1
-    while haskey(manager.widgets, Symbol("param_$(i)_label"))
-        p_key = Symbol("param_$i")
-        lbl_obs = manager.widgets[Symbol("param_$(i)_label")]
-        
-        if i <= length(real_params)
-            real_sym = real_params[i]
-            param_map[p_key] = real_sym
-            reverse_map[real_sym] = p_key
-            
-            lbl_obs[] = frontend_key(real_sym) * ":"  
-        else
-            lbl_obs[] = "Unused:"
-            if haskey(manager.widgets, p_key)
-                manager.widgets[p_key].range[] = [0.0] 
-            end
-        end
-        i += 1
-    end
-    
-    for base_sym in get_base_variables()
-        base_lbl_key = Symbol("$(base_sym)_label")
-        if haskey(manager.widgets, base_lbl_key)
-            manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":"
-        end
-    end
-    
-    manager.maps[:Param] = param_map
-    manager.maps[:Reverse] = reverse_map
-    manager.plot_vars = [real_params; get_base_variables()]
+    _map_parameters_to_sliders!(config)
 
     if haskey(manager.widgets, :editor_cat)
         notify(manager.widgets[:editor_cat].selection)
     end
-    
+
     # Force the UI menu to redraw itself with the newly loaded config
-    notify(manager.state[:Is_Activate_Mode])
+    haskey(manager.state, :Is_Activate_Mode) && notify(manager.state[:Is_Activate_Mode])
+    return config
 end
 
 """
-    set_sim_config!(csv_name::String)
+    _map_parameters_to_sliders!(config::SimulationConfig)
 
-A convenience wrapper that searches local standard directories (e.g., `figures`, `animations`, `Experiments`) for a given CSV filename. If found, it parses the file and applies the configuration via `load_and_apply_csv!`.
+Binds the swept parameters of `config` (sorted by name) to the parameter sliders `param_1, param_2, …`,
+updates the slider labels and rebuilds `manager.plot_vars`. Parameters without a free slider keep
+their first value (a warning suggests `set_max_params!`).
 """
-function set_sim_config!(csv_name::String)
-    filename = endswith(lowercase(csv_name), ".csv") ? csv_name : csv_name * ".csv"
-    
+function _map_parameters_to_sliders!(config::SimulationConfig)
+    real_params = sort!(collect(keys(config.varied)))
+    if length(real_params) > manager.max_params
+        @warn "The configuration sweeps $(length(real_params)) parameters, but the studio has only $(manager.max_params) parameter sliders. " *
+              "Call `set_max_params!($(length(real_params)))` before `launch_plotter()`; parameters without a slider stay at their first value."
+    end
+
+    param_map = Dict{Symbol, Symbol}()
+    reverse_map = Dict{Symbol, Symbol}()
+    for i in 1:manager.max_params
+        p_key = Symbol("param_$i")
+        lbl_obs = get(manager.widgets, Symbol("param_$(i)_label"), nothing)
+        if i <= length(real_params)
+            param_map[p_key] = real_params[i]
+            reverse_map[real_params[i]] = p_key
+            isnothing(lbl_obs) || (lbl_obs[] = frontend_key(real_params[i]) * ":")
+        else
+            isnothing(lbl_obs) || (lbl_obs[] = "Unused:")
+            haskey(manager.widgets, p_key) && (manager.widgets[p_key].range[] = [0.0])
+        end
+    end
+
+    for base_sym in get_base_variables()
+        base_lbl_key = Symbol("$(base_sym)_label")
+        haskey(manager.widgets, base_lbl_key) && (manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":")
+    end
+
+    manager.maps[:Param] = param_map
+    manager.maps[:Reverse] = reverse_map
+    manager.plot_vars = Symbol[real_params; get_base_variables()]
+    return nothing
+end
+
+"""
+    find_config_csv(name::AbstractString)
+
+Locates a configuration CSV by file name: an existing path is returned as is; otherwise the working directory,
+`<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (one level of subfolders each) are searched.
+Returns the path or `nothing`.
+"""
+function find_config_csv(name::AbstractString)
+    candidate = strip(name)
+    isfile(candidate) && return String(candidate)
+    filename = endswith(lowercase(candidate), ".csv") ? String(candidate) : candidate * ".csv"
+    isfile(filename) && return filename
+
     save_root = get_save_path()
-    sim_root = _SIM_ROOT_PATH[]
     search_dirs = [
+        pwd(),
         joinpath(save_root, "figures"),
         joinpath(save_root, "animations"),
-        joinpath(sim_root, "Experiments")
+        preset_dir(),
+        sim_preset_dir(),
+        joinpath(pwd(), "Experiments"),
     ]
-    
-    filepath = ""
     for dir in search_dirs
-        if isdir(dir)
-            test_path = joinpath(dir, filename)
-            if isfile(test_path); filepath = test_path; break; end
-            
-            for subdir in readdir(dir; join=true)
-                if isdir(subdir)
-                    test_path = joinpath(subdir, filename)
-                    if isfile(test_path); filepath = test_path; break; end
-                end
-            end
+        isdir(dir) || continue
+        test_path = joinpath(dir, filename)
+        isfile(test_path) && return test_path
+        for subdir in readdir(dir; join = true)
+            isdir(subdir) || continue
+            test_path = joinpath(subdir, filename)
+            isfile(test_path) && return test_path
         end
-        if !isempty(filepath); break; end
     end
-    
-    if isempty(filepath)
-        @warn "CSV file '$filename' not found."
-        return
+    return nothing
+end
+
+"""
+    set_sim_config!(csv_name::AbstractString)
+
+A convenience wrapper that locates a CSV (a path, or a file name searched for with `find_config_csv`) and applies it via `load_and_apply_csv!`.
+Returns `true` if the file changes structural UI limits (the change is staged until *Run Simulation*), `false` otherwise, and `nothing` if no file was found.
+"""
+function set_sim_config!(csv_name::AbstractString)
+    filepath = find_config_csv(csv_name)
+    if isnothing(filepath)
+        @warn "CSV file '$csv_name' not found."
+        return nothing
     end
-    
-    load_and_apply_csv!(filepath)
+    return load_and_apply_csv!(filepath)
 end
 
 """
@@ -206,6 +229,14 @@ function reset_plotter!()
     manager.ui_state[:is_open] = false
     manager.ui_state[:master_fig] = nothing
     manager.state[:Camera_Locked][] = false
+
+    # Stop a running animation (its timer would keep driving the sliders of the closed window)
+    if haskey(manager.state, :Animation_Timer)
+        timer = manager.state[:Animation_Timer][]
+        isnothing(timer) || close(timer)
+        manager.state[:Animation_Timer][] = nothing
+    end
+    haskey(manager.state, :Is_Animating) && (manager.state[:Is_Animating][] = false)
     
     for (k, obs) in manager.triggers
         if k != :Simulation
@@ -223,8 +254,12 @@ function reset_plotter!()
         end
     end
     
+    for k in collect(keys(manager.listeners))
+        k === :Simulation || delete!(manager.listeners, k)  # switched off above
+    end
+    empty!(manager.widgets)  # widgets of the closed window; the caches keep their state
     manager.state[:plot_window_initialized][] = false
-    
+
     @info "Plotter state completely cleared!"
 end
 
@@ -243,6 +278,8 @@ function launch_plotter()
     plot_layout = master_fig[1, 2] = GridLayout() 
     
     create_controls(ctrl_layout)
+    # A configuration bound before launching needs its slider labels and mapping on the new widgets.
+    isnothing(manager.active_config) || _map_parameters_to_sliders!(manager.active_config)
     setup_ui_interactions!(master_fig, plot_layout, Val(manager.mode[]))
 
     manager.ui_state[:is_open] = true
@@ -400,7 +437,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
             w_key = haskey(rev_map, k) ? rev_map[k] : k 
             if haskey(manager.widgets, w_key)
                 widget = manager.widgets[w_key]
-                if widget isa Makie.Slider
+                # Disabled sliders (range [0.0]: axis or compare target) keep their last real position
+                if widget isa Makie.Slider && length(widget.range[]) > 1
                     val = widget.value[]
                     manager.state[:Slider_Cache][w_key] = Float64(val)
                     manager.state[:Plot_Cache][k] = val

@@ -7,9 +7,17 @@ using Dates, CSV, DataFrames, Pkg, LibGit2, Printf, Statistics, StaticArrays
 
 @reexport using PDEStudioCore
 
-export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
+# PDEStudio needs the refactored backend (cleaned SimulationConfig fields, StatsView, safe str2val).
+if !(isdefined(PDEStudioCore, :StatsView) && hasfield(SimulationConfig, :varied))
+    error("PDEStudio requires the new PDEStudioCore (SimulationConfig with `varied`, `defaults`, …), but an older " *
+          "version is loaded from $(pathof(PDEStudioCore)). Use the new version, e.g. `pkg> dev /path/to/PDEStudioCore.jl`.")
+end
 
-const DUMMY_CONFIG = SimulationConfig(nothing, nothing, ParamDict(), MethodDict(), Symbol[], VariedDict(), String[])
+export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
+export set_sim_preset!, save_sim_preset, save_plot_preset, reset_sim_config!
+
+# Placeholder text of the ":create_new" entry in the preset editors.
+const DEFAULT_PRESET_DESC = "Type a description here, a name in the filename box, then click Save."
 
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---
@@ -91,8 +99,8 @@ mutable struct PlotManager
     methods::Observable{Vector{Symbol}}
     plot_vars::Vector{Symbol}
     caches::Dict{Int, Dict{Symbol, AbstractPlotCache}}
-    
-    active_config::SimulationConfig
+
+    active_config::Union{Nothing, SimulationConfig}   # `nothing` until a configuration is bound
     plot_data::Observable{Dict{Symbol, AbstractPlotData}}
 
     mode::Observable{Symbol}
@@ -114,7 +122,7 @@ function PlotManager()
         Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}(),
         Observable(Symbol[]), Symbol[],
         Dict{Int, Dict{Symbol, AbstractPlotCache}}(),
-        DUMMY_CONFIG, Observable(Dict{Symbol, AbstractPlotData}()),
+        nothing, Observable(Dict{Symbol, AbstractPlotData}()),
         Observable{Symbol}(:eulerian),
         Dict{Symbol, Any}(:is_open => false, :master_fig => nothing),
         (:x, :y, :z, :t), 2,
@@ -142,7 +150,19 @@ function set_allowed_dims!(dims::Tuple{Vararg{Symbol}})
 
     reset_plotter!()
     manager.allowed_dims = dims
+    _sync_resolution_dims!()
     @info "Plotter UI configured for dimensions: $dims"
+end
+
+# Makes sure every allowed dimension has a display resolution (the time axis gets coarser defaults).
+function _sync_resolution_dims!()
+    haskey(manager.state, :Resolution_Base) || (manager.state[:Resolution_Base] = Dict{Symbol, Int}())
+    haskey(manager.state, :Resolution_Ref) || (manager.state[:Resolution_Ref] = Dict{Symbol, Int}())
+    for d in manager.allowed_dims
+        get!(manager.state[:Resolution_Base], d, d === :t ? 50 : 200)
+        get!(manager.state[:Resolution_Ref], d, d === :t ? 100 : 400)
+    end
+    return nothing
 end
 
 """
@@ -233,6 +253,7 @@ include("Controls.jl")
 include("UILogic.jl")
 include("Render.jl")
 include("ConfigIO.jl")
+include("Presets.jl")
 
 """
     get_base_layout_options()
@@ -259,9 +280,12 @@ end
 """
     set_mode!(mode::Symbol)
 
-Switches the fundamental operation mode of the UI (e.g., `:eulerian` or `:lagrangian`). This alters which primitive engines are loaded and triggers a complete state purge.
+Switches the fundamental operation mode of the UI (e.g., `:eulerian` or `:lagrangian`). This alters which primitive engines are loaded and resets the UI state. The bound `SimulationConfig` is kept (call `launch_plotter()` again and press *Run Simulation*).
 """
-set_mode!(mode::Symbol) = (manager.mode[] = mode)
+function set_mode!(mode::Symbol)
+    mode in (:eulerian, :lagrangian) || throw(ArgumentError("mode must be :eulerian or :lagrangian, got :$mode"))
+    manager.mode[] = mode
+end
 
 """
     force_simulation()
@@ -277,14 +301,15 @@ The primary asynchronous worker mapped to the `:Simulation` lock.
 
 It safely checks the validity of the current `SimulationConfig`, executes the headless numerical loops via `PDEStudioCore.run_all_simulations`, caches the updated multi-dimensional arrays, and hands the payload over to the `:Layout` lock to begin mapping the UI.
 """
-function simulation_trigger() 
+function simulation_trigger()
+    ran = false
     @with_lock :Simulation begin
-        
-        curr_config = manager.active_config
-        (isnothing(curr_config) || curr_config == DUMMY_CONFIG) && return
 
-        active_methods = curr_config.active_methods
-        
+        curr_config = manager.active_config
+        isnothing(curr_config) && return
+
+        active_methods = curr_config.defaults
+
         if isempty(active_methods)
             @warn "No methods selected. Please activate at least one method to run."
             return
@@ -292,11 +317,11 @@ function simulation_trigger()
 
         @info "Running dynamic calculations directly from active config..."
         run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
-        
+
         if sort(manager.methods[]) != sort(active_methods)
             manager.methods[] = copy(active_methods)
         end
-        
+
         @info "Running Simulation and Mapping UI..."
 
         manager.locks[:Layout] = true
@@ -307,8 +332,11 @@ function simulation_trigger()
             manager.locks[:Layout] = false
             manager.flags[:Simulation][] = false
         end
+        ran = true
     end
-    manager.triggers[:Data][] += 1
+    # Only continue the cascade if a simulation actually ran (not when blocked or without a config).
+    ran && (manager.triggers[:Data][] += 1)
+    return nothing
 end
 
 """
@@ -335,7 +363,7 @@ function reset_manager!()
     empty!(manager.listeners)
     
     manager.methods.val = Symbol[]
-    manager.active_config = DUMMY_CONFIG
+    manager.active_config = nothing
     manager.plot_data.val = Dict{Symbol, AbstractPlotData}()
     
     core_keys = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
@@ -370,43 +398,36 @@ function reset_manager!()
 
     manager.state[:Resolution_Base] = Dict{Symbol, Int}()
     manager.state[:Resolution_Ref]  = Dict{Symbol, Int}()
-    
-    for d in manager.allowed_dims
-        manager.state[:Resolution_Base][d] = d === :t ? 50 : 200
-        manager.state[:Resolution_Ref][d]  = d === :t ? 100 : 400
-    end
+    _sync_resolution_dims!()
 
     manager.maps[:Labels] = Dict{Symbol, String}()
-    manager.maps[:Presets] = deepcopy(PRESET_DESCRIPTIONS)
+    manager.maps[:Presets] = Dict{Symbol, String}(PRESET_DESCRIPTIONS)
+    manager.maps[:Sim_Presets] = Dict{Symbol, String}()
 
     # Set plot defaults
     set_plot_preset!()
 
-    # Initialize the default creation text
-    manager.maps[:Presets][:create_new] = "Type a description here, type a filename below, and click Save Defs."
-    
-    preset_dir = joinpath(get_save_path(), "Presets")
-    if isdir(preset_dir)
-        for file in readdir(preset_dir)
-            if endswith(file, ".csv")
-                sym = Symbol(replace(file, ".csv" => ""))
-                if !haskey(manager.maps[:Presets], sym)
-                    manager.maps[:Presets][sym] = "Custom disk preset" 
-                end
-            end
-        end
-    end
+    # Initialize the default creation text and register the presets found on disk
+    manager.maps[:Presets][:create_new] = DEFAULT_PRESET_DESC
+    manager.maps[:Sim_Presets][:create_new] = DEFAULT_PRESET_DESC
+    refresh_preset_registries!()
+    return nothing
 end
 
 
 function __init__()
     on(manager.mode) do _
+        # Keep the bound simulation across a mode switch; everything else is rebuilt.
+        config = manager.active_config
+        base = get(manager.state, :Base_Config, nothing)
         reset_plotter!()
         reset_manager!()
+        if !isnothing(config)
+            set_sim_config!(config; snapshot = false)
+            isnothing(base) || (manager.state[:Base_Config] = base)
+        end
     end
     reset_manager!()
-    manager.active_config = DUMMY_CONFIG
-    
 end
 
 end

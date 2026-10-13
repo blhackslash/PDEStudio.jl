@@ -4,6 +4,7 @@ using WGLMakie
 using Test
 using StaticArrays
 import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS, plot_reference_lines!, plot_HUD!
+import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS
 
 # 1. Register the namespace so PDEStudioCore can dynamically resolve these functions
 PDEStudioCore.set_target_module!(@__MODULE__)
@@ -55,7 +56,7 @@ function advection_solver_1d(params::ParamDict)
         end
     end
     
-    return create_sim_data(x, u_num, t, params; time_dim=:t, x_dim=:x)
+    return create_sim_data(x, u_num, t, params; time_dim=:t, dims=:x)
 end
 
 function exact_advection(st::SVector{2, Float64})
@@ -114,6 +115,77 @@ function dummy_tuple_solver(params::ParamDict)
     return create_sim_data(x, u, t, params; time_dim=:t)
 end
 # ==============================================================================
+# --- HELPERS (no window needed) ---
+# ==============================================================================
+@testset "PDEStudio: Helpers" begin
+    @testset "Export formats" begin
+        @test PDEStudio._export_formats(["PNG", ".pdf", "mp4", "tiff"]) == ["png", "pdf"]
+        @test PDEStudio._export_formats("svg") == ["svg"]       # a single entry typed into the editor
+        @test PDEStudio._export_formats((:png, :png)) == ["png"]
+    end
+
+    @testset "Editor input parsing" begin
+        @test PDEStudio._parse_editor_input("1e3", "old text") == "1e3"      # text stays text
+        @test PDEStudio._parse_editor_input("\"quoted\"", "x") == "quoted"
+        @test PDEStudio._parse_editor_input("<empty>", "x") == ""
+        @test PDEStudio._parse_editor_input("1e3", 1.0) == 1000.0
+        @test PDEStudio._parse_editor_input("[:a, :b]", Symbol[]) == [:a, :b]
+        @test PDEStudio._parse_editor_input("println(\"hi\")", 1) isa AbstractString  # never evaluated
+        @test isnothing(PDEStudio._parse_editor_input("none", nothing))
+
+        # Sweeps: a single value sweeps one value; text sweeps keep unquoted items as text
+        @test PDEStudio._parse_sweep_input("[0.1, 0.2]", [0.5]) == [0.1, 0.2]
+        @test PDEStudio._parse_sweep_input("0.3", [0.5]) == [0.3]
+        @test PDEStudio._parse_sweep_input("[upwind, lax_friedrichs]", ["upwind"]) == ["upwind", "lax_friedrichs"]
+        @test PDEStudio._parse_sweep_input("1e3", ["a"]) == ["1e3"]
+        @test PDEStudio._parse_sweep_input("0.1:0.1:0.3", [0.5]) ≈ [0.1, 0.2, 0.3]
+    end
+
+    @testset "Sweeps & comparisons" begin
+        @test PDEStudio._is_numeric_sweep([0.1, 2])
+        @test !PDEStudio._is_numeric_sweep(["upwind", "lax_friedrichs"])
+        @test PDEStudio._param_index([0.1, 0.2, 0.5], 0.45) == 3
+        @test PDEStudio._param_index(["a", "b", "c"], 2.4) == 2
+        @test PDEStudio._param_index(["a", "b"], 7) == 2
+        @test PDEStudio._compare_picks(5) == 1:5
+        picks = PDEStudio._compare_picks(100)
+        @test length(picks) == MAX_COMPARE_PLOTS && first(picks) == 1 && last(picks) == 100
+        @test PDEStudio._preset_symbol(" My  Preset ") == :my_preset
+    end
+
+    @testset "Simulation CSV: patch semantics & text values" begin
+        base = SimulationConfig(
+            create_param_dict(:N => 20, :tag => "1e3", :sim_func_name => :advection_solver_1d),
+            create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                               :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs")),
+            [:upwind]; varied = create_varied_dict(:cfl => [0.2, 0.4]))
+
+        parsed = Dict("Simulation" => Dict("Shared" => Dict{String, Any}("N" => 80)))
+        patched = PDEStudio.csv_to_simulation_config(parsed; base = base)
+        @test patched.shared[:N] == 80
+        @test patched.shared[:sim_func_name] == :advection_solver_1d
+        @test patched.defaults == [:upwind]
+        @test patched.varied[:cfl] == [0.2, 0.4]
+        @test length(patched.methods) == 2
+        @test base.shared[:N] == 20                                  # the base is not modified
+
+        replaced = PDEStudio.csv_to_simulation_config(parsed)
+        @test replaced.shared == Dict(:N => 80) && isempty(replaced.methods)
+
+        # Text that looks like a number survives a write/read round trip
+        rows = PDEStudio._CSVRows()
+        PDEStudio._add_simulation_rows!(rows, base)
+        path = joinpath(mktempdir(), "sim.csv")
+        PDEStudio._write_rows(path, rows)
+        reread = PDEStudio.csv_to_simulation_config(PDEStudio.parse_csv_to_dict(path))
+        @test reread.shared[:tag] == "1e3"
+        @test reread.methods[:upwind][:scheme] == "upwind"
+        @test reread.defaults == [:upwind]
+        @test reread.varied[:cfl] == [0.2, 0.4]
+    end
+end
+
+# ==============================================================================
 # --- TEST SUITE ---
 # ==============================================================================
 @testset "PDEStudio: UI Rendering Integration" begin
@@ -131,9 +203,9 @@ end
     varied = create_varied_dict(:cfl => [0.2, 0.4, 0.5]) 
 
     config = SimulationConfig(
-        shared, methods, [ :upwind,:lax_friedrichs, :analytical_solution,];
-        varied_params = varied,
-        ref_func_name = :exact_advection_factory
+        shared, methods, [:upwind, :lax_friedrichs, :analytical_solution];
+        varied = varied,
+        reference = :exact_advection_factory
     )
     
     fig = launch_plotter()
@@ -201,7 +273,9 @@ end
                 click_button!(:layout_apply) 
                 
                 @test manager.state[:Active_Plot_Type] == style_sym
-                @test haskey(manager.caches[1][:upwind].primitives, style_sym)
+                # Single-method styles draw one (numerical) method, overlay styles all of them
+                drawn = [m for (m, c) in manager.caches[1] if haskey(c.primitives, style_sym)]
+                @test !isempty(drawn) && !(:analytical_solution in drawn && length(drawn) == 1)
             end
         end
     end
@@ -225,7 +299,7 @@ end
     
         compare_config = SimulationConfig(
             shared, methods, [:upwind, :lax_friedrichs];
-            varied_params = varied
+            varied = varied
         )
         
         set_sim_config!(compare_config)
@@ -295,6 +369,18 @@ end
         @test isfile(export_base * ".png")
         @test isfile(export_base * ".pdf")
         @test isfile(export_base * ".svg")
+
+        # A static extension in the filename exports exactly that format
+        manager.ui[:export][:save_formats] = ["png"]
+        manager.widgets[:export_text].stored_string[] = export_base * "_direct.svg"
+        click_button!(:export_button)
+        @test isfile(export_base * "_direct.svg")
+        @test !isfile(export_base * "_direct.png")
+
+        # An unknown "extension" is part of the name
+        manager.widgets[:export_text].stored_string[] = joinpath(export_dir, "run_dt0.5")
+        click_button!(:export_button)
+        @test isfile(joinpath(export_dir, "run_dt0.5.png"))
         
         # 4. Bind the time dimension to the animation target
         click_menu!(manager.widgets[:anim_target], :t)
@@ -359,6 +445,13 @@ end
         
         # Verify the simulation lock was properly processed and cleared
         @test manager.flags[:Simulation][] == false
+        @test manager.active_config.shared[:N] == 20
+        @test manager.active_config.defaults == [:upwind]
+
+        # Keys are written as raw backend names (they used to be display labels that did not always map back)
+        parsed = PDEStudio.parse_csv_to_dict(sim_csv_path)
+        @test haskey(parsed["UI"]["export"], "animation_FPS")
+        @test haskey(parsed["Simulation"]["Shared"], "sim_func_name")
 
         # 4. Save a custom Preset
         preset_name = "my_custom_preset"
@@ -376,13 +469,222 @@ end
         click_button!(:save_presets_button)
         
         # Verify the preset file was written to the specific Presets directory
-        preset_path = joinpath(get_save_path(), "Presets", preset_name * ".csv")
+        preset_path = joinpath(preset_dir(), preset_name * ".csv")
         @test isfile(preset_path)
         
         # Verify the description was parsed and saved to the backend maps
         sym_name = Symbol(preset_name)
         @test haskey(manager.maps[:Presets], sym_name)
         @test manager.maps[:Presets][sym_name] == "A rigorous test preset for the UI pipeline"
+    end
+
+    # =========================================================================
+    # --- VISUAL PRESETS: ROUND TRIP ---
+    # =========================================================================
+    @testset "Visual Presets: Round Trip" begin
+        # Uses the window and the configuration of the previous testset
+        manager.ui[:export][:animation_FPS] = 12
+        PDEStudio.set_label!(:component_1, "Density")
+        @test save_plot_preset("Round Trip"; description = "round trip test")
+        @test isfile(joinpath(preset_dir(), "round_trip.csv"))
+
+        manager.ui[:export][:animation_FPS] = 30
+        PDEStudio.set_label!(:component_1, "Other")
+        sim_before = deepcopy(manager.active_config.shared)
+        set_plot_preset!(:round_trip)
+        yield()
+        @test manager.ui[:export][:animation_FPS] == 12
+        @test PDEStudio.frontend_key(:component_1) == "Density"
+        @test manager.maps[:Presets][:round_trip] == "round trip test"
+        @test manager.active_config.shared == sim_before        # visual presets never touch the simulation
+    end
+
+    # =========================================================================
+    # --- SIMULATION PRESETS (API) ---
+    # =========================================================================
+    @testset "Simulation Presets (API)" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
+        set_sim_config!(SimulationConfig(shared, methods, [:upwind, :lax_friedrichs]))
+        click_button!(:run_button)
+        ui_before = deepcopy(manager.ui[:plot_style])
+
+        # 1. Save the simulation category only
+        @test save_sim_preset("Coarse"; description = "coarse grid")
+        coarse_path = joinpath(sim_preset_dir(), "coarse.csv")
+        @test isfile(coarse_path)
+        parsed = PDEStudio.parse_csv_to_dict(coarse_path)
+        @test haskey(parsed, "Simulation") && !haskey(parsed, "UI") && !haskey(parsed, "Scene")
+        @test manager.maps[:Sim_Presets][:coarse] == "coarse grid"
+
+        # 2. Change the simulation, then switch back with the preset (replace mode)
+        manager.active_config.shared[:N] = 40
+        manager.active_config.defaults = [:upwind]
+        cfg = set_sim_preset!(:coarse)
+        @test cfg === manager.active_config
+        @test cfg.shared[:N] == 20
+        @test cfg.defaults == [:lax_friedrichs, :upwind]
+        @test manager.flags[:Simulation][] == true
+        @test manager.ui[:plot_style] == ui_before               # simulation presets never touch the look
+
+        # 3. A hand-written preset only patches what it lists
+        write(joinpath(sim_preset_dir(), "hires.csv"),
+              "Category,Scope,Parameter,Value\nMetadata,Preset,description,Fine grid\nSimulation,Shared,N,80\n")
+        cfg = set_sim_preset!("hires")
+        @test cfg.shared[:N] == 80
+        @test cfg.shared[:cfl] == 0.5
+        @test cfg.defaults == [:lax_friedrichs, :upwind]
+        @test manager.maps[:Sim_Presets][:hires] == "Fine grid"
+
+        # 4. Reset to the configuration bound with set_sim_config!
+        reset_sim_config!()
+        @test manager.active_config.shared[:N] == 20
+        @test manager.active_config.defaults == [:lax_friedrichs, :upwind]
+
+        # 5. Run the preset
+        set_sim_preset!(:hires)
+        click_button!(:run_button)
+        @test manager.flags[:Simulation][] == false
+        @test isnothing(set_sim_preset!(:does_not_exist))
+    end
+
+    # =========================================================================
+    # --- SIMULATION PRESETS & EDITOR (UI) ---
+    # =========================================================================
+    @testset "Simulation Presets & Editor (UI)" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
+        set_sim_config!(SimulationConfig(shared, methods, [:upwind]; varied = create_varied_dict(:cfl => [0.2, 0.5])))
+        click_button!(:run_button)
+        config = manager.active_config
+        editor_text(s) = (manager.widgets[:editor_text].stored_string[] = s; yield())
+
+        # 1. The preset buttons follow the editor category
+        click_menu!(manager.widgets[:editor_cat], :simulation)
+        @test manager.widgets[:save_presets_button].label[] == "Save Sim Preset"
+        @test manager.widgets[:clear_presets_button].label[] == "Reset Simulation"
+        scopes = [o[2] for o in manager.widgets[:editor_scope].options[]]
+        @test all(in(scopes), [:presets, :shared, :sweep, :config, :upwind, :lax_friedrichs])
+
+        # 2. Shared parameters (numbers are parsed, the change flags a re-run)
+        click_menu!(manager.widgets[:editor_scope], :shared)
+        click_menu!(manager.widgets[:editor_key], :N)
+        editor_text("30")
+        @test config.shared[:N] == 30
+        @test manager.flags[:Simulation][] == true
+        editor_text("default")                                # back to the bound configuration
+        @test config.shared[:N] == 20
+
+        # 3. Text parameters stay text
+        click_menu!(manager.widgets[:editor_scope], :upwind)
+        click_menu!(manager.widgets[:editor_key], :scheme)
+        editor_text("1e3")
+        @test config.methods[:upwind][:scheme] == "1e3"
+        editor_text("upwind")
+        @test config.methods[:upwind][:scheme] == "upwind"
+
+        # 4. The sweep (a single value becomes a one-value sweep)
+        click_menu!(manager.widgets[:editor_scope], :sweep)
+        click_menu!(manager.widgets[:editor_key], :cfl)
+        editor_text("[0.2, 0.4, 0.5]")
+        @test config.varied[:cfl] == [0.2, 0.4, 0.5]
+        editor_text("0.3")
+        @test config.varied[:cfl] == [0.3]
+        editor_text("[0.2, 0.5]")
+
+        # 5. Active methods and functions
+        click_menu!(manager.widgets[:editor_scope], :config)
+        click_menu!(manager.widgets[:editor_key], :defaults)
+        editor_text("[:upwind, :lax_friedrichs]")
+        @test sort(config.defaults) == [:lax_friedrichs, :upwind]
+        click_menu!(manager.widgets[:editor_key], :reference)
+        editor_text(":exact_advection_factory")
+        @test config.reference === :exact_advection_factory
+        editor_text("none")
+        @test isnothing(config.reference)
+
+        # 6. Save a simulation preset from the UI (description typed into the editor)
+        click_menu!(manager.widgets[:editor_scope], :presets)
+        click_menu!(manager.widgets[:editor_key], :create_new)
+        editor_text("Both methods, three CFL numbers")
+        manager.widgets[:export_text].stored_string[] = "ui sim preset"
+        click_button!(:save_presets_button)
+        @test isfile(joinpath(sim_preset_dir(), "ui_sim_preset.csv"))
+        @test manager.maps[:Sim_Presets][:ui_sim_preset] == "Both methods, three CFL numbers"
+        @test manager.maps[:Sim_Presets][:create_new] == PDEStudio.DEFAULT_PRESET_DESC
+
+        # 7. Reset Simulation restores the bound configuration, Apply loads the preset again
+        click_button!(:clear_presets_button)
+        @test manager.active_config.defaults == [:upwind]
+        click_menu!(manager.widgets[:editor_scope], :presets)
+        click_menu!(manager.widgets[:editor_key], :ui_sim_preset)
+        @test manager.widgets[:editor_toggle].label[] == "Apply"
+        click_button!(:editor_toggle)
+        @test sort(manager.active_config.defaults) == [:lax_friedrichs, :upwind]
+        click_button!(:run_button)
+        @test manager.flags[:Simulation][] == false
+        @test sort(manager.methods[]) == [:lax_friedrichs, :upwind]
+
+        # 8. Outside the Simulation category the buttons act on visual presets again
+        click_menu!(manager.widgets[:editor_cat], :ui)
+        @test manager.widgets[:save_presets_button].label[] == "Save Presets"
+        @test manager.widgets[:clear_presets_button].label[] == "Clear Presets"
+    end
+
+    # =========================================================================
+    # --- COMPARE OVER TIME & NON-NUMERIC SWEEPS ---
+    # =========================================================================
+    @testset "Compare over Time & Non-numeric Sweeps" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+
+        # A swept key must exist in the parameters (here: shared) to be applied by the backend
+        shared = create_param_dict(:cfl => 0.5, :N => 40, :scheme => "upwind", :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:fd => create_param_dict())
+        varied = create_varied_dict(:scheme => ["upwind", "lax_friedrichs"])
+        set_sim_config!(SimulationConfig(shared, methods, [:fd]; varied = varied))
+        click_button!(:run_button)
+
+        click_menu!(manager.widgets[:base_plot], :lines)
+        click_menu!(manager.widgets[:plot_style], :lines_1d)
+        click_menu!(manager.widgets[:x_axis], :x)
+        click_menu!(manager.widgets[:y_axis], :none)
+        click_menu!(manager.widgets[:z_axis], :none)
+        click_button!(:layout_apply)
+
+        # The text-valued sweep gets an index slider that shows the swept value
+        @test manager.maps[:Reverse][:scheme] == :param_1
+        @test manager.widgets[:param_1].range[] == [1, 2]
+        @test PDEStudio._slider_value_text(:param_1, 2) == "lax_friedrichs"
+        set_close_to!(manager.widgets[:param_1], 2)
+        yield()
+        @test haskey(manager.caches[1][:fd].primitives, :lines_1d)
+
+        # Compare over the text-valued parameter: one subplot per value
+        click_menu!(manager.widgets[:compare_target], :scheme)
+        click_button!(:layout_apply)
+        @test length(manager.caches) == 2
+
+        # Compare over time: at most MAX_COMPARE_PLOTS evenly spaced time steps
+        click_menu!(manager.widgets[:compare_target], :time)
+        click_button!(:layout_apply)
+        @test 2 <= length(manager.caches) <= MAX_COMPARE_PLOTS
+        @test first(manager.state[:Compare_State]) === :time
+
+        click_menu!(manager.widgets[:compare_target], :none)
+        click_button!(:layout_apply)
+        @test length(manager.caches) == 1
     end
 
     # =========================================================================
@@ -551,7 +853,7 @@ end
         
         config = SimulationConfig(
             shared, methods, [:upwind];
-            varied_params = varied
+            varied = varied
         )
         
         run_all_simulations(config; force_overwrite=true)

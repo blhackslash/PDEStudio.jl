@@ -1,5 +1,4 @@
-const _RANK_0 = (:none,:shared,:presets,:create_new)
-const _RANK_1 = ("analytic", "reference", "exact", "baseline", "true")
+const _RANK_0 = (:none, :shared, :presets, :sweep, :config, :create_new)
 
 """
     menu_option_rank(opt::Tuple)
@@ -20,9 +19,8 @@ function menu_option_rank(opt)
         return (0, label_str)
     end
     
-    # Rank 1: Priority references
-    lm = lowercase(label_str)
-    if any(k -> occursin(k, lm), _RANK_1)
+    # Rank 1: Priority references (same rule as the backend, e.g. "Analytic", "Exact Solution")
+    if is_reference_method(label_str)
         return (1, label_str)
     end
     
@@ -93,6 +91,18 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
     end
 end
 
+# Selects the option with the given value (re-notifying if it is already selected). Returns `false` if there is none.
+function _select_menu_value!(menu_widget, value)
+    idx = findfirst(o -> o isa Tuple && length(o) > 1 && isequal(o[2], value), menu_widget.options[])
+    isnothing(idx) && return false
+    if menu_widget.i_selected[] == idx
+        notify(menu_widget.selection)
+    else
+        menu_widget.i_selected[] = idx
+    end
+    return true
+end
+
 """
     apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
 
@@ -119,19 +129,7 @@ function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict
             
             valid_vals = (!isempty(opts) && opts[1] isa Tuple) ? [o[2] for o in opts] : opts
             
-            # Match 1: Direct literal match
             idx = findfirst(v -> string(v) == string(val), valid_vals)
-            
-            # Match 2: Translate UI strings (e.g. "Contour Filled") back to Symbols (e.g. :contour_f)
-            if isnothing(idx) && val isa AbstractString
-                bk_val = backend_key(val)
-                idx = findfirst(v -> v == bk_val, valid_vals)
-            end
-            
-            # Match 3: Fallback startswith
-            if isnothing(idx) && val isa AbstractString
-                idx = findfirst(v -> startswith(string(v), val), valid_vals)
-            end
             
             if !isnothing(idx)
                 widget.i_selected[] = idx
@@ -190,7 +188,7 @@ function apply_slider_options!(slider_options::Dict)
         
         if haskey(manager.widgets, w_key)
             widget = manager.widgets[w_key]
-            if widget isa Makie.Slider
+            if widget isa Makie.Slider && desired_val isa Real
                 # Safely cache the desired CSV value
                 manager.state[:Slider_Cache][w_key] = Float64(desired_val)
                 manager.state[:Plot_Cache][key] = desired_val
@@ -350,8 +348,11 @@ end
 """
     _setup_run_and_drop_interactions!(master_fig::Figure)
 
-Connects the drag-and-drop file listener to the main Makie `Figure` window. 
-Also handles the staging logic: if a loaded CSV contains structural changes (like an increase in allowed dimensions), it temporarily stores the configuration, turns the execution buttons orange, and prepares to completely reboot the UI via `launch_plotter()` upon the next "Run" click.
+Connects the drag-and-drop file listener and the *Load CSV* button (a path, or a file name searched for in the usual
+folders) to the CSV loader. 
+Also handles the staging logic: if a loaded CSV contains structural changes (like an increase in allowed dimensions or
+parameter sliders), it temporarily stores the configuration, turns the execution buttons orange, and completely
+rebuilds the UI via `launch_plotter()` upon the next "Run" click.
 """
 function _setup_run_and_drop_interactions!(master_fig::Figure)
     load_btn = manager.widgets[:load_config_button]
@@ -359,14 +360,23 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     path_box = manager.widgets[:export_text]
 
     function _handle_load(path)
-        # Load the CSV (which theoretically modifies manager.allowed_dims / max_params)
-        if load_and_apply_csv!(path)
+        local structural
+        try
+            structural = load_and_apply_csv!(path)
+        catch e
+            @error "Failed to load $path" exception = (e, catch_backtrace())
+            load_btn.label[] = "Loading failed (see log). Load CSV from Path Below / Drag & Drop Here"
+            load_btn.buttoncolor[] = :lightcoral
+            return
+        end
+        if structural
             load_btn.buttoncolor[] = :orange
             run_btn.buttoncolor[] = :orange
             load_btn.label[] = "Structural limits changed! \nClicking 'Run Simulation' will completely reset the backend. \nSave current settings as a preset if you want to keep them."
         else
             load_btn.label[] = "CSV successfully loaded! Press 'Run Simulation' to apply it."
             load_btn.buttoncolor[] = :lightgreen
+            notify(manager.flags[:Simulation])  # recolours the Run button (it may still be orange from a staged file)
         end
     end
 
@@ -380,19 +390,17 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
-        path = strip(path_box.stored_string[])
+        path = strip(something(path_box.stored_string[], ""))
         if isempty(path)
             @warn "Please enter a path or filename in the textbox below first."
             return
         end
-        
-        if !isfile(path)
-            set_sim_config!(path)
-            run_btn.buttoncolor[] = :lightgreen
-            run_btn.label[] = "Run Simulation"
-        else
-            _handle_load(path)
+        found = find_config_csv(path)
+        if isnothing(found)
+            @warn "CSV file '$path' not found."
+            return
         end
+        _handle_load(found)
     end
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
@@ -401,24 +409,22 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
             @info "Structural rebuild initiated. Relaunching UI..."
             
             # 1. Extract the staging area
-            new_dims, new_max, parsed = manager.state[:CSV_Cache]
+            staged = pop!(manager.state, :CSV_Cache)
             
             # 2. Apply structural limits globally
-            manager.allowed_dims = new_dims
-            manager.max_params = new_max
+            manager.allowed_dims = staged.dims
+            manager.max_params = staged.max_params
+            _sync_resolution_dims!()
             
-            # 3. Physically relaunch UI (and display it safely if using GLMakie)
+            # 3. Physically relaunch UI (and display it safely if using GLMakie),
+            #    then apply the cached configuration to the NEW widgets and run it.
             Base.invokelatest() do
                 fig = launch_plotter()
                 display(fig)
-                
-                # 4. Apply the fully cached configuration directly to the NEW widgets
-                load_and_apply_csv!(parsed)
+                load_and_apply_csv!(staged.parsed, staged.raw; config = staged.config, sources = staged.sources)
                 force_simulation()
             end
-            
-            # 5. Clean up
-            delete!(manager.state, :CSV_Cache)
+            return
         end
         
         manager.flags[:Simulation][] = false
@@ -432,7 +438,7 @@ end
 """
     _setup_method_interactions!()
 
-Handles the "Activate/Deactivate" method toggles. It intercepts clicks, directly mutates the active arrays within the `SimulationConfig`, and instantly flags the `:Simulation` lock to require a fresh backend numerical evaluation.
+Handles the "Activate/Deactivate" method toggles. It intercepts clicks, updates the active methods (`defaults`) of the `SimulationConfig`, and instantly flags the `:Simulation` lock to require a fresh backend numerical evaluation.
 """
 function _setup_method_interactions!()
     mode_btn = manager.widgets[:mode_button]
@@ -444,12 +450,12 @@ function _setup_method_interactions!()
         config = manager.active_config
         isnothing(config) && return 
         
-        staged = config.active_methods
-        raw_method_names = filter(k -> k != :shared, collect(keys(config.methods_dict)))
+        staged = config.defaults
+        raw_method_names = filter(k -> k != :shared, collect(keys(config.methods)))
         opts = is_activate_mode[] ? filter(m -> !(m in staged), raw_method_names) : copy(staged)
 
         opts_sorted = sort_methods_robust(opts)
-        new_opts = isempty(opts) ? Any[menu_opt(:none)] : [("Methods...", :none); menu_opt.(opts_sorted)]
+        new_opts = isempty(opts) ? Any[menu_opt(:none)] : Any[("Methods...", :none); menu_opt.(opts_sorted)]
         update_menu_safe!(menu_mth, new_opts)
     end
 
@@ -466,12 +472,12 @@ function _setup_method_interactions!()
     end
 
     manager.listeners[:Method_Toggle] = on(menu_mth.selection) do sel
-        (isnothing(sel) || sel == :none || sel == "-") && return
+        (isnothing(sel) || sel === :none || sel == "-") && return
         
         config = manager.active_config
         isnothing(config) && return
         
-        new_staged = copy(config.active_methods)
+        new_staged = copy(config.defaults)
         if is_activate_mode[]
             if !(sel in new_staged)
                 push!(new_staged, sel)
@@ -481,8 +487,7 @@ function _setup_method_interactions!()
             filter!(x -> x != sel, new_staged)
         end
         
-        # Directly mutate the config!
-        config.active_methods = new_staged
+        config.defaults = new_staged
         manager.flags[:Simulation][] = true
         menu_mth.i_selected[] = 1
         
@@ -492,73 +497,213 @@ function _setup_method_interactions!()
     end
 end
 
+# ------------------------------------------------------------------------------
+# Hierarchical editor
+# ------------------------------------------------------------------------------
+
+"""
+    ConfigFields(config)
+
+Editor view (`Simulation → Config`) of the method and function fields of a `SimulationConfig`: `defaults` (active
+methods), `reference`, `postprocess` and `sources`. Assignments go through the backend's normalisation; `none`
+clears a function.
+"""
+struct ConfigFields
+    config::SimulationConfig
+end
+const CONFIG_EDITOR_FIELDS = (:defaults, :reference, :postprocess, :sources)
+Base.haskey(::ConfigFields, key) = key in CONFIG_EDITOR_FIELDS
+Base.keys(::ConfigFields) = collect(CONFIG_EDITOR_FIELDS)
+Base.getindex(p::ConfigFields, key::Symbol) = getproperty(p.config, key)
+function Base.setindex!(p::ConfigFields, value, key::Symbol)
+    key in (:reference, :postprocess) && (value = _function_name(value))
+    setproperty!(p.config, key, value)
+    return p
+end
+
+# The dictionary (or dictionary-like view) the editor edits for a category and scope.
+function _editor_target(cat, scope)
+    if cat === :simulation
+        scope === :presets && return manager.maps[:Sim_Presets]
+        config = manager.active_config
+        isnothing(config) && return nothing
+        scope === :shared && return config.shared
+        scope === :sweep && return config.varied
+        scope === :config && return ConfigFields(config)
+        return get(config.methods, scope, nothing)
+    elseif cat === :ui
+        scope === :presets && return manager.maps[:Presets]
+        return get(manager.ui, scope, nothing)
+    elseif cat === :labels
+        return manager.maps[:Labels]
+    end
+    return nothing
+end
+
+_editor_display(v) = isnothing(v) ? "none" : val2str(v)
+
+# Value restored by typing `default` into the editor: the built-in default of a UI option, the baseline configuration
+# (see `reset_sim_config!`) of a simulation entry. Returns `missing` if there is none.
+function _editor_default(cat, scope, key)
+    if cat === :ui
+        template = _ui_template_scope(scope)
+        haskey(MASTER_UI_DICT, template) && haskey(MASTER_UI_DICT[template], key) && return deepcopy(MASTER_UI_DICT[template][key])
+    elseif cat === :simulation
+        base = get(manager.state, :Base_Config, nothing)
+        isnothing(base) && return missing
+        target = scope === :shared ? base.shared : scope === :sweep ? base.varied :
+                 scope === :config ? ConfigFields(base) : get(base.methods, scope, nothing)
+        (!isnothing(target) && haskey(target, key)) && return deepcopy(target[key])
+    elseif cat === :labels
+        # the built-in display name, i.e. the name without the custom label
+        custom = pop!(manager.maps[:Labels], key, nothing)
+        default = frontend_key(key)
+        isnothing(custom) || (manager.maps[:Labels][key] = custom)
+        return default
+    end
+    return missing
+end
+
+"""
+    _parse_editor_input(s, old)
+
+Parses text typed into the editor. Text values stay text (quotes are optional), everything else is parsed with the
+safe literal parser `str2val` (numbers, symbols, vectors, tuples, …).
+"""
+function _parse_editor_input(s::AbstractString, old)
+    txt = strip(s)
+    txt == "<empty>" && return ""
+    isnothing(old) && lowercase(txt) in ("none", "nothing") && return nothing  # `nothing` is displayed as "none"
+    if old isa AbstractString
+        m = match(r"^\"(.*)\"$"s, txt)
+        return isnothing(m) ? String(txt) : String(m.captures[1])
+    end
+    return str2val(txt)
+end
+
+"""
+    _parse_sweep_input(s, old)
+
+Parses the swept values typed into `Simulation → Sweep` into a `Vector` (a single value sweeps one value). For a
+sweep of text values, unquoted items stay text: `[upwind, lax_friedrichs]`, or a single `1e3`.
+"""
+function _parse_sweep_input(s::AbstractString, old)
+    txt = strip(s)
+    text_sweep = old isa AbstractVector && !isempty(old) && all(v -> v isa AbstractString, old)
+    val = str2val(txt)
+    val isa AbstractVector && return collect(val)
+    if text_sweep
+        m = match(r"^\[(.*)\]$"s, txt)
+        isnothing(m) && return Any[_parse_editor_input(txt, "")]
+        items = filter(!isempty, strip.(split(m.captures[1], ',')))
+        return Any[_parse_editor_input(it, "") for it in items]
+    end
+    return Any[val]
+end
+
+# Flags or triggers whatever an editor change requires.
+function _after_editor_change!(cat, scope, key, target)
+    if cat === :simulation
+        scope === :presets && return nothing
+        manager.flags[:Simulation][] = true
+        if scope === :config && key === :defaults
+            notify(manager.state[:Is_Activate_Mode])  # refresh the method menu
+        elseif scope === :sweep && !isnothing(manager.active_config)
+            _map_parameters_to_sliders!(manager.active_config)
+        end
+    elseif cat === :ui
+        scope === :presets && return nothing
+        if key in REPLOT_OPTIONS
+            manager.triggers[:Plot][] += 1
+        else
+            manager.triggers[:UI][] += 1
+        end
+    elseif cat === :labels
+        if scope === :variables
+            w_key = get(get(manager.maps, :Reverse, Dict{Symbol, Symbol}()), key, key)
+            lbl_key = Symbol("$(w_key)_label")
+            haskey(manager.widgets, lbl_key) && (manager.widgets[lbl_key][] = manager.maps[:Labels][key] * ":")
+        elseif scope === :components
+            notify(manager.widgets[:u_axis].selection)
+        elseif scope === :methods
+            notify(manager.state[:Is_Activate_Mode])
+        end
+        manager.triggers[:UI][] += 1
+    end
+    return nothing
+end
+
+# The preset buttons act on simulation presets while the editor shows the Simulation category.
+function _update_preset_buttons!(cat)
+    w = manager.widgets
+    is_sim = cat === :simulation
+    haskey(w, :save_presets_button) && (w[:save_presets_button].label[] = is_sim ? "Save Sim Preset" : "Save Presets")
+    haskey(w, :clear_presets_button) && (w[:clear_presets_button].label[] = is_sim ? "Reset Simulation" : "Clear Presets")
+    return nothing
+end
+
+_preset_context() = haskey(manager.widgets, :editor_cat) && manager.widgets[:editor_cat].selection[] === :simulation ? :simulation : :visual
+
 """
     _setup_hierarchy_interactions!()
 
 Connects the triple-dropdown hierarchical editor. 
-Uses a cascaded dependency map: selecting a `Category` dynamically populates the available `Scope`s, which in turn populate the specific `Parameter`s. It binds the selected parameter's memory address to the `Textbox` via `val2str`, and handles parsing user text input back into RAM using `str2val`.
+Uses a cascaded dependency map: selecting a `Category` dynamically populates the available `Scope`s, which in turn populate the specific `Parameter`s. It binds the selected parameter's value to the `Textbox` via `val2str`, and parses user text input back with `_parse_editor_input`.
+
+Simulation scopes: `Presets` (simulation presets), `Shared`, `Sweep` (the varied parameters), `Config` (active
+methods, reference, post-processing, source files) and every method. UI scopes: `Presets` (visual presets) and every
+UI style scope. Labels: display names of components, variables and methods.
 """
 function _setup_hierarchy_interactions!()
     menu_cat   = manager.widgets[:editor_cat]
     menu_scope = manager.widgets[:editor_scope]
     menu_key   = manager.widgets[:editor_key]
     tb         = manager.widgets[:editor_text]
+    toggle_btn = manager.widgets[:editor_toggle]
     
     active_target_ref = manager.state[:Active_Target_Obs]
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
-        if isnothing(key) || key === :none || key == "-"
+        cat = menu_cat.selection[]
+        scope = menu_scope.selection[]
+        target = (isnothing(key) || key === :none || isnothing(cat) || isnothing(scope) || scope === :none) ?
+                 nothing : _editor_target(cat, scope)
+
+        if isnothing(target) || !haskey(target, key)
             active_target_ref[] = nothing
             tb.stored_string.val = ""
             if tb.displayed_string[] != ""; Makie.reset!(tb); end
-            
-            manager.widgets[:editor_toggle].label[] = "Toggle"
-            manager.widgets[:editor_toggle].buttoncolor[] = :lightgray
+            toggle_btn.label[] = "Toggle"
+            toggle_btn.buttoncolor[] = :lightgray
             return
         end
-        
-        cat = menu_cat.selection[]
-        scope = menu_scope.selection[]
-        (isnothing(cat) || isnothing(scope) || scope === :none || scope == "-") && return
-        
-        target_dict = nothing
-        if cat === :simulation
-            config = manager.active_config
-            isnothing(config) && return 
-            target_dict = scope === :shared ? config.shared_params : get(config.methods_dict, scope, nothing)
-        elseif cat === :ui
-            target_dict = scope === :presets ? manager.maps[:Presets] : get(manager.ui, scope, nothing)
-        elseif cat === :labels
-            target_dict = manager.maps[:Labels]
-        end
 
-        if !isnothing(target_dict) && haskey(target_dict, key)
-            active_target_ref[] = (target_dict, key)
-            val_str = val2str(target_dict[key])
-            tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
-            
-            if cat === :ui && scope === :presets
-                manager.widgets[:editor_toggle].label[] = "Apply"
-                manager.widgets[:editor_toggle].buttoncolor[] = :lightgreen
-            else
-                manager.widgets[:editor_toggle].label[] = "Toggle"
-                manager.widgets[:editor_toggle].buttoncolor[] = :lightgray
-            end
+        active_target_ref[] = (target, key)
+        val_str = _editor_display(target[key])
+        tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
+        
+        if scope === :presets && key !== :create_new
+            toggle_btn.label[] = "Apply"
+            toggle_btn.buttoncolor[] = :lightgreen
+        else
+            toggle_btn.label[] = "Toggle"
+            toggle_btn.buttoncolor[] = :lightgray
         end
     end
 
-    manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, active_methods
+    manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, _
         isnothing(cat) && return
         new_scopes = Any[]
         
         if cat === :simulation
+            push!(new_scopes, ("Presets", :presets))
             config = manager.active_config
             if !isnothing(config) 
-                push!(new_scopes, ("Shared", :shared))
-                for m in sort_methods_robust(active_methods)
-                    m_sym = Symbol(m)
-                    haskey(config.methods_dict, m_sym) && push!(new_scopes, (string(m_sym), m_sym))
+                push!(new_scopes, ("Shared", :shared), ("Sweep", :sweep), ("Config", :config))
+                for m in sort_methods_robust(collect(keys(config.methods)))
+                    m in _RANK_0 && continue  # reserved scope names
+                    push!(new_scopes, (string(m), m))
                 end
             end
         elseif cat === :ui
@@ -570,62 +715,24 @@ function _setup_hierarchy_interactions!()
             new_scopes = Any[("Components", :components), ("Variables", :variables), ("Methods", :methods)]
         end
         
-        new_scopes = isempty(new_scopes) ? Any[menu_opt(:none)] : new_scopes
         update_menu_safe!(menu_scope, new_scopes; force_notify=true)
+        _update_preset_buttons!(cat)
     end
 
     manager.listeners[:Hierarchy_Scope_Sync] = on(menu_scope.selection) do scope
-        (isnothing(scope) || scope === :none || scope == "-") && return 
+        (isnothing(scope) || scope === :none) && return 
         cat = menu_cat.selection[]
         raw_keys = Symbol[]
         
-        if cat === :simulation
-            config = manager.active_config
-            if !isnothing(config) 
-                target_dict = scope === :shared ? config.shared_params : get(config.methods_dict, scope, Dict{Symbol, Any}())
-                raw_keys = sort(collect(keys(target_dict)))
-            end
-        elseif cat === :ui
-            if scope === :presets
-                # Dynamically scan the disk for custom presets!
-                preset_dir = joinpath(get_save_path(), "Presets")
-                if isdir(preset_dir)
-                    for file in readdir(preset_dir)
-                        if endswith(lowercase(file), ".csv")
-                            sym_name = Symbol(splitext(file)[1])
-                            if !haskey(manager.maps[:Presets], sym_name)
-                                filepath = joinpath(preset_dir, file)
-                                desc = "Custom disk preset"
-                                try
-                                    df = CSV.read(filepath, DataFrame; stringtype=String)
-                                    row_mask = (df.Category .== "Metadata") .&
-                                            (df.Scope .== "Preset") .&
-                                            (df.Parameter .== "description")
-                                    if any(row_mask)
-                                        val = first(df.Value[row_mask])
-                                        if !ismissing(val) && !isempty(strip(val))
-                                            desc = String(strip(val))
-                                        end
-                                    end
-                                catch
-                                    # Gracefully falls back to default if file is unreadable or malformed
-                                end
-                                manager.maps[:Presets][sym_name] = desc
-                            end
-                        end
-                    end
-                end
-                
-                raw_keys = sort(collect(keys(manager.maps[:Presets])))
-            else
-                raw_keys = sort(collect(keys(get(manager.ui, scope, Dict{Symbol, Any}()))))
-            end
+        if scope === :presets
+            refresh_preset_registries!()  # picks up preset files added on disk
+            registry = cat === :simulation ? manager.maps[:Sim_Presets] : manager.maps[:Presets]
+            raw_keys = sort!(collect(keys(registry)))
         elseif cat === :labels
             if scope === :components
                 c_max = 1
                 if !isempty(manager.plot_data[])
-                    pd_first = first(values(manager.plot_data[]))
-                    sim_data = _get_first_valid(pd_first)
+                    sim_data = _get_first_valid(first(values(manager.plot_data[])))
                     if !isnothing(sim_data)
                         u_val = manager.widgets[:u_axis].selection[]
                         target_field = (isnothing(u_val) || u_val === :none) ? :Solution : u_val
@@ -635,29 +742,32 @@ function _setup_hierarchy_interactions!()
                 end
                 raw_keys = [Symbol("component_$i") for i in 1:c_max]
             elseif scope === :variables
-                raw_keys = manager.plot_vars
+                raw_keys = copy(manager.plot_vars)
             elseif scope === :methods
-                raw_keys = manager.methods[]
+                raw_keys = copy(manager.methods[])
             end
             
             for k in raw_keys
-                if !haskey(manager.maps[:Labels], k)
-                    manager.maps[:Labels][k] = string(k)
-                end
+                haskey(manager.maps[:Labels], k) || set_label!(k, frontend_key(k))
             end
+        else
+            target = _editor_target(cat, scope)
+            isnothing(target) || (raw_keys = sort!(collect(keys(target))))
         end
 
-        if scope === :plot_style
+        if cat === :ui && scope === :plot_style
             ptype = manager.widgets[:plot_style].selection[]
             valid_keys = get(STYLE_DEPENDENCIES, ptype, Symbol[])
             filter!(k -> k in valid_keys, raw_keys)
         end
 
-        # Preserve exact casing for Simulation, Labels, and Presets!
-        if cat === :labels
-            new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[(string(k), k) for k in raw_keys]
+        # Exact names for simulation keys and labels; display names for UI options and presets.
+        new_keys = if isempty(raw_keys)
+            Any[menu_opt(:none)]
+        elseif cat === :labels || (cat === :simulation && scope !== :presets)
+            Any[(string(k), k) for k in raw_keys]
         else
-            new_keys = isempty(raw_keys) ? Any[menu_opt(:none)] : Any[menu_opt(k) for k in raw_keys]
+            Any[menu_opt(k) for k in raw_keys]
         end
         
         update_menu_safe!(menu_key, new_keys; force_notify=true)
@@ -669,82 +779,73 @@ function _setup_hierarchy_interactions!()
     end
 
     manager.listeners[:Hierarchy_Text_Sync] = on(tb.stored_string) do s
+        s isa AbstractString || return
         target_info = active_target_ref[]
         isnothing(target_info) && return
-        if manager.flags[:Layout][] || manager.flags[:Simulation][]; return end
-        target_dict, key = target_info
+        manager.locks[:Simulation] && return  # a simulation is running
+        target, key = target_info
         
         cat = menu_cat.selection[]
         scope = menu_scope.selection[]
         
         try
-            if cat === :labels || (cat === :ui && scope === :presets)
-                target_dict[key] = string(s)
-            else
-                target_dict[key] = str2val(s)
-            end
-            
-            if cat === :simulation
-                manager.flags[:Simulation][] = true 
-            elseif cat === :ui
-                if scope !== :presets
-                    if key in REPLOT_OPTIONS
-                        manager.triggers[:Plot][] += 1
-                    else
-                        manager.triggers[:UI][] += 1
-                    end
+            if scope === :presets
+                target[key] = String(s)  # the description (for :create_new: of the next preset saved)
+            elseif strip(s) == "default"
+                val = _editor_default(cat, scope, key)
+                if ismissing(val)
+                    @warn "No default value is known for '$key'."
+                    return
                 end
+                cat === :labels ? set_label!(key, string(val)) : (target[key] = val)
+                tb.displayed_string[] = cat === :labels ? string(val) : _editor_display(val)
             elseif cat === :labels
-                
-                if scope === :variables
-                    lbl_key = Symbol("$(key)_label")
-                    if haskey(manager.widgets, lbl_key)
-                        manager.widgets[lbl_key][] = target_dict[key] * ":"
+                set_label!(key, String(s))
+            else
+                if cat === :simulation && scope === :sweep
+                    val = _parse_sweep_input(s, target[key])
+                    if isempty(val)
+                        @warn "A sweep needs at least one value; '$key' was not changed."
+                        return
                     end
-                elseif scope === :components
-                    notify(manager.widgets[:u_axis].selection)
-                elseif scope === :methods
-                    notify(manager.state[:Is_Activate_Mode])
+                else
+                    val = _parse_editor_input(s, target[key])
                 end
-                manager.triggers[:UI][] += 1
+                target[key] = val
             end
+            _after_editor_change!(cat, scope, key, target)
         catch e
             @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
         end
     end
     
-    manager.listeners[:Hierarchy_Toggle_Sync] = on(manager.widgets[:editor_toggle].clicks) do _
+    manager.listeners[:Hierarchy_Toggle_Sync] = on(toggle_btn.clicks) do _
         target_info = active_target_ref[]
         isnothing(target_info) && return
-        if manager.flags[:Layout][] || manager.flags[:Simulation][]; return end
-        target_dict, key = target_info
+        manager.locks[:Simulation] && return
+        target, key = target_info
         
         cat = menu_cat.selection[]
         scope = menu_scope.selection[]
         
         try
-            if cat === :ui && scope === :presets
+            if scope === :presets
                 if key === :create_new
-                    @info "Fill in a filename below and click 'Save Defs' to write to disk."
+                    save_label = cat === :simulation ? "Save Sim Preset" : "Save Presets"
+                    @info "Type a description here, enter a name in the filename box and click '$save_label'."
+                elseif cat === :simulation
+                    set_sim_preset!(key)
                 else
                     set_plot_preset!(key)
                 end
                 return
             end
             
-            if target_dict[key] isa Bool
-                target_dict[key] = !target_dict[key]
-                tb.displayed_string[] = string(target_dict[key])
-                
-                if cat === :simulation
-                    manager.flags[:Simulation][] = true 
-                elseif cat === :ui
-                    if key in REPLOT_OPTIONS
-                        manager.triggers[:Plot][] += 1
-                    else
-                        manager.triggers[:UI][] += 1
-                    end
-                end
+            val = target[key]
+            if val isa Bool
+                target[key] = !val
+                tb.displayed_string[] = string(!val)
+                _after_editor_change!(cat, scope, key, target)
             end
         catch e
             @warn "Failed to toggle parameter '$key'." exception=(e, catch_backtrace())
@@ -860,18 +961,25 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return export_fig, export_obs
     end
     manager.listeners[:Export_Click] = on(btn_export.clicks) do _
-        raw_filename = string(strip(saveBox.stored_string[]))
-        if isempty(raw_filename); raw_filename = "plot_export"; end
+        raw_filename = String(strip(something(saveBox.stored_string[], "")))
+        isempty(raw_filename) && (raw_filename = "plot_export")
         
-        base_name, ext = splitext(raw_filename)
-        ext = lowercase(replace(ext, "." => ""))
+        name_part, ext = splitext(raw_filename)
+        ext = lowercase(lstrip(ext, '.'))
         
-        # Safely extract the selected static formats from the UI export dictionary
-        formats = get(manager.ui[:export], :save_formats, String[])
-        
-        # --- Pre-Export Validation ---
-        supported_anim_exts = ["mp4", "gif", "webm"]
-        is_anim = lowercase(ext) in supported_anim_exts
+        is_anim = ext in ANIMATION_EXPORT_FORMATS
+        if is_anim
+            base_name = name_part
+            formats = String[]
+        elseif ext in STATIC_EXPORT_FORMATS
+            # "figure.pdf" exports exactly that format, ignoring the format list of the export settings
+            base_name = name_part
+            formats = [ext]
+        else
+            # no (or an unknown) extension, e.g. "run_dt0.5": the whole text is the name
+            base_name = raw_filename
+            formats = _export_formats(get(manager.ui[:export], :save_formats, String[]))
+        end
 
         target_name = anim_target_obs[] 
         if is_anim
@@ -883,13 +991,6 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         extract_and_store_camera_state!(plot_layout)
         
         target_widget = is_anim ? get_target_widget(target_name) : nothing
-        
-        # Strip out and warn about any animation formats mistakenly put in the UI formats list
-        invalid_formats = filter(f -> lowercase(f) in supported_anim_exts, formats)
-        if !isempty(invalid_formats)
-            @warn "Animation formats $invalid_formats found in the export settings are ignored. To export an animation, explicitly add the extension (e.g., '.mp4') directly in the filename textbox."
-            filter!(f -> !(lowercase(f) in supported_anim_exts), formats)
-        end
 
         try
             # 1. SHUT DOWN MAIN WINDOW (Prevents cache corruption and duplicate colorbars)
@@ -907,17 +1008,15 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             # --- ANIMATION EXPORT ---
             if is_anim
                 save_path = joinpath(get_save_path(), "animations")
-                mkpath(save_path)
+                fname = joinpath(save_path, base_name * "." * ext)
+                mkpath(dirname(fname))
                 
-                # Strictly use the explicitly provided extension
-                fname = joinpath(save_path, base_name * "." * lowercase(ext))
-                
-                duration = manager.ui[:export][:animation_time]
-                fps = manager.ui[:export][:animation_FPS]
+                duration = Float64(manager.ui[:export][:animation_time])
+                fps = max(1, round(Int, manager.ui[:export][:animation_FPS]))
                 comp = get(manager.ui[:export], :mp4_compression, 15)
                 
                 rng = target_widget.range[]
-                n_frames = Int(duration * fps)
+                n_frames = max(2, round(Int, duration * fps))
                 @info "Recording pristine '$target_name' animation to $fname..."
                 
                 record(export_fig, fname, range(rng[1], rng[end], length=n_frames); framerate=fps, compression=comp, px_per_unit=dpi_val/96.0) do val
@@ -932,17 +1031,19 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             # --- STATIC FRAME EXPORT ---
             elseif !isempty(formats)
                 save_dir = joinpath(get_save_path(), "figures")
-                if manager.ui[:export][:create_savefolder]; save_dir = joinpath(save_dir, base_name); end
-                mkpath(save_dir)
+                if get(manager.ui[:export], :create_savefolder, false) === true
+                    save_dir = joinpath(save_dir, base_name)
+                end
 
                 for fmt in formats
                     full_path = joinpath(save_dir, base_name * ".$fmt")
-                    if fmt == "png"
+                    mkpath(dirname(full_path))
+                    if fmt in ("png", "jpg", "jpeg")
                         save(full_path, export_fig; backend=CairoMakie, px_per_unit=dpi_val/96.0)
                     else
                         save(full_path, export_fig; backend=CairoMakie)
                     end
-                    @info "Pristine Image ($fmt) saved safely via CairoMakie!"
+                    @info "Pristine Image ($fmt) saved to $full_path"
                 end
                 
                 metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
@@ -974,38 +1075,40 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
+    # Context-sensitive: saves a simulation preset while the editor shows the Simulation category, otherwise a visual preset.
     manager.listeners[:Save_Defs] = on(manager.widgets[:save_presets_button].clicks) do _
-        # --- DISK SAVE (Create New Preset) ---
-        filename = manager.widgets[:export_text].stored_string[]
+        filename = String(strip(something(saveBox.stored_string[], "")))
         if isempty(filename)
             @warn "Please enter a preset name in the Filename box."
             return
         end
         
-        sym_name = Symbol(lowercase(replace(strip(filename), r"\s+" => "_")))
-        save_dir = joinpath(get_save_path(), "Presets")
-        mkpath(save_dir)
-        
-        desc = manager.maps[:Presets][:create_new]
-        if desc == "Type a description here, type a filename above, \nand click Save Preset." || isempty(desc)
-            desc = "User custom preset: $filename"
-        end
-        manager.maps[:Presets][sym_name] = desc
-        
-        success = save_preset_to_csv(sym_name, save_dir)
-        if success
-            Makie.reset!(manager.widgets[:export_text])
-            manager.maps[:Presets][:create_new] = "Type a description here, type a filename above, \nand click Save Preset."
-            notify(manager.widgets[:editor_scope].selection)
-            
-            idx = findfirst(x -> x[2] == sym_name, manager.widgets[:editor_key].options[])
-            if !isnothing(idx); manager.widgets[:editor_key].selection[] = sym_name; end
-        end
+        is_sim = _preset_context() === :simulation
+        registry_key = is_sim ? :Sim_Presets : :Presets
+        registry = manager.maps[registry_key]
+        desc = get(registry, :create_new, "")
+
+        success = is_sim ? save_sim_preset(filename; description = desc) :
+                           save_plot_preset(filename; description = desc)
+        success || return
+
+        registry[:create_new] = DEFAULT_PRESET_DESC
+        Makie.reset!(saveBox)
+
+        # Show the new preset in the editor
+        _select_menu_value!(manager.widgets[:editor_scope], :presets)
+        _select_menu_value!(manager.widgets[:editor_key], _preset_symbol(filename))
     end
     
+    # Context-sensitive: restores the bound simulation configuration, or the default look.
     manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_presets_button].clicks) do _
-        set_plot_preset!()
-        manager.triggers[:UI][] += 1
+        if _preset_context() === :simulation
+            manager.locks[:Simulation] && return
+            reset_sim_config!()
+        else
+            set_plot_preset!()
+            manager.triggers[:UI][] += 1
+        end
     end
 
     manager.listeners[:Anim_State_Change] = on(is_animating) do animating
@@ -1092,8 +1195,8 @@ function _setup_chain_A!(::Val{:eulerian})
             (isnothing(style_sel) || style_sel == :none || isnothing(base_sel) || base_sel == :none) && return
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
-            if n_params > 0; manager.plot_vars[1:n_params] .= Symbol.(pd_first.active_param_keys); end
-            dim_names = manager.plot_vars
+            # The swept parameters of the computed data (the bound config may already sweep others: re-run pending)
+            dim_names = Symbol[Symbol.(pd_first.active_param_keys); get_base_variables()]
             
             sim_data = _get_first_valid(pd_first)
             isnothing(sim_data) && return
@@ -1141,7 +1244,7 @@ function _setup_chain_A!(::Val{:eulerian})
             update_menu_safe!(w[:compare_target], compare_opts; fallbacks=[:none], force_notify=false)
 
             ptype = manager.widgets[:plot_style].selection[]
-            p_dim = PLOT_DIM_MAP[ptype]
+            p_dim = get(PLOT_DIM_MAP, ptype, 1)
             
             build_axis_opts = function(excluded_syms)
                 excluded_loops = [occursin("|", string(ex)) ? Symbol(split(string(ex), "|")[2]) : ex for ex in excluded_syms]
@@ -1166,9 +1269,9 @@ function _setup_chain_A!(::Val{:eulerian})
             end
             
             base_vars = get_base_variables()
-            x_val = w[:x_axis].selection[]
             
             update_menu_safe!(w[:x_axis], build_axis_opts([]); fallbacks=base_vars, force_notify=false)
+            x_val = w[:x_axis].selection[]  # read after the update: the old choice may no longer exist
             if p_dim >= 2
                 update_menu_safe!(w[:y_axis], build_axis_opts([x_val]); fallbacks=base_vars, force_notify=false)
             else
@@ -1208,7 +1311,7 @@ function _setup_chain_A!(::Val{:lagrangian})
             isnothing(l_data) && return
             
             n_params = length(pd_first.active_param_keys)
-            dim_names = manager.plot_vars
+            dim_names = Symbol.(pd_first.active_param_keys)
             
             D = length(l_data.domain.mins) - (isnothing(l_data.domain.time_dim) ? 0 : 1)
             spatial_keys = filter(k -> k != l_data.domain.time_dim, l_data.domain.dim_keys)
@@ -1395,9 +1498,7 @@ function _setup_chain_C!(mode::Val{T}) where T
             c_options = Any[]
             for i in 1:comp_max
                 sym = Symbol("component_$i")
-                if !haskey(manager.maps[:Labels], sym)
-                    manager.maps[:Labels][sym] = "Component $i"
-                end
+                haskey(manager.maps[:Labels], sym) || set_label!(sym, "Component $i")
                 
                 push!(c_options, (frontend_key(sym), i))
             end
