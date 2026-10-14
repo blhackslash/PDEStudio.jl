@@ -75,7 +75,7 @@ end
 
 # Text next to a slider: the swept value for non-numeric parameters, the formatted number otherwise.
 function _slider_value_text(widget_key::Symbol, v)
-    param = get(get(manager.maps, :Param, Dict{Symbol, Symbol}()), widget_key, nothing)
+    param = get(manager.param_map, widget_key, nothing)
     if !isnothing(param)
         i = findfirst(isequal(param), manager.plot_vars)
         isnothing(i) || return _fmt_value(_param_display_value(i, v))
@@ -108,7 +108,7 @@ function generate_dynamic_title(
             continue
         end
 
-        name = titlecase(string(name_sym))
+        name = frontend_key(name_sym)   # custom display labels (set_label!) apply to titles too
 
         if i in plot_dims
             push!(title_parts, "$name = [Axis]")
@@ -199,7 +199,7 @@ Overrides Makie's automatic axis scaling with rigid, user-defined boundary limit
 """
 function apply_axis_limits_overrides!(ax)
     
-    if get(manager.state, :Camera_Locked, Observable(false))[]
+    if manager.camera_locked[]
         return
     end
     ui_x = manager.ui[:x_axis]
@@ -278,7 +278,7 @@ function set_axis_limits_manager!(ax::Axis, xs, us)
     new_yscale = use_log_y ? log10 : identity
 
     # Calculate and apply the valid padded limits before changing the scale
-    is_locked = get(manager.state, :Camera_Locked, Observable(false))[]
+    is_locked = manager.camera_locked[]
     
     if !is_locked
         final_xlims = calculate_padded_axis_range(raw_xlims, ui_x[:padding], use_log_x) 
@@ -378,8 +378,7 @@ end
 Parses the UI dropdown logic to determine the precise Makie anchoring coordinates for the legend block. 
 Returns `(is_detached, halign, valign)`.
 """
-function _parse_legend_position(target = haskey(manager.state, :Compare_State) ? manager.state[:Compare_State][1] :
-                                         manager.widgets[:compare_target].selection[])
+function _parse_legend_position(target = manager.compare_state[1])
     base_align = manager.widgets[:legend_base].selection[]
     add_align  = manager.widgets[:legend_add].selection[]
     
@@ -415,7 +414,7 @@ function create_or_update_legend!(plot_layout::GridLayout, plotted_objects::Vect
     
     if isempty(plotted_objects) || isempty(labels); return; end
     
-    layout_dict = manager.state[:Layout_Dict][]
+    layout_dict = manager.layout_dict[]
     if !haskey(layout_dict, :Legend) || isnothing(layout_dict[:Legend]); return; end
     
     ui_style = manager.ui[:axis_general]
@@ -458,7 +457,7 @@ function create_or_update_colorbar!(plot_layout::GridLayout, plot_object, color_
     ui_stl = manager.ui[:plot_style]
     if !haskey(ui_stl, :color_map); return; end 
     safe_limits = color_range_obs isa Tuple ? color_range_obs : lift(cr -> (Float64(cr[1]), Float64(cr[2])), color_range_obs)
-    layout_dict = manager.state[:Layout_Dict][]
+    layout_dict = manager.layout_dict[]
     cb_list = layout_dict[:Colorbars]
     isempty(cb_list) && return
     
@@ -748,7 +747,7 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
     haskey(z_ui, :label_offset) && (ax.zlabeloffset = z_ui[:label_offset]) 
 
     ax.perspectiveness = 0.5
-    if !get(manager.state, :Camera_Locked, Observable(false))[]
+    if !manager.camera_locked[]
         ax.aspect = (1, 1, 0.6)
     end
 end
@@ -912,7 +911,7 @@ function extract_and_store_camera_state!(plot_layout::GridLayout)
             cam_opts[Symbol("Axis_$(i)_Elevation")] = Float64(ax.elevation[])
         end
     end
-    manager.state[:Camera_Cache] = cam_opts
+    manager.camera_cache = cam_opts
 end
 
 """
@@ -923,8 +922,8 @@ If the camera is not globally locked by the user, the cache is instantly cleared
 """
 function _enforce_camera_lock!(axes::Vector)
     
-    is_locked = get(manager.state, :Camera_Locked, Observable(false))[]
-    cam_opts = get(manager.state, :Camera_Cache, Dict{Symbol, Any}())
+    is_locked = manager.camera_locked[]
+    cam_opts = manager.camera_cache
     
     if !isempty(cam_opts)
         for (i, ax) in enumerate(axes)
@@ -950,7 +949,7 @@ function _enforce_camera_lock!(axes::Vector)
         
         # If it wasn't permanently locked by the user, clear the camera again
         if !is_locked
-            empty!(manager.state[:Camera_Cache])
+            empty!(manager.camera_cache)
         end
     end
 end

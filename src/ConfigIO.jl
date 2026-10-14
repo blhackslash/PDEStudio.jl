@@ -42,22 +42,22 @@ _sorted_pairs(d) = sort!(collect(d), by = p -> string(first(p)))
 
 function _add_scene_rows!(rows::_CSVRows)
     # The persistent caches hold the state even when no window is open; open widgets take precedence.
-    plot_opts = merge(copy(manager.state[:Plot_Cache]), extract_plot_options())
+    plot_opts = merge(copy(manager.plot_cache), extract_plot_options())
     for (k, v) in _sorted_pairs(plot_opts)
         add_row!(rows, "Scene", "Plot", k, v)
     end
-    layout_opts = merge(copy(manager.state[:Layout_Cache]), extract_layout_options())
+    layout_opts = merge(copy(manager.layout_cache), extract_layout_options())
     for (k, v) in _sorted_pairs(layout_opts)
         add_row!(rows, "Scene", "Layout", k, v)
     end
-    for (k, v) in _sorted_pairs(get(manager.state, :Camera_Cache, Dict{Symbol, Any}()))
+    for (k, v) in _sorted_pairs(manager.camera_cache)
         add_row!(rows, "Scene", "Camera", k, v)
     end
-    for (k, v) in _sorted_pairs(get(manager.maps, :Labels, Dict{Symbol, String}()))
+    for (k, v) in _sorted_pairs(manager.labels)
         v == string(k) && continue  # skip redundant default labels
         add_row!(rows, "Scene", "Labels", k, v)
     end
-    exp_opts = merge(copy(manager.state[:Exploration_Cache]), extract_exploration_options())
+    exp_opts = merge(copy(manager.exploration_cache), extract_exploration_options())
     for (k, v) in _sorted_pairs(exp_opts)
         add_row!(rows, "Scene", "Exploration", k, v)
     end
@@ -161,7 +161,7 @@ end
 function _ui_template_scope(scope::Symbol)
     scope === :z_axis && return :z_axis_3d
     scope in (:x_axis, :y_axis) || return scope
-    ptype = get(manager.state, :Active_Plot_Type, :none)
+    ptype = manager.active_plot_type
     one_d = get(PLOT_DIM_MAP, ptype, 1) == 1 && !is_surface(ptype)
     return Symbol(scope, one_d ? "_1d" : "_nd")
 end
@@ -270,7 +270,7 @@ until *Run Simulation* if the open window has to be rebuilt. Returns `true` if s
 """
 function load_and_apply_csv!(filepath::AbstractString)
     @info "Loading configuration from CSV: $filepath"
-    delete!(manager.state, :CSV_Cache)  # a newer file replaces a staged one
+    manager.csv_cache = nothing  # a newer file replaces a staged one
     parsed, raw = _read_csv(filepath)
     bundled_config, bundled, origins = _run_bundled_sources(parsed, filepath)
     sources = isnothing(bundled_config) ? filter(!isempty, bundled) :
@@ -288,13 +288,13 @@ function load_and_apply_csv!(filepath::AbstractString)
     new_max = max(new_max, n_varied)
 
     if new_dims != manager.allowed_dims || new_max != manager.max_params
-        if !get(manager.ui_state, :is_open, false)
+        if !manager.is_open
             # No window yet: the limits can be applied directly.
             manager.allowed_dims = new_dims
             manager.max_params = new_max
             _sync_resolution_dims!()
         else
-            manager.state[:CSV_Cache] = (dims = new_dims, max_params = new_max, parsed = parsed, raw = raw,
+            manager.csv_cache = (dims = new_dims, max_params = new_max, parsed = parsed, raw = raw,
                                          config = bundled_config, sources = sources)
             @info "Structural limits changed! Configuration staged; press 'Run Simulation' to rebuild the studio."
             return true
@@ -325,9 +325,9 @@ the plot style, UI overrides, layout, axes and slider positions, camera, labels 
 function load_and_apply_csv!(parsed::Dict, raw = nothing; config = nothing, sources = String[])
     @info "Applying parsed CSV configuration..."
     cfg = get(parsed, "Config", Dict())
-    for (scope, target) in (("Resolution_Base", :Resolution_Base), ("Resolution_Ref", :Resolution_Ref))
+    for (scope, target) in (("Resolution_Base", manager.resolution_base), ("Resolution_Ref", manager.resolution_ref))
         for (k, v) in get(cfg, scope, Dict())
-            v isa Real && (manager.state[target][Symbol(k)] = Int(v))
+            v isa Real && (target[Symbol(k)] = Int(v))
         end
     end
 
@@ -379,12 +379,12 @@ function load_and_apply_csv!(parsed::Dict, raw = nothing; config = nothing, sour
     # --- 6. CAMERA ---
     cam_source = _scene_source(parsed, "Camera")
     if !isnothing(cam_source) && !isempty(cam_source)
-        manager.state[:Camera_Cache] = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
-        manager.state[:Camera_Locked][] = true
-        manager.state[:Skip_Next_Camera_Extract] = true
+        manager.camera_cache = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in cam_source)
+        manager.camera_locked[] = true
+        manager.skip_next_camera_extract = true
     else
-        manager.state[:Camera_Cache] = Dict{Symbol, Any}()
-        manager.state[:Camera_Locked][] = false
+        manager.camera_cache = Dict{Symbol, Any}()
+        manager.camera_locked[] = false
     end
 
     # --- 7. LABELS (kept as text) ---
@@ -623,10 +623,10 @@ function save_params_to_csv(base_filename::AbstractString, save_dir::AbstractStr
         isnothing(config) || _add_simulation_rows!(rows, config)
         add_row!(rows, "Config", "Dimensions", "allowed_dims", manager.allowed_dims)
         add_row!(rows, "Config", "Dimensions", "max_params", manager.max_params)
-        for (dim, res) in _sorted_pairs(manager.state[:Resolution_Base])
+        for (dim, res) in _sorted_pairs(manager.resolution_base)
             add_row!(rows, "Config", "Resolution_Base", dim, res)
         end
-        for (dim, res) in _sorted_pairs(manager.state[:Resolution_Ref])
+        for (dim, res) in _sorted_pairs(manager.resolution_ref)
             add_row!(rows, "Config", "Resolution_Ref", dim, res)
         end
 
@@ -650,7 +650,7 @@ function save_preset_to_csv(preset_name::Symbol, save_dir::AbstractString)
 
     try
         rows = _CSVRows()
-        desc = get(manager.maps[:Presets], preset_name, "User custom preset")
+        desc = get(manager.presets, preset_name, "User custom preset")
         add_row!(rows, "Metadata", "Preset", "description", desc)
         add_row!(rows, "Metadata", "Preset", "type", "visual")
         _add_scene_rows!(rows)

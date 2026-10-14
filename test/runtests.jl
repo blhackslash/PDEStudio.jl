@@ -272,7 +272,7 @@ end
                 # Verify pipeline execution via the physical button click
                 click_button!(:layout_apply) 
                 
-                @test manager.state[:Active_Plot_Type] == style_sym
+                @test manager.active_plot_type == style_sym
                 # Single-method styles draw one (numerical) method, overlay styles all of them
                 drawn = [m for (m, c) in manager.caches[1] if haskey(c.primitives, style_sym)]
                 @test !isempty(drawn) && !(:analytical_solution in drawn && length(drawn) == 1)
@@ -474,8 +474,8 @@ end
         
         # Verify the description was parsed and saved to the backend maps
         sym_name = Symbol(preset_name)
-        @test haskey(manager.maps[:Presets], sym_name)
-        @test manager.maps[:Presets][sym_name] == "A rigorous test preset for the UI pipeline"
+        @test haskey(manager.presets, sym_name)
+        @test manager.presets[sym_name] == "A rigorous test preset for the UI pipeline"
     end
 
     # =========================================================================
@@ -495,7 +495,7 @@ end
         yield()
         @test manager.ui[:export][:animation_FPS] == 12
         @test PDEStudio.frontend_key(:component_1) == "Density"
-        @test manager.maps[:Presets][:round_trip] == "round trip test"
+        @test manager.presets[:round_trip] == "round trip test"
         @test manager.active_config.shared == sim_before        # visual presets never touch the simulation
     end
 
@@ -520,7 +520,7 @@ end
         @test isfile(coarse_path)
         parsed = PDEStudio.parse_csv_to_dict(coarse_path)
         @test haskey(parsed, "Simulation") && !haskey(parsed, "UI") && !haskey(parsed, "Scene")
-        @test manager.maps[:Sim_Presets][:coarse] == "coarse grid"
+        @test manager.sim_presets[:coarse] == "coarse grid"
 
         # 2. Change the simulation, then switch back with the preset (replace mode)
         manager.active_config.shared[:N] = 40
@@ -539,7 +539,7 @@ end
         @test cfg.shared[:N] == 80
         @test cfg.shared[:cfl] == 0.5
         @test cfg.defaults == [:lax_friedrichs, :upwind]
-        @test manager.maps[:Sim_Presets][:hires] == "Fine grid"
+        @test manager.sim_presets[:hires] == "Fine grid"
 
         # 4. Reset to the configuration bound with set_sim_config!
         reset_sim_config!()
@@ -620,8 +620,8 @@ end
         manager.widgets[:export_text].stored_string[] = "ui sim preset"
         click_button!(:save_presets_button)
         @test isfile(joinpath(sim_preset_dir(), "ui_sim_preset.csv"))
-        @test manager.maps[:Sim_Presets][:ui_sim_preset] == "Both methods, three CFL numbers"
-        @test manager.maps[:Sim_Presets][:create_new] == PDEStudio.DEFAULT_PRESET_DESC
+        @test manager.sim_presets[:ui_sim_preset] == "Both methods, three CFL numbers"
+        @test manager.sim_presets[:create_new] == PDEStudio.DEFAULT_PRESET_DESC
 
         # 7. Reset Simulation restores the bound configuration, Apply loads the preset again
         click_button!(:clear_presets_button)
@@ -664,7 +664,7 @@ end
         click_button!(:layout_apply)
 
         # The text-valued sweep gets an index slider that shows the swept value
-        @test manager.maps[:Reverse][:scheme] == :param_1
+        @test manager.reverse_map[:scheme] == :param_1
         @test manager.widgets[:param_1].range[] == [1, 2]
         @test PDEStudio._slider_value_text(:param_1, 2) == "lax_friedrichs"
         set_close_to!(manager.widgets[:param_1], 2)
@@ -680,7 +680,7 @@ end
         click_menu!(manager.widgets[:compare_target], :time)
         click_button!(:layout_apply)
         @test 2 <= length(manager.caches) <= MAX_COMPARE_PLOTS
-        @test first(manager.state[:Compare_State]) === :time
+        @test first(manager.compare_state) === :time
 
         click_menu!(manager.widgets[:compare_target], :none)
         click_button!(:layout_apply)
@@ -711,8 +711,8 @@ end
         
         set_plot_preset!(:heatmap)
         yield()
-        @test manager.state[:Layout_Cache][:base_plot] == :heatmap
-        @test manager.state[:Layout_Cache][:plot_style] == :heatmap_flat
+        @test manager.layout_cache[:base_plot] == :heatmap
+        @test manager.layout_cache[:plot_style] == :heatmap_flat
         
         set_plot_preset!(:compact3d)
         yield()
@@ -873,7 +873,7 @@ end
         click_button!(:layout_apply)
         yield()
         
-        @test manager.state[:Active_Plot_Type] == :scatter_1d
+        @test manager.active_plot_type == :scatter_1d
         @test haskey(manager.caches[1][:upwind].primitives, :scatter_1d)
         # Verify the backend correctly allocated a Lagrangian cache
         @test typeof(manager.caches[1][:upwind]).name.name == :LagrangianPlotCache

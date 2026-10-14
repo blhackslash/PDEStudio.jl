@@ -58,7 +58,7 @@ function _handle_plot_trigger!(
     data = manager.plot_data[]
     isempty(data) && return false
 
-    target, _, _, _ = manager.state[:Compare_State]
+    target, _, _, _ = manager.compare_state
     is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
 
@@ -75,7 +75,7 @@ function _handle_plot_trigger!(
         plot_x_slices = Dict{Int, Any}()
         plot_y_slices = Dict{Int, Any}()
 
-        manager.state[:Plot_Titles] = fill("", num_plots)
+        manager.plot_titles = fill("", num_plots)
 
         for i in 1:num_plots
             manager.caches[i] = Dict{Symbol, _cache_type(Val(manager.mode[]))}()
@@ -95,7 +95,7 @@ function _handle_plot_trigger!(
             
             ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
             
-            manager.state[:Plot_Titles][i] = ts
+            manager.plot_titles[i] = ts
             
             default_title = is_compare ? "$(compare_labels[i])" : ts
             
@@ -172,10 +172,10 @@ function _handle_slider_trigger!(u_sel)
     isempty(data) && return false
 
     w = manager.widgets
-    active_axes = manager.state[:Active_Axes][]
+    active_axes = manager.active_axes[]
     u_val = u_sel[]
 
-    _, target_idx, _, _ = manager.state[:Compare_State]
+    _, target_idx, _, _ = manager.compare_state
     _, sim_data = _get_active_sim_data(data)
     isnothing(sim_data) && return false
 
@@ -185,8 +185,8 @@ function _handle_slider_trigger!(u_sel)
     target_field = (isnothing(u_val) || u_val === :none) ? :Solution : u_val
     base_stat = Symbol(first(_split_axis_symbol(target_field)))
     kept_syms = Tuple(get_kept_dims(base_stat, sim_data.domain))  # :Solution keeps every dimension
-    slider_cache = manager.state[:Slider_Cache]
-    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+    slider_cache = manager.slider_cache
+    rev_map = manager.reverse_map
 
     manager.locks[:PlotData] = true
     try
@@ -272,7 +272,7 @@ function _handle_data_trigger!(
 
     (isempty(data) || isempty(caches) || isempty(manager.methods[])) && return false
 
-    target, _, _, _ = manager.state[:Compare_State]
+    target, _, _, _ = manager.compare_state
     is_compare = target != :none
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     
@@ -283,7 +283,7 @@ function _handle_data_trigger!(
     plot_x_slices = Dict{Int, Any}()
     plot_y_slices = Dict{Int, Any}()
 
-    manager.state[:Plot_Titles] = fill("", num_plots)
+    manager.plot_titles = fill("", num_plots)
 
     for i in 1:num_plots
         mutated_sel_vals = is_compare ? _mutate_compare_vals(sel_vals, i) : sel_vals
@@ -318,7 +318,7 @@ function _handle_data_trigger!(
         
         ts = generate_dynamic_title(Tuple(active_title_indices), manager.plot_vars, mutated_sel_vals, sim_data)
         
-        manager.state[:Plot_Titles][i] = ts
+        manager.plot_titles[i] = ts
             
         default_title = is_compare ? "$(compare_labels[i])" : ts
 
@@ -373,7 +373,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
     ui_app = manager.ui[:plot_style]
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
 
-    target, _, old_compare_labels, _ = manager.state[:Compare_State]
+    target, _, old_compare_labels, _ = manager.compare_state
     is_compare = target != :none
     
     dyn_compare_labels = copy(old_compare_labels)
@@ -399,8 +399,8 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
     global_cr_obs = get_colorrange(ui_app, global_u)
 
     for (i, ax) in enumerate(axes)
-        if haskey(manager.state, :Plot_Titles) && i <= length(manager.state[:Plot_Titles])
-            ts = manager.state[:Plot_Titles][i]
+        if i <= length(manager.plot_titles)
+            ts = manager.plot_titles[i]
             default_title = is_compare && !isempty(dyn_compare_labels) && i <= length(dyn_compare_labels) ? "$(dyn_compare_labels[i])" : ts
             ax.title[] = manager.ui[:labels][:title] == "default" ? default_title : manager.ui[:labels][:title]
         end
@@ -452,7 +452,7 @@ function _handle_ui_trigger!(::Val{T}, master_fig, plot_layout, axes, has_colorb
     end
     
     # Block dynamic resizing if backend is recording
-    if !get(manager.state, :Is_Exporting, false)
+    if !manager.is_exporting
         resize_to_layout!(master_fig)
     end
     
@@ -469,7 +469,7 @@ end
 Helper function for multi-column comparison grids. Intercepts the global slider positions and substitutes the specific value required by the current subplot `idx` (e.g., assigning a specific time step to column 2).
 """
 function _mutate_compare_vals(current_sels, idx)
-    t_val, t_idx, c_labels, c_vals = manager.state[:Compare_State]
+    t_val, t_idx, c_labels, c_vals = manager.compare_state
     mutated = collect(current_sels)
     if !isnothing(t_idx) && !isempty(c_vals) && idx <= length(c_vals)
         mutated[t_idx] = c_vals[idx]
@@ -497,7 +497,7 @@ Returns a structured dictionary allocating specific Makie objects to concrete ro
 function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     is_3d_axis = PLOT_DIM_MAP[T] == 3 || is_surface(T)
     w = manager.widgets
-    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+    rev_map = manager.reverse_map
     
     # Parameters without a slider (more swept parameters than `max_params`) stay at their first value.
     selector_obs = map(manager.plot_vars) do n
@@ -566,7 +566,7 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
     has_colorbar = T in COLORBAR_SUPPORTED_PLOTS
 
     layout_dict = calculate_layout_dictionary(num_plots, cols, link_mode, has_legend, is_det, halign, valign, has_colorbar)
-    manager.state[:Layout_Dict][] = layout_dict
+    manager.layout_dict[] = layout_dict
     
     axes = []
     for i in 1:num_plots
@@ -598,7 +598,7 @@ function _initialize_render_layout!(plot_layout::GridLayout, ::Val{T}) where T
         findfirst(isequal(target), manager.plot_vars)
     end
 
-    manager.state[:Compare_State] = (target, target_idx, compare_labels, compare_vals)
+    manager.compare_state = (target, target_idx, compare_labels, compare_vals)
 
     return axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, has_colorbar
 end

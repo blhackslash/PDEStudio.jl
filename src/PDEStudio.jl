@@ -82,51 +82,72 @@ end
 """
     PlotManager
 
-The central reactive state machine governing the `PDEStudio` interface. 
+The central reactive state of the `PDEStudio` interface: the widgets of the open window, the bound
+`SimulationConfig`, the loaded sweep data, the persistent option caches and the trigger / lock
+hierarchy that keeps the headless backend and the Makie frontend from racing each other.
 
-It encapsulates all UI widget references, active configuration payloads, UI state dictionaries, and the critical hierarchical trigger locks (`locks`, `flags`, `triggers`) that prevent asynchronous race conditions between the headless backend and the Makie frontend.
+A single instance exists (`PDEStudio.manager`); [`reset_manager!`](@ref) returns it to its pristine
+state and [`reset_plotter!`](@ref) closes the window. The `locks` are re-entrancy guards for the
+synchronous observable cascades (see [`@with_lock`](@ref)), not thread locks.
 """
-mutable struct PlotManager 
-    ui::Dict{Symbol, Dict{Symbol, Any}}     
-    widgets::Dict{Symbol, Any}              
-    triggers::Dict{Symbol, Observable{Int}} 
-    flags::Dict{Symbol, Observable{Bool}}
-    state::Dict{Symbol, Any}               
-    maps::Dict{Symbol, Any}                
-    locks::Dict{Symbol, Bool}               
-    listeners::Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}} 
-    
-    methods::Observable{Vector{Symbol}}
-    plot_vars::Vector{Symbol}
-    caches::Dict{Int, Dict{Symbol, AbstractPlotCache}}
+Base.@kwdef mutable struct PlotManager
+    # --- UI dictionaries, widgets and the trigger hierarchy ---
+    ui::Dict{Symbol, Dict{Symbol, Any}} = Dict{Symbol, Dict{Symbol, Any}}()     # active UI style scopes
+    widgets::Dict{Symbol, Any} = Dict{Symbol, Any}()                            # Makie blocks of the open window
+    triggers::Dict{Symbol, Observable{Int}} = Dict{Symbol, Observable{Int}}()   # one trigger per tier of LOCK_HIERARCHY
+    flags::Dict{Symbol, Observable{Bool}} = Dict{Symbol, Observable{Bool}}()    # "pending" flags per tier (button colours)
+    locks::Dict{Symbol, Bool} = Dict{Symbol, Bool}()                            # re-entrancy guards per tier / menu chain
+    listeners::Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}} =
+        Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}()
 
-    active_config::Union{Nothing, SimulationConfig}   # `nothing` until a configuration is bound
-    plot_data::Observable{Dict{Symbol, AbstractPlotData}}
+    # --- display names, presets and the slider mapping ---
+    labels::Dict{Symbol, String} = Dict{Symbol, String}()            # custom display names (`set_label!`)
+    presets::Dict{Symbol, String} = Dict{Symbol, String}()           # visual presets: name => description
+    sim_presets::Dict{Symbol, String} = Dict{Symbol, String}()       # simulation presets: name => description
+    param_map::Dict{Symbol, Symbol} = Dict{Symbol, Symbol}()         # slider key (:param_i) => swept parameter
+    reverse_map::Dict{Symbol, Symbol} = Dict{Symbol, Symbol}()       # swept parameter => slider key
 
-    mode::Observable{Symbol}
-    ui_state::Dict{Symbol, Any}
+    # --- the simulation and its data ---
+    methods::Observable{Vector{Symbol}} = Observable(Symbol[])       # active methods (drawn)
+    plot_vars::Vector{Symbol} = Symbol[]                             # [swept parameters; base dimensions]
+    caches::Dict{Int, Dict{Symbol, AbstractPlotCache}} = Dict{Int, Dict{Symbol, AbstractPlotCache}}()
+    active_config::Union{Nothing, SimulationConfig} = nothing        # `nothing` until a configuration is bound
+    base_config::Union{Nothing, SimulationConfig} = nothing          # baseline that `reset_sim_config!` returns to
+    plot_data::Observable{Dict{Symbol, AbstractPlotData}} = Observable(Dict{Symbol, AbstractPlotData}())
+    mode::Observable{Symbol} = Observable{Symbol}(:eulerian)
+    allowed_dims::Tuple{Vararg{Symbol}} = (:x, :y, :z, :t)
+    max_params::Int = 2
+    resolution_base::Dict{Symbol, Int} = Dict{Symbol, Int}()         # display resolution per dimension (numerical data)
+    resolution_ref::Dict{Symbol, Int} = Dict{Symbol, Int}()          # display resolution per dimension (references)
 
-    allowed_dims::Tuple{Vararg{Symbol}}
-    max_params::Int
-end
+    # --- the window ---
+    is_open::Bool = false
+    master_fig::Union{Nothing, Figure} = nothing
+    plot_window_initialized::Observable{Bool} = Observable(false)
+    main_render_observers::Vector{ObserverFunction} = ObserverFunction[]
 
-function PlotManager()
-    return PlotManager(
-        Dict{Symbol, Dict{Symbol, Any}}(),
-        Dict{Symbol, Any}(), 
-        Dict{Symbol, Observable{Int}}(),
-        Dict{Symbol, Observable{Bool}}(), 
-        Dict{Symbol, Any}(),                   
-        Dict{Symbol, Any}(),                   
-        Dict{Symbol, Bool}(), 
-        Dict{Symbol, Union{ObserverFunction, Vector{ObserverFunction}}}(),
-        Observable(Symbol[]), Symbol[],
-        Dict{Int, Dict{Symbol, AbstractPlotCache}}(),
-        nothing, Observable(Dict{Symbol, AbstractPlotData}()),
-        Observable{Symbol}(:eulerian),
-        Dict{Symbol, Any}(:is_open => false, :master_fig => nothing),
-        (:x, :y, :z, :t), 2,
-    )
+    # --- reactive UI state ---
+    active_axes::Observable{Vector{Int}} = Observable{Vector{Int}}(Int[])    # indices into plot_vars bound to plot axes
+    is_activate_mode::Observable{Bool} = Observable(true)                     # method menu activates (or deactivates)
+    is_animating::Observable{Bool} = Observable(false)
+    animation_timer::Observable{Union{Nothing, Timer}} = Observable{Union{Nothing, Timer}}(nothing)
+    active_target::Observable{Any} = Observable{Any}(nothing)                 # (dict, key) edited in the hierarchical editor
+    layout_dict::Observable{Dict{Symbol, Any}} = Observable(Dict{Symbol, Any}())   # subplot grid of the current layout
+    camera_locked::Observable{Bool} = Observable(false)
+
+    # --- persistent caches (they outlive a closed window) ---
+    camera_cache::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    slider_cache::Dict{Symbol, Float64} = Dict{Symbol, Float64}()
+    layout_cache::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    plot_cache::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    exploration_cache::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    compare_state::Tuple{Symbol, Union{Nothing, Int}, Vector{String}, Vector} = (:none, nothing, String[], Any[])
+    plot_titles::Vector{String} = String[]
+    active_plot_type::Symbol = :none                                 # :none before the first layout
+    csv_cache::Union{Nothing, NamedTuple} = nothing                  # structural CSV staged until "Run Simulation"
+    is_exporting::Bool = false
+    skip_next_camera_extract::Bool = false
+    bypass_locks::Bool = false
 end
 
 const manager = PlotManager()
@@ -156,11 +177,9 @@ end
 
 # Makes sure every allowed dimension has a display resolution (the time axis gets coarser defaults).
 function _sync_resolution_dims!()
-    haskey(manager.state, :Resolution_Base) || (manager.state[:Resolution_Base] = Dict{Symbol, Int}())
-    haskey(manager.state, :Resolution_Ref) || (manager.state[:Resolution_Ref] = Dict{Symbol, Int}())
     for d in manager.allowed_dims
-        get!(manager.state[:Resolution_Base], d, d === :t ? 50 : 200)
-        get!(manager.state[:Resolution_Ref], d, d === :t ? 100 : 400)
+        get!(manager.resolution_base, d, d === :t ? 50 : 200)
+        get!(manager.resolution_ref, d, d === :t ? 100 : 400)
     end
     return nothing
 end
@@ -182,7 +201,7 @@ get_base_variables() = collect(manager.allowed_dims)
 Dynamically sets the internal interpolation and rendering resolution for a specific spatial or temporal dimension. Can target either the numerical baseline grid or the highly-resolved analytical reference grid.
 """
 function set_resolution!(dim::Symbol, val::Int; is_ref::Bool=false)
-    target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
+    target = is_ref ? manager.resolution_ref : manager.resolution_base
     target[dim] = val
 end
 
@@ -192,7 +211,7 @@ end
 Retrieves the active UI resolution for a given dimension, automatically falling back to sensible defaults (200 for numerical, 400 for analytical) if the dimension was dynamically generated during a sweep.
 """
 function get_resolution(dim::Symbol; is_ref::Bool=false)
-    target = is_ref ? manager.state[:Resolution_Ref] : manager.state[:Resolution_Base]
+    target = is_ref ? manager.resolution_ref : manager.resolution_base
     # Fallback default if a completely new dimension is requested dynamically
     return get(target, dim, is_ref ? 400 : 200)
 end
@@ -218,7 +237,7 @@ macro with_lock(lock_name, expr)
         local lname = $(esc(lock_name))
         local locks = manager.locks
         
-        if get(manager.state, :Bypass_Locks, false)
+        if manager.bypass_locks
             $(esc(expr))
         elseif !locks[lname]
             local lock_idx = findfirst(isequal(lname), LOCK_HIERARCHY)
@@ -342,89 +361,62 @@ end
 """
     reset_manager!()
 
-Performs a deep purge of the entire `PlotManager` architecture. 
-
-It empties all UI dictionaries, safely clears reactive `on` and `onany` listeners to prevent dangling references, reconstructs the base observable trigger tree, and repopulates the hierarchical default styles from the master templates.
+Returns the `PlotManager` to its pristine state: detaches every listener, drops the UI dictionaries,
+widgets, caches, labels and the bound configuration, rebuilds the trigger tree and reloads the default
+styles and the presets found on disk. The mode, the allowed dimensions, the number of parameter
+sliders and the window handle are kept (see [`reset_plotter!`](@ref) for the window).
 """
 function reset_manager!()
-    
-    empty!(manager.ui); empty!(manager.widgets)
-    empty!(manager.flags) 
-    empty!(manager.state); empty!(manager.maps) 
-    empty!(manager.locks); empty!(manager.plot_vars); empty!(manager.caches)
-    
-    for (k, listener_node) in manager.listeners
+    for (_, listener_node) in manager.listeners
         if listener_node isa Vector
             for l in listener_node; off(l); end
         else
             off(listener_node)
         end
     end
-    empty!(manager.listeners)
-    
+
+    fresh = PlotManager()
+    for field in fieldnames(PlotManager)
+        field in (:mode, :allowed_dims, :max_params, :is_open, :master_fig, :methods, :plot_data) && continue
+        setfield!(manager, field, getfield(fresh, field))
+    end
     manager.methods.val = Symbol[]
-    manager.active_config = nothing
     manager.plot_data.val = Dict{Symbol, AbstractPlotData}()
-    
-    core_keys = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
-    for k in core_keys
+
+    for k in LOCK_HIERARCHY
         manager.triggers[k] = Observable(0)
         manager.locks[k]    = false
-        manager.flags[k]    = Observable(false) 
+        manager.flags[k]    = Observable(false)
     end
-    
     manager.listeners[:Simulation] = on(manager.triggers[:Simulation]) do _; simulation_trigger() end
-    
-    for k in [:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D]
+    for k in (:Menu_Sync, :Menu_A, :Menu_B, :Menu_C, :Menu_D)
         manager.locks[k] = false
     end
-    
-    manager.state[:plot_window_initialized] = Observable(false)
-    manager.state[:Active_Axes] = Observable{Vector{Int}}(Int[])
-    manager.state[:Is_Activate_Mode] = Observable(true)
-    manager.state[:Is_Animating] = Observable(false)
-    manager.state[:Animation_Timer] = Observable{Any}(nothing)
-    manager.state[:Active_Target_Obs] = Observable{Any}(nothing)
-    manager.state[:Layout_Dict] = Observable(Dict{Symbol, Any}())
-    manager.state[:Camera_Locked] = Observable(false)
 
-    manager.state[:Camera_Cache] = Dict{Symbol, Any}()
-    manager.state[:Slider_Cache] = Dict{Symbol, Float64}()
-    manager.state[:Layout_Cache] = get_base_layout_options()
-    manager.state[:Plot_Cache]   = Dict{Symbol, Any}()
-    manager.state[:Exploration_Cache] = Dict{Symbol, Any}()
-
-    manager.state[:Compare_State] = (:none, nothing, String[], Any[])
-
-    manager.state[:Resolution_Base] = Dict{Symbol, Int}()
-    manager.state[:Resolution_Ref]  = Dict{Symbol, Int}()
     _sync_resolution_dims!()
-
-    manager.maps[:Labels] = Dict{Symbol, String}()
-    manager.maps[:Presets] = Dict{Symbol, String}(PRESET_DESCRIPTIONS)
-    manager.maps[:Sim_Presets] = Dict{Symbol, String}()
+    manager.layout_cache = get_base_layout_options()
+    manager.presets = Dict{Symbol, String}(PRESET_DESCRIPTIONS)
 
     # Set plot defaults
     set_plot_preset!()
 
     # Initialize the default creation text and register the presets found on disk
-    manager.maps[:Presets][:create_new] = DEFAULT_PRESET_DESC
-    manager.maps[:Sim_Presets][:create_new] = DEFAULT_PRESET_DESC
+    manager.presets[:create_new] = DEFAULT_PRESET_DESC
+    manager.sim_presets[:create_new] = DEFAULT_PRESET_DESC
     refresh_preset_registries!()
     return nothing
 end
-
 
 function __init__()
     on(manager.mode) do _
         # Keep the bound simulation across a mode switch; everything else is rebuilt.
         config = manager.active_config
-        base = get(manager.state, :Base_Config, nothing)
+        base = manager.base_config
         reset_plotter!()
         reset_manager!()
         if !isnothing(config)
             set_sim_config!(config; snapshot = false)
-            isnothing(base) || (manager.state[:Base_Config] = base)
+            isnothing(base) || (manager.base_config = base)
         end
     end
     reset_manager!()

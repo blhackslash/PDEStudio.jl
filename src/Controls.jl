@@ -14,7 +14,7 @@ This top-level builder orchestrates the creation of all interactive UI blocks:
 5. Static plot configuration menus and dimensional sliders.
 6. Camera locking and animation playback controls.
 
-It finalizes construction by injecting the persistent default layout states from the `manager.state` cache.
+It finalizes construction by injecting the persistent layout, plot and exploration caches of the manager.
 """
 function create_controls(layout::GridLayout)
     rowgap!(layout, 15) 
@@ -77,13 +77,13 @@ function create_controls(layout::GridLayout)
     # --- 8. CAMERA & ANIMATION CONTROLS (Bottom) ---
     bottom_ops = layout[current_row, 1] = GridLayout()
     manager.widgets[:play_anim_button]   = Button(bottom_ops[1, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
-    manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
+    manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(bottom_ops, i, Relative(1/2)); end
 
     # Restore from the persistent cache instead of hard defaults
-    apply_layout_options!(manager.state[:Layout_Cache])
-    apply_plot_options!(manager.state[:Plot_Cache])
-    apply_exploration_options!(manager.state[:Exploration_Cache])
+    apply_layout_options!(manager.layout_cache)
+    apply_plot_options!(manager.plot_cache)
+    apply_exploration_options!(manager.exploration_cache)
 end
 
 """

@@ -118,7 +118,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     xs_slices, us_slices = data_tuples
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
-    plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
@@ -135,8 +134,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.primitives[:lines_1d] = l
         cache_dict[label] = cache
         
-        push!(plotted_objects, [Makie.LineElement(color=c, linewidth=lw, linestyle=ls)])
-        push!(labels_for_legend, frontend_key(label))
     end
 end
 
@@ -149,7 +146,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
-    plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
@@ -166,8 +162,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.primitives[:contour_colors] = ct
         cache_dict[label] = cache
 
-        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
-        push!(labels_for_legend, frontend_key(label))
     end
 end
 
@@ -339,7 +333,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     xs_slices, ys_slices, us_slices = data_tuples
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
-    plotted_objects, labels_for_legend = [], String[]
     
     for (m_idx, label) in enumerate(active_methods)
         cache = EulerianPlotCache()
@@ -358,8 +351,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.primitives[:contour_surface] = cs
         cache_dict[label] = cache
 
-        push!(plotted_objects, [Makie.LineElement(color=color, linewidth=lw)])
-        push!(labels_for_legend, frontend_key(label))
     end
 end
 
@@ -403,7 +394,7 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     label = active_methods[base_idx]
     cache = EulerianPlotCache()
     
-    dir = get(ui_app, :line_direction, "Horizontal") 
+    dir = get(ui_app, :line_direction, :horizontal)
     X, Y, Z, U = build_3d_lines_grid(xs_slices[base_idx], ys_slices[base_idx], zs_slices[base_idx], us_slices[base_idx], dir)
     cache.obs_x.val = X
     cache.obs_y.val = Y
@@ -572,7 +563,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
-    plotted_objects, labels_for_legend = [], String[]
     is_eul = manager.mode[] == :eulerian
 
     for (m_idx, label) in enumerate(active_methods)
@@ -598,8 +588,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.primitives[:scatter_colors] = s
         cache_dict[label] = cache
         
-        push!(plotted_objects, [Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
-        push!(labels_for_legend, frontend_key(label))
     end
 end
 
@@ -608,7 +596,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
     ui_app = manager.ui[:plot_style]
     cache_dict = manager.caches[plot_idx]
     xs_slices, us_slices = data_tuples
-    plotted_objects, labels_for_legend = [], String[]
     is_eul = manager.mode[] == :eulerian
 
     for (m_idx, label) in enumerate(active_methods)
@@ -634,8 +621,6 @@ function initialize_base_plot!(plot_layout::GridLayout, ax, active_methods, data
         cache.primitives[:scatter_lines] = sl
         cache_dict[label] = cache
         
-        push!(plotted_objects, [Makie.LineElement(color=c, linewidth=lw, linestyle=ls), Makie.MarkerElement(color=c, marker=mrk, markersize=ms)])
-        push!(labels_for_legend, frontend_key(label))
     end
 end
 

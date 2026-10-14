@@ -54,7 +54,7 @@ Registers a custom UI display name for a backend Symbol (e.g. `set_label!(:rk4, 
 is displayed; files always store the backend names.
 """
 function set_label!(sym::Symbol, label::AbstractString)
-    return manager.maps[:Labels][sym] = String(label)
+    return manager.labels[sym] = String(label)
 end
 
 """
@@ -64,8 +64,8 @@ Translates an internal variable or method `Symbol` into a clean, human-readable 
 """
 function frontend_key(s::Symbol)
     # 1. Check User-Defined dynamic labels first
-    if haskey(manager.maps, :Labels) && haskey(manager.maps[:Labels], s)
-        return manager.maps[:Labels][s]
+    if haskey(manager.labels, s)
+        return manager.labels[s]
     end
     # 2. Default Mappings
     if haskey(SYMBOL_TO_LABEL_MAP, s)
@@ -269,11 +269,11 @@ function switch_ui_plot_type!(plot_type::Symbol)
     end
 
     # Track the active state and calculate dimensionality shifts
-    old_plot_type = get(manager.state, :Active_Plot_Type, :none)
+    old_plot_type = manager.active_plot_type
     if old_plot_type == plot_type && !isempty(ui)
         return 
     end
-    manager.state[:Active_Plot_Type] = plot_type
+    manager.active_plot_type = plot_type
     
     old_dim = haskey(PLOT_DIM_MAP, old_plot_type) ? PLOT_DIM_MAP[old_plot_type] : 0
     new_dim = PLOT_DIM_MAP[plot_type]
@@ -334,21 +334,19 @@ function set_plot_preset!()
     #    so `manager.ui` is never left empty (UI triggers read it before the next layout rebuild).
     empty!(manager.ui)
     base_layout = get_base_layout_options()
-    plot_type = get(manager.state, :Active_Plot_Type, base_layout[:plot_style])
-    delete!(manager.state, :Active_Plot_Type)
+    plot_type = (manager.active_plot_type === :none ? base_layout[:plot_style] : manager.active_plot_type)
+    manager.active_plot_type = :none
     switch_ui_plot_type!(haskey(PLOT_DIM_MAP, plot_type) ? plot_type : base_layout[:plot_style])
 
     # 2. Reset Layout and Sliders safely
     apply_layout_options!(base_layout)
-    empty!(manager.state[:Slider_Cache])
+    empty!(manager.slider_cache)
     
     # 3. Reset Camera
-    manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+    manager.camera_cache = Dict{Symbol, Any}()
     
     # 4. Reset Exploration Options
-    if haskey(manager.state, :Exploration_Cache)
-        manager.state[:Exploration_Cache] = Dict{Symbol, Any}(:anim_target => :none, :component => 1)
-    end
+    manager.exploration_cache = Dict{Symbol, Any}(:anim_target => :none, :component => 1)
 
     manager.triggers[:Layout][] += 1
     @info "UI and Layout have been directly reset to defaults."
@@ -483,7 +481,7 @@ function set_plot_preset!(name::Union{Symbol, AbstractString})
     parsed, raw = _read_csv(preset_path)
     visual = Dict(k => v for (k, v) in parsed if k in VISUAL_CSV_CATEGORIES)
     load_and_apply_csv!(visual, raw)
-    manager.maps[:Presets][name] = _preset_description(raw, "Custom disk preset")
+    manager.presets[name] = _preset_description(raw, "Custom disk preset")
     manager.triggers[:Layout][] += 1
     @info "Applied custom disk preset: $name"
     return true
