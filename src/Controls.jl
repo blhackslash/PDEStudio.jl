@@ -77,7 +77,7 @@ function create_controls(layout::GridLayout)
     # --- 8. CAMERA & ANIMATION CONTROLS (Bottom) ---
     bottom_ops = layout[current_row, 1] = GridLayout()
     manager.widgets[:play_anim_button]   = Button(bottom_ops[1, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
-    manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightgray, width=nothing)
+    manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(bottom_ops, i, Relative(1/2)); end
 
     # Restore from the persistent cache instead of hard defaults

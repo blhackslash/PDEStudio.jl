@@ -131,22 +131,15 @@ function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict
             
             idx = findfirst(v -> string(v) == string(val), valid_vals)
             
+            # Setting `i_selected` notifies `selection` by itself (an extra notify ran every listener twice).
             if !isnothing(idx)
                 widget.i_selected[] = idx
-                notify(widget.selection)
             else
                 # Fallback for dynamic menus (like Axis targets) pushing new options
-                if opts isa Vector && !isempty(opts) && opts[1] isa Tuple
-                    new_opts = copy(opts)
-                    push!(new_opts, (string(val), val))
-                    widget.options[] = new_opts
-                else
-                    new_opts = copy(opts)
-                    push!(new_opts, val)
-                    widget.options[] = new_opts
-                end
+                new_opts = copy(opts)
+                push!(new_opts, opts[1] isa Tuple ? (string(val), val) : val)
+                widget.options[] = new_opts
                 widget.i_selected[] = length(widget.options[])
-                notify(widget.selection)
             end
         end
     end

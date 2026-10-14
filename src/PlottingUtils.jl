@@ -108,7 +108,7 @@ function generate_dynamic_title(
             continue
         end
 
-        name = titlecase(string(name_sym))
+        name = frontend_key(name_sym)   # custom display labels (set_label!) apply to titles too
 
         if i in plot_dims
             push!(title_parts, "$name = [Axis]")

@@ -366,8 +366,7 @@ function reset_manager!()
     manager.active_config = nothing
     manager.plot_data.val = Dict{Symbol, AbstractPlotData}()
     
-    core_keys = [:Simulation, :Data, :Layout, :Plot, :Slider, :PlotData, :UI]
-    for k in core_keys
+    for k in LOCK_HIERARCHY
         manager.triggers[k] = Observable(0)
         manager.locks[k]    = false
         manager.flags[k]    = Observable(false) 
