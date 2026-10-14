@@ -104,19 +104,19 @@ function _select_menu_value!(menu_widget, value)
 end
 
 """
-    apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
+    apply_options!(cache::AbstractDict, option_keys::Tuple, new_options::Dict)
 
 Orchestrates the massive state synchronization that occurs when a CSV preset is loaded.
 
-1. **Persistent Update:** Unconditionally overwrites the background dictionary cache (`manager.state[cache_key]`) with the loaded values.
+1. **Persistent Update:** Unconditionally overwrites the persistent `cache` (`manager.layout_cache`, `manager.plot_cache` or `manager.exploration_cache`) with the loaded values.
 2. **Widget Synchronization:** If the corresponding Makie widget currently exists in the layout, it safely updates its observable. It uses a three-tier matching system to resolve loaded UI strings (e.g., `"Contour Filled"`) back to their functional backend `Symbol`s (e.g., `:contour_f`).
 """
-function apply_options!(cache_key::Symbol, option_keys::Tuple, new_options::Dict)
+function apply_options!(cache::AbstractDict, option_keys::Tuple, new_options::Dict)
     isempty(new_options) && return
 
     # 1. ALWAYS update the central source of truth
     for (k, v) in new_options
-        manager.state[cache_key][k] = v
+        cache[k] = v
     end
 
     # 2. Sync the widgets ONLY if they currently exist
@@ -169,7 +169,7 @@ Because sliders automatically trigger data-fetching loops, this function safely 
 function apply_slider_options!(slider_options::Dict)
     isempty(slider_options) && return
     
-    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+    rev_map = manager.reverse_map
     for (key, desired_val) in slider_options
         # Skip standard dropdown keys if a mixed dictionary is passed in
         if key in PLOT_AXIS_OPTIONS || key in LAYOUT_OPTIONS || key in EXPLORATION_OPTIONS || key === :reset
@@ -183,8 +183,8 @@ function apply_slider_options!(slider_options::Dict)
             widget = manager.widgets[w_key]
             if widget isa Makie.Slider && desired_val isa Real
                 # Safely cache the desired CSV value
-                manager.state[:Slider_Cache][w_key] = Float64(desired_val)
-                manager.state[:Plot_Cache][key] = desired_val
+                manager.slider_cache[w_key] = Float64(desired_val)
+                manager.plot_cache[key] = desired_val
                 
                 rng = widget.range[]
                 
@@ -204,11 +204,11 @@ end
     extract_slider_options()
 
 Extracts the exact numeric floating-point values from every dynamic parameter slider currently rendered in the UI. 
-Maps the internal UI widget keys back to their core physics variable symbols via `manager.maps[:Reverse]`.
+Maps the internal UI widget keys back to their core physics variable symbols via `manager.reverse_map`.
 """
 function extract_slider_options()
     opts = Dict{Symbol, Any}()
-    rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+    rev_map = manager.reverse_map
     for k in manager.plot_vars
         w_key = haskey(rev_map, k) ? rev_map[k] : k 
         if haskey(manager.widgets, w_key)
@@ -224,11 +224,11 @@ end
 # ==============================================================================
 # --- ALIASES FOR COMPATIBILITY ---
 # ==============================================================================
-apply_layout_options!(opts::Dict)      = apply_options!(:Layout_Cache, LAYOUT_OPTIONS, opts)
-apply_exploration_options!(opts::Dict) = apply_options!(:Exploration_Cache, EXPLORATION_OPTIONS, opts)
+apply_layout_options!(opts::Dict)      = apply_options!(manager.layout_cache, LAYOUT_OPTIONS, opts)
+apply_exploration_options!(opts::Dict) = apply_options!(manager.exploration_cache, EXPLORATION_OPTIONS, opts)
 
 function apply_plot_options!(opts::Dict)
-    apply_options!(:Plot_Cache, PLOT_AXIS_OPTIONS, opts)
+    apply_options!(manager.plot_cache, PLOT_AXIS_OPTIONS, opts)
     apply_slider_options!(opts)
 end
 
@@ -285,7 +285,7 @@ function _setup_button_state_machine!()
     # 1. Layout Watcher
     layout_obs = [w[k].selection for k in LAYOUT_OPTIONS if haskey(w, k)]
     manager.listeners[:Watch_Layout] = onany(layout_obs...) do _...
-        merge!(manager.state[:Layout_Cache], extract_layout_options())
+        merge!(manager.layout_cache, extract_layout_options())
         if !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_lay[] = true
         end
@@ -294,7 +294,7 @@ function _setup_button_state_machine!()
     # 2. Plot Watcher
     plot_obs = [w[k].selection for k in PLOT_AXIS_OPTIONS if haskey(w, k)]
     manager.listeners[:Watch_Plot] = onany(plot_obs...) do _...
-        merge!(manager.state[:Plot_Cache], extract_plot_options())
+        merge!(manager.plot_cache, extract_plot_options())
         if !manager.locks[:Plot] && !manager.locks[:Layout] && !manager.locks[:Simulation]
             f_plot[] = true
         end
@@ -303,7 +303,7 @@ function _setup_button_state_machine!()
     # 3. Exploration Watcher (Updates Cache, but doesn't flag a hard reset)
     exp_obs = [w[k].selection for k in EXPLORATION_OPTIONS if haskey(w, k)]
     manager.listeners[:Watch_Exploration] = onany(exp_obs...) do _...
-        merge!(manager.state[:Exploration_Cache], extract_exploration_options())
+        merge!(manager.exploration_cache, extract_exploration_options())
     end
 
     # --- MASTER HIERARCHY RESOLVER ---
@@ -398,11 +398,12 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
         
-        if haskey(manager.state, :CSV_Cache)
+        if !isnothing(manager.csv_cache)
             @info "Structural rebuild initiated. Relaunching UI..."
             
             # 1. Extract the staging area
-            staged = pop!(manager.state, :CSV_Cache)
+            staged = manager.csv_cache
+            manager.csv_cache = nothing
             
             # 2. Apply structural limits globally
             manager.allowed_dims = staged.dims
@@ -436,7 +437,7 @@ Handles the "Activate/Deactivate" method toggles. It intercepts clicks, updates 
 function _setup_method_interactions!()
     mode_btn = manager.widgets[:mode_button]
     menu_mth = manager.widgets[:method_toggle]
-    is_activate_mode = manager.state[:Is_Activate_Mode]
+    is_activate_mode = manager.is_activate_mode
     
     # A helper function to manually sync the menu directly from the config
     function sync_menu()
@@ -517,7 +518,7 @@ end
 # The dictionary (or dictionary-like view) the editor edits for a category and scope.
 function _editor_target(cat, scope)
     if cat === :simulation
-        scope === :presets && return manager.maps[:Sim_Presets]
+        scope === :presets && return manager.sim_presets
         config = manager.active_config
         isnothing(config) && return nothing
         scope === :shared && return config.shared
@@ -525,10 +526,10 @@ function _editor_target(cat, scope)
         scope === :config && return ConfigFields(config)
         return get(config.methods, scope, nothing)
     elseif cat === :ui
-        scope === :presets && return manager.maps[:Presets]
+        scope === :presets && return manager.presets
         return get(manager.ui, scope, nothing)
     elseif cat === :labels
-        return manager.maps[:Labels]
+        return manager.labels
     end
     return nothing
 end
@@ -542,16 +543,16 @@ function _editor_default(cat, scope, key)
         template = _ui_template_scope(scope)
         haskey(MASTER_UI_DICT, template) && haskey(MASTER_UI_DICT[template], key) && return deepcopy(MASTER_UI_DICT[template][key])
     elseif cat === :simulation
-        base = get(manager.state, :Base_Config, nothing)
+        base = manager.base_config
         isnothing(base) && return missing
         target = scope === :shared ? base.shared : scope === :sweep ? base.varied :
                  scope === :config ? ConfigFields(base) : get(base.methods, scope, nothing)
         (!isnothing(target) && haskey(target, key)) && return deepcopy(target[key])
     elseif cat === :labels
         # the built-in display name, i.e. the name without the custom label
-        custom = pop!(manager.maps[:Labels], key, nothing)
+        custom = pop!(manager.labels, key, nothing)
         default = frontend_key(key)
-        isnothing(custom) || (manager.maps[:Labels][key] = custom)
+        isnothing(custom) || (manager.labels[key] = custom)
         return default
     end
     return missing
@@ -600,7 +601,7 @@ function _after_editor_change!(cat, scope, key, target)
         scope === :presets && return nothing
         manager.flags[:Simulation][] = true
         if scope === :config && key === :defaults
-            notify(manager.state[:Is_Activate_Mode])  # refresh the method menu
+            notify(manager.is_activate_mode)  # refresh the method menu
         elseif scope === :sweep && !isnothing(manager.active_config)
             _map_parameters_to_sliders!(manager.active_config)
         end
@@ -613,13 +614,13 @@ function _after_editor_change!(cat, scope, key, target)
         end
     elseif cat === :labels
         if scope === :variables
-            w_key = get(get(manager.maps, :Reverse, Dict{Symbol, Symbol}()), key, key)
+            w_key = get(manager.reverse_map, key, key)
             lbl_key = Symbol("$(w_key)_label")
-            haskey(manager.widgets, lbl_key) && (manager.widgets[lbl_key][] = manager.maps[:Labels][key] * ":")
+            haskey(manager.widgets, lbl_key) && (manager.widgets[lbl_key][] = manager.labels[key] * ":")
         elseif scope === :components
             notify(manager.widgets[:u_axis].selection)
         elseif scope === :methods
-            notify(manager.state[:Is_Activate_Mode])
+            notify(manager.is_activate_mode)
         end
         manager.triggers[:UI][] += 1
     end
@@ -654,7 +655,7 @@ function _setup_hierarchy_interactions!()
     tb         = manager.widgets[:editor_text]
     toggle_btn = manager.widgets[:editor_toggle]
     
-    active_target_ref = manager.state[:Active_Target_Obs]
+    active_target_ref = manager.active_target
 
     function sync_textbox_to_active_key()
         key = menu_key.selection[]
@@ -719,7 +720,7 @@ function _setup_hierarchy_interactions!()
         
         if scope === :presets
             refresh_preset_registries!()  # picks up preset files added on disk
-            registry = cat === :simulation ? manager.maps[:Sim_Presets] : manager.maps[:Presets]
+            registry = cat === :simulation ? manager.sim_presets : manager.presets
             raw_keys = sort!(collect(keys(registry)))
         elseif cat === :labels
             if scope === :components
@@ -741,7 +742,7 @@ function _setup_hierarchy_interactions!()
             end
             
             for k in raw_keys
-                haskey(manager.maps[:Labels], k) || set_label!(k, frontend_key(k))
+                haskey(manager.labels, k) || set_label!(k, frontend_key(k))
             end
         else
             target = _editor_target(cat, scope)
@@ -860,20 +861,20 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     btn_export = manager.widgets[:export_button]
 
     manager.listeners[:Camera_Lock_Click] = on(btn_lock.clicks) do _
-        is_locked = !manager.state[:Camera_Locked][]
-        manager.state[:Camera_Locked][] = is_locked
+        is_locked = !manager.camera_locked[]
+        manager.camera_locked[] = is_locked
         
         if is_locked
             extract_and_store_camera_state!(plot_layout)
             @info "Camera locked to current view."
         else
-            manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+            manager.camera_cache = Dict{Symbol, Any}()
             @info "Camera unlocked. Will auto-scale on next data update."
         end
     end
 
     # Couple the button directly to the observable
-    manager.listeners[:Camera_State_Sync] = on(manager.state[:Camera_Locked]) do is_locked
+    manager.listeners[:Camera_State_Sync] = on(manager.camera_locked) do is_locked
         if is_locked
             btn_lock.label[] = "Camera: Locked"
             btn_lock.buttoncolor[] = :lightgreen
@@ -884,12 +885,12 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     end
 
     anim_target_obs = manager.widgets[:anim_target].selection
-    is_animating = manager.state[:Is_Animating]
-    animation_timer = manager.state[:Animation_Timer]
+    is_animating = manager.is_animating
+    animation_timer = manager.animation_timer
 
     function get_target_widget(target_name)
         target_name == :none && return nothing
-        rev_map = haskey(manager.maps, :Reverse) ? manager.maps[:Reverse] : Dict{Symbol, Symbol}()
+        rev_map = manager.reverse_map
         w_key = haskey(rev_map, target_name) ? rev_map[target_name] : Symbol(target_name)
         return haskey(manager.widgets, w_key) ? manager.widgets[w_key] : nothing
     end
@@ -901,7 +902,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         
         idx = findfirst(isequal(target_name), manager.plot_vars)
-        if !isnothing(idx) && idx in manager.state[:Active_Axes][]
+        if !isnothing(idx) && idx in manager.active_axes[]
             @warn "Cannot animate an active plot axis."
             return false 
         end
@@ -979,24 +980,22 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             !check_selection_validity(target_name) && return
         end
 
-        was_locked = manager.state[:Camera_Locked][]
-        manager.state[:Camera_Locked][] = true 
+        was_locked = manager.camera_locked[]
+        manager.camera_locked[] = true 
         extract_and_store_camera_state!(plot_layout)
         
         target_widget = is_anim ? get_target_widget(target_name) : nothing
 
         try
             # 1. SHUT DOWN MAIN WINDOW (Prevents cache corruption and duplicate colorbars)
-            if haskey(manager.state, :Main_Render_Observers)
-                for obs in manager.state[:Main_Render_Observers]; off(obs); end
-                empty!(manager.state[:Main_Render_Observers])
-            end
+            for obs in manager.main_render_observers; off(obs); end
+            empty!(manager.main_render_observers)
             
             # 2. BUILD PRISTINE EXPORT FIGURE (Takes exclusive control of manager.caches)
             export_fig, export_obs = build_pristine_export_figure()
             dpi_val = get(manager.ui[:export], :dpi, 300)
 
-            manager.state[:Is_Exporting] = true
+            manager.is_exporting = true
 
             # --- ANIMATION EXPORT ---
             if is_anim
@@ -1052,15 +1051,15 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         catch e
             @error "Export Failed" exception=(e, catch_backtrace())
         finally
-            manager.state[:Is_Exporting] = false
+            manager.is_exporting = false
             
-            manager.state[:Camera_Locked][] = was_locked
+            manager.camera_locked[] = was_locked
             if !was_locked
-                manager.state[:Camera_Cache] = Dict{Symbol, Any}()
+                manager.camera_cache = Dict{Symbol, Any}()
             end
             
             @info "Restoring main UI..."
-            manager.state[:Skip_Next_Camera_Extract] = true 
+            manager.skip_next_camera_extract = true 
             manager.triggers[:Layout][] += 1
             
             # Force the OpenGL context to bring the main window back to life
@@ -1077,8 +1076,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
         
         is_sim = _preset_context() === :simulation
-        registry_key = is_sim ? :Sim_Presets : :Presets
-        registry = manager.maps[registry_key]
+        registry = is_sim ? manager.sim_presets : manager.presets
         desc = get(registry, :create_new, "")
 
         success = is_sim ? save_sim_preset(filename; description = desc) :
@@ -1371,7 +1369,7 @@ It listens to the exact spatial axes the user has currently selected (e.g., X an
 function _setup_chain_B!(::Val{:eulerian})
     w = manager.widgets
     x_sel, y_sel, z_sel = w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection
-    active_axes_obs = manager.state[:Active_Axes]
+    active_axes_obs = manager.active_axes
 
     manager.listeners[:Eulerian_Chain_B] = onany(x_sel, y_sel, z_sel, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
         @with_lock :Menu_B begin
@@ -1423,7 +1421,7 @@ The Lagrangian variant of Chain B. Because particles lack rigid meshes, it filte
 """
 function _setup_chain_B!(::Val{:lagrangian})
     w = manager.widgets
-    active_axes_obs = manager.state[:Active_Axes]
+    active_axes_obs = manager.active_axes
 
     manager.listeners[:Lagrangian_Chain_B] = onany(w[:x_axis].selection, w[:y_axis].selection, w[:z_axis].selection, manager.plot_data) do x_val, y_val, z_val, plot_data_dict
         @with_lock :Menu_B begin
@@ -1491,7 +1489,7 @@ function _setup_chain_C!(mode::Val{T}) where T
             c_options = Any[]
             for i in 1:comp_max
                 sym = Symbol("component_$i")
-                haskey(manager.maps[:Labels], sym) || set_label!(sym, "Component $i")
+                haskey(manager.labels, sym) || set_label!(sym, "Component $i")
                 
                 push!(c_options, (frontend_key(sym), i))
             end

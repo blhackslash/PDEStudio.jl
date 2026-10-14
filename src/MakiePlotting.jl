@@ -88,14 +88,12 @@ With `snapshot = true` (the default) a copy of `config` is kept as the baseline 
 """
 function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     manager.active_config = config
-    delete!(manager.state, :CSV_Cache)  # a staged (structural) CSV is superseded by this configuration
+    manager.csv_cache = nothing  # a staged (structural) CSV is superseded by this configuration
     haskey(manager.flags, :Simulation) && (manager.flags[:Simulation][] = true)
 
-    if haskey(manager.maps, :Labels)
-        for m_sym in keys(config.methods)
-            if m_sym !== :shared && !haskey(manager.maps[:Labels], m_sym)
-                set_label!(m_sym, is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym))
-            end
+    for m_sym in keys(config.methods)
+        if m_sym !== :shared && !haskey(manager.labels, m_sym)
+            set_label!(m_sym, is_reference_method(m_sym) ? frontend_key(m_sym) : string(m_sym))
         end
     end
 
@@ -103,7 +101,7 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     active_m = sort_methods_robust(isempty(config.defaults) ? collect(keys(config.methods)) : unique(config.defaults))
     filter!(k -> k !== :shared, active_m)
     config.defaults = active_m
-    snapshot && (manager.state[:Base_Config] = deepcopy(config))
+    snapshot && (manager.base_config = deepcopy(config))
     manager.methods[] = copy(active_m)
 
     # Build UI mappings immediately so CSV loading and layout triggers can use them
@@ -114,7 +112,7 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     end
 
     # Force the UI menu to redraw itself with the newly loaded config
-    haskey(manager.state, :Is_Activate_Mode) && notify(manager.state[:Is_Activate_Mode])
+    notify(manager.is_activate_mode)
     return config
 end
 
@@ -152,8 +150,8 @@ function _map_parameters_to_sliders!(config::SimulationConfig)
         haskey(manager.widgets, base_lbl_key) && (manager.widgets[base_lbl_key][] = frontend_key(base_sym) * ":")
     end
 
-    manager.maps[:Param] = param_map
-    manager.maps[:Reverse] = reverse_map
+    manager.param_map = param_map
+    manager.reverse_map = reverse_map
     manager.plot_vars = Symbol[real_params; get_base_variables()]
     return nothing
 end
@@ -215,7 +213,7 @@ Safely resets the Makie rendering engine.
 It systematically closes the active display screen, clears the `Figure` cache, and explicitly detaches all reactive `ObserverFunction` listeners to prevent memory leaks and ghost updates during hot reloads.
 """
 function reset_plotter!()
-    fig = manager.ui_state[:master_fig]
+    fig = manager.master_fig
     
     if !isnothing(fig)
         try
@@ -226,17 +224,15 @@ function reset_plotter!()
         empty!(fig)
     end
     
-    manager.ui_state[:is_open] = false
-    manager.ui_state[:master_fig] = nothing
-    manager.state[:Camera_Locked][] = false
+    manager.is_open = false
+    manager.master_fig = nothing
+    manager.camera_locked[] = false
 
     # Stop a running animation (its timer would keep driving the sliders of the closed window)
-    if haskey(manager.state, :Animation_Timer)
-        timer = manager.state[:Animation_Timer][]
-        isnothing(timer) || close(timer)
-        manager.state[:Animation_Timer][] = nothing
-    end
-    haskey(manager.state, :Is_Animating) && (manager.state[:Is_Animating][] = false)
+    timer = manager.animation_timer[]
+    isnothing(timer) || close(timer)
+    manager.animation_timer[] = nothing
+    manager.is_animating[] = false
     
     for (k, obs) in manager.triggers
         if k != :Simulation
@@ -258,7 +254,7 @@ function reset_plotter!()
         k === :Simulation || delete!(manager.listeners, k)  # switched off above
     end
     empty!(manager.widgets)  # widgets of the closed window; the caches keep their state
-    manager.state[:plot_window_initialized][] = false
+    manager.plot_window_initialized[] = false
 
     @info "Plotter state completely cleared!"
 end
@@ -282,8 +278,8 @@ function launch_plotter()
     isnothing(manager.active_config) || _map_parameters_to_sliders!(manager.active_config)
     setup_ui_interactions!(master_fig, plot_layout, Val(manager.mode[]))
 
-    manager.ui_state[:is_open] = true
-    manager.ui_state[:master_fig] = master_fig
+    manager.is_open = true
+    manager.master_fig = master_fig
 
     setup_plot_window!(master_fig, plot_layout)
     resize_to_layout!(master_fig)
@@ -301,16 +297,16 @@ Bootstraps the top-level trigger listeners responsible for layout management.
 This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing base plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
 """
 function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
-    if manager.state[:plot_window_initialized][]; return; end
-    manager.state[:plot_window_initialized][] = true
+    if manager.plot_window_initialized[]; return; end
+    manager.plot_window_initialized[] = true
 
     # Store observers globally
-    manager.state[:Main_Render_Observers] = ObserverFunction[]
+    manager.main_render_observers = ObserverFunction[]
 
     function rebuild_plot_layout!()
-        if get(manager.state, :Camera_Locked, Observable(false))[]
-            if get(manager.state, :Skip_Next_Camera_Extract, false)
-                manager.state[:Skip_Next_Camera_Extract] = false
+        if manager.camera_locked[]
+            if manager.skip_next_camera_extract
+                manager.skip_next_camera_extract = false
             else
                 extract_and_store_camera_state!(plot_layout)
             end
@@ -324,10 +320,8 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         end
 
         # Safely clear old observers
-        if haskey(manager.state, :Main_Render_Observers)
-            for obs in manager.state[:Main_Render_Observers]; off(obs); end
-            empty!(manager.state[:Main_Render_Observers])
-        end
+        for obs in manager.main_render_observers; off(obs); end
+        empty!(manager.main_render_observers)
         empty!(manager.caches)
         
         for c in copy(plot_layout.content)
@@ -338,7 +332,7 @@ function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
         switch_ui_plot_type!(ptype_sym)
         
         new_obs = setup_render_lift!(master_fig, plot_layout, Val(ptype_sym))
-        if !isnothing(new_obs); append!(manager.state[:Main_Render_Observers], new_obs); end
+        if !isnothing(new_obs); append!(manager.main_render_observers, new_obs); end
     end
 
     manager.listeners[:Data] = on(manager.triggers[:Data]) do _
@@ -432,7 +426,7 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
     manager.listeners[:PlotData_Sync_Widget] = onany(c_sel, selector_obs...) do _...
         
         # Sync manual slider drags into the persistent caches
-        rev_map = get(manager.maps, :Reverse, Dict{Symbol, Symbol}())
+        rev_map = manager.reverse_map
         for k in manager.plot_vars
             w_key = haskey(rev_map, k) ? rev_map[k] : k 
             if haskey(manager.widgets, w_key)
@@ -440,8 +434,8 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
                 # Disabled sliders (range [0.0]: axis or compare target) keep their last real position
                 if widget isa Makie.Slider && length(widget.range[]) > 1
                     val = widget.value[]
-                    manager.state[:Slider_Cache][w_key] = Float64(val)
-                    manager.state[:Plot_Cache][k] = val
+                    manager.slider_cache[w_key] = Float64(val)
+                    manager.plot_cache[k] = val
                 end
             end
         end

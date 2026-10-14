@@ -69,8 +69,8 @@ end
 Registers the visual and simulation presets found on disk (with their descriptions) in the preset lists of the editor.
 """
 function refresh_preset_registries!()
-    haskey(manager.maps, :Presets) && _scan_presets!(manager.maps[:Presets], preset_dir())
-    haskey(manager.maps, :Sim_Presets) && _scan_presets!(manager.maps[:Sim_Presets], sim_preset_dir())
+    _scan_presets!(manager.presets, preset_dir())
+    _scan_presets!(manager.sim_presets, sim_preset_dir())
     return nothing
 end
 
@@ -92,7 +92,7 @@ function save_plot_preset(name; description::AbstractString = "")
         return false
     end
     haskey(PRESET_DESCRIPTIONS, sym) && @warn "'$sym' is also the name of a built-in preset, which takes precedence when applying it."
-    manager.maps[:Presets][sym] = _clean_description(description, "User custom preset: $sym")
+    manager.presets[sym] = _clean_description(description, "User custom preset: $sym")
     return save_preset_to_csv(sym, preset_dir())
 end
 
@@ -133,7 +133,7 @@ function save_sim_preset(name; description::AbstractString = "")
         @error "Simulation preset save failed" exception = (e, catch_backtrace())
         return false
     end
-    haskey(manager.maps, :Sim_Presets) && (manager.maps[:Sim_Presets][sym] = desc)
+    manager.sim_presets[sym] = desc
     @info "Simulation preset saved to $path"
     return true
 end
@@ -173,9 +173,7 @@ function set_sim_preset!(name; mode::Union{Nothing, Symbol} = nothing)
     isnothing(current) || (config.sources = copy(current.sources))  # the code (solvers) stays as it is
     set_sim_config!(config; snapshot = false)
 
-    if haskey(manager.maps, :Sim_Presets)
-        manager.maps[:Sim_Presets][Symbol(splitext(basename(path))[1])] = _preset_description(raw, "Custom simulation preset")
-    end
+    manager.sim_presets[Symbol(splitext(basename(path))[1])] = _preset_description(raw, "Custom simulation preset")
     @info "Applied simulation preset '$name' ($apply_mode). Press 'Run Simulation' to compute it."
     return config
 end
@@ -187,7 +185,7 @@ Restores the simulation configuration that was last bound with [`set_sim_config!
 CSV), discarding simulation presets and editor changes applied since. Flags the simulation for a re-run.
 """
 function reset_sim_config!()
-    base = get(manager.state, :Base_Config, nothing)
+    base = manager.base_config
     if isnothing(base)
         @warn "There is no baseline simulation configuration to reset to."
         return nothing

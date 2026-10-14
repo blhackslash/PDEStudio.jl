@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased: typed manager
+
+### Changed
+- `PlotManager` is a typed struct: the former `state`, `ui_state` and `maps` dictionaries are fields
+  (`camera_locked`, `compare_state`, `layout_cache`, `plot_cache`, `slider_cache`, `resolution_base`, `labels`,
+  `presets`, `sim_presets`, `param_map`, `reverse_map`, `is_open`, `master_fig`, …). `reset_manager!` rebuilds
+  the manager from the field defaults. Code that reached into `manager.state[:Key]` or `manager.maps[:Key]`
+  must use the fields.
+- `apply_options!` takes the cache dictionary instead of its former `manager.state` key.
+
+### Fixed
+- Restoring a menu option notified its listeners twice.
+- Dynamic plot titles use the display labels (`set_label!`) like the menus and legends.
+- The default direction of 3-D line grids was a string the grid builder never matched.
+- The camera-lock button started in a colour that did not match its unlocked state.
+
 ## Unreleased: adaptation to the new PDEStudioCore
 
 ### New
