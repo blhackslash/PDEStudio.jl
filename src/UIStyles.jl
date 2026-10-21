@@ -482,6 +482,7 @@ function set_plot_preset!(name::Union{Symbol, AbstractString})
     visual = Dict(k => v for (k, v) in parsed if k in VISUAL_CSV_CATEGORIES)
     load_and_apply_csv!(visual, raw)
     manager.presets[name] = _preset_description(raw, "Custom disk preset")
+    _refresh_preset_menu!()
     manager.triggers[:Layout][] += 1
     @info "Applied custom disk preset: $name"
     return true

@@ -642,6 +642,51 @@ end
     end
 
     # =========================================================================
+    # --- EDITOR: PRESETS SCOPE & LIVE PRESET LISTS ---
+    # =========================================================================
+    @testset "Editor: Presets scope & live preset lists" begin
+        reset_plotter!()
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
+        set_sim_config!(SimulationConfig(shared, methods, [:upwind]))
+        fig = launch_plotter()
+        display(fig)
+        w = manager.widgets
+        key_values() = [o[2] for o in w[:editor_key].options[]]
+
+        # 1. With a configuration bound before launching, the editor opens on Simulation → Presets
+        @test w[:editor_cat].selection[] === :simulation
+        @test w[:editor_scope].selection[] === :presets
+        @test w[:editor_key].selection[] === :create_new
+
+        # 2. A preset saved through the API shows up while the scope stays selected
+        save_sim_preset("api_saved"; description = "saved from the REPL")
+        @test :api_saved in key_values()
+        @test w[:editor_key].selection[] === :create_new
+
+        # 3. A file copied into the preset folder shows up when the key menu is opened
+        mkpath(sim_preset_dir())
+        write(joinpath(sim_preset_dir(), "copied.csv"),
+              "Category,Scope,Parameter,Value\nMetadata,Preset,description,copied by hand\nSimulation,Shared,N,40\n")
+        @test !(:copied in key_values())
+        w[:editor_key].is_open[] = true
+        @test :copied in key_values()
+        w[:editor_key].is_open[] = false
+        click_menu!(w[:editor_key], :copied)
+        @test w[:editor_text].displayed_string[] == "copied by hand"
+        @test w[:editor_toggle].label[] == "Apply"
+
+        # 4. The same for visual presets under UI → Presets; the scope survives the category switch
+        click_menu!(w[:editor_cat], :ui)
+        @test w[:editor_scope].selection[] === :presets
+        save_plot_preset("api_look"; description = "look from the REPL")
+        @test :api_look in key_values()
+        click_menu!(w[:editor_cat], :simulation)
+        @test w[:editor_scope].selection[] === :presets
+        @test :api_saved in key_values() && !(:api_look in key_values())
+    end
+
+    # =========================================================================
     # --- COMPARE OVER TIME & NON-NUMERIC SWEEPS ---
     # =========================================================================
     @testset "Compare over Time & Non-numeric Sweeps" begin

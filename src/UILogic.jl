@@ -638,6 +638,34 @@ end
 
 _preset_context() = haskey(manager.widgets, :editor_cat) && manager.widgets[:editor_cat].selection[] === :simulation ? :simulation : :visual
 
+# The preset registry shown under `Presets` for an editor category.
+_preset_registry(cat) = cat === :simulation ? manager.sim_presets : manager.presets
+
+"""
+    _refresh_preset_menu!()
+
+Re-fills the editor's key menu while it shows a `Presets` scope, so presets saved or applied through the API
+(`save_plot_preset`, `save_sim_preset`, `set_plot_preset!`, `set_sim_preset!`) and files copied into the preset
+folders appear without re-selecting the scope. A no-op when the editor is closed or shows another scope. The
+selected preset is kept if it still exists, otherwise `create_new` is selected.
+"""
+function _refresh_preset_menu!()
+    w = manager.widgets
+    all(k -> haskey(w, k), (:editor_cat, :editor_scope, :editor_key)) || return nothing
+    w[:editor_scope].selection[] === :presets || return nothing
+    menu_key = w[:editor_key]
+    refresh_preset_registries!()
+    new_arr = sort(Any[menu_opt(k) for k in sort!(collect(keys(_preset_registry(w[:editor_cat].selection[]))))],
+                   by = menu_option_rank)
+    old_arr = menu_key.options[]
+    length(old_arr) == length(new_arr) && all(o[1] == n[1] && o[2] == n[2] for (o, n) in zip(old_arr, new_arr)) &&
+        return nothing
+    # Assigned directly (not through `update_menu_safe!`), so that an open dropdown is not closed by the update.
+    menu_key.options[] = new_arr                              # Makie keeps the selection if it still exists
+    menu_key.i_selected[] == 0 && _select_menu_value!(menu_key, :create_new)
+    return nothing
+end
+
 """
     _setup_hierarchy_interactions!()
 
@@ -709,7 +737,8 @@ function _setup_hierarchy_interactions!()
             new_scopes = Any[("Components", :components), ("Variables", :variables), ("Methods", :methods)]
         end
         
-        update_menu_safe!(menu_scope, new_scopes; force_notify=true)
+        # Without a valid selection the editor opens on the presets of the category.
+        update_menu_safe!(menu_scope, new_scopes; fallbacks=[:presets], force_notify=true)
         _update_preset_buttons!(cat)
     end
 
@@ -720,8 +749,7 @@ function _setup_hierarchy_interactions!()
         
         if scope === :presets
             refresh_preset_registries!()  # picks up preset files added on disk
-            registry = cat === :simulation ? manager.sim_presets : manager.presets
-            raw_keys = sort!(collect(keys(registry)))
+            raw_keys = sort!(collect(keys(_preset_registry(cat))))
         elseif cat === :labels
             if scope === :components
                 c_max = 1
@@ -770,6 +798,13 @@ function _setup_hierarchy_interactions!()
 
     manager.listeners[:Hierarchy_Key_Sync] = on(menu_key.selection) do _
         sync_textbox_to_active_key()
+    end
+
+    # Opening the key menu of a `Presets` scope rescans the preset folders: Makie only notifies a menu selection
+    # when it changes, so files copied there while the scope was already selected would otherwise show up only
+    # after re-selecting it (e.g. by switching the category and back).
+    manager.listeners[:Hierarchy_Key_Open] = on(menu_key.is_open) do is_open
+        is_open && _refresh_preset_menu!()
     end
 
     manager.listeners[:Hierarchy_Text_Sync] = on(tb.stored_string) do s

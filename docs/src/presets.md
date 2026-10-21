@@ -20,7 +20,7 @@ Both are ordinary studio CSV files, so they can be versioned, shared and written
 3.  Type a name into the filename box (`Coarse Grid` is stored as `coarse_grid.csv`) and click the save button.
 4.  To apply a preset, select it under **Presets** (the description is shown in the text box) and click **Apply**. Applying a simulation preset sets the `Run Simulation` lock; click it to compute.
 
-Preset files you copy into the folders appear in the lists the next time you open the *Presets* scope.
+Preset files you copy into the folders appear in the list the next time you open the parameter menu of the *Presets* scope.
 
 ## From Code
 
