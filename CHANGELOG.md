@@ -11,6 +11,11 @@
 - `apply_options!` takes the cache dictionary instead of its former `manager.state` key.
 
 ### Fixed
+- The editor opens on *Presets*; with a configuration bound before `launch_plotter()` it opened on *Config*.
+- Presets saved or applied through the API (`save_plot_preset`, `save_sim_preset`, `set_plot_preset!`,
+  `set_sim_preset!`) and files copied into the preset folders appear in the *Presets* list right away (the folders
+  are rescanned when the parameter menu is opened); before, the list only refreshed when the scope was re-selected,
+  e.g. by switching the category and back.
 - Restoring a menu option notified its listeners twice.
 - Dynamic plot titles use the display labels (`set_label!`) like the menus and legends.
 - The default direction of 3-D line grids was a string the grid builder never matched.
