@@ -22,3 +22,14 @@ makedocs(
         "API Reference" => "api.md",
     ],
 )
+format = Documenter.HTML(
+    prettyurls = get(ENV, "CI", "false") == "true",
+    canonical = "https://blhackslash.github.io/PDEStudio.jl/",
+    assets = String[],
+),
+
+deploydocs(
+    repo = "github.com/blhackslash/PDEStudio.jl.git",
+    devbranch = "main",
+    push_preview = true,
+)
