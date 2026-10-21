@@ -27,11 +27,16 @@ jobs:
         uses: https://github.com/julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
+      # 1. Install virtual display server for GLMakie headless testing
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - uses: https://github.com/julia-actions/julia-buildpkg@v1
         with:
           ignore-no-cache: true
-
+      
+      # 2. Wrap the runtest action in xvfb-run
       - uses: https://github.com/julia-actions/julia-runtest@v1
         with:
+          prefix: xvfb-run
           coverage: false
