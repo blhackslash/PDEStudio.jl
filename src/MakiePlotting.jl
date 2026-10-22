@@ -406,7 +406,14 @@ function setup_render_lift!(master_fig::Figure, plot_layout::GridLayout, ::Val{T
     manager.listeners[:Plot] = on(manager.triggers[:Plot]) do _
         local success = false
         @with_lock :Plot begin
-            success = _handle_plot_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+            try
+                success = _handle_plot_trigger!(Val(T), plot_layout, axes, num_plots, compare_labels, x_sel, y_sel, z_sel, u_sel, c_sel, selector_obs, _build_param_indices, _mutate_compare_vals)
+            catch e
+                # Keep the studio usable: the user can change the style or option that failed and update again.
+                @error "Updating the plot failed; the current plot style or options could not be drawn for this data. " *
+                       "Change them (e.g. the plot style, colours or levels) and click 'Update Plot' again." exception = (e, catch_backtrace())
+                success = false
+            end
         end
         if success
             manager.triggers[:Slider][] += 1

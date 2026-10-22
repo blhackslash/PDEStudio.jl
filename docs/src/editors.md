@@ -27,7 +27,7 @@ The `PDEStudioCore` configuration. Scopes:
 | **Shared** | `config.shared`, the parameters every run uses. |
 | **Sweep** | `config.varied`, the swept values. A single value becomes a one-value sweep; in a sweep of text values, unquoted items stay text (`[upwind, lax_friedrichs]`). The sliders are remapped immediately. (A swept key only takes effect if it exists in the shared or method parameters.) |
 | **Config** | `defaults` (the active methods), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
-| *each method* | The parameter overrides of that method (`config.methods[m]`). Every method of the configuration is listed, active or not. |
+| *each method* | The parameter overrides of that method (`config.methods[m]`). Only the active methods are listed; activate a method to edit it. |
 
 *   **Trigger Behavior:** physics changes alter the data, so any edit here turns `Run Simulation` yellow and locks the plot until you re-run. Edits are only blocked while a simulation is running.
 *   **Context-sensitive buttons:** while this category is selected, the preset buttons read **Save Sim Preset** and **Reset Simulation**.

@@ -64,6 +64,40 @@ function _scan_presets!(registry::Dict{Symbol, String}, dir::AbstractString)
 end
 
 """
+    _store_preset_description!(cat, name, desc)
+
+Writes a new description into the `Metadata, Preset, description` row of an existing preset file (visual presets
+for `cat === :ui`, simulation presets otherwise), so a description edited in the studio survives a restart. Built-in
+presets and presets without a file keep the description in memory only. Returns `true` if a file was updated.
+"""
+function _store_preset_description!(cat, name, desc::AbstractString)
+    dir = cat === :simulation ? sim_preset_dir() : preset_dir()
+    path = _preset_file(dir, name)
+    isnothing(path) && return false
+    try
+        rows = _CSVRows()
+        found = false
+        for row in CSV.Rows(path)
+            vals = String[String(coalesce(getproperty(row, c), "")) for c in (:Category, :Scope, :Parameter, :Value)]
+            if vals[1] == "Metadata" && vals[2] == "Preset" && vals[3] == "description"
+                vals[4] = String(desc)
+                found = true
+            end
+            push!(rows.cats, vals[1]); push!(rows.scopes, vals[2]); push!(rows.params, vals[3]); push!(rows.vals, vals[4])
+        end
+        if !found
+            pushfirst!(rows.cats, "Metadata"); pushfirst!(rows.scopes, "Preset")
+            pushfirst!(rows.params, "description"); pushfirst!(rows.vals, String(desc))
+        end
+        _write_rows(path, rows)
+        return true
+    catch e
+        @warn "Could not store the description of preset '$name' in $path." exception = (e, catch_backtrace())
+        return false
+    end
+end
+
+"""
     refresh_preset_registries!()
 
 Registers the visual and simulation presets found on disk (with their descriptions) in the preset lists of the editor.
@@ -105,8 +139,7 @@ end
 """
     save_sim_preset(name; description = "")
 
-Saves the simulation category of the bound configuration—shared parameters, all methods and their parameters, the
-active methods, the parameter sweep and the reference / post-processing functions—as the simulation preset
+Saves the simulation category of the bound configuration—shared parameters, the active methods and their parameters, the parameter sweep and the reference / post-processing functions—as the simulation preset
 `<save path>/Presets/Simulation/<name>.csv`. Nothing visual is stored. Returns `true` on success.
 
 Apply it later with [`set_sim_preset!`](@ref).

@@ -536,6 +536,28 @@ end
 
 _editor_display(v) = isnothing(v) ? "none" : val2str(v)
 
+# Shows `s` in the editor's text box as its current (stored) value. Makie draws a displayed string that differs
+# from the stored one in the placeholder colour, so values set only through `displayed_string` looked like
+# placeholders. `stored_string.val` is set without notifying, so the text is not re-applied as an edit.
+function _show_editor_text!(tb, s::AbstractString)
+    tb.stored_string.val = String(s)
+    tb.displayed_string[] = String(s)
+    return nothing
+end
+
+# The scope / key currently shown in the editor, or `nothing`.
+function _editor_selection()
+    w = manager.widgets
+    all(k -> haskey(w, k), (:editor_cat, :editor_scope, :editor_key)) || return nothing
+    return (w[:editor_cat].selection[], w[:editor_scope].selection[], w[:editor_key].selection[])
+end
+
+# UI options holding colours are validated when edited: an invalid colour would only fail later, inside the
+# render loop, where it cannot be caught and leaves the studio unable to draw.
+const _COLOR_UI_KEYS = (:color, :colors)
+_valid_ui_value(key::Symbol, val) = key in _COLOR_UI_KEYS ? _valid_color(val) :
+                                    key === :color_map ? _valid_colormap(val) : true
+
 # Value restored by typing `default` into the editor: the built-in default of a UI option, the baseline configuration
 # (see `reset_sim_config!`) of a simulation entry. Returns `missing` if there is none.
 function _editor_default(cat, scope, key)
@@ -673,7 +695,7 @@ Connects the triple-dropdown hierarchical editor.
 Uses a cascaded dependency map: selecting a `Category` dynamically populates the available `Scope`s, which in turn populate the specific `Parameter`s. It binds the selected parameter's value to the `Textbox` via `val2str`, and parses user text input back with `_parse_editor_input`.
 
 Simulation scopes: `Presets` (simulation presets), `Shared`, `Sweep` (the varied parameters), `Config` (active
-methods, reference, post-processing, source files) and every method. UI scopes: `Presets` (visual presets) and every
+methods, reference, post-processing, source files) and every active method. UI scopes: `Presets` (visual presets) and every
 UI style scope. Labels: display names of components, variables and methods.
 """
 function _setup_hierarchy_interactions!()
@@ -703,7 +725,7 @@ function _setup_hierarchy_interactions!()
 
         active_target_ref[] = (target, key)
         val_str = _editor_display(target[key])
-        tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
+        _show_editor_text!(tb, isempty(val_str) ? "<empty>" : val_str)
         
         if scope === :presets && key !== :create_new
             toggle_btn.label[] = "Apply"
@@ -714,7 +736,7 @@ function _setup_hierarchy_interactions!()
         end
     end
 
-    manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, _
+    manager.listeners[:Hierarchy_Cat_Sync] = onany(menu_cat.selection, manager.methods) do cat, active
         isnothing(cat) && return
         new_scopes = Any[]
         
@@ -723,7 +745,8 @@ function _setup_hierarchy_interactions!()
             config = manager.active_config
             if !isnothing(config) 
                 push!(new_scopes, ("Shared", :shared), ("Sweep", :sweep), ("Config", :config))
-                for m in sort_methods_robust(collect(keys(config.methods)))
+                # Only the active methods (activate one to edit it); inactive ones stay in `config.methods`.
+                for m in sort_methods_robust(filter(m -> haskey(config.methods, m), active))
                     m in _RANK_0 && continue  # reserved scope names
                     push!(new_scopes, (string(m), m))
                 end
@@ -820,6 +843,8 @@ function _setup_hierarchy_interactions!()
         try
             if scope === :presets
                 target[key] = String(s)  # the description (for :create_new: of the next preset saved)
+                _show_editor_text!(tb, s)  # keeps displayed == stored when the string was set programmatically
+                key === :create_new || _store_preset_description!(cat, key, String(s))
             elseif strip(s) == "default"
                 val = _editor_default(cat, scope, key)
                 if ismissing(val)
@@ -827,7 +852,7 @@ function _setup_hierarchy_interactions!()
                     return
                 end
                 cat === :labels ? set_label!(key, string(val)) : (target[key] = val)
-                tb.displayed_string[] = cat === :labels ? string(val) : _editor_display(val)
+                _show_editor_text!(tb, cat === :labels ? string(val) : _editor_display(val))
             elseif cat === :labels
                 set_label!(key, String(s))
             else
@@ -839,6 +864,11 @@ function _setup_hierarchy_interactions!()
                     end
                 else
                     val = _parse_editor_input(s, target[key])
+                end
+                if cat === :ui && !_valid_ui_value(key, val)
+                    @warn "'$key' was not changed: $(repr(val)) is not a valid " *
+                          (key === :color_map ? "colormap (e.g. :viridis)." : "colour (e.g. :red, \"#1f77b4\" or (:blue, 0.5)).")
+                    return
                 end
                 target[key] = val
             end
@@ -873,7 +903,7 @@ function _setup_hierarchy_interactions!()
             val = target[key]
             if val isa Bool
                 target[key] = !val
-                tb.displayed_string[] = string(!val)
+                _show_editor_text!(tb, string(!val))
                 _after_editor_change!(cat, scope, key, target)
             end
         catch e
@@ -1113,6 +1143,16 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         is_sim = _preset_context() === :simulation
         registry = is_sim ? manager.sim_presets : manager.presets
         desc = get(registry, :create_new, "")
+        # Text typed under Presets → create_new counts even if Enter was not pressed yet (then the displayed
+        # string differs from the stored one, which is always kept in sync otherwise).
+        sel = _editor_selection()
+        if !isnothing(sel) && sel[2] === :presets && sel[3] === :create_new
+            tb = manager.widgets[:editor_text]
+            shown = strip(tb.displayed_string[])
+            if shown != strip(something(tb.stored_string[], "")) && !isempty(shown) && shown != "<empty>"
+                desc = String(shown)
+            end
+        end
 
         success = is_sim ? save_sim_preset(filename; description = desc) :
                            save_plot_preset(filename; description = desc)

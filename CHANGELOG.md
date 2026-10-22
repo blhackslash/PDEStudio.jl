@@ -9,13 +9,27 @@
   the manager from the field defaults. Code that reached into `manager.state[:Key]` or `manager.maps[:Key]`
   must use the fields.
 - `apply_options!` takes the cache dictionary instead of its former `manager.state` key.
+- The editor's *Simulation* category lists only the active methods as scopes (activate a method to edit it).
+- CSV files (exports and simulation presets) store only the active methods and their parameters; inactive methods
+  of the bound configuration are no longer written.
 
 ### Fixed
+- A numerically constant field (e.g. the `Float32` initial state of a Riemann problem) made the filled contour
+  style fail inside Makie, which could abort `launch_plotter()` when that style was still selected from a previous
+  session. The colour range of such fields is now widened (relative `1e-3`), and a failing plot update is reported
+  as an error instead of taking the studio down.
+- An invalid colour typed into the editor (`hud → color`, `plot_style → colors`, or a wrong `color_map`) is
+  rejected with a warning; before, it was stored and failed later inside the render loop, after which nothing could
+  be drawn. The HUD also falls back to its default colour if its colour setting is invalid.
 - The editor opens on *Presets*; with a configuration bound before `launch_plotter()` it opened on *Config*.
 - Presets saved or applied through the API (`save_plot_preset`, `save_sim_preset`, `set_plot_preset!`,
   `set_sim_preset!`) and files copied into the preset folders appear in the *Presets* list right away (the folders
   are rescanned when the parameter menu is opened); before, the list only refreshed when the scope was re-selected,
   e.g. by switching the category and back.
+- Values shown by the editor (including preset descriptions) were drawn in the grey placeholder colour, because
+  only the displayed text of the box was set; the stored text is now kept in sync.
+- A preset description typed under *create_new* is used by *Save Presets* even if Enter was not pressed; editing the
+  description of an existing preset is written to its file.
 - Restoring a menu option notified its listeners twice.
 - Dynamic plot titles use the display labels (`set_label!`) like the menus and legends.
 - The default direction of 3-D line grids was a string the grid builder never matched.
@@ -26,7 +40,7 @@
 ### New
 - **Simulation presets**: the counterpart of visual presets for the physics. `save_sim_preset`, `set_sim_preset!` (replace or patch mode), `reset_sim_config!`; in the GUI, the preset buttons become *Save Sim Preset* / *Reset Simulation* while the editor shows the *Simulation* category, and presets are applied under *Simulation → Presets*. Stored in `<save path>/Presets/Simulation/`. See `docs/src/presets.md`.
 - `save_plot_preset(name; description)` as API for visual presets.
-- Editor: scopes *Sweep* (`config.varied`) and *Config* (`defaults`, `reference`, `postprocess`, `sources`); every method is listed, active or not; typing `default` restores the built-in / baseline value; `none` clears a function or a `nothing` parameter.
+- Editor: scopes *Sweep* (`config.varied`) and *Config* (`defaults`, `reference`, `postprocess`, `sources`); every active method is listed; typing `default` restores the built-in / baseline value; `none` clears a function or a `nothing` parameter.
 - Non-numeric parameter sweeps (scheme names, tuples, …): index sliders that show the swept value, index axes, comparisons.
 - Compare over **time** (was unreachable) and over long sweeps, capped at 12 evenly spaced subplots.
 - *Load CSV* accepts a bare file name (searched in the usual folders).

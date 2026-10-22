@@ -177,13 +177,23 @@ Extracts the exact color range bounds from the UI dictionary or dynamically calc
 
 Always returns a `Makie.Vec2f` wrapped in an Observable to prevent ComputePipeline strict typing crashes during contourf level recalculations.
 """
+# Widens a (numerically) constant range `[lo, hi]` to a relative width of 1e-3 (absolute 1e-6 around zero).
+# A field that is constant up to floating-point noise (e.g. the initial state of a Riemann problem in `Float32`)
+# would otherwise get contour levels spaced below the data's precision, which makes Makie's `contourf` fail.
+function _pad_degenerate_range(lo::Real, hi::Real)
+    scale = max(abs(lo), abs(hi))
+    hi - lo > 1e-5 * scale && return (lo, hi)
+    pad = max(1e-3 * scale, 1e-6)
+    return (lo - pad, hi + pad)
+end
+
 function get_colorrange(ui_app::Dict, u_data::AbstractArray)
     cr_val = ui_app[:color_range] 
     
     if isempty(cr_val)
         valid_u = filter(isfinite, vec(u_data))
         l_u, h_u = isempty(valid_u) ? (0.0, 1.0) : (minimum(valid_u), maximum(valid_u))
-        if l_u == h_u; h_u += 1e-6; end
+        l_u, h_u = _pad_degenerate_range(l_u, h_u)
         
         # Use Makie.Vec2f to perfectly match ComputePipeline's expected output type
         return Observable(Makie.Vec2f(l_u, h_u))
@@ -753,6 +763,37 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
 end
 
 """
+    _valid_color(c)
+    _valid_colormap(c)
+
+`true` if Makie can convert `c` to a colour (or every entry of a vector / tuple of colours) or to a colormap.
+"""
+function _valid_color(c)
+    c isa AbstractVector && return all(_valid_color, c)
+    try
+        Makie.to_color(c)
+        return true
+    catch
+        return false
+    end
+end
+function _valid_colormap(c)
+    try
+        Makie.to_colormap(c)
+        return true
+    catch
+        return false
+    end
+end
+
+# `c` if it is a valid colour, otherwise `fallback` (with a warning naming `what`).
+function _safe_color(c, fallback, what::AbstractString)
+    _valid_color(c) && return c
+    @warn "Invalid $what $(repr(c)); using $(repr(fallback)) instead."
+    return fallback
+end
+
+"""
     plot_HUD!(ax::Axis)
 
 Injects arbitrary user-defined shapes (scatter points, connected polygons, tracking lines) in relative screen-space coordinates (0.0, 1.0) directly on top of the active plot axes to highlight specific regions of interest.
@@ -775,7 +816,7 @@ function plot_HUD!(ax::Axis)
         end
 
         mode  = lowercase(strip(ui_hud[:mode])) 
-        color = ui_hud[:color] 
+        color = _safe_color(ui_hud[:color], MASTER_UI_DICT[:hud][:color], "HUD color")
         lw    = ui_hud[:line_width] 
         ls    = ui_hud[:line_style] 
         ms    = ui_hud[:marker_size] 

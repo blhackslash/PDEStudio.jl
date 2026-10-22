@@ -4,7 +4,7 @@ A study usually has two independent halves: *how it looks* (layout, axes, colors
 
 | | Visual Preset | Simulation Preset |
 | :--- | :--- | :--- |
-| **Holds** | Layout, plot axes, slider positions, camera, labels, exploration options, all UI styles | Shared parameters, every method and its parameters, the active methods, the sweep, the reference and post-processing functions |
+| **Holds** | Layout, plot axes, slider positions, camera, labels, exploration options, all UI styles | Shared parameters, the active methods and their parameters, the sweep, the reference and post-processing functions |
 | **Ignores** | Everything in the *Simulation* category | Everything visual, and source files |
 | **Folder** | `<save path>/Presets/` | `<save path>/Presets/Simulation/` |
 | **Save** | *Save Presets* · [`save_plot_preset`](@ref) | *Save Sim Preset* · [`save_sim_preset`](@ref) |
