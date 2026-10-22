@@ -536,6 +536,22 @@ end
 
 _editor_display(v) = isnothing(v) ? "none" : val2str(v)
 
+# Shows `s` in the editor's text box as its current (stored) value. Makie draws a displayed string that differs
+# from the stored one in the placeholder colour, so values set only through `displayed_string` looked like
+# placeholders. `stored_string.val` is set without notifying, so the text is not re-applied as an edit.
+function _show_editor_text!(tb, s::AbstractString)
+    tb.stored_string.val = String(s)
+    tb.displayed_string[] = String(s)
+    return nothing
+end
+
+# The scope / key currently shown in the editor, or `nothing`.
+function _editor_selection()
+    w = manager.widgets
+    all(k -> haskey(w, k), (:editor_cat, :editor_scope, :editor_key)) || return nothing
+    return (w[:editor_cat].selection[], w[:editor_scope].selection[], w[:editor_key].selection[])
+end
+
 # UI options holding colours are validated when edited: an invalid colour would only fail later, inside the
 # render loop, where it cannot be caught and leaves the studio unable to draw.
 const _COLOR_UI_KEYS = (:color, :colors)
@@ -709,7 +725,7 @@ function _setup_hierarchy_interactions!()
 
         active_target_ref[] = (target, key)
         val_str = _editor_display(target[key])
-        tb.displayed_string[] = isempty(val_str) ? "<empty>" : val_str
+        _show_editor_text!(tb, isempty(val_str) ? "<empty>" : val_str)
         
         if scope === :presets && key !== :create_new
             toggle_btn.label[] = "Apply"
@@ -827,6 +843,8 @@ function _setup_hierarchy_interactions!()
         try
             if scope === :presets
                 target[key] = String(s)  # the description (for :create_new: of the next preset saved)
+                _show_editor_text!(tb, s)  # keeps displayed == stored when the string was set programmatically
+                key === :create_new || _store_preset_description!(cat, key, String(s))
             elseif strip(s) == "default"
                 val = _editor_default(cat, scope, key)
                 if ismissing(val)
@@ -834,7 +852,7 @@ function _setup_hierarchy_interactions!()
                     return
                 end
                 cat === :labels ? set_label!(key, string(val)) : (target[key] = val)
-                tb.displayed_string[] = cat === :labels ? string(val) : _editor_display(val)
+                _show_editor_text!(tb, cat === :labels ? string(val) : _editor_display(val))
             elseif cat === :labels
                 set_label!(key, String(s))
             else
@@ -885,7 +903,7 @@ function _setup_hierarchy_interactions!()
             val = target[key]
             if val isa Bool
                 target[key] = !val
-                tb.displayed_string[] = string(!val)
+                _show_editor_text!(tb, string(!val))
                 _after_editor_change!(cat, scope, key, target)
             end
         catch e
@@ -1125,6 +1143,16 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         is_sim = _preset_context() === :simulation
         registry = is_sim ? manager.sim_presets : manager.presets
         desc = get(registry, :create_new, "")
+        # Text typed under Presets → create_new counts even if Enter was not pressed yet (then the displayed
+        # string differs from the stored one, which is always kept in sync otherwise).
+        sel = _editor_selection()
+        if !isnothing(sel) && sel[2] === :presets && sel[3] === :create_new
+            tb = manager.widgets[:editor_text]
+            shown = strip(tb.displayed_string[])
+            if shown != strip(something(tb.stored_string[], "")) && !isempty(shown) && shown != "<empty>"
+                desc = String(shown)
+            end
+        end
 
         success = is_sim ? save_sim_preset(filename; description = desc) :
                            save_plot_preset(filename; description = desc)

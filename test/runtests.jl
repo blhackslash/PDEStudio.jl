@@ -543,6 +543,14 @@ end
         @test haskey(parsed, "Simulation") && !haskey(parsed, "UI") && !haskey(parsed, "Scene")
         @test manager.sim_presets[:coarse] == "coarse grid"
 
+        # 1b. Only the active methods are written
+        manager.active_config.defaults = [:upwind]
+        @test save_sim_preset("only_upwind")
+        parsed_u = PDEStudio.parse_csv_to_dict(joinpath(sim_preset_dir(), "only_upwind.csv"))
+        @test haskey(parsed_u["Simulation"], "upwind") && !haskey(parsed_u["Simulation"], "lax_friedrichs")
+        @test Symbol.(parsed_u["Simulation"]["Config"]["methods"]) == [:upwind]
+        manager.active_config.defaults = [:upwind, :lax_friedrichs]
+
         # 2. Change the simulation, then switch back with the preset (replace mode)
         manager.active_config.shared[:N] = 40
         manager.active_config.defaults = [:upwind]
@@ -686,6 +694,23 @@ end
         save_sim_preset("api_saved"; description = "saved from the REPL")
         @test :api_saved in key_values()
         @test w[:editor_key].selection[] === :create_new
+
+        # 2b. The description is shown as the box's value (stored == displayed, so Makie draws it in the text colour)
+        click_menu!(w[:editor_key], :api_saved)
+        @test w[:editor_text].displayed_string[] == "saved from the REPL"
+        @test w[:editor_text].stored_string[] == w[:editor_text].displayed_string[]
+        # ... editing it is written to the preset file
+        w[:editor_text].stored_string[] = "edited description"
+        @test manager.sim_presets[:api_saved] == "edited description"
+        raw_desc = PDEStudio._read_csv(joinpath(sim_preset_dir(), "api_saved.csv"))[2]["Metadata"]["Preset"]["description"]
+        @test raw_desc == "edited description"
+        # ... and a description typed under create_new counts without pressing Enter
+        click_menu!(w[:editor_key], :create_new)
+        w[:editor_text].displayed_string[] = "typed, not submitted"
+        manager.widgets[:export_text].stored_string[] = "typed_only"
+        click_button!(:save_presets_button)
+        @test manager.sim_presets[:typed_only] == "typed, not submitted"
+        @test w[:editor_key].selection[] === :typed_only
 
         # 3. A file copied into the preset folder shows up when the key menu is opened
         mkpath(sim_preset_dir())

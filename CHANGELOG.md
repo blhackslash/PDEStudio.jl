@@ -10,6 +10,8 @@
   must use the fields.
 - `apply_options!` takes the cache dictionary instead of its former `manager.state` key.
 - The editor's *Simulation* category lists only the active methods as scopes (activate a method to edit it).
+- CSV files (exports and simulation presets) store only the active methods and their parameters; inactive methods
+  of the bound configuration are no longer written.
 
 ### Fixed
 - A numerically constant field (e.g. the `Float32` initial state of a Riemann problem) made the filled contour
@@ -24,6 +26,10 @@
   `set_sim_preset!`) and files copied into the preset folders appear in the *Presets* list right away (the folders
   are rescanned when the parameter menu is opened); before, the list only refreshed when the scope was re-selected,
   e.g. by switching the category and back.
+- Values shown by the editor (including preset descriptions) were drawn in the grey placeholder colour, because
+  only the displayed text of the box was set; the stored text is now kept in sync.
+- A preset description typed under *create_new* is used by *Save Presets* even if Enter was not pressed; editing the
+  description of an existing preset is written to its file.
 - Restoring a menu option notified its listeners twice.
 - Dynamic plot titles use the display labels (`set_label!`) like the menus and legends.
 - The default direction of 3-D line grids was a string the grid builder never matched.

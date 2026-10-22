@@ -82,14 +82,15 @@ _csv_text(v) = (v isa AbstractString && !isempty(v) && !isequal(_parse_csv_value
 """
     _add_simulation_rows!(rows, config::SimulationConfig)
 
-Writes the simulation category of a configuration: shared parameters, every method's parameters, the method list,
-the active methods (`defaults`), the reference and post-processing function names, and the sweep (`Simulation, Sweep`).
+Writes the simulation category of a configuration: shared parameters, the parameters of the *active* methods
+(`defaults`; inactive methods are left out, like they are left out of the plots), the method list, the active
+methods, the reference and post-processing function names, and the sweep (`Simulation, Sweep`).
 """
 function _add_simulation_rows!(rows::_CSVRows, config::SimulationConfig)
     for (k, v) in _sorted_pairs(config.shared)
         add_row!(rows, "Simulation", "Shared", k, _csv_text(v))
     end
-    method_names = sort!(collect(keys(config.methods)))
+    method_names = sort!(filter(m -> haskey(config.methods, m), unique(config.defaults)))
     for m in method_names
         if string(m) in _RESERVED_SIM_SCOPES
             @warn "Method :$m clashes with a reserved CSV scope; its parameters are not saved."
