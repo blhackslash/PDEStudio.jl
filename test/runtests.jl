@@ -153,6 +153,27 @@ end
         @test PDEStudio._preset_symbol(" My  Preset ") == :my_preset
     end
 
+    @testset "Colour ranges & colour validation" begin
+        # A numerically constant field gets a usable (relative 1e-3) colour range instead of one made of noise
+        lo, hi = PDEStudio._pad_degenerate_range(1.3999995f0, 1.4000003f0)
+        @test hi - lo ≥ 2e-3 * 1.4 && lo < 1.3999995f0 && hi > 1.4000003f0
+        @test PDEStudio._pad_degenerate_range(0.0, 0.0) == (-1e-6, 1e-6)
+        @test PDEStudio._pad_degenerate_range(0.0, 1.0) == (0.0, 1.0)
+        # ... so the Float32 initial state of a Riemann problem (with a masked region) renders as filled contours
+        z = 1.4f0 .+ Float32.(1e-7 .* randn(60, 40)); z[40:end, 1:10] .= NaN32
+        cr = PDEStudio.get_colorrange(Dict{Symbol, Any}(:color_range => Any[]), z)[]
+        fig = Figure(); ax = Axis(fig[1, 1])
+        # (contourf! itself fails for noise-spaced levels; rendered through CairoMakie since no backend window is up here)
+        @test contourf!(ax, Float32.(1:60), Float32.(1:40), z; levels = range(cr[1], cr[2], length = 20), colorrange = cr) isa Makie.Plot
+        @test Makie.colorbuffer(fig; backend = PDEStudio.CairoMakie) isa AbstractMatrix
+
+        @test PDEStudio._valid_color(:red) && PDEStudio._valid_color("#1f77b4") && PDEStudio._valid_color([(:black, 0.8), :blue])
+        @test !PDEStudio._valid_color("rde") && !PDEStudio._valid_color([:blue, :rde])
+        @test PDEStudio._valid_colormap(:viridis) && !PDEStudio._valid_colormap(:viridiss)
+        @test PDEStudio._valid_ui_value(:line_width, "whatever") && !PDEStudio._valid_ui_value(:color, "rde")
+        @test PDEStudio._valid_ui_value(:colors, [:cyan, :magenta]) && !PDEStudio._valid_ui_value(:color_map, :viridiss)
+    end
+
     @testset "Simulation CSV: patch semantics & text values" begin
         base = SimulationConfig(
             create_param_dict(:N => 20, :tag => "1e3", :sim_func_name => :advection_solver_1d),
@@ -574,7 +595,8 @@ end
         @test manager.widgets[:save_presets_button].label[] == "Save Sim Preset"
         @test manager.widgets[:clear_presets_button].label[] == "Reset Simulation"
         scopes = [o[2] for o in manager.widgets[:editor_scope].options[]]
-        @test all(in(scopes), [:presets, :shared, :sweep, :config, :upwind, :lax_friedrichs])
+        @test all(in(scopes), [:presets, :shared, :sweep, :config, :upwind])
+        @test !(:lax_friedrichs in scopes)   # inactive methods are not listed
 
         # 2. Shared parameters (numbers are parsed, the change flags a re-run)
         click_menu!(manager.widgets[:editor_scope], :shared)
@@ -634,6 +656,7 @@ end
         click_button!(:run_button)
         @test manager.flags[:Simulation][] == false
         @test sort(manager.methods[]) == [:lax_friedrichs, :upwind]
+        @test :lax_friedrichs in [o[2] for o in manager.widgets[:editor_scope].options[]]   # active now
 
         # 8. Outside the Simulation category the buttons act on visual presets again
         click_menu!(manager.widgets[:editor_cat], :ui)
@@ -853,6 +876,22 @@ end
 
         hud_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "HUD"]
         @test !isempty(hud_plots)
+
+        # 1b. An invalid HUD colour falls back to the default instead of failing inside the render loop
+        manager.ui[:hud][:color] = "rde"
+        @test_logs (:warn, r"Invalid HUD color") plot_HUD!(ax)
+        hud_plots = [p for p in ax.scene.plots if haskey(p, :label) && p.label[] == "HUD"]
+        @test !isempty(hud_plots) && Makie.to_color(hud_plots[1].color[]) == Makie.to_color(:red)
+        manager.ui[:hud][:color] = :red
+        # ... and the editor refuses to store one
+        click_menu!(manager.widgets[:editor_cat], :ui)
+        click_menu!(manager.widgets[:editor_scope], :hud)
+        click_menu!(manager.widgets[:editor_key], :color)
+        @test_logs (:warn, r"not a valid colour") (manager.widgets[:editor_text].stored_string[] = "rde")
+        @test manager.ui[:hud][:color] == :red
+        manager.widgets[:editor_text].stored_string[] = ":blue"
+        @test manager.ui[:hud][:color] == :blue
+        manager.widgets[:editor_text].stored_string[] = ":red"
 
         # 2. Test Reference Lines (Direct Local Call)
         ref_lines = plot_reference_lines!(ax, [-1.0, -2.0]; label="Convergence Ref")
