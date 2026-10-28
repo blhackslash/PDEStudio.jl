@@ -97,8 +97,10 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
         end
     end
 
-    # Without explicit defaults, every method of the configuration is active (references first, then by name).
-    active_m = sort_methods_robust(isempty(config.defaults) ? collect(keys(config.methods)) : unique(config.defaults))
+    # Explicit `defaults` keep their order: it is the order of the legends and of the "compare methods" subplots
+    # (edit it under Simulation → Config → defaults). Without defaults every method is active, references first.
+    active_m = isempty(config.defaults) ? sort_methods_robust(collect(keys(config.methods))) :
+               Symbol[Symbol(m) for m in unique(config.defaults)]
     filter!(k -> k !== :shared, active_m)
     config.defaults = active_m
     snapshot && (manager.base_config = deepcopy(config))

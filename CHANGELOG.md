@@ -3,6 +3,10 @@
 ## Unreleased: typed manager
 
 ### Changed
+- The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
+  comparison). Reorder the list under *Simulation → Config → defaults* (or in `SimulationConfig`) to override
+  the automatic order; activated methods are appended. Without explicit defaults the order is still references
+  first, then alphabetical.
 - `PlotManager` is a typed struct: the former `state`, `ui_state` and `maps` dictionaries are fields
   (`camera_locked`, `compare_state`, `layout_cache`, `plot_cache`, `slider_cache`, `resolution_base`, `labels`,
   `presets`, `sim_presets`, `param_map`, `reverse_map`, `is_open`, `master_fig`, …). `reset_manager!` rebuilds
