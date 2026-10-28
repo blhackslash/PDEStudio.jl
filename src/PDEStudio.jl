@@ -337,7 +337,7 @@ function simulation_trigger()
         @info "Running dynamic calculations directly from active config..."
         run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
 
-        if sort(manager.methods[]) != sort(active_methods)
+        if manager.methods[] != active_methods   # order matters: it is the legend / comparison order
             manager.methods[] = copy(active_methods)
         end
 

@@ -557,7 +557,7 @@ end
         cfg = set_sim_preset!(:coarse)
         @test cfg === manager.active_config
         @test cfg.shared[:N] == 20
-        @test cfg.defaults == [:lax_friedrichs, :upwind]
+        @test cfg.defaults == [:upwind, :lax_friedrichs]   # the order given to set_sim_config! survives the round trip
         @test manager.flags[:Simulation][] == true
         @test manager.ui[:plot_style] == ui_before               # simulation presets never touch the look
 
@@ -567,13 +567,13 @@ end
         cfg = set_sim_preset!("hires")
         @test cfg.shared[:N] == 80
         @test cfg.shared[:cfl] == 0.5
-        @test cfg.defaults == [:lax_friedrichs, :upwind]
+        @test cfg.defaults == [:upwind, :lax_friedrichs]
         @test manager.sim_presets[:hires] == "Fine grid"
 
         # 4. Reset to the configuration bound with set_sim_config!
         reset_sim_config!()
         @test manager.active_config.shared[:N] == 20
-        @test manager.active_config.defaults == [:lax_friedrichs, :upwind]
+        @test manager.active_config.defaults == [:upwind, :lax_friedrichs]
 
         # 5. Run the preset
         set_sim_preset!(:hires)
@@ -732,6 +732,55 @@ end
         click_menu!(w[:editor_cat], :simulation)
         @test w[:editor_scope].selection[] === :presets
         @test :api_saved in key_values() && !(:api_look in key_values())
+    end
+
+    # =========================================================================
+    # --- METHOD ORDER FOLLOWS `defaults` ---
+    # =========================================================================
+    @testset "Method order follows defaults" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"),
+                                     :analytic => create_param_dict())
+        cfg = SimulationConfig(shared, methods, [:upwind, :lax_friedrichs]; reference = :exact_advection_factory)
+        set_sim_config!(cfg)
+        @test manager.methods[] == [:upwind, :lax_friedrichs]            # not re-sorted
+        click_button!(:run_button)
+        first_method() = only(keys(manager.caches[1]))
+
+        # 1. The "compare methods" subplots follow the order of `defaults`
+        click_menu!(manager.widgets[:base_plot], :lines)
+        click_menu!(manager.widgets[:plot_style], :lines_1d)
+        click_menu!(manager.widgets[:x_axis], :x)
+        click_menu!(manager.widgets[:compare_target], :methods)
+        click_button!(:layout_apply)
+        @test first_method() == :upwind
+
+        # 2. Reordering the list in the editor is the override; it takes effect with the next run
+        click_menu!(manager.widgets[:editor_cat], :simulation)
+        click_menu!(manager.widgets[:editor_scope], :config)
+        click_menu!(manager.widgets[:editor_key], :defaults)
+        manager.widgets[:editor_text].stored_string[] = "[:lax_friedrichs, :upwind]"
+        @test manager.active_config.defaults == [:lax_friedrichs, :upwind]
+        click_button!(:run_button)
+        @test manager.methods[] == [:lax_friedrichs, :upwind]
+        click_button!(:layout_apply)
+        @test first_method() == :lax_friedrichs
+
+        # 3. Activating a method appends it; a saved preset keeps the order
+        manager.is_activate_mode[] = true
+        click_menu!(manager.widgets[:method_toggle], :analytic)
+        @test manager.active_config.defaults == [:lax_friedrichs, :upwind, :analytic]
+        @test save_sim_preset("ordered")
+        manager.active_config.defaults = [:upwind]
+        @test set_sim_preset!(:ordered).defaults == [:lax_friedrichs, :upwind, :analytic]
+
+        # 4. Without explicit defaults the automatic order (references first) still applies
+        set_sim_config!(SimulationConfig(shared, methods; reference = :exact_advection_factory))
+        @test manager.methods[] == [:analytic, :lax_friedrichs, :upwind]
     end
 
     # =========================================================================

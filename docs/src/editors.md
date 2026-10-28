@@ -26,7 +26,7 @@ The `PDEStudioCore` configuration. Scopes:
 | **Presets** | Simulation presets: select one and click **Apply**; `create_new` holds the description of the next preset you save (see [Presets](presets.md)). |
 | **Shared** | `config.shared`, the parameters every run uses. |
 | **Sweep** | `config.varied`, the swept values. A single value becomes a one-value sweep; in a sweep of text values, unquoted items stay text (`[upwind, lax_friedrichs]`). The sliders are remapped immediately. (A swept key only takes effect if it exists in the shared or method parameters.) |
-| **Config** | `defaults` (the active methods), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
+| **Config** | `defaults` (the active methods, in the order they are drawn: legends, colours and the *Methods* comparison follow it, so reorder the list here to override the automatic order), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
 | *each method* | The parameter overrides of that method (`config.methods[m]`). Only the active methods are listed; activate a method to edit it. |
 
 *   **Trigger Behavior:** physics changes alter the data, so any edit here turns `Run Simulation` yellow and locks the plot until you re-run. Edits are only blocked while a simulation is running.
@@ -45,4 +45,4 @@ A dictionary that renames backend keys for the frontend: components (`component_
 
 Below the editor is the method toggle, which hot-swaps the active numerical methods and analytical references.
 *   Click the **Mode** button to switch between `Activate` (add a method) and `Deactivate` (remove one).
-*   Select the method in the dropdown. This changes `config.defaults`, so the `Run Simulation` lock is set to compute the new method. (The same list is editable as *Simulation → Config → defaults*.)
+*   Select the method in the dropdown. This changes `config.defaults` (an activated method is appended), so the `Run Simulation` lock is set to compute the new method. (The same list is editable as *Simulation → Config → defaults*, which is also where you change the order.)

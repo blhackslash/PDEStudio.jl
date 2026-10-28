@@ -473,9 +473,9 @@ function csv_to_simulation_config(parsed_csv::Dict; base::Union{Nothing, Simulat
     for m in defaults
         get!(ParamDict, methods, m)
     end
-    isempty(defaults) && (defaults = collect(keys(methods)))
+    isempty(defaults) && (defaults = sort_methods_robust(collect(keys(methods))))   # an explicit list keeps its order
 
-    return SimulationConfig(shared, methods, sort_methods_robust(defaults);
+    return SimulationConfig(shared, methods, defaults;
                             varied = varied, reference = reference, postprocess = postprocess, sources = sources)
 end
 

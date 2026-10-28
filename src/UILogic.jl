@@ -473,10 +473,7 @@ function _setup_method_interactions!()
         
         new_staged = copy(config.defaults)
         if is_activate_mode[]
-            if !(sel in new_staged)
-                push!(new_staged, sel)
-                new_staged = sort_methods_robust(new_staged) 
-            end
+            sel in new_staged || push!(new_staged, sel)   # appended: `defaults` keeps the display order
         else
             filter!(x -> x != sel, new_staged)
         end
