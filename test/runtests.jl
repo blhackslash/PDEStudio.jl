@@ -141,6 +141,24 @@ end
         @test PDEStudio._parse_sweep_input("0.1:0.1:0.3", [0.5]) ≈ [0.1, 0.2, 0.3]
     end
 
+    @testset "Method permutations" begin
+        ms = [Symbol("b(K=2)"), :analytic, :a]                  # automatic order: analytic, a, b(K=2)
+        @test PDEStudio._method_permutation(ms) == [3, 1, 2]
+        @test PDEStudio._permute_methods(ms, [3, 1, 2]) == ms
+        @test PDEStudio._permute_methods(ms, (2, 3, 1)) == [:a, Symbol("b(K=2)"), :analytic]
+        @test PDEStudio._permute_methods(ms, 1:3) == [:analytic, :a, Symbol("b(K=2)")]
+        @test PDEStudio._method_permutation(PDEStudio._permute_methods(ms, [2, 3, 1])) == [2, 3, 1]
+        @test PDEStudio._permute_methods([:x], 1) == [:x]
+        @test PDEStudio._method_permutation(Symbol[]) == Int[]
+        @test_throws ArgumentError PDEStudio._permute_methods(ms, [1, 2])       # one index per method
+        @test_throws ArgumentError PDEStudio._permute_methods(ms, [1, 1, 2])
+        @test_throws ArgumentError PDEStudio._permute_methods(ms, [:a, :b, :c])
+        @test_throws ArgumentError PDEStudio._permute_methods(ms, [true, false, true])
+        # what the editor reads from the text box
+        @test PDEStudio._parse_editor_input("[3, 1, 2]", [1, 2, 3]) == [3, 1, 2]
+        @test collect(PDEStudio._parse_editor_input("(3, 1, 2)", [1, 2, 3])) == [3, 1, 2]
+    end
+
     @testset "Sweeps & comparisons" begin
         @test PDEStudio._is_numeric_sweep([0.1, 2])
         @test !PDEStudio._is_numeric_sweep(["upwind", "lax_friedrichs"])
@@ -781,6 +799,80 @@ end
         # 4. Without explicit defaults the automatic order (references first) still applies
         set_sim_config!(SimulationConfig(shared, methods; reference = :exact_advection_factory))
         @test manager.methods[] == [:analytic, :lax_friedrichs, :upwind]
+    end
+
+    # =========================================================================
+    # --- METHOD ORDER AS A PERMUTATION (Simulation → Config → permutation) ---
+    # =========================================================================
+    @testset "Method order as a permutation" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        long_name = Symbol("upwind (cfl=0.5)")                      # shown as Symbol("…") in `defaults`
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"),
+                                     long_name => create_param_dict(:scheme => "upwind"),
+                                     :analytic => create_param_dict())
+        # automatic order: analytic, lax_friedrichs, upwind, upwind (cfl=0.5)
+        cfg = SimulationConfig(shared, methods, [:upwind, :lax_friedrichs, :analytic]; reference = :exact_advection_factory)
+        set_sim_config!(cfg)
+        click_button!(:run_button)
+
+        tb = manager.widgets[:editor_text]
+        click_menu!(manager.widgets[:editor_cat], :simulation)
+        click_menu!(manager.widgets[:editor_scope], :config)
+        @test :permutation in Iterators.map(last, manager.widgets[:editor_key].options[])
+        click_menu!(manager.widgets[:editor_key], :permutation)
+
+        # 1. Only the permutation of the automatic order is shown
+        @test tb.displayed_string[] == "[3, 2, 1]"
+
+        # 2. Typing a permutation reorders `defaults`; tuples are accepted and shown as the vector
+        tb.stored_string[] = "(1, 3, 2)"
+        @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs]
+        @test tb.displayed_string[] == "[1, 3, 2]"
+        @test manager.flags[:Simulation][] == true
+        click_button!(:run_button)
+        @test manager.methods[] == [:analytic, :upwind, :lax_friedrichs]
+        @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs]
+
+        # 3. Invalid input leaves the order alone
+        for bad in ("[1, 2]", "[1, 1, 2]", "[:a, :b, :c]")
+            @test_logs (:warn,) match_mode=:any (tb.stored_string[] = bad)
+            @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs]
+        end
+
+        # 4. `defaults` itself still shows and takes method names
+        click_menu!(manager.widgets[:editor_key], :defaults)
+        @test occursin("lax_friedrichs", tb.displayed_string[])
+
+        # 5. Activating a method appends it and refreshes the shown permutation
+        click_menu!(manager.widgets[:editor_key], :permutation)
+        manager.is_activate_mode[] = true
+        click_menu!(manager.widgets[:method_toggle], long_name)
+        @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs, long_name]
+        @test tb.displayed_string[] == "[1, 3, 2, 4]"
+        tb.stored_string[] = "[4, 3, 2, 1]"
+        @test manager.active_config.defaults == [long_name, :upwind, :lax_friedrichs, :analytic]
+
+        # 6. `default` restores the order of the configuration bound with set_sim_config! (different methods
+        #    now: the automatic order); with the same methods its order
+        tb.stored_string[] = "default"
+        @test manager.active_config.defaults == [:analytic, :lax_friedrichs, :upwind, long_name]
+        @test tb.displayed_string[] == "[1, 2, 3, 4]"
+        manager.is_activate_mode[] = false
+        click_menu!(manager.widgets[:method_toggle], long_name)
+        tb.stored_string[] = "default"
+        @test manager.active_config.defaults == [:upwind, :lax_friedrichs, :analytic]
+
+        # 7. The permutation is a view only: CSV files and presets store `defaults`, not `permutation`
+        tb.stored_string[] = "[2, 3, 1]"
+        @test save_sim_preset("permuted")
+        manager.active_config.defaults = [:upwind]
+        @test set_sim_preset!(:permuted).defaults == [:lax_friedrichs, :upwind, :analytic]
+        csv = read(joinpath(sim_preset_dir(), "permuted.csv"), String)
+        @test !occursin("permutation", csv)
     end
 
     # =========================================================================

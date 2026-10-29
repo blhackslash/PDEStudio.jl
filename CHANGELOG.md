@@ -2,6 +2,12 @@
 
 ## Unreleased: typed manager
 
+### New
+- *Simulation → Config → permutation* shows the order of the active methods (`defaults`) as a permutation of their
+  automatic order (references first, then alphabetical, as the method menus list them), e.g. `[3, 1, 2]`. Typing a
+  new permutation reorders `defaults`, so long method names don't have to be retyped to change the order of
+  legends, colours and the *Methods* comparison. It is a view of `defaults` and is not written to CSV files.
+
 ### Changed
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
   comparison). Reorder the list under *Simulation → Config → defaults* (or in `SimulationConfig`) to override
