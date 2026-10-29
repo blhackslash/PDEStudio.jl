@@ -20,6 +20,25 @@ function sort_methods_robust(methods::AbstractVector)
     return sort(syms, by = m -> (is_reference_method(m) ? 0 : 1, string(m)))
 end
 
+# The display order of `methods` as a permutation `p` of their automatic order: `methods == sort_methods_robust(methods)[p]`.
+function _method_permutation(methods::AbstractVector)
+    ms = unique(Symbol[Symbol(m) for m in methods])
+    canon = sort_methods_robust(ms)
+    return Int[findfirst(isequal(m), canon) for m in ms]
+end
+
+# Reorders `methods` by a permutation `p` of their automatic order (the inverse of `_method_permutation`).
+function _permute_methods(methods::AbstractVector, p)
+    canon = sort_methods_robust(unique(Symbol[Symbol(m) for m in methods]))
+    perm = p isa Integer && !(p isa Bool) ? [p] : p
+    (perm isa Union{AbstractVector, Tuple} && all(i -> i isa Integer && !(i isa Bool), perm)) ||
+        throw(ArgumentError("a permutation is a list of indices, e.g. [2, 1, 3]; got $(repr(p))"))
+    perm = Int[i for i in perm]
+    (length(perm) == length(canon) && isperm(perm)) ||
+        throw(ArgumentError("expected a permutation of 1:$(length(canon)) (one index per active method), got $(repr(p))"))
+    return canon[perm]
+end
+
 # ------------------------------------------------------------------------------
 # Value formatting & comparison helpers
 # ------------------------------------------------------------------------------

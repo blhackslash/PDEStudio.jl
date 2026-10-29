@@ -481,6 +481,10 @@ function _setup_method_interactions!()
         config.defaults = new_staged
         manager.flags[:Simulation][] = true
         menu_mth.i_selected[] = 1
+        # The editor may be showing `defaults` or `permutation`, which just changed
+        sel_editor = _editor_selection()
+        !isnothing(sel_editor) && sel_editor[1] === :simulation && sel_editor[2] === :config &&
+            notify(manager.widgets[:editor_key].selection)
         
         @with_lock :Menu_Sync begin
             sync_menu()
@@ -498,15 +502,23 @@ end
 Editor view (`Simulation → Config`) of the method and function fields of a `SimulationConfig`: `defaults` (active
 methods), `reference`, `postprocess` and `sources`. Assignments go through the backend's normalisation; `none`
 clears a function.
+
+`permutation` is not a field: it shows the order of `defaults` as indices into their automatic order (references
+first, then alphabetical, as the method menus list them), and assigning a permutation reorders `defaults`.
 """
 struct ConfigFields
     config::SimulationConfig
 end
-const CONFIG_EDITOR_FIELDS = (:defaults, :reference, :postprocess, :sources)
+const CONFIG_EDITOR_FIELDS = (:defaults, :permutation, :reference, :postprocess, :sources)
 Base.haskey(::ConfigFields, key) = key in CONFIG_EDITOR_FIELDS
 Base.keys(::ConfigFields) = collect(CONFIG_EDITOR_FIELDS)
-Base.getindex(p::ConfigFields, key::Symbol) = getproperty(p.config, key)
+Base.getindex(p::ConfigFields, key::Symbol) =
+    key === :permutation ? _method_permutation(p.config.defaults) : getproperty(p.config, key)
 function Base.setindex!(p::ConfigFields, value, key::Symbol)
+    if key === :permutation
+        p.config.defaults = _permute_methods(p.config.defaults, value)
+        return p
+    end
     key in (:reference, :postprocess) && (value = _function_name(value))
     setproperty!(p.config, key, value)
     return p
@@ -532,6 +544,10 @@ function _editor_target(cat, scope)
 end
 
 _editor_display(v) = isnothing(v) ? "none" : val2str(v)
+
+# The text the editor shows for `target[key]`; a method permutation is shown as plain indices (`[3, 1, 2]`).
+_editor_text(target, key) = target isa ConfigFields && key === :permutation ? "[" * join(target[key], ", ") * "]" :
+                            _editor_display(target[key])
 
 # Shows `s` in the editor's text box as its current (stored) value. Makie draws a displayed string that differs
 # from the stored one in the placeholder colour, so values set only through `displayed_string` looked like
@@ -564,6 +580,14 @@ function _editor_default(cat, scope, key)
     elseif cat === :simulation
         base = manager.base_config
         isnothing(base) && return missing
+        if scope === :config && key === :permutation
+            # The baseline order if it has the same methods, otherwise the automatic order
+            config = manager.active_config
+            isnothing(config) && return missing
+            current = unique(config.defaults)
+            same = Set(current) == Set(base.defaults)
+            return same ? _method_permutation(base.defaults) : collect(1:length(current))
+        end
         target = scope === :shared ? base.shared : scope === :sweep ? base.varied :
                  scope === :config ? ConfigFields(base) : get(base.methods, scope, nothing)
         (!isnothing(target) && haskey(target, key)) && return deepcopy(target[key])
@@ -619,7 +643,7 @@ function _after_editor_change!(cat, scope, key, target)
     if cat === :simulation
         scope === :presets && return nothing
         manager.flags[:Simulation][] = true
-        if scope === :config && key === :defaults
+        if scope === :config && key in (:defaults, :permutation)
             notify(manager.is_activate_mode)  # refresh the method menu
         elseif scope === :sweep && !isnothing(manager.active_config)
             _map_parameters_to_sliders!(manager.active_config)
@@ -721,7 +745,7 @@ function _setup_hierarchy_interactions!()
         end
 
         active_target_ref[] = (target, key)
-        val_str = _editor_display(target[key])
+        val_str = _editor_text(target, key)
         _show_editor_text!(tb, isempty(val_str) ? "<empty>" : val_str)
         
         if scope === :presets && key !== :create_new
@@ -849,7 +873,7 @@ function _setup_hierarchy_interactions!()
                     return
                 end
                 cat === :labels ? set_label!(key, string(val)) : (target[key] = val)
-                _show_editor_text!(tb, cat === :labels ? string(val) : _editor_display(val))
+                _show_editor_text!(tb, cat === :labels ? string(val) : _editor_text(target, key))
             elseif cat === :labels
                 set_label!(key, String(s))
             else
@@ -868,6 +892,8 @@ function _setup_hierarchy_interactions!()
                     return
                 end
                 target[key] = val
+                # `(2, 1, 3)` and `[2, 1, 3]` are the same permutation; show it the way it is read
+                target isa ConfigFields && key === :permutation && _show_editor_text!(tb, _editor_text(target, key))
             end
             _after_editor_change!(cat, scope, key, target)
         catch e
