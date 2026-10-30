@@ -2,7 +2,7 @@
 
 Makie-based interactive frontend for PDE simulations run with PDEStudioCore.jl (which it
 reexports): an interactive plotter for Eulerian and Lagrangian data in 1–3 D, a
-hierarchical editor for the simulation config, visual and simulation presets, CSV
+tabbed control panel with editor pages for the simulation config (and a raw `SimulationConfig` editor), visual and simulation presets, CSV
 config files, and static/animated exports. Works with GLMakie (local) or WGLMakie +
 Bonito (served from a compute node); CairoMakie is used for exports.
 
@@ -24,7 +24,7 @@ fix without having looked at the result.
 | Path | Contents |
 |:-----|:---------|
 | `src/PDEStudio.jl` | Module, plot caches, `PlotManager` (the single `manager`), `LOCK_HIERARCHY`, `@with_lock` |
-| `src/UILogic.jl`, `src/Controls.jl`, `src/UIStyles.jl` | Window layout, menus, sliders, editor, styles |
+| `src/UILogic.jl`, `src/Controls.jl`, `src/UIStyles.jl` | Window layout, tabs and editor pages (fixed widgets, parked off-screen when hidden), menus, sliders, styles |
 | `src/PlottingLogic.jl`, `src/MakiePlotting.jl`, `src/Render.jl`, `src/PlottingUtils.jl` | Building and updating plots, render primitives (lines, heatmap, contour, scatter, volume) |
 | `src/DataHandler.jl` | Loading sweep data from PDEStudioCore into `PlotSweepData` |
 | `src/ConfigIO.jl` | CSV config read/write, provenance (git commit, package versions), exports |
@@ -62,5 +62,5 @@ fix without having looked at the result.
 - Tests and experiments use a temporary save path (`set_save_path!(mktempdir())`).
 - Every export needs a docstring; docs build with `checkdocs = :exports` (warnings only for
   missing docs and cross references, but don't add new ones). UI changes: update the
-  matching page in `docs/src/gui/` or `docs/src/render/`.
+  matching page in `docs/src/` (the plot styles: `docs/src/render/`).
 - Commit subjects: short and imperative, describing the user-visible change.

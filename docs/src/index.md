@@ -2,7 +2,7 @@
 
 **PDEStudio.jl** is an interactive, Makie-driven graphical frontend for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations.
 
-It is built directly on top of its numerical backend **PDEStudioCore.jl** (reexported, so `using PDEStudio` is enough) and turns its simulation data into responsive 1D, 2D and 3D visualizations. It features a hierarchical editor, CSV-based presets for both the look and the physics of a study, and a rendering engine that handles Eulerian grids and Lagrangian particle systems.
+It is built directly on top of its numerical backend **PDEStudioCore.jl** (reexported, so `using PDEStudio` is enough) and turns its simulation data into responsive 1D, 2D and 3D visualizations. It features a tabbed control panel with editors for the physics and the look (and an *Advanced* tab for the raw `SimulationConfig`), CSV-based presets for both the look and the physics of a study, and a rendering engine that handles Eulerian grids and Lagrangian particle systems.
 
 PDE simulations often have to run on servers. There are two ways to work with remote machines:
 
@@ -17,7 +17,7 @@ PDE simulations often have to run on servers. There are two ways to work with re
 The studio is built around a central, reactive state manager that links the live simulation data to the Makie render loop.
 
 *   **Eulerian & Lagrangian Support:** Rendering primitives adapt to the data: grid-based heatmaps, surfaces and volumes, or point-based scatter plots. Data stored in the other representation is converted on the fly.
-*   **Hierarchical Editor:** Shared parameters, method parameters, the parameter sweep, the active methods, UI styles, export settings and display names, in one editor with a tab per category and a page per scope (see [Advanced Editors](editors.md)).
+*   **Editors:** the shared parameters (*Shared*), the methods with their parameters and drawing order (*Methods*), the look and the display names (*UI*), presets, export settings and resolution (*Files*) and the raw `SimulationConfig`: sweep, fields, all methods (*Advanced*); one row per entry (see [Editors](editors.md)).
 *   **Dynamic Layouts:** Multi-plot comparisons (methods, components, time steps or any swept parameter), linked or decoupled axes and detached legends.
 *   **Any Sweep:** Swept parameters can be numbers or anything else (scheme names, tuples, …); non-numeric sweeps get index sliders that display the swept value.
 
@@ -30,7 +30,7 @@ The studio is built around a central, reactive state manager that links the live
 | File | What it holds | Created with |
 | :--- | :--- | :--- |
 | **Export CSV** | Everything: physics, look, sweep, git commits, Julia versions, bundled sources | *Export* (next to every figure/animation) |
-| **Visual Preset** | The look only (layout, axes, camera, labels, UI styles) | *Files → Look → Save*, [`save_plot_preset`](@ref) |
+| **Look (visual) Preset** | The look only (layout, axes, camera, labels, UI styles) | *Files → Look → Save*, [`save_plot_preset`](@ref) |
 | **Simulation Preset** | The physics only (shared/method parameters, active methods, sweep, functions) | *Files → Simulation → Save*, [`save_sim_preset`](@ref) |
 
 Visual presets apply to any simulation; simulation presets swap the physics while the look stays as it is. See [Presets](presets.md).

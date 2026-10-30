@@ -1,4 +1,4 @@
-## Deep Dive: Advanced Editors
+## Deep Dive: The Editors
 
 The editor tabs (*Methods*, *Shared*, *UI*, *Advanced*) sit at the heart of the interface. They expose the backend's data structures, so you can change solver settings, sweeps and styles without touching the REPL.
 

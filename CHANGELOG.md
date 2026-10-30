@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased: GUI redesign (breaking)
+
+The control panel was rebuilt around tabs and editor pages. Widgets are still created once per window: hidden panels
+and unused rows are parked outside the figure (a hidden Makie button or slider would otherwise still react to clicks),
+so switching tabs or pages never touches the plots. The window is 500 px of controls plus the plots and fits a Full HD
+screen (the plot area keeps its titles and axis labels inside its own box).
+
+### New
+- **Tabs:** *Plot*, *Methods*, *Shared*, *UI*, *Files*, *Advanced* (`PDEStudio.show_tab!`). Always visible below
+  them: a **status line** with the result of the last action (edits and refused values, method changes, presets,
+  runs, loads, exports; green / orange / red), *Play Anim* / *Lock Camera*, the execution buttons and the sliders.
+- **Plot tab:** one option per row; *Layout options* (Apply Layout) and *Plot options* (Update Plot). The **plot
+  style** is chosen on a page of all supported styles, grouped by Lines, Scatter, Contour, Heatmap and Volume
+  (Lagrangian data: the scatter styles of its dimension). Plot width, plot height and grid columns take any whole
+  number (50–5000 px, 1–12 columns).
+- **Methods tab:** every method with *active / off*, a *Show: active / disabled / all* filter, *Edit ›* for its
+  parameters (inactive methods too) and an *Order ▲▼* view of the drawing order (`defaults`) with ▲ ▼.
+- **Shared tab:** the shared parameters, one row each.
+- **UI tab:** a fixed overview: *General* (fonts, HUD, outliers), *Labels* (*Plot*: title and axis labels; the
+  display names of components, variables and methods), *Axes* (every axis variant: X/Y 1D, X/Y 2D/3D, Z 3D) and
+  *Plot styles* (one page per plot type with the options it uses). The pages of the active plot are highlighted.
+- **Files tab:** Name / path and Description boxes (typed text counts without pressing Enter), Load CSV, Export,
+  *Settings ›* (export settings), *Resolution ›* (points per dimension of the data and the references), and all
+  presets: Save / Reset / *Presets ›* for simulation and look presets. *Presets ›* lists them with *Apply* and
+  *Edit ›*, which edits the rows of the preset file (change, ✕ delete, add; written right away).
+- **Advanced tab:** the `SimulationConfig` itself: `shared`, `varied` (the sweep), the fields (`defaults`,
+  `reference`, `postprocess`, `sources`) and the list of all methods. Values are typed Julia literals, parsed
+  strictly; ✕ deletes a key; keys are added with a type (`auto`, `Int`, `Float64`, `Bool`, `String`, `Symbol`,
+  `Tuple`, vectors); methods are added and deleted.
+- **Editor pages:** one row per entry (name, value, a button: on/off for Booleans, ↺ to restore the default), 16
+  rows per page with ◀ ▶ for longer lists, ◀ Back to the overview; `PDEStudio.show_editor_page!` opens a page from
+  code.
+
+### Changed
+- Only the sliders with a choice to make are shown (unused parameter sliders, dimensions on a plot axis or missing
+  from the data are hidden); the sliders are at the bottom of the panel.
+- Every axis variant keeps its own settings (`manager.ui[:x_axis_1d]`, …), so switching between 1D and 2D/3D plots
+  no longer resets them; `manager.ui` always holds every UI scope.
+- Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in the
+  status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is accepted.
+- Load results are reported in the status line (the load button only changes colour); dropping a CSV no longer
+  switches tabs.
+
+### Breaking
+- **Tabs and widgets:** the tabs are `:plot`, `:methods`, `:shared`, `:ui`, `:files`, `:advanced`. Removed from
+  `manager.widgets`: `:editor_cat`, `:editor_scope`, `:editor_key`, `:editor_text`, `:editor_toggle`, `:mode_button`,
+  `:method_toggle`, `:base_plot` (and `manager.active_target`, `manager.is_activate_mode`). `:plot_width`,
+  `:plot_height` and `:compare_columns` are `NumberBox`es and `:plot_style` is a `StyleChoice` (`.selection` holds
+  the value as before). The preset buttons are in the Files tab (`:save_sim_preset_button`, `:reset_sim_button`,
+  `:save_presets_button`, `:clear_presets_button`, description in `:preset_desc_text`). Scripts that drove the
+  editor should use `show_editor_page!` and the rows (`manager.editor_row_keys`, `:editor_row_<i>_text` /
+  `:editor_row_<i>_button`).
+- **No base plot:** the `base_plot` layout option is gone (`Scene, Layout, base_plot` rows of older files are
+  ignored).
+- **UI CSV rows of the axes** use the variant scopes (`UI, x_axis_nd, padding, …`). Older files with `x_axis` /
+  `y_axis` / `z_axis` still load (as the variant of their plot style), but older versions can't read the axis
+  settings of new files. `manager.ui[:x_axis]` no longer exists (`PDEStudio._axis_ui(:x_axis)` is the active one).
+- **Removed editor features:** the `permutation` key (use the Methods tab's *Order ▲▼*), the Sweep and Config pages
+  with their conveniences (single values as sweeps, unquoted text sweeps; use the Advanced tab), the Presets pages
+  of the editor and the `create_new` preset entry (use the Files tab).
+
 ## Unreleased: typed manager
 
 ### New
@@ -9,58 +70,6 @@
   legends, colours and the *Methods* comparison. It is a view of `defaults` and is not written to CSV files.
 
 ### Changed
-- The control panel is organised in tabs: **Plot**, **Layout**, **Simulation**, **UI**, **Labels** (the three editor
-  categories, which replace the category dropdown) and **Files**. The filename box, the sliders, *Play Anim* /
-  *Lock Camera* and the execution buttons are always visible below the tabs, so the window is much shorter (it fits
-  a Full HD screen). All widgets are still created once per window: the panels of the other tabs are hidden and
-  parked outside the figure (hidden Makie buttons and sliders would otherwise still react to clicks). Switching tabs
-  doesn't touch the plots. A window opens on the Plot tab; `PDEStudio.show_tab!` selects one from code.
-- The editor has pages instead of the Scope / Parameter dropdowns: each editor tab opens on an overview with one
-  button per scope (with the number of entries), and a page lists every entry of the scope as a row (name, value box
-  and a button: on/off for Booleans, ↺ to restore the default, *Apply* for presets). Long scopes and overviews get
-  ◀ ▶ pages; ◀ Back returns to the overview. Rows and buttons are a fixed set bound to the open page.
-  `PDEStudio.show_editor_page!(:simulation, :shared)` opens a page from code.
-- Only the sliders with a choice to make are shown (unused parameter sliders and dimensions on a plot axis or not in
-  the data are hidden), and the sliders moved to the bottom of the control panel.
-- The Layout and Plot tabs are one **Plot** tab (layout options above, plot options below). Plot width, plot height
-  and grid columns are number boxes for any value (50–5000 px, 1–12 columns) instead of fixed menus.
-- **Methods** tab (in place of the Mode button and the method dropdown): every method with an *active / off* button,
-  a *Show: active / disabled / all* filter, *Edit ›* for its parameters (inactive methods too) and an *Order ▲▼*
-  view of the active methods in drawing order with ▲ ▼ to move them. The Simulation overview no longer lists the
-  methods.
-- A status line below the tabs shows the result of the last action (edits and refused values, method changes,
-  presets, runs, CSV loads, exports), coloured by outcome. The load button no longer carries the load messages, and
-  dropping a CSV no longer switches to the Files tab.
-- The plot style is chosen on a page of all supported styles (Plot tab → *Plot Style*), grouped by Lines, Scatter,
-  Contour, Heatmap and Volume; the separate *Base Plot* menu is gone. Lagrangian data offers the scatter styles of
-  its dimension.
-- The **Files** tab holds the Name / path box (no longer always visible), a Description box for new presets, Load
-  CSV, Export with *Export settings ›* (the former *UI → Export* page) and Save / Reset for simulation presets and
-  look presets. The editor tabs no longer have preset buttons; presets are applied on their *Presets* pages, which
-  no longer have a `create_new` row. Typed names and descriptions count without pressing Enter.
-- The **UI** overview is fixed: *General*, *Axes* (every axis variant: X/Y 1D, X/Y 2D/3D, Z 3D) and *Plot styles*
-  (one page per plot type with the options it uses), with the pages of the active plot highlighted. Every axis
-  variant keeps its own settings (`x_axis_1d`, …), so switching between 1D and 2D/3D plots no longer resets them.
-- Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in
-  the status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is still accepted.
-- The Simulation tab is the **Shared** tab: one page of the shared parameters. The sweep and the configuration fields
-  are edited in the Advanced tab, the methods and their order in the Methods tab.
-- The Labels tab moved into the UI tab: a *Labels* section with *Plot* (the former *UI → Labels*: title and axis
-  labels) and the display names of components, variables and methods.
-- **Files → Resolution ›**: the points per dimension of the data and of the references (`set_resolution!`), with ↺
-  to restore the default; Run Simulation reloads the data.
-- Editor pages have 16 rows (the height of the Plot tab). The Advanced tab lists the methods on a page of their own
-  (full-width rows with Edit › and ✕, ◀ ▶ pages for long lists, *Add method* below).
-- **Advanced** tab: edits the `SimulationConfig` directly (shared, varied, the fields and every method, active or
-  not). Values are Julia literals with their types, parsed strictly; ✕ deletes a key; new keys are added with a type
-  (`auto`, `Int`, `Float64`, `Bool`, `String`, `Symbol`, `Tuple`, vectors); methods can be added and deleted.
-- All presets are in the Files tab: *Presets ›* lists the simulation or look presets with *Apply* and *Edit ›*, a
-  page of the rows of the preset file (edit values, ✕ delete rows, add rows); written to the file right away. The
-  Presets pages of the Simulation and UI tabs are gone.
-- The Plot tab lists one option per row (name on the left) instead of the three-column grid. The control panel is
-  500 px wide; the tabs are as wide as their labels.
-- The plot area keeps its titles and axis labels inside its own box, so they no longer add height to the window
-  (about 140 px less).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
   comparison). Reorder the list under *Simulation → Config → defaults* (or in `SimulationConfig`) to override
   the automatic order; activated methods are appended. Without explicit defaults the order is still references
@@ -74,30 +83,6 @@
 - The editor's *Simulation* category lists only the active methods as scopes (activate a method to edit it).
 - CSV files (exports and simulation presets) store only the active methods and their parameters; inactive methods
   of the bound configuration are no longer written.
-
-### Breaking
-- The editor widgets `:editor_cat`, `:editor_scope`, `:editor_key`, `:editor_text` and `:editor_toggle` are gone
-  from `manager.widgets` (and `manager.active_target`), as are the method widgets `:mode_button` and
-  `:method_toggle` (and `manager.is_activate_mode`); `:plot_width`, `:plot_height` and `:compare_columns` are
-  `NumberBox`es (`.selection` still holds the value, `.box` is the text box). The tabs are `:plot`, `:methods`,
-  `:simulation`, `:ui`, `:labels`, `:files` (no `:layout`).
-- `:base_plot` is gone (widget, layout option and `Scene, Layout` CSV row; old rows are ignored); `:plot_style` is a
-  `StyleChoice` (`.selection` holds the plot type, `.button` opens the style page).
-- UI CSV rows of the axes use the variant scopes (`UI, x_axis_nd, padding, …`); older files with `x_axis`/`y_axis`/
-  `z_axis` still load, but files written now can't be read by older versions with their axis settings.
-  `manager.ui` holds every scope permanently (`manager.ui[:x_axis]` no longer exists; `PDEStudio._axis_ui(:x_axis)`
-  gives the active variant).
-- The preset buttons are `:save_sim_preset_button`, `:reset_sim_button` (simulation), `:save_presets_button`,
-  `:clear_presets_button` (look) in the Files tab, with the description in `:preset_desc_text`; the `:create_new`
-  preset entry is gone.
-- The `permutation` key of *Simulation → Config* is gone, together with the Sweep and Config pages of the Simulation
-  tab: the drawing order is set in the Methods tab (*Order ▲▼*), the sweep and the fields in the Advanced tab. The
-  tabs are `:plot`, `:methods`, `:shared`, `:ui`, `:files`, `:advanced` (no `:simulation`, no `:labels`);
-  `show_editor_page!(:ui, :methods)` opens the method display names.
-- The Simulation and UI overviews have no *Presets* page (`show_editor_page!(:simulation, :presets)`); use the
-  Files tab (`show_editor_page!(:files, PDEStudio.PRESET_LIST)` with `manager.preset_kind`). Scripts that drove the editor through them should use
-  `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /
-  `:editor_row_<i>_button`). The CSV format is unchanged.
 
 ### Fixed
 - A numerically constant field (e.g. the `Float32` initial state of a Riemann problem) made the filled contour

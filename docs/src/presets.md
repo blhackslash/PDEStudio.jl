@@ -2,10 +2,10 @@
 
 A study usually has two independent halves: *how it looks* (layout, axes, colors, camera, labels) and *what is computed* (parameters, methods, sweep). PDEStudio keeps them apart with two kinds of presets:
 
-| | Visual Preset | Simulation Preset |
+| | Look (visual) Preset | Simulation Preset |
 | :--- | :--- | :--- |
 | **Holds** | Layout, plot axes, slider positions, camera, labels, exploration options, all UI styles | Shared parameters, the active methods and their parameters, the sweep, the reference and post-processing functions |
-| **Ignores** | Everything in the *Simulation* category | Everything visual, and source files |
+| **Ignores** | The simulation (parameters, methods, sweep, functions) | Everything visual, and source files |
 | **Folder** | `<save path>/Presets/` | `<save path>/Presets/Simulation/` |
 | **Save** | *Files → Look → Save* · [`save_plot_preset`](@ref) | *Files → Simulation → Save* · [`save_sim_preset`](@ref) |
 | **Apply** | *Files → Look → Presets ›* + **Apply** · [`set_plot_preset!`](@ref) | *Files → Simulation → Presets ›* + **Apply** · [`set_sim_preset!`](@ref) |
@@ -37,7 +37,7 @@ reset_sim_config!()           # back to the configuration bound with set_sim_con
 set_plot_preset!()            # back to the default look
 ```
 
-Built-in visual presets: `:convergence`, `:publication`, `:heatmap`, `:component`, `:compact3d`, `:nolabels` and `:darkmode`.
+Built-in look presets: `:convergence`, `:publication`, `:heatmap`, `:component`, `:compact3d`, `:nolabels` and `:darkmode`.
 
 ## Replace or Patch
 

@@ -26,7 +26,7 @@ Instead of constantly tweaking sliders to compare states, you can unroll your di
 While Layout dictates *how* things are drawn, Plot Options dictate *what* is drawn. Changes made here are instantly resolved via the **Update Plot** button without needing to rebuild the layout.
 
 #### 1. The X $\rightarrow$ Y $\rightarrow$ Z Hierarchy
-The independent axes cascade strictly from left to right. This prevents mathematically impossible plots (like plotting X versus X).
+The independent axes cascade strictly from top to bottom (X, then Y, then Z). This prevents mathematically impossible plots (like plotting X versus X).
 *   When you select an **X-Axis**, that variable is removed from the available options for Y and Z.
 *   Selecting a **Y-Axis** further restricts the available options for Z.
 *   *Auto-Correction:* If you change your Plot Style from a 3D volume down to a 1D line plot, the studio will automatically detect the incompatibility, disable the Y and Z axis selectors, and reset the plot to prevent the engine from crashing.
