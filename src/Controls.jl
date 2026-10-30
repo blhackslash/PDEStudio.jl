@@ -3,26 +3,34 @@
 # ==============================================================================
 
 # Width of the control panel (pixels).
-const CONTROL_WIDTH = 450
+const CONTROL_WIDTH = 500
 
-# Tabs of the control panel and their button labels. The Methods tab and the three editor categories (Simulation,
-# UI, Labels) show the editor; the Methods tab edits the simulation configuration.
-const CONTROL_TABS = (:plot, :methods, :simulation, :ui, :labels, :files)
+# Tabs of the control panel and their button labels. The Methods tab, the three editor categories (Simulation, UI,
+# Labels) and the Advanced tab show the editor; the Methods tab edits the simulation configuration through the
+# studio's views, the Advanced tab edits the `SimulationConfig` itself.
+const CONTROL_TABS = (:plot, :methods, :simulation, :ui, :labels, :files, :advanced)
 const TAB_LABELS = Dict(:plot => "Plot", :methods => "Methods", :simulation => "Simulation", :ui => "UI",
-                        :labels => "Labels", :files => "Files")
-const EDITOR_TABS = (:methods, :simulation, :ui, :labels)
+                        :labels => "Labels", :files => "Files", :advanced => "Advanced")
+const EDITOR_TABS = (:methods, :simulation, :ui, :labels, :advanced)
 const TAB_ROWGAP = 12   # gap between the panels of a tab
 
 # The panels (widget groups) each tab shows, top to bottom. The editor panel is shared by the editor tabs.
 const TAB_PANELS = Dict(:plot => (:layout, :plot), :methods => (:editor,), :simulation => (:editor,),
-                        :ui => (:editor,), :labels => (:editor,), :files => (:files,))
+                        :ui => (:editor,), :labels => (:editor,), :files => (:files,), :advanced => (:editor,))
 const TAB_PANEL_NAMES = (:plot, :layout, :editor, :files)
 
-# The Files tab shows its panel, or the export settings (`EXPORT_SETTINGS`, an editor page of `ui[:export]`); the
-# Plot tab shows its options, or the page of all plot styles (`STYLE_CHOOSER`).
+# The Files tab shows its panel, or one of its editor pages: the export settings (`EXPORT_SETTINGS`, `ui[:export]`),
+# the list of the simulation or look presets (`PRESET_LIST`) or the rows of a preset file (`PRESET_FILE`). The Plot
+# tab shows its options, or the page of all plot styles (`STYLE_CHOOSER`).
 const EXPORT_SETTINGS = :export
+const PRESET_LIST = Symbol("#presets")
+const PRESET_FILE = Symbol("#preset_file")
 const STYLE_CHOOSER = Symbol("#styles")
-const TAB_EDITOR_PAGES = Dict(:files => EXPORT_SETTINGS, :plot => STYLE_CHOOSER)
+const TAB_EDITOR_PAGES = Dict(:files => (EXPORT_SETTINGS, PRESET_LIST, PRESET_FILE), :plot => (STYLE_CHOOSER,))
+
+# Types offered when a key is added in the Advanced tab (`auto`: the literal as typed).
+const RAW_VALUE_TYPES = (:auto, :Int, :Float64, :Bool, :String, :Symbol, :Tuple,
+                         Symbol("Vector{Float64}"), Symbol("Vector{Int}"), Symbol("Vector{Symbol}"), Symbol("Vector{String}"))
 
 # The Methods tab lists the methods (`nothing`), shows the drawing order (`ORDER_VIEW`) or the page of a method.
 const ORDER_VIEW = Symbol("#order")
@@ -42,7 +50,7 @@ const SLIDER_ROWGAP = 5
 
 Constructs the primary control panel inside the provided Makie `GridLayout`, top to bottom:
 
-1. The tab bar (`Plot`, `Methods`, `Simulation`, `UI`, `Labels`, `Files`).
+1. The tab bar (`Plot`, `Methods`, `Simulation`, `UI`, `Labels`, `Files`, `Advanced`).
 2. The tab content: the panel(s) of the selected tab (see `TAB_PANELS`). Every panel is built once; the panels of
    the other tabs are parked off-screen by `show_tab!`.
 3. The status line (see `_status!`).
@@ -59,10 +67,14 @@ function create_controls(layout::GridLayout)
     colsize!(layout, 1, Fixed(CONTROL_WIDTH))
 
     # --- 1. TAB BAR ---
+    # each tab is as wide as its label (plus padding), the rest of the row is shared evenly
     tab_bar = layout[1, 1] = GridLayout()
+    label_widths = [Makie.widths(Makie.text_bb(TAB_LABELS[t], Makie.to_font("TeX Gyre Heros Makie"), 13))[1] for t in CONTROL_TABS]
+    spare = (CONTROL_WIDTH - 3 * (length(CONTROL_TABS) - 1) - sum(label_widths)) / length(CONTROL_TABS)
     for (i, tab) in enumerate(CONTROL_TABS)
         manager.widgets[Symbol("tab_", tab)] = Button(tab_bar[1, i], label = TAB_LABELS[tab], width = nothing,
-                                                      fontsize = 13, padding = (4, 4, 6, 6))
+                                                      fontsize = 13, padding = (2, 2, 6, 6))
+        colsize!(tab_bar, i, Fixed(floor(label_widths[i] + spare)))
     end
     colgap!(tab_bar, 3)
 
@@ -138,33 +150,35 @@ end
 
 Builds the `Files` tab: the name / path box (exports, presets, CSV loading) and the description of a new preset;
 loading a CSV (or drop a file anywhere on the window), export and its settings (an editor page of `ui[:export]`); and
-saving / resetting presets: simulation presets (the physics) and look presets (the visual settings). Presets are
-applied on the *Presets* pages of the Simulation and UI tabs. Results are shown in the status line.
+the presets: save / reset the simulation (the physics) and the look (the visual settings), and *Presets ›*, the list
+of the saved presets with *Apply* and *Edit ›* (the rows of the preset file). Results are shown in the status line.
 """
 function create_file_controls!(layout::GridLayout)
     w = manager.widgets
     Label(layout[1, 1], "Name / path", halign = :left, fontsize = 13)
-    w[:export_text] = Textbox(layout[1, 2:3], placeholder = "file name, preset name or CSV path", width = nothing)
+    w[:export_text] = Textbox(layout[1, 2:4], placeholder = "file name, preset name or CSV path", width = nothing)
     Label(layout[2, 1], "Description", halign = :left, fontsize = 13)
-    w[:preset_desc_text] = Textbox(layout[2, 2:3], placeholder = "of a preset you save (optional)", width = nothing)
+    w[:preset_desc_text] = Textbox(layout[2, 2:4], placeholder = "of a preset you save (optional)", width = nothing)
 
-    w[:load_config_button]     = Button(layout[3, 1], label = "Load CSV", buttoncolor = :lightgray, width = nothing)
-    w[:export_button]          = Button(layout[3, 2], label = "Export", buttoncolor = :lightblue, width = nothing)
-    w[:export_settings_button] = Button(layout[3, 3], label = "Export settings ›", width = nothing)
-    Label(layout[4, 1:3], "CSV files can also be dropped anywhere on the window.", halign = :left, fontsize = 11,
+    Label(layout[3, 1], "File", halign = :left, fontsize = 13)
+    w[:load_config_button]     = Button(layout[3, 2], label = "Load CSV", buttoncolor = :lightgray, width = nothing)
+    w[:export_button]          = Button(layout[3, 3], label = "Export", buttoncolor = :lightblue, width = nothing)
+    w[:export_settings_button] = Button(layout[3, 4], label = "Settings ›", width = nothing)
+    Label(layout[4, 1:4], "CSV files can also be dropped anywhere on the window.", halign = :left, fontsize = 11,
           color = :gray40)
 
-    Label(layout[5, 1:3], "Presets  (apply them on the Presets pages of the Simulation and UI tabs)", halign = :left,
-          font = :bold, color = :darkred)
+    Label(layout[5, 1:4], "Presets", halign = :left, font = :bold, color = :darkred)
+    neutral = RGBf(0.92, 0.92, 0.92)
     Label(layout[6, 1], "Simulation", halign = :left, fontsize = 13)
     w[:save_sim_preset_button] = Button(layout[6, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
-    w[:reset_sim_button]       = Button(layout[6, 3], label = "Reset", buttoncolor = RGBf(0.92, 0.92, 0.92), width = nothing)
+    w[:reset_sim_button]       = Button(layout[6, 3], label = "Reset", buttoncolor = neutral, width = nothing)
+    w[:sim_presets_button]     = Button(layout[6, 4], label = "Presets ›", width = nothing)
     Label(layout[7, 1], "Look", halign = :left, fontsize = 13)
     w[:save_presets_button]  = Button(layout[7, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
-    w[:clear_presets_button] = Button(layout[7, 3], label = "Reset", buttoncolor = RGBf(0.92, 0.92, 0.92), width = nothing)
+    w[:clear_presets_button] = Button(layout[7, 3], label = "Reset", buttoncolor = neutral, width = nothing)
+    w[:look_presets_button]  = Button(layout[7, 4], label = "Presets ›", width = nothing)
 
     colsize!(layout, 1, Fixed(100))
-    for i in 2:3; colsize!(layout, i, Auto()); end
     rowgap!(layout, 3, 2)    # the hint belongs to the buttons above it
     rowgap!(layout, 4, 14)   # space before the presets
 end
@@ -240,94 +254,63 @@ function _set_number!(nb::NumberBox, val)
     return nothing
 end
 
+# A row of a single-column options panel: the name on the left; returns the position of the widget on the right.
+function _option_row!(gl::GridLayout, row::Int, name::AbstractString)
+    Label(gl[row, 1], name, halign = :left, fontsize = 13)
+    return gl[row, 2]
+end
+
+# Column widths and gaps of the options panels.
+function _finish_option_panel!(gl::GridLayout)
+    colsize!(gl, 1, Fixed(140))
+    rowgap!(gl, 4)
+    rowgap!(gl, 1, 8)   # below the section title
+    return nothing
+end
+
 """
     build_layout_options!(menu_layout::GridLayout)
 
-Builds the upper half of the `Plot` tab: structural layout features applied with *Apply Layout* (the plot style,
-sizing, legend positioning and multi-column comparison modes). The plot style is chosen on a page of all styles
-(`StyleChoice`); plot width, height and grid columns are free numbers (`NumberBox`).
+Builds the upper half of the `Plot` tab, one option per row: the structural layout features applied with *Apply
+Layout*: the plot style (chosen on a page of all styles, `StyleChoice`), plot width and height (`NumberBox`),
+legend placement and the multi-plot comparison (target, grid columns, coupling).
 """
 function build_layout_options!(menu_layout::GridLayout)
-    cr = 1
-    gaps = Int[]
+    w = manager.widgets
+    Label(menu_layout[1, 1:2], "Layout options  (Apply Layout)", font = :bold, color = :darkred, halign = :left)
 
-    Label(menu_layout[cr, 1:3], "Layout options  (Apply Layout)", font = :bold, color = :darkred, halign = :left)
-    push!(gaps, 6); cr += 1
-
-    compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
-
-    # --- ROW BLOCK 1: Plot style, size and legend ---
-    Label(menu_layout[cr,1], "Plot Style", font=:bold, color=:teal)
-    Label(menu_layout[cr,2], "Plot Width", font=:bold, color=:teal)
-    Label(menu_layout[cr,3], "Legend Base", font=:bold, color=:darkorchid)
-    push!(gaps, 2); cr += 1
-
-    manager.widgets[:plot_style]  = StyleChoice(menu_layout[cr,1], manager.mode[] == :eulerian ? :lines_1d : :scatter_1d)
-    manager.widgets[:plot_width]  = NumberBox(menu_layout[cr,2], 500; lo = 50, hi = 5000, name = "Plot Width")
-    manager.widgets[:legend_base] = Menu(menu_layout[cr,3], options = Any[menu_opt(:none), menu_opt(:center), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
-    push!(gaps, 10); cr += 1
-
-    # --- ROW BLOCK 2: Size and legend (modifiers) ---
-    Label(menu_layout[cr,2], "Plot Height", font=:bold, color=:teal)
-    Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
-    push!(gaps, 2); cr += 1
-
-    manager.widgets[:plot_height] = NumberBox(menu_layout[cr,2], 400; lo = 50, hi = 5000, name = "Plot Height")
-    manager.widgets[:legend_add]  = Menu(menu_layout[cr,3], options = Any[menu_opt(:detached), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
-    push!(gaps, 15); cr += 1
-
-    # --- ROW BLOCK 3: Comparisons ---
-    Label(menu_layout[cr,1], "Compare Target", font=:bold, color=:darkorange)
-    Label(menu_layout[cr,2], "Grid Columns", font=:bold, color=:darkorange)
-    Label(menu_layout[cr,3], "Compare Link", font=:bold, color=:darkorange)
-    push!(gaps, 2); cr += 1
-
-    manager.widgets[:compare_target]  = Menu(menu_layout[cr,1], options = compare_opts)
-    manager.widgets[:compare_columns] = NumberBox(menu_layout[cr,2], 2; lo = 1, hi = MAX_COMPARE_PLOTS, name = "Grid Columns")
-    manager.widgets[:compare_link]    = Menu(menu_layout[cr,3], options = Any[menu_opt(:fully_coupled), menu_opt(:colorbar_only), menu_opt(:axes_only), menu_opt(:decoupled)])
-
-    cr += 1
-
-    for i in 1:3; colsize!(menu_layout, i, Relative(1/3)); end
-    for (i, gap) in enumerate(gaps); rowgap!(menu_layout, i, gap); end
+    w[:plot_style]  = StyleChoice(_option_row!(menu_layout, 2, "Plot Style"), manager.mode[] == :eulerian ? :lines_1d : :scatter_1d)
+    w[:plot_width]  = NumberBox(_option_row!(menu_layout, 3, "Plot Width (px)"), 500; lo = 50, hi = 5000, name = "Plot Width")
+    w[:plot_height] = NumberBox(_option_row!(menu_layout, 4, "Plot Height (px)"), 400; lo = 50, hi = 5000, name = "Plot Height")
+    w[:legend_base] = Menu(_option_row!(menu_layout, 5, "Legend"),
+                           options = Any[menu_opt(:none), menu_opt(:center), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
+    w[:legend_add]  = Menu(_option_row!(menu_layout, 6, "Legend Placement"),
+                           options = Any[menu_opt(:detached), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
+    w[:compare_target]  = Menu(_option_row!(menu_layout, 7, "Compare"),
+                               options = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)])
+    w[:compare_columns] = NumberBox(_option_row!(menu_layout, 8, "Grid Columns"), 2; lo = 1, hi = MAX_COMPARE_PLOTS, name = "Grid Columns")
+    w[:compare_link]    = Menu(_option_row!(menu_layout, 9, "Compare Link"),
+                               options = Any[menu_opt(:fully_coupled), menu_opt(:colorbar_only), menu_opt(:axes_only), menu_opt(:decoupled)])
+    _finish_option_panel!(menu_layout)
 end
 
 """
     build_plot_options!(menu_layout::GridLayout)
 
-Builds the lower half of the `Plot` tab: independent axis selectors, the dependent field, the animation target and
-the vector component selector, which update the data without rebuilding the plot grid (*Update Plot*).
+Builds the lower half of the `Plot` tab, one option per row: the independent axes, the dependent field, its
+component and the animation target, which update the data without rebuilding the plot grid (*Update Plot*).
 """
 function build_plot_options!(menu_layout::GridLayout)
-    cr = 1
-    gaps = Int[]
+    w = manager.widgets
+    Label(menu_layout[1, 1:2], "Plot options  (Update Plot)", font = :bold, color = :darkred, halign = :left)
 
-    Label(menu_layout[cr, 1:3], "Plot options  (Update Plot)", font = :bold, color = :darkred, halign = :left)
-    push!(gaps, 6); cr += 1
-
-    # --- ROW BLOCK 4: Independent Axes ---
-    Label(menu_layout[cr,1], "X-Axis", font=:bold)
-    Label(menu_layout[cr,2], "Y-Axis", font=:bold)
-    Label(menu_layout[cr,3], "Z-Axis", font=:bold)
-    push!(gaps, 2); cr += 1
-
-    manager.widgets[:x_axis] = Menu(menu_layout[cr,1], options = Any[menu_opt(:none)])
-    manager.widgets[:y_axis] = Menu(menu_layout[cr,2], options = Any[menu_opt(:none)])
-    manager.widgets[:z_axis] = Menu(menu_layout[cr,3], options = Any[menu_opt(:none)])
-    push!(gaps, 10); cr += 1
-
-    # --- ROW BLOCK 5: Rest ---
-    Label(menu_layout[cr,1], "U-Axis (Dep)", font=:bold)
-    Label(menu_layout[cr,2], "Anim Target", font=:bold, color=:darkorange)
-    Label(menu_layout[cr,3], "Component", font=:bold)
-    push!(gaps, 2); cr += 1
-
-    manager.widgets[:u_axis]      = Menu(menu_layout[cr,1], options = Any[menu_opt(:none)])
-    manager.widgets[:anim_target] = Menu(menu_layout[cr,2], options = Any[menu_opt(:none)])
-    manager.widgets[:component]   = Menu(menu_layout[cr,3], options = Any[(frontend_key(:component_1), 1)])
-
-    for i in 1:3; colsize!(menu_layout, i, Relative(1/3)); end
-    for (i, gap) in enumerate(gaps); rowgap!(menu_layout, i, gap); end
+    w[:x_axis]      = Menu(_option_row!(menu_layout, 2, "X-Axis"), options = Any[menu_opt(:none)])
+    w[:y_axis]      = Menu(_option_row!(menu_layout, 3, "Y-Axis"), options = Any[menu_opt(:none)])
+    w[:z_axis]      = Menu(_option_row!(menu_layout, 4, "Z-Axis"), options = Any[menu_opt(:none)])
+    w[:u_axis]      = Menu(_option_row!(menu_layout, 5, "U-Axis (Dep)"), options = Any[menu_opt(:none)])
+    w[:component]   = Menu(_option_row!(menu_layout, 6, "Component"), options = Any[(frontend_key(:component_1), 1)])
+    w[:anim_target] = Menu(_option_row!(menu_layout, 7, "Anim Target"), options = Any[menu_opt(:none)])
+    _finish_option_panel!(menu_layout)
 end
 
 """
@@ -366,14 +349,18 @@ _slider_keys() = Symbol[[Symbol("param_$i") for i in 1:manager.max_params]; get_
     create_editor_controls!(layout::GridLayout)
 
 Builds the editor panel shared by the `Methods`, `Simulation`, `UI` and `Labels` tabs (the tab is the category; the
-Methods tab edits the simulation configuration) and by the export settings of the `Files` tab:
+Methods tab edits the simulation configuration, the Advanced tab the `SimulationConfig` itself) and by the pages of
+the `Files` tab (export settings, presets):
 
 - a header with a back button (to the overview), the title of the page and ◀ ▶ for scopes with more keys than rows;
 - the tools of the Methods tab: which methods are listed (active / disabled / all) and the drawing order view;
 - the overview: one button per page (scope) of the category, `OVERVIEW_BUTTONS` of them, in titled sections;
 - a page: `EDITOR_ROWS` rows of key name, value box and an action button (on/off for `Bool` values, ↺ to restore
   the default, *Apply* for presets);
-- the method rows of the Methods tab: `EDITOR_ROWS` rows of name and two buttons (active/off and Edit, or ▲ ▼).
+- the item rows: `EDITOR_ROWS` rows of name and two buttons (Methods tab: active/off and Edit, or ▲ ▼; Files tab:
+  Apply and Edit of a preset);
+- rows that add an entry: to a preset file (category and scope, key, value), to a configuration scope in the
+  Advanced tab (key, type, value; plus deleting a method) and a method (Advanced overview).
 
 All of it is built once; `_render_editor!` binds the widgets to the selected page and parks the unused ones.
 """
@@ -441,5 +428,31 @@ function create_editor_controls!(layout::GridLayout)
         colgap!(row, 6)
     end
     rowgap!(method_rows, EDITOR_ROWGAP)
+
+    # --- Rows that add entries; all built in one row (at most one is shown), parked unless their page is open ---
+    neutral = RGBf(0.92, 0.92, 0.92)
+    # a row of a preset file
+    preset_add = p[:preset_add] = layout[4, 1] = GridLayout()
+    w[:preset_add_scope] = Textbox(preset_add[1, 1], placeholder = "Category, Scope", width = nothing, fontsize = 12)
+    w[:preset_add_key]   = Textbox(preset_add[1, 2], placeholder = "key", width = nothing, fontsize = 12)
+    w[:preset_add_value] = Textbox(preset_add[1, 3], placeholder = "value", width = nothing, fontsize = 12)
+    w[:preset_add_button] = Button(preset_add[1, 4], label = "Add", buttoncolor = :lightblue, width = nothing)
+    colsize!(preset_add, 1, Relative(0.32)); colsize!(preset_add, 4, Fixed(46))
+    # a key of a raw configuration scope (Advanced), with its type; and deleting a method
+    raw_add = p[:raw_add] = layout[4, 1] = GridLayout()
+    raw_add_row = p[:raw_add_row] = raw_add[1, 1] = GridLayout()
+    w[:raw_add_key]   = Textbox(raw_add_row[1, 1], placeholder = "new key", width = nothing, fontsize = 12)
+    w[:raw_add_type]  = Menu(raw_add_row[1, 2], options = Any[(string(t), t) for t in RAW_VALUE_TYPES], fontsize = 12)
+    w[:raw_add_value] = Textbox(raw_add_row[1, 3], placeholder = "value", width = nothing, fontsize = 12)
+    w[:raw_add_button] = Button(raw_add_row[1, 4], label = "Add", buttoncolor = :lightblue, width = nothing)
+    colsize!(raw_add_row, 1, Relative(0.28)); colsize!(raw_add_row, 2, Fixed(120)); colsize!(raw_add_row, 4, Fixed(46))
+    p[:raw_delete_method] = raw_add[2, 1] = GridLayout()
+    w[:raw_delete_method] = Button(p[:raw_delete_method][1, 1], label = "Delete this method", buttoncolor = RGBf(1.0, 0.8, 0.8),
+                                   width = nothing)
+    # a method (Advanced overview)
+    method_add = p[:method_add] = layout[4, 1] = GridLayout()
+    w[:method_add_name]   = Textbox(method_add[1, 1], placeholder = "name of a new method", width = nothing, fontsize = 12)
+    w[:method_add_button] = Button(method_add[1, 2], label = "Add method", buttoncolor = neutral, width = nothing)
+    colsize!(method_add, 2, Fixed(110))
     rowgap!(layout, 8)
 end

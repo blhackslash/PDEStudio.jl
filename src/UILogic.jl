@@ -611,12 +611,19 @@ function show_tab!(tab::Symbol)
     return nothing
 end
 
-# The panels a tab shows: the Files and Plot tabs show the editor while their page (export settings, plot styles) is open.
+# The panels a tab shows: the Files and Plot tabs show the editor while one of their pages is open.
 _tab_panels(tab) = haskey(TAB_EDITOR_PAGES, tab) && _editor_tab(tab) ? (:editor,) : TAB_PANELS[tab]
 
-# Whether a tab shows the editor: the editor tabs, and the Files / Plot tab with its page open (`TAB_EDITOR_PAGES`).
+# Whether a tab shows the editor: the editor tabs, and the Files / Plot tab with a page open (`TAB_EDITOR_PAGES`).
 _editor_tab(tab) = tab in EDITOR_TABS ||
-                   (haskey(TAB_EDITOR_PAGES, tab) && first(get(manager.editor_view, tab, (nothing, 1))) === TAB_EDITOR_PAGES[tab])
+                   (haskey(TAB_EDITOR_PAGES, tab) && first(get(manager.editor_view, tab, (nothing, 1))) in TAB_EDITOR_PAGES[tab])
+
+# The mode of the editor page shown in the active tab (see `_editor_mode`), or `nothing`.
+function _active_editor_mode()
+    tab = manager.active_tab[]
+    _editor_tab(tab) || return nothing
+    return _editor_mode(tab, first(get(manager.editor_view, tab, (nothing, 1))))
+end
 
 """
     _setup_tab_interactions!()
@@ -816,23 +823,29 @@ const _SCOPE_LABELS = Dict(:presets => "Presets", :shared => "Shared", :sweep =>
 """
     _editor_sections(cat)
 
-The overview of an editor category: titled groups of pages (scopes), all fixed. Simulation: `Presets`, and with a
-bound configuration `Shared`, `Sweep` and `Config` (the methods have a tab of their own). UI: *General* (presets,
-fonts, labels, HUD, outliers), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type
-of the mode, each with the options that type uses). Labels: components, variables and methods.
+The overview of an editor category: titled groups of pages (scopes). Simulation: with a bound configuration
+`Shared`, `Sweep` and `Config` (the methods have a tab of their own, the presets are in the Files tab). UI: *General*
+(fonts, labels, HUD, outliers), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type
+of the mode, each with the options that type uses). Labels: components, variables and methods. Advanced: the raw
+scopes of the `SimulationConfig` (`shared`, `varied`, the fields) and every method, active or not.
 """
 function _editor_sections(cat)
     if cat === :simulation
-        scopes = isnothing(manager.active_config) ? Symbol[:presets] : Symbol[:presets, :shared, :sweep, :config]
+        scopes = isnothing(manager.active_config) ? Symbol[] : Symbol[:shared, :sweep, :config]
         return Pair{String, Vector{Symbol}}["" => scopes]
     elseif cat === :ui
-        return Pair{String, Vector{Symbol}}["General" => Symbol[:presets, UI_GENERAL_SCOPES...],
+        return Pair{String, Vector{Symbol}}["General" => Symbol[UI_GENERAL_SCOPES...],
                                             "Axes" => Symbol[UI_AXIS_SCOPES...],
                                             "Plot styles" => _plot_style_scopes()]
     elseif cat === :labels
         return Pair{String, Vector{Symbol}}["" => Symbol[:components, :variables, :methods]]
     elseif cat === :plot
         return _plot_style_sections()
+    elseif cat === :advanced
+        config = manager.active_config
+        isnothing(config) && return Pair{String, Vector{Symbol}}[]
+        methods = filter(m -> !(m in _RANK_0), sort_methods_robust(collect(keys(config.methods))))
+        return Pair{String, Vector{Symbol}}["Configuration" => Symbol[:shared, :sweep, :config], "Methods (all)" => methods]
     end
     return Pair{String, Vector{Symbol}}[]
 end
@@ -949,6 +962,7 @@ _key_label(cat, scope, key) = (cat === :ui || scope === :presets) && key isa Sym
 # The label of a page button: the scope and (except in the static UI overview) its number of entries.
 function _scope_button_label(cat, scope)
     cat === :plot && return _style_label(scope)
+    cat === :advanced && return "$(_scope_label(:simulation, scope)) ($(length(_raw_keys(scope))))"
     cat === :ui && return _scope_label(cat, scope)
     return "$(_scope_label(cat, scope)) ($(length(_editor_keys(cat, scope))))"
 end
@@ -988,11 +1002,16 @@ function _bind_editor_row!(i::Int, cat, scope, target, key)
     return nothing
 end
 
-# What the editor shows for a tab and scope: the overview, the rows of a page, or the method list / drawing order of
-# the Methods tab.
+# What the editor shows for a tab and scope: the overview, the rows of a page, the method list / drawing order of the
+# Methods tab, the preset list / a preset file of the Files tab, or the raw rows of the Advanced tab.
 function _editor_mode(tab, scope)
-    tab === :files && return :rows       # the export settings
+    if tab === :files
+        scope === PRESET_LIST && return :preset_list
+        scope === PRESET_FILE && return :preset_file
+        return :rows                     # the export settings
+    end
     tab === :plot && return :overview    # the plot styles
+    tab === :advanced && return isnothing(scope) ? :overview : :raw_rows
     if tab === :methods
         isnothing(scope) && return :method_list
         scope === ORDER_VIEW && return :method_order
@@ -1003,7 +1022,8 @@ end
 
 # Whether `scope` is (still) a page of the tab, e.g. not a method that was removed.
 function _editor_scope_valid(tab, scope)
-    haskey(TAB_EDITOR_PAGES, tab) && return scope === TAB_EDITOR_PAGES[tab]
+    tab === :files && scope === PRESET_FILE && return !isnothing(_preset_rows(manager.preset_kind, manager.preset_name))
+    haskey(TAB_EDITOR_PAGES, tab) && return scope in TAB_EDITOR_PAGES[tab]
     isnothing(scope) && return true
     if tab === :methods
         config = manager.active_config
@@ -1057,6 +1077,295 @@ function _bind_method_row!(i::Int, mode, m::Symbol, pos::Int, n::Int)
     return nothing
 end
 
+# --- Files tab: presets -------------------------------------------------------------------------------------------
+
+# The saved presets of a kind (`:simulation`, `:visual`), sorted.
+_preset_items(kind::Symbol) = sort!(filter(!=(:create_new), collect(keys(_preset_kind_registry(kind)))))
+
+# Binds item row `i` to a preset: name and description, Apply and Edit (built-in presets have no file to edit).
+function _bind_preset_row!(i::Int, kind::Symbol, name::Symbol)
+    w = manager.widgets
+    desc = get(_preset_kind_registry(kind), name, "")
+    w[Symbol("method_row_", i, "_label")][] = _short("$name  ·  $desc", 52)
+    a, b = w[Symbol("method_row_", i, "_a")], w[Symbol("method_row_", i, "_b")]
+    a.label[] = "Apply"
+    a.buttoncolor[] = _ROW_GREEN
+    b.label[] = "Edit ›"
+    b.buttoncolor[] = isnothing(_preset_file(_preset_kind_dir(kind), name)) ? _ROW_FAINT : _ROW_NEUTRAL
+    return nothing
+end
+
+# Binds editor row `i` to row `idx` of the open preset file: scope and key, the value as written, ✕ to delete.
+function _bind_preset_file_row!(i::Int, idx::Int)
+    w = manager.widgets
+    r = manager.preset_file_rows[idx]
+    w[Symbol("editor_row_", i, "_label")][] = r[1] == "Metadata" ? r[3] : "$(r[2]) · $(r[3])"
+    _show_editor_text!(w[Symbol("editor_row_", i, "_text")], r[4])
+    btn = w[Symbol("editor_row_", i, "_button")]
+    btn.label[] = "✕"
+    btn.buttoncolor[] = RGBf(1.0, 0.85, 0.85)
+    return nothing
+end
+
+# Applies (`which = :a`) or opens the file (`:b`) of the preset bound to item row `i`.
+function _preset_row_action!(i::Int, which::Symbol)
+    i <= length(manager.editor_row_keys) || return nothing
+    name, kind = manager.editor_row_keys[i], manager.preset_kind
+    if which === :a
+        ok = kind === :simulation ? !isnothing(set_sim_preset!(name)) : set_plot_preset!(name) !== false
+        ok ? _status!("Applied $(kind === :simulation ? "simulation" : "look") preset '$name'." *
+                      (kind === :simulation ? " Run Simulation to compute it." : ""), :ok) :
+             _status!("Preset '$name' could not be applied (see the log).", :warn)
+        _render_editor!()
+    elseif isnothing(_preset_file(_preset_kind_dir(kind), name))
+        _report(:warn, "'$name' is built in and has no file: apply it and save it under a new name to edit it.")
+    else
+        manager.preset_name = name
+        show_editor_page!(:files, PRESET_FILE)
+    end
+    return nothing
+end
+
+# Writes the rows of the open preset file and reports `msg`.
+function _store_preset_file!(msg::AbstractString)
+    if _write_preset_rows!(manager.preset_kind, manager.preset_name, manager.preset_file_rows)
+        _status!("Preset '$(manager.preset_name)': $msg", :ok)
+    else
+        _report(:warn, "Preset '$(manager.preset_name)' has no file any more.")
+    end
+    _render_editor!()
+    return nothing
+end
+
+function _set_preset_value!(i::Int, s::AbstractString)
+    i <= length(manager.editor_row_keys) || return nothing
+    r = manager.preset_file_rows[manager.editor_row_keys[i]]
+    r[4] = String(strip(s))
+    _store_preset_file!("$(r[2]) · $(r[3]) = $(_short(r[4]))")
+end
+
+function _delete_preset_row!(i::Int)
+    i <= length(manager.editor_row_keys) || return nothing
+    r = manager.preset_file_rows[manager.editor_row_keys[i]]
+    deleteat!(manager.preset_file_rows, manager.editor_row_keys[i])
+    _store_preset_file!("removed $(r[2]) · $(r[3])")
+end
+
+"""
+    _add_preset_row!()
+
+Adds the row typed into the add-row of a preset file page: `Category, Scope` (a simulation preset may give only the
+scope, e.g. `Shared`), key and value (as written in the file, e.g. `40`, `upwind`, `[0.1, 0.2]`). An existing
+entry with the same category, scope and key gets the new value.
+"""
+function _add_preset_row!()
+    w = manager.widgets
+    parts = strip.(split(_box_text(w[:preset_add_scope]), ','))
+    key, value = _box_text(w[:preset_add_key]), _box_text(w[:preset_add_value])
+    if length(parts) == 1 && manager.preset_kind === :simulation
+        parts = ["Simulation", parts[1]]
+    end
+    if length(parts) != 2 || any(isempty, parts) || isempty(key)
+        _report(:warn, "Give the category and scope (e.g. `Simulation, Shared` or `UI, hud`) and a key.")
+        return nothing
+    end
+    rows = manager.preset_file_rows
+    existing = findfirst(r -> r[1] == parts[1] && r[2] == parts[2] && r[3] == key, rows)
+    isnothing(existing) ? push!(rows, String[parts[1], parts[2], key, value]) : (rows[existing][4] = value)
+    foreach(k -> Makie.reset!(w[k]), (:preset_add_key, :preset_add_value))
+    _store_preset_file!("$(parts[2]) · $key = $(_short(value))")
+end
+
+# --- Advanced tab: the SimulationConfig itself ------------------------------------------------------------------
+
+const _RAW_CONFIG_FIELDS = (:defaults, :reference, :postprocess, :sources)
+
+# The dictionary of a raw scope (`:shared`, `:sweep` = `varied`, a method), or the config itself for `:config`.
+function _raw_target(scope)
+    config = manager.active_config
+    isnothing(config) && return nothing
+    scope === :shared && return config.shared
+    scope === :sweep && return config.varied
+    scope === :config && return config
+    return get(config.methods, scope, nothing)
+end
+
+function _raw_keys(scope)
+    scope === :config && return Any[_RAW_CONFIG_FIELDS...]
+    target = _raw_target(scope)
+    return isnothing(target) ? Any[] : Any[sort!(collect(keys(target)), by = string)...]
+end
+
+_raw_value(scope, key) = scope === :config ? getproperty(manager.active_config, key) : _raw_target(scope)[key]
+
+# A value exactly as stored: a Julia literal with its type (`20`, `0.5`, `"text"`, `:sym`, `Float64[0.1, 0.2]`).
+_raw_text(v) = isnothing(v) ? "nothing" : val2str(v; top_level = false)
+
+# Parses a raw literal; text must be quoted (anything that is no literal is refused).
+function _parse_raw(s::AbstractString)
+    txt = strip(s)
+    v = str2val(txt)
+    v isa AbstractString && !startswith(txt, '"') && return (false, nothing)
+    return (true, v)
+end
+
+const _RAW_HINT = "Raw values are Julia literals: 20, 0.5, \"text\", :symbol, [1, 2], (1, 2), nothing."
+
+function _after_raw_change!(scope, msg::AbstractString)
+    manager.flags[:Simulation][] = true
+    scope === :sweep && _map_parameters_to_sliders!(manager.active_config)
+    _status!("$msg. Run Simulation to apply.", :ok)
+    _render_editor!()
+    return nothing
+end
+
+function _bind_raw_row!(i::Int, scope, key)
+    w = manager.widgets
+    w[Symbol("editor_row_", i, "_label")][] = string(key)
+    _show_editor_text!(w[Symbol("editor_row_", i, "_text")], _raw_text(_raw_value(scope, key)))
+    btn = w[Symbol("editor_row_", i, "_button")]
+    deletable = scope !== :config
+    btn.label[] = deletable ? "✕" : " "
+    btn.buttoncolor[] = deletable ? RGBf(1.0, 0.85, 0.85) : _ROW_FAINT
+    return nothing
+end
+
+"""
+    _apply_raw_input!(scope, key, s)
+
+Advanced tab: stores the literal `s` in the scope as it is: no text fallback, no sweep conversion, no views. The
+value must be a Julia literal (text in quotes); a sweep must be a vector. Flags *Run Simulation*.
+"""
+function _apply_raw_input!(scope, key, s::AbstractString)
+    ok, v = _parse_raw(s)
+    if !ok
+        _report(:warn, "'$key' was not changed: '$(_short(String(strip(s)), 30))' is no literal. $_RAW_HINT")
+        return _render_editor!()
+    end
+    if scope === :sweep && !(v isa AbstractVector)
+        _report(:warn, "'$key' was not changed: a sweep is a vector, e.g. [0.1, 0.2].")
+        return _render_editor!()
+    end
+    try
+        scope === :config ? setproperty!(manager.active_config, key, v) : (_raw_target(scope)[key] = v)
+    catch e
+        _report(:warn, "'$key' was not changed: $(_short(sprint(showerror, e), 80))")
+        return _render_editor!()
+    end
+    _after_raw_change!(scope, "$(_scope_label(:simulation, scope)) → $key = $(_short(_raw_text(v)))")
+end
+
+function _delete_raw_key!(scope, key)
+    scope === :config && return nothing   # the fields of the configuration can't be removed
+    delete!(_raw_target(scope), key)
+    _after_raw_change!(scope, "Removed $key from $(_scope_label(:simulation, scope))")
+end
+
+"""
+    _typed_value(T, s)
+
+The value of `s` as type `T` (`RAW_VALUE_TYPES`): `:auto` reads the literal (text in quotes), `:String` and
+`:Symbol` take the text as it is, the number and Bool types parse it, vectors convert each entry (`[a, b]` works for
+`Vector{Symbol}` and `Vector{String}`), `:Tuple` accepts a tuple or vector literal. Throws an `ArgumentError` with a
+readable message otherwise.
+"""
+function _typed_value(T::Symbol, s::AbstractString)
+    txt = String(strip(s))
+    unquote(x) = (m = match(r"^\"(.*)\"$"s, x); isnothing(m) ? x : String(m.captures[1]))
+    if T === :auto
+        ok, v = _parse_raw(txt)
+        ok || throw(ArgumentError("'$(_short(txt, 30))' is no literal: choose a type or quote text"))
+        return v
+    end
+    T === :String && return unquote(txt)
+    T === :Symbol && return Symbol(lstrip(unquote(txt), ':'))
+    for (name, R) in ((:Int, Int), (:Float64, Float64), (:Bool, Bool))
+        T === name || continue
+        v = tryparse(R, txt)
+        isnothing(v) && throw(ArgumentError("'$(_short(txt, 30))' is no $R"))
+        return v
+    end
+    v = str2val(txt)
+    if v isa AbstractString   # e.g. [a, b]: bare words
+        m = match(r"^\[(.*)\]$"s, txt)
+        isnothing(m) && throw(ArgumentError("'$(_short(txt, 30))' is no vector, e.g. [1, 2]"))
+        v = Any[unquote(String(strip(x))) for x in split(m.captures[1], ',') if !isempty(strip(x))]
+    end
+    if T === :Tuple
+        v isa Tuple && return v
+        v isa AbstractVector && return Tuple(v)
+        throw(ArgumentError("'$(_short(txt, 30))' is no tuple, e.g. (1, 2)"))
+    end
+    v isa AbstractVector || throw(ArgumentError("'$(_short(txt, 30))' is no vector, e.g. [1, 2]"))
+    conv = Dict(Symbol("Vector{Float64}") => x -> Float64(x isa AbstractString ? parse(Float64, x) : x),
+                Symbol("Vector{Int}") => x -> Int(x isa AbstractString ? parse(Int, x) : x),
+                Symbol("Vector{Symbol}") => x -> Symbol(lstrip(string(x), ':')),
+                Symbol("Vector{String}") => x -> string(x))
+    haskey(conv, T) || throw(ArgumentError("unknown type $T"))
+    try
+        return [conv[T](x) for x in v]
+    catch
+        throw(ArgumentError("the entries of '$(_short(txt, 30))' can't be converted to $T"))
+    end
+end
+
+"""
+    _add_raw_key!()
+
+Advanced tab: adds the key typed into the add-row to the open scope, with the value converted to the chosen type
+(see `_typed_value`). Refuses keys that exist (edit their row) and sweeps that aren't vectors.
+"""
+function _add_raw_key!()
+    w = manager.widgets
+    scope = first(get(manager.editor_view, :advanced, (nothing, 1)))
+    target = _raw_target(scope)
+    (isnothing(target) || scope === :config) && return nothing
+    name = lstrip(_box_text(w[:raw_add_key]), ':')
+    if isempty(name)
+        return _report(:warn, "Type the name of the new key.")
+    end
+    key = Symbol(name)
+    haskey(target, key) && return _report(:warn, "'$key' exists already: edit its row.")
+    T = something(w[:raw_add_type].selection[], :auto)
+    v = try
+        _typed_value(T, _box_text(w[:raw_add_value]))
+    catch e
+        return _report(:warn, "'$key' was not added: " * (e isa ArgumentError ? e.msg : sprint(showerror, e)))
+    end
+    scope === :sweep && !(v isa AbstractVector) && return _report(:warn, "'$key' was not added: a sweep is a vector.")
+    target[key] = v
+    foreach(k -> Makie.reset!(w[k]), (:raw_add_key, :raw_add_value))
+    _after_raw_change!(scope, "Added $key = $(_short(_raw_text(v))) to $(_scope_label(:simulation, scope))")
+end
+
+# Advanced overview: adds an (inactive) method with no parameter overrides and opens it.
+function _add_method!()
+    config = manager.active_config
+    isnothing(config) && return nothing
+    w = manager.widgets
+    name = lstrip(_box_text(w[:method_add_name]), ':')
+    isempty(name) && return _report(:warn, "Type the name of the new method.")
+    m = Symbol(name)
+    (haskey(config.methods, m) || m in _RANK_0) && return _report(:warn, "'$m' exists already (or is a reserved name).")
+    config.methods[m] = create_param_dict()
+    Makie.reset!(w[:method_add_name])
+    manager.flags[:Simulation][] = true
+    _status!("Method $m added (inactive: activate it in the Methods tab).", :ok)
+    show_editor_page!(:advanced, m)
+end
+
+# Advanced: removes the open method from the configuration (and from the active methods).
+function _delete_method!()
+    config = manager.active_config
+    m = first(get(manager.editor_view, :advanced, (nothing, 1)))
+    (isnothing(config) || isnothing(m) || !haskey(config.methods, m)) && return nothing
+    delete!(config.methods, m)
+    config.defaults = Symbol[x for x in config.defaults if x != m]
+    manager.flags[:Simulation][] = true
+    _status!("Method $m deleted. Run Simulation to apply.", :ok)
+    show_editor_page!(:advanced)
+end
+
 """
     _render_editor!()
 
@@ -1075,8 +1384,14 @@ function _render_editor!()
     scope, page = get(manager.editor_view, tab, (nothing, 1))
     _editor_scope_valid(tab, scope) || ((scope, page) = (nothing, 1))
     mode = _editor_mode(tab, scope)
+    if mode === :preset_file
+        manager.preset_file_rows = something(_preset_rows(manager.preset_kind, manager.preset_name), Vector{String}[])
+    end
     items = mode === :overview ? _editor_scopes(cat) :
-            mode === :rows ? _editor_keys(cat, scope) : _method_items(mode)
+            mode === :rows ? _editor_keys(cat, scope) :
+            mode === :preset_list ? _preset_items(manager.preset_kind) :
+            mode === :preset_file ? Any[eachindex(manager.preset_file_rows)...] :
+            mode === :raw_rows ? _raw_keys(scope) : _method_items(mode)
     per_page = mode === :overview ? max(OVERVIEW_BUTTONS, length(items)) : EDITOR_ROWS   # overviews are one page
     npages = max(1, cld(length(items), per_page))
     page = clamp(page, 1, npages)
@@ -1087,8 +1402,14 @@ function _render_editor!()
     config = manager.active_config
     title = if tab === :plot
         "Plot style"
+    elseif tab === :advanced
+        isnothing(scope) ? "Advanced: the SimulationConfig" : "$(_scope_label(:simulation, scope))  (raw)"
     elseif mode === :overview
         TAB_LABELS[tab]
+    elseif mode === :preset_list
+        manager.preset_kind === :simulation ? "Simulation presets" : "Look presets"
+    elseif mode === :preset_file
+        "Preset: $(manager.preset_name)"
     elseif tab === :files
         "Export settings"
     elseif mode === :rows
@@ -1100,17 +1421,24 @@ function _render_editor!()
     end
     w[:editor_title][] = npages > 1 ? "$title  ($page/$npages)" : title
 
-    # Panel rows: header, the tools of the Methods tab, body
+    # Panel rows: header, the tools of the Methods tab, body, the add-rows of the preset file / raw pages
     in_methods = mode in (:method_list, :method_order)
-    _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body]], [true, in_methods, true]; gap = 8)
-    (mode === :rows || tab === :plot) ? _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
+    raw_dict = mode === :raw_rows && scope !== :config
+    _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body], p[:preset_add], p[:raw_add], p[:method_add]],
+           [true, in_methods, true, mode === :preset_file, raw_dict, tab === :advanced && mode === :overview && !isnothing(config)];
+           gap = 8)
+    raw_dict && _pack!(p[:raw_add], [p[:raw_add_row], p[:raw_delete_method]],
+                       [true, !(scope in (:shared, :sweep))]; gap = 6)
+    (mode in (:rows, :raw_rows, :preset_list, :preset_file) || tab === :plot) ?
+        _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
     npages > 1 ? _place!(p[:editor_pager], p[:editor_header], 1, 3) : _park!(p[:editor_pager])
     if in_methods
         w[:method_filter].label[] = "Show: $(manager.method_filter)"
         w[:method_order].label[] = mode === :method_order ? "◀ Method list" : "Order ▲▼"
     end
 
-    body_view = mode === :overview ? :editor_overview : mode === :rows ? :editor_rows : :method_rows
+    body_view = mode === :overview ? :editor_overview :
+                mode in (:rows, :preset_file, :raw_rows) ? :editor_rows : :method_rows
     for name in (:editor_overview, :editor_rows, :method_rows)
         name === body_view || _park!(p[name])
     end
@@ -1119,12 +1447,13 @@ function _render_editor!()
     if mode === :overview
         manager.editor_row_keys = Any[]
         _render_overview!(cat)
-    elseif mode === :rows
+    elseif mode in (:rows, :preset_file, :raw_rows)
         manager.editor_page_scopes = Symbol[]
         manager.editor_row_keys = Any[page_items...]
-        target = _editor_target(cat, scope)
+        target = mode === :rows ? _editor_target(cat, scope) : nothing
         for (i, key) in enumerate(page_items)
-            _bind_editor_row!(i, cat, scope, target, key)
+            mode === :rows ? _bind_editor_row!(i, cat, scope, target, key) :
+            mode === :preset_file ? _bind_preset_file_row!(i, key) : _bind_raw_row!(i, scope, key)
         end
         rows = [p[Symbol("editor_row_", i)] for i in 1:EDITOR_ROWS]
         _pack!(p[:editor_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
@@ -1132,7 +1461,8 @@ function _render_editor!()
         manager.editor_page_scopes = Symbol[]
         manager.editor_row_keys = Any[page_items...]
         for (i, m) in enumerate(page_items)
-            _bind_method_row!(i, mode, m, offset + i, length(items))
+            mode === :preset_list ? _bind_preset_row!(i, manager.preset_kind, m) :
+                                    _bind_method_row!(i, mode, m, offset + i, length(items))
         end
         rows = [p[Symbol("method_row_", i)] for i in 1:EDITOR_ROWS]
         _pack!(p[:method_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
@@ -1394,12 +1724,26 @@ function _setup_editor_interactions!()
         manager.listeners[Symbol("Editor_Row_Text_", i)] = on(tb.stored_string) do s
             s isa AbstractString || return
             manager.locks[:Simulation] && return  # a simulation is running
+            mode = _active_editor_mode()
+            if mode === :preset_file
+                return _set_preset_value!(i, s)
+            elseif mode === :raw_rows
+                i <= length(manager.editor_row_keys) || return
+                return _apply_raw_input!(first(manager.editor_view[:advanced]), manager.editor_row_keys[i], s)
+            end
             b = _editor_row_binding(i)
             isnothing(b) && return
             _apply_editor_input!(b..., s, tb) && _render_editor!()
         end
         manager.listeners[Symbol("Editor_Row_Button_", i)] = on(w[Symbol("editor_row_", i, "_button")].clicks) do _
             manager.locks[:Simulation] && return
+            mode = _active_editor_mode()
+            if mode === :preset_file
+                return _delete_preset_row!(i)
+            elseif mode === :raw_rows
+                i <= length(manager.editor_row_keys) || return
+                return _delete_raw_key!(first(manager.editor_view[:advanced]), manager.editor_row_keys[i])
+            end
             b = _editor_row_binding(i)
             isnothing(b) && return
             _editor_row_action!(b..., tb)
@@ -1414,13 +1758,26 @@ function _setup_editor_interactions!()
         end
     end
     manager.listeners[:Editor_Back] = on(w[:editor_back].clicks) do _
-        cat = manager.active_tab[]
-        _editor_tab(cat) && show_editor_page!(cat)
+        tab = manager.active_tab[]
+        _editor_tab(tab) || return
+        _active_editor_mode() === :preset_file ? show_editor_page!(:files, PRESET_LIST) : show_editor_page!(tab)
     end
+    for (name, kind) in ((:sim_presets_button, :simulation), (:look_presets_button, :visual))
+        manager.listeners[Symbol("Preset_List_", kind)] = on(w[name].clicks) do _
+            manager.preset_kind = kind
+            refresh_preset_registries!()
+            show_editor_page!(:files, PRESET_LIST)
+        end
+    end
+    manager.listeners[:Preset_Add] = on(_ -> _add_preset_row!(), w[:preset_add_button].clicks)
+    manager.listeners[:Raw_Add] = on(_ -> _add_raw_key!(), w[:raw_add_button].clicks)
+    manager.listeners[:Raw_Delete_Method] = on(_ -> _delete_method!(), w[:raw_delete_method].clicks)
+    manager.listeners[:Method_Add] = on(_ -> _add_method!(), w[:method_add_button].clicks)
     manager.listeners[:Export_Settings] = on(_ -> show_editor_page!(:files, EXPORT_SETTINGS), w[:export_settings_button].clicks)
     for i in 1:EDITOR_ROWS, which in (:a, :b)
-        manager.listeners[Symbol("Method_Row_", i, "_", which)] =
-            on(_ -> _method_row_action!(i, which), w[Symbol("method_row_", i, "_", which)].clicks)
+        manager.listeners[Symbol("Method_Row_", i, "_", which)] = on(w[Symbol("method_row_", i, "_", which)].clicks) do _
+            _active_editor_mode() === :preset_list ? _preset_row_action!(i, which) : _method_row_action!(i, which)
+        end
     end
     manager.listeners[:Method_Filter] = on(w[:method_filter].clicks) do _
         k = findfirst(isequal(manager.method_filter), METHOD_FILTERS)

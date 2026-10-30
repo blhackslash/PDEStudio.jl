@@ -277,6 +277,8 @@ end
 
     # Editor pages (Simulation / UI / Labels tabs): the row of a key on the open page, typing into it, its button,
     # and clicking the page button of a scope on an overview
+    editor_row_at(i) = (text = manager.widgets[Symbol("editor_row_", i, "_text")],
+                        button = manager.widgets[Symbol("editor_row_", i, "_button")])
     function editor_row(key)
         i = findfirst(isequal(key), manager.editor_row_keys)
         isnothing(i) && error("no row for $(repr(key)) on the editor page (rows: $(manager.editor_row_keys))")
@@ -292,6 +294,21 @@ end
         i = findfirst(isequal(m), manager.editor_row_keys)
         isnothing(i) && error("$(repr(m)) is not listed (methods: $(manager.editor_row_keys))")
         manager.widgets[Symbol("method_row_", i, "_a")].clicks[] += 1
+        yield()
+    end
+    # Whether a widget is drawn inside the window (hidden widgets are parked off-screen)
+    shown_now(k) = (b = manager.widgets[k]; b.blockscene.visible[] && all(minimum(b.layoutobservables.computedbbox[]) .>= 0))
+    hidden_now(k) = (b = manager.widgets[k]; !b.blockscene.visible[] && !all(minimum(b.layoutobservables.computedbbox[]) .>= 0))
+
+    # Files tab: the preset list of a kind (:simulation, :visual) and the buttons of a preset's row (:a Apply, :b Edit)
+    function open_presets!(kind)
+        click_button!(:tab_files)
+        click_button!(kind === :simulation ? :sim_presets_button : :look_presets_button)
+    end
+    function press_preset!(name, which)
+        i = findfirst(isequal(name), manager.editor_row_keys)
+        isnothing(i) && error("no preset $(repr(name)) in the list (presets: $(manager.editor_row_keys))")
+        manager.widgets[Symbol("method_row_", i, "_", which)].clicks[] += 1
         yield()
     end
     function open_scope!(scope)
@@ -632,9 +649,9 @@ end
 
         # 1. The Simulation tab opens on its overview: one page button per scope; the preset buttons follow the tab
         click_button!(:tab_simulation)
-        @test manager.editor_page_scopes == [:presets, :shared, :sweep, :config]   # the methods have their own tab
+        @test manager.editor_page_scopes == [:shared, :sweep, :config]   # methods and presets have their own tabs
         @test manager.widgets[:editor_title][] == "Simulation"
-        @test manager.widgets[:editor_page_2].label[] == "Shared (3)"
+        @test manager.widgets[:editor_page_1].label[] == "Shared (3)"
 
         # 2. Shared parameters (numbers are parsed, the change flags a re-run); ↺ restores the bound configuration
         open_scope!(:shared)
@@ -695,12 +712,12 @@ end
         click_button!(:save_sim_preset_button)                 # without a name: refused, reported
         @test occursin("Enter a preset name", manager.widgets[:status][])
 
-        # 7. Reset Simulation restores the bound configuration, Apply (Simulation → Presets) loads the preset again
+        # 7. Reset restores the bound configuration, Apply (Files → Simulation presets) loads the preset again
         click_button!(:reset_sim_button)
         @test manager.active_config.defaults == [:upwind]
-        show_editor_page!(:simulation, :presets)
-        @test editor_row(:ui_sim_preset).button.label[] == "Apply"
-        press_row!(:ui_sim_preset)
+        open_presets!(:simulation)
+        @test manager.widgets[:editor_title][] == "Simulation presets"
+        press_preset!(:ui_sim_preset, :a)
         @test sort(manager.active_config.defaults) == [:lax_friedrichs, :upwind]
         click_button!(:run_button)
         @test manager.flags[:Simulation][] == false
@@ -730,7 +747,7 @@ end
     # =========================================================================
     # --- EDITOR: PRESETS SCOPE & LIVE PRESET LISTS ---
     # =========================================================================
-    @testset "Editor: Presets pages & live preset lists" begin
+    @testset "Files tab: preset lists & preset files" begin
         reset_plotter!()
         shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
@@ -738,55 +755,76 @@ end
         fig = launch_plotter()
         display(fig)
         w = manager.widgets
+        row_label(i) = w[Symbol("editor_row_", i, "_label")][]
 
-        # 1. The Presets page lists the presets on disk
-        click_button!(:tab_simulation)
-        @test first(manager.editor_page_scopes) === :presets
-        open_scope!(:presets)
-        @test !(:create_new in manager.editor_row_keys)
-
-        # 2. A preset saved through the API shows up on the open page
+        # 1. Presets › lists the saved presets with Apply and Edit; a preset saved through the API shows up
+        open_presets!(:simulation)
+        @test w[:editor_title][] == "Simulation presets" && shown_now(:editor_back)
         save_sim_preset("api_saved"; description = "saved from the REPL")
         @test :api_saved in manager.editor_row_keys
+        i = findfirst(isequal(:api_saved), manager.editor_row_keys)
+        @test occursin("saved from the REPL", w[Symbol("method_row_", i, "_label")][])
+        @test w[Symbol("method_row_", i, "_a")].label[] == "Apply" && w[Symbol("method_row_", i, "_b")].label[] == "Edit ›"
+        @test !(:create_new in manager.editor_row_keys)
 
-        # 2b. The description is shown as the box's value (stored == displayed, so Makie draws it in the text colour)
-        tb = editor_row(:api_saved).text
-        @test tb.displayed_string[] == "saved from the REPL"
-        @test tb.stored_string[] == tb.displayed_string[]
-        # ... editing it is written to the preset file
-        type_into!(:api_saved, "edited description")
+        # 2. Edit › shows the rows of the file: values as written, ✕ deletes, the add-row adds or replaces
+        press_preset!(:api_saved, :b)
+        @test w[:editor_title][] == "Preset: api_saved"
+        @test row_label(1) == "description" && editor_row_at(1).text.displayed_string[] == "saved from the REPL"
+        editor_row_at(1).text.stored_string[] = "edited description"   # the description row
         @test manager.sim_presets[:api_saved] == "edited description"
         raw_desc = PDEStudio._read_csv(joinpath(sim_preset_dir(), "api_saved.csv"))[2]["Metadata"]["Preset"]["description"]
         @test raw_desc == "edited description"
-        # ... and a name and description typed into the Files tab count without pressing Enter
-        click_button!(:tab_files)
+        n_rows = length(manager.preset_file_rows)
+        w[:preset_add_scope].stored_string[] = "Shared"           # a simulation preset may give only the scope
+        w[:preset_add_key].stored_string[] = "cfl"
+        w[:preset_add_value].stored_string[] = "0.25"
+        click_button!(:preset_add_button)
+        @test ["Simulation", "Shared", "cfl", "0.25"] in manager.preset_file_rows
+        @test length(manager.preset_file_rows) == n_rows         # cfl existed: replaced, not added twice
+        w[:preset_add_scope].stored_string[] = "Simulation, Shared"
+        w[:preset_add_key].stored_string[] = "extra"
+        w[:preset_add_value].stored_string[] = "1"
+        click_button!(:preset_add_button)
+        @test length(manager.preset_file_rows) == n_rows + 1
+        idx = findfirst(r -> r[3] == "extra", manager.preset_file_rows)
+        row_i = findfirst(isequal(idx), manager.editor_row_keys)
+        isnothing(row_i) && (click_button!(:editor_next); row_i = findfirst(isequal(idx), manager.editor_row_keys))
+        editor_row_at(row_i).button.clicks[] += 1                # ✕
+        @test !any(r -> r[3] == "extra", manager.preset_file_rows)
+        @test !any(r -> r[3] == "extra", PDEStudio._preset_rows(:simulation, :api_saved))   # written to the file
+        click_button!(:editor_back)                              # back to the list
+        @test w[:editor_title][] == "Simulation presets"
+        press_preset!(:api_saved, :a)                            # the edited preset is applied
+        @test manager.active_config.shared[:cfl] == 0.25
+        @test occursin("Applied simulation preset 'api_saved'", w[:status][])
+
+        # 3. A name and description typed into the Files tab count without pressing Enter
+        click_button!(:editor_back)
         manager.widgets[:export_text].displayed_string[] = "typed_only"
         manager.widgets[:preset_desc_text].displayed_string[] = "typed, not submitted"
         click_button!(:save_sim_preset_button)
         @test manager.sim_presets[:typed_only] == "typed, not submitted"
-        show_editor_page!(:simulation, :presets)
-        @test :typed_only in manager.editor_row_keys
 
-        # 3. A file copied into the preset folder shows up when the page is opened again
+        # 4. A file copied into the preset folder shows up when the list is opened
         mkpath(sim_preset_dir())
         write(joinpath(sim_preset_dir(), "copied.csv"),
               "Category,Scope,Parameter,Value\nMetadata,Preset,description,copied by hand\nSimulation,Shared,N,40\n")
-        @test !(:copied in manager.editor_row_keys)
-        click_button!(:editor_back)
-        n_files = count(f -> endswith(f, ".csv"), readdir(sim_preset_dir()))
-        @test w[:editor_page_1].label[] == "Presets ($n_files)"  # the overview counts the presets on disk
-        open_scope!(:presets)
+        open_presets!(:simulation)
         @test :copied in manager.editor_row_keys
-        @test editor_row(:copied).text.displayed_string[] == "copied by hand"
-        @test editor_row(:copied).button.label[] == "Apply"
 
-        # 4. The same for visual presets under UI → Presets; each tab keeps its page
-        show_editor_page!(:ui, :presets)
+        # 5. Look presets: the built-in ones can be applied but have no file to edit
+        click_button!(:editor_back)
+        open_presets!(:visual)
+        @test w[:editor_title][] == "Look presets" && :darkmode in manager.editor_row_keys
+        @test !(:api_saved in manager.editor_row_keys)
+        @test_logs (:warn, r"built in") press_preset!(:darkmode, :b)
+        @test w[:editor_title][] == "Look presets"
         save_plot_preset("api_look"; description = "look from the REPL")
         @test :api_look in manager.editor_row_keys
-        click_button!(:tab_simulation)
-        @test first(manager.editor_view[:simulation]) === :presets
-        @test :api_saved in manager.editor_row_keys && !(:api_look in manager.editor_row_keys)
+        press_preset!(:api_look, :b)
+        @test startswith(w[:editor_title][], "Preset: api_look  (1/")   # a look preset has many rows: ◀ ▶ pages
+        @test any(r -> r[1] == "UI", manager.preset_file_rows)
     end
 
     # =========================================================================
@@ -924,6 +962,7 @@ end
         tab_widgets = Dict(:plot => (:plot_style, :plot_width, :compare_link, :x_axis, :component),
                            :methods => (:method_filter, :method_row_1_a),
                            :simulation => (:editor_page_1,), :ui => (:editor_page_1,), :labels => (:editor_page_1,),
+                           :advanced => (:editor_page_1, :method_add_button),
                            :files => (:export_text, :preset_desc_text, :load_config_button, :export_button,
                                       :save_sim_preset_button, :clear_presets_button))
         sample = unique(vcat(collect.(values(tab_widgets))...))
@@ -1004,7 +1043,7 @@ end
         many = create_param_dict(:sim_func_name => :advection_solver_1d, (Symbol("p", lpad(i, 2, '0')) => i for i in 1:14)...)
         set_sim_config!(SimulationConfig(many, methods, [:upwind]))
         show_editor_page!(:simulation)
-        @test shown(:editor_page_4) && hidden(:editor_page_5)  # presets, shared, sweep, config
+        @test shown(:editor_page_3) && hidden(:editor_page_4)  # shared, sweep, config
         @test hidden(:editor_back) && hidden(:editor_next) && hidden(:method_filter)
         open_scope!(:shared)
         @test w[:editor_title][] == "Shared  (1/2)"
@@ -1078,9 +1117,9 @@ end
         # 4d. The UI overview is static: general scopes, every axis variant and every plot type
         show_editor_page!(:ui)
         @test [w[Symbol("editor_section_", k)].text[] for k in 1:3] == ["General", "Axes", "Plot styles"]
-        @test manager.editor_page_scopes[1:10] == [:presets, :axis_general, :labels, :hud, :outliers_extrema,
-                                                   :x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d]
-        @test Set(manager.editor_page_scopes[11:end]) == euler_styles
+        @test manager.editor_page_scopes[1:9] == [:axis_general, :labels, :hud, :outliers_extrema,
+                                                  :x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d]
+        @test Set(manager.editor_page_scopes[10:end]) == euler_styles
         @test !(:export in manager.editor_page_scopes)        # the export settings are in the Files tab
         open_scope!(:heatmap_flat)                             # a plot type lists the options it uses
         @test Set(manager.editor_row_keys) == Set(PDEStudio.STYLE_DEPENDENCIES[:heatmap_flat])
@@ -1238,6 +1277,103 @@ end
     end
 
     # =========================================================================
+    # --- ADVANCED TAB: THE SIMULATIONCONFIG ITSELF ---
+    # =========================================================================
+    @testset "Advanced tab (raw configuration)" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
+        set_sim_config!(SimulationConfig(shared, methods, [:upwind]; varied = create_varied_dict(:cfl => [0.2, 0.5])))
+        click_button!(:run_button)
+        w = manager.widgets
+        config = manager.active_config
+        function add_raw!(key, T, value)
+            w[:raw_add_key].stored_string[] = key
+            w[:raw_add_type].i_selected[] = findfirst(o -> o[2] === T, w[:raw_add_type].options[])
+            w[:raw_add_value].stored_string[] = value
+            click_button!(:raw_add_button)
+        end
+
+        # 1. The overview: the raw scopes and every method (inactive ones too)
+        click_button!(:tab_advanced)
+        @test manager.editor_page_scopes == [:shared, :sweep, :config, :lax_friedrichs, :upwind]
+        @test [w[Symbol("editor_section_", k)].text[] for k in 1:2] == ["Configuration", "Methods (all)"]
+
+        # 2. Values are shown and parsed as Julia literals: types are visible, text needs quotes
+        open_scope!(:shared)
+        @test w[:editor_title][] == "Shared  (raw)"
+        @test editor_row(:sim_func_name).text.displayed_string[] == ":advection_solver_1d"
+        @test editor_row(:N).button.label[] == "✕"
+        type_into!(:N, "30")
+        @test config.shared[:N] === 30 && manager.flags[:Simulation][] == true
+        type_into!(:N, "abc")                                   # no literal: refused
+        @test config.shared[:N] === 30 && occursin("no literal", w[:status][])
+        type_into!(:N, "\"abc\"")                             # quoted text is text
+        @test config.shared[:N] == "abc"
+        type_into!(:N, "20")
+        show_editor_page!(:advanced, :lax_friedrichs)           # an inactive method
+        @test editor_row(:scheme).text.displayed_string[] == "\"lax_friedrichs\""
+
+        # 3. The sweep takes vectors only (no conversion of single values)
+        show_editor_page!(:advanced, :sweep)
+        @test editor_row(:cfl).text.displayed_string[] == "Float64[0.2, 0.5]"
+        type_into!(:cfl, "0.3")
+        @test config.varied[:cfl] == [0.2, 0.5] && occursin("vector", w[:status][])
+        type_into!(:cfl, "[0.2, 0.3, 0.5]")
+        @test config.varied[:cfl] == [0.2, 0.3, 0.5]
+
+        # 4. The fields of the configuration: raw values, no ✕
+        show_editor_page!(:advanced, :config)
+        @test manager.editor_row_keys == [:defaults, :reference, :postprocess, :sources]
+        @test editor_row(:defaults).text.displayed_string[] == "Symbol[:upwind]"
+        @test editor_row(:reference).text.displayed_string[] == "nothing"
+        @test hidden_now(:raw_add_key)                          # nothing can be added here
+        press_row!(:defaults)
+        @test config.defaults == [:upwind]
+
+        # 5. Adding keys with a type; existing keys and impossible values are refused; ✕ deletes
+        show_editor_page!(:advanced, :shared)
+        add_raw!("p", :Float64, "1")
+        @test config.shared[:p] === 1.0
+        add_raw!("names", Symbol("Vector{Symbol}"), "[a, b]")
+        @test config.shared[:names] == [:a, :b] && eltype(config.shared[:names]) === Symbol
+        add_raw!("tag", :String, "upwind")
+        @test config.shared[:tag] == "upwind"
+        add_raw!("bad", :auto, "abc")
+        @test !haskey(config.shared, :bad) && occursin("no literal", w[:status][])
+        add_raw!("bad", :Int, "1.5")
+        @test !haskey(config.shared, :bad)
+        add_raw!("N", :Int, "5")
+        @test config.shared[:N] === 20 && occursin("exists already", w[:status][])
+        press_row!(:p)
+        @test !haskey(config.shared, :p)
+        show_editor_page!(:advanced, :sweep)
+        add_raw!("N", :auto, "[10, 20]")
+        @test config.varied[:N] == [10, 20]
+        @test :N in values(manager.param_map)                  # a new swept key gets a slider
+        press_row!(:N)
+        @test !haskey(config.varied, :N)
+
+        # 6. Methods can be added (inactive) and deleted (also from the active methods)
+        show_editor_page!(:advanced)
+        @test shown_now(:method_add_button)
+        w[:method_add_name].stored_string[] = "new_scheme"
+        click_button!(:method_add_button)
+        @test haskey(config.methods, :new_scheme) && !(:new_scheme in config.defaults)
+        @test w[:editor_title][] == "new_scheme  (raw)"         # its page is open
+        add_raw!("scheme", :String, "upwind")
+        @test config.methods[:new_scheme][:scheme] == "upwind"
+        show_editor_page!(:advanced, :upwind)
+        click_button!(:raw_delete_method)
+        @test !haskey(config.methods, :upwind) && isempty(config.defaults)
+        @test isnothing(first(manager.editor_view[:advanced]))
+        @test !(:upwind in manager.editor_page_scopes)
+    end
+
+    # =========================================================================
     # --- COMPARE OVER TIME & NON-NUMERIC SWEEPS ---
     # =========================================================================
     @testset "Compare over Time & Non-numeric Sweeps" begin
@@ -1327,9 +1463,8 @@ end
         click_menu!(manager.widgets[:z_axis], :none)
         click_button!(:layout_apply)
 
-        show_editor_page!(:ui, :presets)
-        @test editor_row(:darkmode).button.label[] == "Apply"
-        press_row!(:darkmode)
+        open_presets!(:visual)
+        press_preset!(:darkmode, :a)
         yield()
         
         @test manager.ui[:plot_style][:colors] == [:cyan, :magenta, :yellow, :white]
