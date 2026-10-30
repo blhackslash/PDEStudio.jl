@@ -94,6 +94,10 @@ Base.@kwdef mutable struct PlotManager
     # --- UI dictionaries, widgets and the trigger hierarchy ---
     ui::Dict{Symbol, Dict{Symbol, Any}} = Dict{Symbol, Dict{Symbol, Any}}()     # active UI style scopes
     widgets::Dict{Symbol, Any} = Dict{Symbol, Any}()                            # Makie blocks of the open window
+    panels::Dict{Symbol, GridLayout} = Dict{Symbol, GridLayout}()               # widget groups of the control tabs
+    panel_park::Union{Nothing, GridLayout} = nothing                            # off-screen layout of hidden panels
+    tab_area::Union{Nothing, GridLayout} = nothing                              # where the selected tab's panels go
+    active_tab::Observable{Symbol} = Observable(:plot)                          # selected tab of the control panel
     triggers::Dict{Symbol, Observable{Int}} = Dict{Symbol, Observable{Int}}()   # one trigger per tier of LOCK_HIERARCHY
     flags::Dict{Symbol, Observable{Bool}} = Dict{Symbol, Observable{Bool}}()    # "pending" flags per tier (button colours)
     locks::Dict{Symbol, Bool} = Dict{Symbol, Bool}()                            # re-entrancy guards per tier / menu chain

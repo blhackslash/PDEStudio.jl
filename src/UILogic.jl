@@ -266,6 +266,7 @@ function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mod
     manager.widgets[:editor_cat].i_selected[] = 1
     notify(manager.widgets[:editor_cat].selection)
     notify(manager.methods)
+    _setup_tab_interactions!()
 end
 
 """
@@ -353,6 +354,7 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     path_box = manager.widgets[:export_text]
 
     function _handle_load(path)
+        show_tab!(:files)  # the load button reports the result (a file may have been dropped on another tab)
         local structural
         try
             structural = load_and_apply_csv!(path)
@@ -490,6 +492,95 @@ function _setup_method_interactions!()
             sync_menu()
         end
     end
+end
+
+# ------------------------------------------------------------------------------
+# Control tabs
+# ------------------------------------------------------------------------------
+
+# Draws or hides every block of a panel. Hidden Makie blocks still react to the mouse where they were (buttons,
+# sliders and toggles hit-test their bounding box), which is why `show_tab!` also parks hidden panels off-screen.
+function _set_panel_visible!(gl::GridLayout, visible::Bool)
+    for c in Makie.GridLayoutBase.contents(gl)
+        if c isa GridLayout
+            _set_panel_visible!(c, visible)
+        elseif c isa Makie.Block
+            visible || _release_block!(c)
+            c.blockscene.visible[] == visible || (c.blockscene.visible[] = visible)
+        end
+    end
+    return nothing
+end
+
+# Closes an open dropdown and drops the keyboard focus, so nothing hidden keeps listening.
+_release_block!(b) = nothing
+_release_block!(m::Menu) = (m.is_open[] && (m.is_open[] = false); nothing)
+_release_block!(t::Textbox) = (t.focused[] && Makie.defocus!(t); nothing)
+
+"""
+    show_tab!(tab::Symbol)
+
+Selects a tab of the control panel (`:plot`, `:layout`, `:simulation`, `:ui`, `:labels`, `:files`). The panels of
+the tab (`TAB_PANELS`) are placed in the tab area and drawn; every other panel is hidden and parked in a layout
+outside the figure, where it can't be clicked. Widgets are never deleted or recreated. The editor tabs also select
+the editor category. A no-op without an open window.
+"""
+function show_tab!(tab::Symbol)
+    haskey(TAB_PANELS, tab) || throw(ArgumentError("unknown tab :$tab (tabs: $(join(CONTROL_TABS, ", ")))"))
+    area, park = manager.tab_area, manager.panel_park
+    (isnothing(area) || isnothing(park)) && return nothing
+
+    shown = TAB_PANELS[tab]
+    for (j, name) in enumerate(sort!(collect(keys(manager.panels))))
+        name in shown && continue
+        panel = manager.panels[name]
+        _set_panel_visible!(panel, false)
+        park[1, j] = panel
+    end
+    for (i, name) in enumerate(shown)
+        panel = manager.panels[name]
+        area[i, 1] = panel
+        _set_panel_visible!(panel, true)
+    end
+
+    for t in CONTROL_TABS
+        btn = get(manager.widgets, Symbol("tab_", t), nothing)
+        isnothing(btn) && continue
+        active = t === tab
+        btn.buttoncolor[]        = active ? RGBf(0.25, 0.41, 0.88) : RGBf(0.92, 0.92, 0.92)
+        btn.buttoncolor_hover[]  = active ? RGBf(0.39, 0.58, 0.93) : RGBf(0.85, 0.85, 0.85)
+        btn.buttoncolor_active[] = active ? RGBf(0.25, 0.41, 0.88) : RGBf(0.75, 0.75, 0.75)
+        btn.labelcolor[] = btn.labelcolor_hover[] = btn.labelcolor_active[] = active ? :white : :black
+    end
+
+    cat_menu = get(manager.widgets, :editor_cat, nothing)
+    if tab in EDITOR_TABS && !isnothing(cat_menu) && cat_menu.selection[] !== tab
+        _select_menu_value!(cat_menu, tab)
+    end
+    manager.active_tab[] === tab || (manager.active_tab[] = tab)
+    return nothing
+end
+
+"""
+    _setup_tab_interactions!()
+
+Connects the tab buttons to `show_tab!` and keeps the tab in sync with the editor category: selecting a
+category (from code, e.g. `manager.widgets[:editor_cat]`) switches to its tab. Re-notifications of an unchanged
+category (`set_sim_config!` refreshes the editor that way) don't switch tabs.
+"""
+function _setup_tab_interactions!()
+    for tab in CONTROL_TABS
+        btn = manager.widgets[Symbol("tab_", tab)]
+        manager.listeners[Symbol("Tab_", tab)] = on(_ -> show_tab!(tab), btn.clicks)
+    end
+    cat_menu = manager.widgets[:editor_cat]
+    last_cat = Ref{Any}(cat_menu.selection[])
+    manager.listeners[:Tab_Category] = on(cat_menu.selection) do cat
+        isequal(cat, last_cat[]) && return
+        last_cat[] = cat
+        cat in EDITOR_TABS && manager.active_tab[] !== cat && show_tab!(cat)
+    end
+    return nothing
 end
 
 # ------------------------------------------------------------------------------

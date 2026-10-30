@@ -4,7 +4,7 @@ using WGLMakie
 using Test
 using StaticArrays
 import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS, plot_reference_lines!, plot_HUD!
-import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS
+import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS, show_tab!
 
 # 1. Register the namespace so PDEStudioCore can dynamically resolve these functions
 PDEStudioCore.set_target_module!(@__MODULE__)
@@ -873,6 +873,105 @@ end
         @test set_sim_preset!(:permuted).defaults == [:lax_friedrichs, :upwind, :analytic]
         csv = read(joinpath(sim_preset_dir(), "permuted.csv"), String)
         @test !occursin("permutation", csv)
+    end
+
+    # =========================================================================
+    # --- CONTROL TABS (fixed widgets, hidden panels parked off-screen) ---
+    # =========================================================================
+    @testset "Control tabs" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"))
+        cfg = SimulationConfig(shared, methods, [:upwind, :lax_friedrichs])
+        set_sim_config!(cfg)
+        click_button!(:run_button)
+        w = manager.widgets
+
+        # Widgets of each panel (a sample) and whether they are drawn and inside the window
+        panel_widgets = Dict(:plot => (:x_axis, :component), :layout => (:base_plot, :compare_link),
+                             :editor => (:editor_scope, :editor_text, :save_presets_button),
+                             :methods => (:mode_button, :method_toggle), :files => (:load_config_button, :export_button))
+        onscreen(b) = (bb = b.layoutobservables.computedbbox[]; all(minimum(bb) .>= 0))
+        shown(k) = w[k].blockscene.visible[] && onscreen(w[k])
+        hidden(k) = !w[k].blockscene.visible[] && !onscreen(w[k])
+
+        @test manager.active_tab[] === :plot                       # a window opens on the Plot tab
+        @test hidden(:editor_cat)                                  # the category is selected by the tabs
+
+        # 1. Every tab shows exactly its panels; the always visible controls stay where they are
+        always = (:run_button, :layout_apply, :plot_button, :play_anim_button, :export_text)
+        always_bbox = Dict(k => w[k].layoutobservables.computedbbox[] for k in always)
+        for tab in PDEStudio.CONTROL_TABS
+            click_button!(Symbol("tab_", tab))
+            @test manager.active_tab[] === tab
+            for (panel, keys) in panel_widgets, k in keys
+                @test panel in PDEStudio.TAB_PANELS[tab] ? shown(k) : hidden(k)
+            end
+            @test all(k -> shown(k) && w[k].layoutobservables.computedbbox[] == always_bbox[k], always)
+            @test hidden(:editor_cat)
+            tab in PDEStudio.EDITOR_TABS && @test w[:editor_cat].selection[] === tab
+        end
+
+        # 2. Clicks reach only the visible widget, never a hidden one at the same place in another tab
+        center(b) = (bb = b.layoutobservables.computedbbox[]; Tuple(Float64.(minimum(bb) .+ widths(bb) ./ 2)))
+        function mouse_click!(pos)
+            e = events(fig)
+            e.mouseposition[] = pos
+            e.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.press)
+            e.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.release)
+            e.mouseposition[] = (0.0, 0.0)
+        end
+        show_tab!(:simulation)
+        mode_pos = center(w[:mode_button])
+        mode_before = manager.is_activate_mode[]
+        mouse_click!(mode_pos)
+        @test manager.is_activate_mode[] != mode_before            # the visible button reacts …
+        w[:mode_button].clicks[] += 1                              # (a second mouse click now would be a double click)
+        @test manager.is_activate_mode[] == mode_before
+        show_tab!(:layout)
+        clicks_before = w[:mode_button].clicks[]
+        mouse_click!(mode_pos)                                     # … the parked one doesn't
+        @test w[:mode_button].clicks[] == clicks_before
+        @test manager.is_activate_mode[] == mode_before
+        w[:base_plot].is_open[] = false
+        show_tab!(:plot)
+        mouse_click!(center(w[:x_axis]))
+        @test w[:x_axis].is_open[]
+        @test !w[:base_plot].is_open[]                             # same place in the Layout tab
+        w[:x_axis].is_open[] = false
+
+        # 3. Switching tabs releases open menus and the keyboard focus, and never touches the plot
+        ax = first(c for c in fig.content if c isa Axis)
+        viewport_updates = Ref(0)
+        obs = on(_ -> viewport_updates[] += 1, ax.scene.viewport)
+        show_tab!(:simulation)
+        w[:editor_scope].is_open[] = true
+        Makie.focus!(w[:editor_text])
+        show_tab!(:plot)
+        @test !w[:editor_scope].is_open[] && !w[:editor_text].focused[]
+        for tab in PDEStudio.CONTROL_TABS; show_tab!(tab); end
+        @test viewport_updates[] == 0
+        off(obs)
+
+        # 4. The editor category and the tab follow each other; refreshing the editor doesn't switch tabs
+        show_tab!(:plot)
+        click_menu!(w[:editor_cat], :ui)
+        @test manager.active_tab[] === :ui
+        show_tab!(:layout)
+        set_sim_config!(cfg)                                       # re-notifies the (unchanged) category
+        @test manager.active_tab[] === :layout
+        @test_throws ArgumentError show_tab!(:nonsense)
+
+        # 5. A rebuilt window opens on the Plot tab again, with the Simulation category in the editor
+        show_tab!(:labels)
+        fig = launch_plotter()
+        display(fig)
+        @test manager.active_tab[] === :plot
+        @test manager.widgets[:editor_cat].selection[] === :simulation
+        @test manager.widgets[:x_axis].blockscene.visible[] && !manager.widgets[:editor_scope].blockscene.visible[]
     end
 
     # =========================================================================
