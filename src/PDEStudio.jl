@@ -137,7 +137,7 @@ Base.@kwdef mutable struct PlotManager
 
     # --- reactive UI state ---
     active_axes::Observable{Vector{Int}} = Observable{Vector{Int}}(Int[])    # indices into plot_vars bound to plot axes
-    is_activate_mode::Observable{Bool} = Observable(true)                     # method menu activates (or deactivates)
+    method_filter::Symbol = :all                                              # methods listed by the Methods tab
     is_animating::Observable{Bool} = Observable(false)
     animation_timer::Observable{Union{Nothing, Timer}} = Observable{Union{Nothing, Timer}}(nothing)
     layout_dict::Observable{Dict{Symbol, Any}} = Observable(Dict{Symbol, Any}())   # subplot grid of the current layout
@@ -338,12 +338,13 @@ function simulation_trigger()
         active_methods = curr_config.defaults
 
         if isempty(active_methods)
-            @warn "No methods selected. Please activate at least one method to run."
+            _report(:warn, "No methods selected. Activate at least one method (Methods tab) to run.")
             return
         end
 
         @info "Running dynamic calculations directly from active config..."
-        run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
+        elapsed = @elapsed run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
+        _status!("Simulation finished in $(round(elapsed, digits = 1)) s ($(length(active_methods)) methods).", :ok)
 
         if manager.methods[] != active_methods   # order matters: it is the legend / comparison order
             manager.methods[] = copy(active_methods)

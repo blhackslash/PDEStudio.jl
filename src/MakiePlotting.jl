@@ -111,8 +111,6 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
 
     _render_editor!()
 
-    # Force the UI menu to redraw itself with the newly loaded config
-    notify(manager.is_activate_mode)
     return config
 end
 

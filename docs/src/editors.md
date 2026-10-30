@@ -1,6 +1,6 @@
 ## Deep Dive: Advanced Editors
 
-The "Parameter & UI Editor" and the "Method Controls" sit at the heart of the interface. They expose the backend's data structures, so you can change solver settings, sweeps and styles without touching the REPL.
+The editor tabs (*Methods*, *Simulation*, *UI*, *Labels*) sit at the heart of the interface. They expose the backend's data structures, so you can change solver settings, sweeps and styles without touching the REPL.
 
 ### 🎛️ The Editor Pages
 
@@ -35,9 +35,8 @@ The `PDEStudioCore` configuration. Scopes:
 | **Shared** | `config.shared`, the parameters every run uses. |
 | **Sweep** | `config.varied`, the swept values. A single value becomes a one-value sweep; in a sweep of text values, unquoted items stay text (`[upwind, lax_friedrichs]`). The sliders are remapped immediately. (A swept key only takes effect if it exists in the shared or method parameters.) |
 | **Config** | `defaults` (the active methods, in the order they are drawn: legends, colours and the *Methods* comparison follow it, so reorder the list here to override the automatic order), `permutation` (the same order as indices, see below; both rows are on the same page), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
-| *each method* | The parameter overrides of that method (`config.methods[m]`). Only the active methods are listed; activate a method to edit it. |
 
-*   **Reordering methods with `permutation`:** long method names make `defaults` tedious to reorder (`Symbol[Symbol("SSPRK3MUSCL2(EPD2)"), …]`). `permutation` shows the same order as indices into the automatic order of the active methods, i.e. references first, then alphabetical, the order in which the method dropdown and the overview list them. With the active methods `analytic`, `lax_friedrichs` and `upwind`, the permutation `[3, 2, 1]` stands for `[:upwind, :lax_friedrichs, :analytic]`. Type a new permutation (`[1, 3, 2]` or `(1, 3, 2)`) to reorder `defaults`; it needs one index per active method. `default` restores the order of the bound configuration (or the automatic order if the active methods differ from it). Only `defaults` is stored in CSV files and presets.
+*   **Reordering methods with `permutation`:** long method names make `defaults` tedious to reorder (`Symbol[Symbol("SSPRK3MUSCL2(EPD2)"), …]`). `permutation` shows the same order as indices into the automatic order of the active methods, i.e. references first, then alphabetical, the order in which the Methods tab lists them. With the active methods `analytic`, `lax_friedrichs` and `upwind`, the permutation `[3, 2, 1]` stands for `[:upwind, :lax_friedrichs, :analytic]`. Type a new permutation (`[1, 3, 2]` or `(1, 3, 2)`) to reorder `defaults`; it needs one index per active method. `default` restores the order of the bound configuration (or the automatic order if the active methods differ from it). Only `defaults` is stored in CSV files and presets.
 *   **Trigger Behavior:** physics changes alter the data, so any edit here turns `Run Simulation` yellow and locks the plot until you re-run. Edits are only blocked while a simulation is running.
 *   **Context-sensitive buttons:** in this tab, the preset buttons read **Save Sim Preset** and **Reset Simulation**.
 
@@ -50,8 +49,17 @@ The visual styles, layout templates and export settings of the renderer, plus **
 A dictionary that renames backend keys for the frontend: components (`component_1`, …), variables (dimensions and swept parameters) and methods.
 *   *Example:* if your solver names a swept parameter `:rho`, the UI shows "Rho". Open *Labels → Variables*, type `Density` into the `rho` row: every dropdown, legend and slider label now says "Density". Labels are text; `default` restores the built-in name. Labels are stored in exports and visual presets.
 
-### ⚙️ Method Controls
+### ⚙️ The Methods Tab
 
-In the **Simulation** tab, below the editor, is the method toggle, which hot-swaps the active numerical methods and analytical references.
-*   Click the **Mode** button to switch between `Activate` (add a method) and `Deactivate` (remove one).
-*   Select the method in the dropdown. This changes `config.defaults` (an activated method is appended), so the `Run Simulation` lock is set to compute the new method. (The same list is editable as *Simulation → Config → defaults*, which is also where you change the order.)
+The **Methods** tab lists every method of the configuration (numerical methods and analytical references) in the
+automatic order: references first, then alphabetical, the order the `permutation` key counts in.
+*   **active / off** activates or deactivates a method. This changes `config.defaults` (an activated method is
+    appended to the drawing order), so the `Run Simulation` lock is set to compute it.
+*   **Show: active / disabled / all** filters the list (click to cycle).
+*   **Edit ›** opens the parameter overrides of the method (`config.methods[m]`) as an editor page, for inactive
+    methods too; **◀ Back** returns to the list.
+*   **Order ▲▼** shows the active methods in drawing order (`defaults`: legends, colours and the *Methods*
+    comparison follow it), numbered from the top. **▲ / ▼** move a method; the new order is drawn after the next
+    *Run Simulation* (cached results are reused). **◀ Method list** returns to the list.
+*   The title shows how many methods are active; long lists get ◀ ▶ pages. The preset buttons act on simulation
+    presets, as in the *Simulation* tab.

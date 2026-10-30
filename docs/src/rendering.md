@@ -1,6 +1,6 @@
 ## Deep Dive: Rendering Configuration
 
-The red-titled sections—**Layout Options** and **Plot Options**—are the visual engine room of PDEStudio. These panels define exactly how your high-dimensional simulation tensors are sliced, projected, and compared on the screen. 
+The two red-titled sections of the **Plot** tab—**Layout options** and **Plot options**—are the visual engine room of PDEStudio. These panels define exactly how your high-dimensional simulation tensors are sliced, projected, and compared on the screen. 
 
 ### 🏗️ Layout Options (Structural Geometry)
 
@@ -9,10 +9,12 @@ The Layout Options section dictates the physical structure of the Makie grid. Be
 #### 1. Base Plot & Plot Style
 *   **Base Plot:** Defines the core geometry (e.g., `Lines`, `Heatmap`, `Scatter`, `Volume`). This dropdown automatically adapts based on whether your backend is in Eulerian (mesh) or Lagrangian (particle) mode.
 *   **Plot Style:** Offers specific modifiers for your base plot (e.g., switching a heatmap from `Flat` to `Surface`, or changing 1D lines to `Scatter Lines`).
+*   **Plot Width / Plot Height:** the size of each subplot in pixels, any whole number from 50 to 5000 (type it and press Enter; other input is refused with a message in the status line).
 
 #### 2. The Comparison Engine
 Instead of constantly tweaking sliders to compare states, you can unroll your dimensions across a multi-column grid.
 *   **Compare Target:** You can compare *almost anything* side-by-side. You can unroll different **Methods** (e.g., comparing an Upwind solver vs. a WENO solver), split vector **Components** into separate plots, compare **Time** steps, or compare across any **Varied Parameter** (e.g., different grid resolutions `N`, or text-valued sweeps such as scheme names; each subplot is titled with its value).
+*   **Grid Columns:** the number of subplots per row of a comparison, any whole number from 1 to 12.
 *   **At most 12 subplots:** comparisons over time or over long sweeps show up to 12 evenly spaced values (always including the first and the last), so a run with hundreds of time steps does not create hundreds of axes. The compared variable's slider is disabled while the comparison is active.
 *   **Compare Link (Coupling):** When comparing multiple plots, this dropdown dictates how they share visual limits:
     *   *Fully Coupled:* All subplots share the exact same X/Y/Z axis limits and a single global Colorbar. Perfect for 1-to-1 visual comparisons.
