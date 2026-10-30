@@ -43,6 +43,14 @@
   variant keeps its own settings (`x_axis_1d`, …), so switching between 1D and 2D/3D plots no longer resets them.
 - Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in
   the status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is still accepted.
+- The Simulation tab is the **Shared** tab: one page of the shared parameters. The sweep and the configuration fields
+  are edited in the Advanced tab, the methods and their order in the Methods tab.
+- The Labels tab moved into the UI tab: a *Labels* section with *Plot* (the former *UI → Labels*: title and axis
+  labels) and the display names of components, variables and methods.
+- **Files → Resolution ›**: the points per dimension of the data and of the references (`set_resolution!`), with ↺
+  to restore the default; Run Simulation reloads the data.
+- Editor pages have 16 rows (the height of the Plot tab). The Advanced tab lists the methods on a page of their own
+  (full-width rows with Edit › and ✕, ◀ ▶ pages for long lists, *Add method* below).
 - **Advanced** tab: edits the `SimulationConfig` directly (shared, varied, the fields and every method, active or
   not). Values are Julia literals with their types, parsed strictly; ✕ deletes a key; new keys are added with a type
   (`auto`, `Int`, `Float64`, `Bool`, `String`, `Symbol`, `Tuple`, vectors); methods can be added and deleted.
@@ -82,6 +90,10 @@
 - The preset buttons are `:save_sim_preset_button`, `:reset_sim_button` (simulation), `:save_presets_button`,
   `:clear_presets_button` (look) in the Files tab, with the description in `:preset_desc_text`; the `:create_new`
   preset entry is gone.
+- The `permutation` key of *Simulation → Config* is gone, together with the Sweep and Config pages of the Simulation
+  tab: the drawing order is set in the Methods tab (*Order ▲▼*), the sweep and the fields in the Advanced tab. The
+  tabs are `:plot`, `:methods`, `:shared`, `:ui`, `:files`, `:advanced` (no `:simulation`, no `:labels`);
+  `show_editor_page!(:ui, :methods)` opens the method display names.
 - The Simulation and UI overviews have no *Presets* page (`show_editor_page!(:simulation, :presets)`); use the
   Files tab (`show_editor_page!(:files, PDEStudio.PRESET_LIST)` with `manager.preset_kind`). Scripts that drove the editor through them should use
   `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /

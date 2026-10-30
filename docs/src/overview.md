@@ -11,15 +11,13 @@ control panel is a row of tabs; below the selected tab, the controls you need al
 | :--- | :--- |
 | **Plot** | One option per row, in two sections. *Layout options*: the **plot style** (the button opens a page of every supported style, grouped by Lines, Scatter, Contour, Heatmap and Volume; click one to choose it), plot width and height and the number of grid columns (any number), legend and its placement, and multi-plot comparisons; *changes here require a click on **Apply Layout** to rebuild the plot grid*, which is the expensive step (especially in a browser with WGLMakie). *Plot options*: the independent axes (X, Y, Z), the dependent field (U-Axis), its component and the animation target; changes update the data without rebuilding the plot grid (**Update Plot**). Details: [Rendering](rendering.md). |
 | **Methods** | Every method of the configuration with an **active / off** button (filter: **Show: active / disabled / all**) and **Edit ›** for its parameters (also of inactive methods); **Order ▲▼** shows the active methods in drawing order (legends, colours, the *Methods* comparison) with ▲ ▼ to move them. Details: [Advanced Editors](editors.md). |
-| **Simulation** | The editor for the simulation configuration: shared parameters, the sweep and `defaults`/`permutation`/functions (*Config*). Details: [Advanced Editors](editors.md). |
-| **UI** | The editor for the look, with a fixed overview: *General* (fonts, labels, HUD, outliers), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type). The pages of the active plot are highlighted. |
-| **Labels** | The editor for display names of components, variables and methods. |
-| **Files** | The **Name / path** box (exports, presets, CSV files) and the **Description** of a preset you save; **Load CSV** (or drop the file anywhere on the window), **Export** and **Settings ›** (export formats, resolution, animation length, …); all presets: **Save / Reset / Presets ›** for simulation presets (the physics) and look presets (the visual settings). *Presets ›* lists the saved presets with **Apply** and **Edit ›**, which opens the rows of the preset file. Details: [File Operations](file_ops.md), [Presets](presets.md). |
-| **Advanced** | The `SimulationConfig` itself, without the studio's conveniences: `shared`, `varied` (the sweep), the fields (`defaults`, `reference`, …) and every method, active or not. Values are Julia literals with their types; keys and methods can be added and deleted. Details: [Advanced Editors](editors.md). |
+| **Shared** | The shared parameters of the simulation (`config.shared`), one row each. The sweep and the other fields of the configuration are in the **Advanced** tab. Details: [Advanced Editors](editors.md). |
+| **UI** | The look and the display names, with a fixed overview: *General* (fonts, HUD, outliers), *Labels* (*Plot*: title and axis labels; display names of components, variables and methods), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type). The pages of the active plot are highlighted. |
+| **Files** | The **Name / path** box (exports, presets, CSV files) and the **Description** of a preset you save; **Load CSV** (or drop the file anywhere on the window), **Export** and **Settings ›** (export formats, image resolution, animation length, …); **Resolution ›** (points per dimension of the data and of the references); all presets: **Save / Reset / Presets ›** for simulation presets (the physics) and look presets (the visual settings). *Presets ›* lists the saved presets with **Apply** and **Edit ›**, which opens the rows of the preset file. Details: [File Operations](file_ops.md), [Presets](presets.md). |
+| **Advanced** | The `SimulationConfig` itself, without the studio's conveniences: `shared`, `varied` (the sweep), the fields (`defaults`, `reference`, …) and the list of all methods, active or not. Values are Julia literals with their types; keys and methods can be added and deleted. Details: [Advanced Editors](editors.md). |
 
-*Simulation*, *UI* and *Labels* are the three categories of the editor: the tab selects the category and opens on
-an overview with one button per page (scope); a page lists the entries of the scope as rows. The *Methods*,
-*Files* and *Advanced* tabs use the same editor for their pages.
+The *Methods*, *Shared*, *UI* and *Advanced* tabs and the pages of the *Files* tab use the same editor: a page lists
+entries as rows (name, value, a button), an overview has one button per page.
 
 ## Always Visible
 
@@ -37,4 +35,4 @@ an overview with one button per page (scope); a page lists the entries of the sc
     redraw, the corresponding button turns yellow to show that the plot is out of sync.
 
 A window opens on the **Plot** tab. The tab can also be selected from code with `PDEStudio.show_tab!(:methods)`
-(`:plot`, `:methods`, `:simulation`, `:ui`, `:labels`, `:files`, `:advanced`).
+(`:plot`, `:methods`, `:shared`, `:ui`, `:files`, `:advanced`).
