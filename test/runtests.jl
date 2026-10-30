@@ -721,7 +721,6 @@ end
         i = findfirst(isequal(:api_saved), manager.editor_row_keys)
         @test occursin("saved from the REPL", w[Symbol("method_row_", i, "_label")][])
         @test w[Symbol("method_row_", i, "_a")].label[] == "Apply" && w[Symbol("method_row_", i, "_b")].label[] == "Edit ›"
-        @test !(:create_new in manager.editor_row_keys)
 
         # 2. Edit › shows the rows of the file: values as written, ✕ deletes, the add-row adds or replaces
         press_preset!(:api_saved, :b)

@@ -1,13 +1,4 @@
 """
-    allMethodNames(config::SimulationConfig)
-
-Returns a list of all method names defined within the active `SimulationConfig`, sorted strictly by priority using `sort_methods_robust`.
-"""
-function allMethodNames(config::SimulationConfig)
-    return sort_methods_robust(collect(keys(config.methods)))
-end
-
-"""
     sort_methods_robust(methods::AbstractVector)
 
 Sorts method names, guaranteeing that analytical baselines or exact reference solutions are evaluated and drawn first.
@@ -51,7 +42,7 @@ end
 # Export formats
 # ------------------------------------------------------------------------------
 
-# Extensions typed into the filename box: an animation format records an animation, a static format exports exactly
+# Extensions typed into the Name / path box of the Files tab: an animation format records an animation, a static format exports exactly
 # that format, anything else is part of the name.
 const ANIMATION_EXPORT_FORMATS = ("mp4", "gif", "webm", "mkv")
 const STATIC_EXPORT_FORMATS = ("png", "pdf", "svg", "eps", "jpg", "jpeg")
@@ -205,7 +196,7 @@ end
 """
     apply_axis_limits_overrides!(ax)
 
-Overrides Makie's automatic axis scaling with rigid, user-defined boundary limits set via the hierarchical UI editor. Bypassed if the global Camera Lock is actively tracking a manual pan/zoom state.
+Overrides Makie's automatic axis scaling with rigid, user-defined boundary limits set on the axis pages of the UI tab (`lims`). Bypassed if the global Camera Lock is actively tracking a manual pan/zoom state.
 """
 function apply_axis_limits_overrides!(ax)
     

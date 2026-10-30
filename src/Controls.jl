@@ -197,9 +197,9 @@ end
 """
     NumberBox
 
-A text box for a whole number (plot width and height, grid columns) that stands in for the dropdowns it replaced:
-`selection` holds the value and changes only on valid input between `lo` and `hi`, so the layout watcher, the option
-caches, presets and CSV files treat it like a menu. Invalid input is refused with a status message.
+A text box for a whole number (plot width and height, grid columns). `selection` holds the value and changes only on
+valid input between `lo` and `hi`, so the layout watcher, the option caches, presets and CSV files treat it like the
+menus of the other layout options. Invalid input is refused with a status message.
 """
 struct NumberBox
     box::Textbox
@@ -229,8 +229,8 @@ end
     StyleChoice
 
 The plot style of the Plot tab: a button showing the current plot type, which opens the page of all plot styles
-(`STYLE_CHOOSER`, see `_choose_plot_style!`). `selection` holds the plot type, so the layout watcher, presets and
-CSV files treat it like the menus it replaced (there is no separate base plot any more).
+(`STYLE_CHOOSER`, see `_choose_plot_style!`). `selection` holds the plot type, so the layout watcher, presets and CSV
+files treat it like the menus of the other layout options.
 """
 struct StyleChoice
     button::Button
