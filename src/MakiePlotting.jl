@@ -256,6 +256,9 @@ function reset_plotter!()
         k === :Simulation || delete!(manager.listeners, k)  # switched off above
     end
     empty!(manager.widgets)  # widgets of the closed window; the caches keep their state
+    empty!(manager.panels)
+    manager.panel_park = nothing
+    manager.tab_area = nothing
     manager.plot_window_initialized[] = false
 
     @info "Plotter state completely cleared!"

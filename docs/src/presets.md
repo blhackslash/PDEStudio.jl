@@ -15,7 +15,7 @@ Both are ordinary studio CSV files, so they can be versioned, shared and written
 
 ## In the Studio
 
-1.  Select the category in the editor: **UI** for the look, **Simulation** for the physics. The two preset buttons follow the category: *Save Presets / Clear Presets* versus *Save Sim Preset / Reset Simulation*.
+1.  Select the tab: **UI** for the look, **Simulation** for the physics. The two preset buttons follow the category: *Save Presets / Clear Presets* versus *Save Sim Preset / Reset Simulation*.
 2.  *Optional:* select the scope **Presets**, the entry `create_new`, and type a description into the text box.
 3.  Type a name into the filename box (`Coarse Grid` is stored as `coarse_grid.csv`) and click the save button.
 4.  To apply a preset, select it under **Presets** (the description is shown in the text box) and click **Apply**. Applying a simulation preset sets the `Run Simulation` lock; click it to compute.

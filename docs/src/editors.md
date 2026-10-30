@@ -4,7 +4,7 @@ The "Parameter & UI Editor" and the "Method Controls" sit at the heart of the in
 
 ### 🎛️ The Hierarchical Editor
 
-The editor uses three cascading dropdowns (**Category** → **Scope** → **Parameter**). Selecting a parameter shows its current value in the text box below.
+The editor is shown in the **Simulation**, **UI** and **Labels** tabs; the tab is the category. Two cascading dropdowns (**Scope** → **Parameter**) select the entry, and its current value appears in the text box below.
 
 #### Setting Values
 Type a new value and press Enter. Input is parsed with the safe literal parser `str2val`: numbers, symbols (`:upwind`), strings, tuples (`(64, 64)`), vectors (`[0.1, 0.2]`, `Float64[0.1, 0.2]`), dictionaries and ranges (`0.1:0.1:0.5`). **Nothing you type is ever evaluated as code.**
@@ -16,7 +16,7 @@ Type a new value and press Enter. Input is parsed with the safe literal parser `
 
 ### 📂 The Categories
 
-The first dropdown selects which part of the studio you edit.
+The tab selects which part of the studio you edit.
 
 #### 1. Simulation
 The `PDEStudioCore` configuration. Scopes:
@@ -31,7 +31,7 @@ The `PDEStudioCore` configuration. Scopes:
 
 *   **Reordering methods with `permutation`:** long method names make `defaults` tedious to reorder (`Symbol[Symbol("SSPRK3MUSCL2(EPD2)"), …]`). `permutation` shows the same order as indices into the automatic order of the active methods, i.e. references first, then alphabetical, the order in which the method dropdown and the method scopes list them. With the active methods `analytic`, `lax_friedrichs` and `upwind`, the permutation `[3, 2, 1]` stands for `[:upwind, :lax_friedrichs, :analytic]`. Type a new permutation (`[1, 3, 2]` or `(1, 3, 2)`) to reorder `defaults`; it needs one index per active method. `default` restores the order of the bound configuration (or the automatic order if the active methods differ from it). Only `defaults` is stored in CSV files and presets.
 *   **Trigger Behavior:** physics changes alter the data, so any edit here turns `Run Simulation` yellow and locks the plot until you re-run. Edits are only blocked while a simulation is running.
-*   **Context-sensitive buttons:** while this category is selected, the preset buttons read **Save Sim Preset** and **Reset Simulation**.
+*   **Context-sensitive buttons:** in this tab, the preset buttons read **Save Sim Preset** and **Reset Simulation**.
 
 #### 2. UI
 The visual styles, layout templates and export settings of the renderer, plus **Presets** (the visual presets, applied with **Apply**).

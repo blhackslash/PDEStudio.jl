@@ -1,6 +1,6 @@
 ## Deep Dive: File Operations & Execution
 
-The top section of the control panel is the command center for serialization and execution. Because PDE simulations and 3D graphics can be computationally heavy, this region works with a lock system that keeps the UI responsive.
+The **Files** tab, the filename box and the execution buttons below the tabs handle serialization and execution. Because PDE simulations and 3D graphics can be computationally heavy, this region works with a lock system that keeps the UI responsive.
 
 ### 🚦 The Reactive State Machine (Triggers & Locks)
 
@@ -16,7 +16,7 @@ Simulations that already exist on disk (same parameters, same hash) are loaded i
 
 ### 📂 Loading a Saved State
 
-Type the path of a CSV into the filename box and click the load button at the top, or simply drop the file onto the window. A bare file name (with or without `.csv`) is enough: the studio searches the working directory, `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (each including one level of subfolders). The same works from code: `set_sim_config!("my_run.csv")`.
+Type the path of a CSV into the filename box and click the load button in the **Files** tab, or simply drop the file anywhere onto the window (the studio switches to the **Files** tab to report the result). A bare file name (with or without `.csv`) is enough: the studio searches the working directory, `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (each including one level of subfolders). The same works from code: `set_sim_config!("my_run.csv")`.
 
 The load button turns **green** when the file was read; press *Run Simulation* to compute and show it.
 

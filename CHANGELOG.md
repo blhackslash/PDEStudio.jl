@@ -9,6 +9,13 @@
   legends, colours and the *Methods* comparison. It is a view of `defaults` and is not written to CSV files.
 
 ### Changed
+- The control panel is organised in tabs: **Plot**, **Layout**, **Simulation**, **UI**, **Labels** (the three editor
+  categories, which replace the category dropdown) and **Files**. The filename box, the sliders, *Play Anim* /
+  *Lock Camera* and the execution buttons are always visible below the tabs, so the window is much shorter (it fits
+  a Full HD screen). All widgets are still created once per window: the panels of the other tabs are hidden and
+  parked outside the figure (hidden Makie buttons and sliders would otherwise still react to clicks). Switching tabs
+  doesn't touch the plots. A window opens on the Plot tab; `PDEStudio.show_tab!` selects one from code.
+  The widget keys in `manager.widgets` are unchanged (`:editor_cat` still selects the editor category).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
   comparison). Reorder the list under *Simulation → Config → defaults* (or in `SimulationConfig`) to override
   the automatic order; activated methods are appended. Without explicit defaults the order is still references

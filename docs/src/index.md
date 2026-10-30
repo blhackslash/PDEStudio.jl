@@ -17,7 +17,7 @@ PDE simulations often have to run on servers. There are two ways to work with re
 The studio is built around a central, reactive state manager that links the live simulation data to the Makie render loop.
 
 *   **Eulerian & Lagrangian Support:** Rendering primitives adapt to the data: grid-based heatmaps, surfaces and volumes, or point-based scatter plots. Data stored in the other representation is converted on the fly.
-*   **Hierarchical Editor:** Shared parameters, method parameters, the parameter sweep, the active methods, UI styles, export settings and display names, all in one Category → Scope → Parameter editor (see [Advanced Editors](editors.md)).
+*   **Hierarchical Editor:** Shared parameters, method parameters, the parameter sweep, the active methods, UI styles, export settings and display names, all in one Scope → Parameter editor, with one tab per category (see [Advanced Editors](editors.md)).
 *   **Dynamic Layouts:** Multi-plot comparisons (methods, components, time steps or any swept parameter), linked or decoupled axes and detached legends.
 *   **Any Sweep:** Swept parameters can be numbers or anything else (scheme names, tuples, …); non-numeric sweeps get index sliders that display the swept value.
 
