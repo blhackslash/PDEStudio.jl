@@ -6,9 +6,8 @@ The two red-titled sections of the **Plot** tab—**Layout options** and **Plot 
 
 The Layout Options section dictates the physical structure of the Makie grid. Because changes here require destroying and rebuilding plot axes and legends, modifying these settings will turn the **Apply Layout** button yellow, signaling that a structural rebuild is required.
 
-#### 1. Base Plot & Plot Style
-*   **Base Plot:** Defines the core geometry (e.g., `Lines`, `Heatmap`, `Scatter`, `Volume`). This dropdown automatically adapts based on whether your backend is in Eulerian (mesh) or Lagrangian (particle) mode.
-*   **Plot Style:** Offers specific modifiers for your base plot (e.g., switching a heatmap from `Flat` to `Surface`, or changing 1D lines to `Scatter Lines`).
+#### 1. Plot Style
+*   **Plot Style:** the button shows the current plot type and opens a page with every supported style, grouped by geometry (*Lines*, *Scatter*, *Contour*, *Heatmap*, *Volume*); the current one is highlighted, a click chooses another (◀ Back keeps it). The page adapts to the mode: Lagrangian (particle) data offers the scatter styles matching the dimension of the particles.
 *   **Plot Width / Plot Height:** the size of each subplot in pixels, any whole number from 50 to 5000 (type it and press Enter; other input is refused with a message in the status line).
 
 #### 2. The Comparison Engine

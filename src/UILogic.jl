@@ -127,6 +127,9 @@ function apply_options!(cache::AbstractDict, option_keys::Tuple, new_options::Di
             if widget isa NumberBox
                 _set_number!(widget, val)
                 continue
+            elseif widget isa StyleChoice
+                _set_style!(widget, val)
+                continue
             end
             opts = widget.options[]
             isempty(opts) && continue
@@ -387,9 +390,9 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
-        path = strip(something(path_box.stored_string[], ""))
+        path = _box_text(path_box)
         if isempty(path)
-            _report(:warn, "Enter a path or file name in the filename box first.")
+            _report(:warn, "Enter a path or file name in the Name / path box first.")
             return
         end
         found = find_config_csv(path)
@@ -505,15 +508,15 @@ _release_block!(b) = nothing
 _release_block!(m::Menu) = (m.is_open[] && (m.is_open[] = false); nothing)
 _release_block!(t::Textbox) = (t.focused[] && Makie.defocus!(t); nothing)
 
-# Whether a block or layout sits exactly in `parent[row, col]`.
-function _is_at(item, parent::GridLayout, row::Int, col::Int)
+# Whether a block or layout sits exactly in `parent[row, cols]`.
+function _is_at(item, parent::GridLayout, row::Int, cols)
     gc = Makie.GridLayoutBase.gridcontent(item)
-    return !isnothing(gc) && gc.parent === parent && gc.span.rows == row:row && gc.span.cols == col:col
+    return !isnothing(gc) && gc.parent === parent && gc.span.rows == row:row && gc.span.cols == (cols isa Int ? (cols:cols) : cols)
 end
 
-# Places a block or layout in `parent[row, col]` (moving it only if it isn't there yet) and draws it.
-function _place!(item, parent::GridLayout, row::Int, col::Int)
-    _is_at(item, parent, row, col) || (parent[row, col] = item)
+# Places a block or layout in `parent[row, cols]` (moving it only if it isn't there yet) and draws it.
+function _place!(item, parent::GridLayout, row::Int, cols)
+    _is_at(item, parent, row, cols) || (parent[row, cols] = item)
     _set_item_visible!(item, true)
     return nothing
 end
@@ -589,7 +592,7 @@ function show_tab!(tab::Symbol)
     area = manager.tab_area
     (isnothing(area) || isnothing(manager.panel_park)) && return nothing
 
-    shown = TAB_PANELS[tab]
+    shown = _tab_panels(tab)
     names = [shown...; [n for n in TAB_PANEL_NAMES if !(n in shown)]]
     _pack!(area, [manager.panels[n] for n in names], [n in shown for n in names]; gap = TAB_ROWGAP)
 
@@ -604,12 +607,16 @@ function show_tab!(tab::Symbol)
     end
 
     manager.active_tab[] === tab || (manager.active_tab[] = tab)
-    if tab in EDITOR_TABS
-        _update_preset_buttons!(_data_cat(tab))
-        _render_editor!()
-    end
+    _render_editor!()
     return nothing
 end
+
+# The panels a tab shows: the Files and Plot tabs show the editor while their page (export settings, plot styles) is open.
+_tab_panels(tab) = haskey(TAB_EDITOR_PAGES, tab) && _editor_tab(tab) ? (:editor,) : TAB_PANELS[tab]
+
+# Whether a tab shows the editor: the editor tabs, and the Files / Plot tab with its page open (`TAB_EDITOR_PAGES`).
+_editor_tab(tab) = tab in EDITOR_TABS ||
+                   (haskey(TAB_EDITOR_PAGES, tab) && first(get(manager.editor_view, tab, (nothing, 1))) === TAB_EDITOR_PAGES[tab])
 
 """
     _setup_tab_interactions!()
@@ -668,7 +675,7 @@ function _editor_target(cat, scope)
         return get(config.methods, scope, nothing)
     elseif cat === :ui
         scope === :presets && return manager.presets
-        return get(manager.ui, scope, nothing)
+        return get(manager.ui, _ui_template_scope(scope), nothing)   # a plot type's page edits `plot_style`
     elseif cat === :labels
         return manager.labels
     end
@@ -791,62 +798,120 @@ function _after_editor_change!(cat, scope, key, target)
     return nothing
 end
 
-# The preset buttons act on simulation presets while the editor shows the Simulation category.
-function _update_preset_buttons!(cat)
-    w = manager.widgets
-    is_sim = cat === :simulation
-    haskey(w, :save_presets_button) && (w[:save_presets_button].label[] = is_sim ? "Save Sim Preset" : "Save Presets")
-    haskey(w, :clear_presets_button) && (w[:clear_presets_button].label[] = is_sim ? "Reset Simulation" : "Clear Presets")
-    return nothing
-end
-
-# The preset buttons act on simulation presets in the Simulation tab and on visual presets otherwise.
-_preset_context() = _data_cat(manager.active_tab[]) === :simulation ? :simulation : :visual
-
-# The editor category of a tab: the Methods tab edits the simulation configuration.
-_data_cat(tab) = tab === :methods ? :simulation : tab
+# The editor category of a tab: the Methods tab edits the simulation configuration, the Files tab the export settings.
+_data_cat(tab) = tab === :methods ? :simulation : tab === :files ? :ui : tab   # (:plot: the plot styles)
 
 # The preset registry shown under `Presets` for an editor category.
 _preset_registry(cat) = cat === :simulation ? manager.sim_presets : manager.presets
 
 # Display names of the fixed scopes; UI scopes and keys use their frontend names, simulation keys their exact names.
 const _SCOPE_LABELS = Dict(:presets => "Presets", :shared => "Shared", :sweep => "Sweep", :config => "Config",
-                           :components => "Components", :variables => "Variables", :methods => "Methods")
+                           :components => "Components", :variables => "Variables", :methods => "Methods",
+                           :export => "Export settings",
+                           :x_axis_1d => "X Axis (1D)", :y_axis_1d => "Y Axis (1D)", :x_axis_nd => "X Axis (2D/3D)",
+                           :y_axis_nd => "Y Axis (2D/3D)", :z_axis_3d => "Z Axis (3D)",
+                           :heatmap_flat => "Heatmap Flat", :heatmap_surface => "Heatmap Surface",
+                           :scatter_surface => "Scatter Surface", :volume_3d => "Volume")
 
 """
-    _editor_scopes(cat)
+    _editor_sections(cat)
 
-The pages (scopes) of an editor category, in overview order. Simulation: `Presets`, and with a bound configuration
-`Shared`, `Sweep` and `Config` (the methods have a tab of their own). UI: `Presets` and every UI style scope.
-Labels: components, variables and methods.
+The overview of an editor category: titled groups of pages (scopes), all fixed. Simulation: `Presets`, and with a
+bound configuration `Shared`, `Sweep` and `Config` (the methods have a tab of their own). UI: *General* (presets,
+fonts, labels, HUD, outliers), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type
+of the mode, each with the options that type uses). Labels: components, variables and methods.
 """
-function _editor_scopes(cat)
+function _editor_sections(cat)
     if cat === :simulation
-        scopes = Symbol[:presets]
-        config = manager.active_config
-        isnothing(config) && return scopes
-        append!(scopes, (:shared, :sweep, :config))
-        return scopes
+        scopes = isnothing(manager.active_config) ? Symbol[:presets] : Symbol[:presets, :shared, :sweep, :config]
+        return Pair{String, Vector{Symbol}}["" => scopes]
     elseif cat === :ui
-        return Symbol[:presets; sort!(collect(keys(manager.ui)))]
+        return Pair{String, Vector{Symbol}}["General" => Symbol[:presets, UI_GENERAL_SCOPES...],
+                                            "Axes" => Symbol[UI_AXIS_SCOPES...],
+                                            "Plot styles" => _plot_style_scopes()]
     elseif cat === :labels
-        return Symbol[:components, :variables, :methods]
+        return Pair{String, Vector{Symbol}}["" => Symbol[:components, :variables, :methods]]
+    elseif cat === :plot
+        return _plot_style_sections()
     end
-    return Symbol[]
+    return Pair{String, Vector{Symbol}}[]
+end
+
+# The plot styles of the mode, one titled group per base plot, without the ones the data doesn't allow.
+function _plot_style_sections()
+    opts = manager.mode[] == :eulerian ? EULERIAN_PLOT_STYLE_OPTIONS : LAGRANGIAN_PLOT_STYLE_OPTIONS
+    bases = manager.mode[] == :eulerian ? (:lines, :scatter, :contour, :heatmap, :volume) : (:scatter,)
+    allowed = manager.allowed_styles
+    sections = Pair{String, Vector{Symbol}}[]
+    for b in bases
+        styles = Symbol[o[2] for o in opts[b] if isempty(allowed) || o[2] in allowed]
+        isempty(styles) || push!(sections, frontend_key(b) => styles)
+    end
+    return sections
+end
+
+# The display name of a plot type (the menu names of some only make sense next to their base plot, e.g. "Flat").
+_style_label(style::Symbol) = get(_SCOPE_LABELS, style, frontend_key(style))
+
+"""
+    _choose_plot_style!(style)
+
+Selects a plot type from the page of all plot styles, returns to the Plot tab and flags *Apply Layout*.
+"""
+function _choose_plot_style!(style::Symbol)
+    sc = manager.widgets[:plot_style]
+    changed = sc.selection[] != style
+    _set_style!(sc, style)
+    show_editor_page!(:plot)
+    changed && _status!("Plot style: $(_style_label(style)). Apply Layout to redraw.", :ok)
+    return nothing
+end
+
+"""
+    _set_allowed_styles!(styles)
+
+Limits the plot styles offered by the Plot tab to `styles` (e.g. the scatter styles matching the dimension of
+Lagrangian data); the plot style falls back to the first one if the current one isn't among them.
+"""
+function _set_allowed_styles!(styles::Vector{Symbol})
+    manager.allowed_styles = styles
+    sc = manager.widgets[:plot_style]
+    sc.selection[] in styles || _set_style!(sc, first(styles))
+    _render_editor!()
+    return nothing
+end
+
+# Every page of the overview of an editor category.
+_editor_scopes(cat) = reduce(vcat, last.(_editor_sections(cat)); init = Symbol[])
+
+# The plot types of the mode, grouped by base plot.
+function _plot_style_scopes()
+    groups = manager.mode[] == :eulerian ?
+             [EULERIAN_PLOT_STYLE_OPTIONS[b] for b in (:lines, :scatter, :contour, :heatmap, :volume)] :
+             [LAGRANGIAN_PLOT_STYLE_OPTIONS[:scatter]]
+    return Symbol[o[2] for opts in groups for o in opts]
+end
+
+# Whether the page of a UI scope belongs to the active plot (the active plot type and its axis variants).
+function _ui_scope_active(scope)
+    ptype = manager.active_plot_type
+    scope === ptype && return true
+    scope in UI_AXIS_SCOPES || return false
+    scope === :z_axis_3d && return get(PLOT_DIM_MAP, ptype, 1) == 3 || is_surface(ptype)
+    return scope in (_ui_template_scope(:x_axis), _ui_template_scope(:y_axis))
 end
 
 """
     _editor_keys(cat, scope)
 
-The keys of an editor page, in row order. Presets: `create_new` first, then the presets found on disk (the preset
-folders are rescanned, so files copied there show up). The plot style scope lists only the options of the selected
-plot style. Labels get their built-in display name if they have none yet.
+The keys of an editor page, in row order. Presets: the presets found on disk (the preset folders are rescanned, so
+files copied there show up). The page of a plot type lists the options that type uses (`STYLE_DEPENDENCIES`). Labels
+get their built-in display name if they have none yet.
 """
 function _editor_keys(cat, scope)
     if scope === :presets
         refresh_preset_registries!()  # picks up preset files added on disk
-        names = sort!(collect(keys(_preset_registry(cat))))
-        return Any[:create_new; filter(!=(:create_new), names)]
+        return Any[sort!(filter(!=(:create_new), collect(keys(_preset_registry(cat)))))...]
     elseif cat === :labels
         raw_keys = Symbol[]
         if scope === :components
@@ -874,25 +939,23 @@ function _editor_keys(cat, scope)
     target = _editor_target(cat, scope)
     isnothing(target) && return Any[]
     ks = sort!(collect(keys(target)))
-    if cat === :ui && scope === :plot_style && haskey(manager.widgets, :plot_style)
-        valid_keys = get(STYLE_DEPENDENCIES, manager.widgets[:plot_style].selection[], Symbol[])
-        filter!(k -> k in valid_keys, ks)
-    end
+    cat === :ui && haskey(STYLE_DEPENDENCIES, scope) && filter!(in(STYLE_DEPENDENCIES[scope]), ks)
     return Any[ks...]
 end
 
 _scope_label(cat, scope) = get(_SCOPE_LABELS, scope, cat === :simulation ? string(scope) : menu_opt(scope)[1])
 _key_label(cat, scope, key) = (cat === :ui || scope === :presets) && key isa Symbol ? menu_opt(key)[1] : string(key)
 
+# The label of a page button: the scope and (except in the static UI overview) its number of entries.
 function _scope_button_label(cat, scope)
-    ks = _editor_keys(cat, scope)
-    n = scope === :presets ? count(!=(:create_new), ks) : length(ks)
-    return "$(_scope_label(cat, scope)) ($n)"
+    cat === :plot && return _style_label(scope)
+    cat === :ui && return _scope_label(cat, scope)
+    return "$(_scope_label(cat, scope)) ($(length(_editor_keys(cat, scope))))"
 end
 
-# What the button of a row does: apply a preset, toggle a Bool, restore the default, or nothing (`create_new`).
+# What the button of a row does: apply a preset, toggle a Bool, or restore the default.
 function _row_action(cat, scope, target, key)
-    scope === :presets && return key === :create_new ? :none : :apply
+    scope === :presets && return :apply
     haskey(target, key) && target[key] isa Bool && return :toggle
     return :reset
 end
@@ -928,6 +991,8 @@ end
 # What the editor shows for a tab and scope: the overview, the rows of a page, or the method list / drawing order of
 # the Methods tab.
 function _editor_mode(tab, scope)
+    tab === :files && return :rows       # the export settings
+    tab === :plot && return :overview    # the plot styles
     if tab === :methods
         isnothing(scope) && return :method_list
         scope === ORDER_VIEW && return :method_order
@@ -938,6 +1003,7 @@ end
 
 # Whether `scope` is (still) a page of the tab, e.g. not a method that was removed.
 function _editor_scope_valid(tab, scope)
+    haskey(TAB_EDITOR_PAGES, tab) && return scope === TAB_EDITOR_PAGES[tab]
     isnothing(scope) && return true
     if tab === :methods
         config = manager.active_config
@@ -1002,7 +1068,7 @@ A no-op outside the editor tabs, so it can be called after any change.
 """
 function _render_editor!()
     tab = manager.active_tab[]
-    (tab in EDITOR_TABS && haskey(manager.panels, :editor_rows)) || return nothing
+    (_editor_tab(tab) && haskey(manager.panels, :editor_rows)) || return nothing
     w, p = manager.widgets, manager.panels
     cat = _data_cat(tab)
 
@@ -1011,7 +1077,7 @@ function _render_editor!()
     mode = _editor_mode(tab, scope)
     items = mode === :overview ? _editor_scopes(cat) :
             mode === :rows ? _editor_keys(cat, scope) : _method_items(mode)
-    per_page = mode === :overview ? OVERVIEW_BUTTONS : EDITOR_ROWS
+    per_page = mode === :overview ? max(OVERVIEW_BUTTONS, length(items)) : EDITOR_ROWS   # overviews are one page
     npages = max(1, cld(length(items), per_page))
     page = clamp(page, 1, npages)
     manager.editor_view[tab] = (scope, page)
@@ -1019,8 +1085,12 @@ function _render_editor!()
     page_items = items[offset + 1:min(offset + per_page, length(items))]
 
     config = manager.active_config
-    title = if mode === :overview
+    title = if tab === :plot
+        "Plot style"
+    elseif mode === :overview
         TAB_LABELS[tab]
+    elseif tab === :files
+        "Export settings"
     elseif mode === :rows
         _scope_label(cat, scope)
     elseif mode === :method_order
@@ -1030,11 +1100,10 @@ function _render_editor!()
     end
     w[:editor_title][] = npages > 1 ? "$title  ($page/$npages)" : title
 
-    # Panel rows: header, the tools of the Methods tab, body, preset buttons
+    # Panel rows: header, the tools of the Methods tab, body
     in_methods = mode in (:method_list, :method_order)
-    _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body], p[:editor_footer]],
-           [true, in_methods, true, true]; gap = 8)
-    mode === :rows ? _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
+    _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body]], [true, in_methods, true]; gap = 8)
+    (mode === :rows || tab === :plot) ? _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
     npages > 1 ? _place!(p[:editor_pager], p[:editor_header], 1, 3) : _park!(p[:editor_pager])
     if in_methods
         w[:method_filter].label[] = "Show: $(manager.method_filter)"
@@ -1048,14 +1117,8 @@ function _render_editor!()
     _place!(p[body_view], p[:editor_body], 1, 1)
 
     if mode === :overview
-        manager.editor_page_scopes = Symbol[page_items...]
         manager.editor_row_keys = Any[]
-        buttons = [w[Symbol("editor_page_", j)] for j in 1:OVERVIEW_BUTTONS]
-        for (j, s) in enumerate(page_items)
-            buttons[j].label[] = _scope_button_label(cat, s)
-        end
-        _pack!(p[:editor_overview], buttons, [j <= length(page_items) for j in 1:OVERVIEW_BUTTONS];
-               ncols = OVERVIEW_COLS, gap = EDITOR_ROWGAP + 2)
+        _render_overview!(cat)
     elseif mode === :rows
         manager.editor_page_scopes = Symbol[]
         manager.editor_row_keys = Any[page_items...]
@@ -1078,24 +1141,67 @@ function _render_editor!()
 end
 
 """
+    _render_overview!(cat)
+
+Binds the page buttons of the overview to the sections of `cat` (see `_editor_sections`): a section title (if any)
+spanning the row, then its buttons, `OVERVIEW_COLS` per row. The pages of the active plot (plot type and axis
+variants) are highlighted. Unused buttons and titles are parked.
+"""
+function _render_overview!(cat)
+    w, ov = manager.widgets, manager.panels[:editor_overview]
+    buttons = [w[Symbol("editor_page_", j)] for j in 1:OVERVIEW_BUTTONS]
+    titles = [w[Symbol("editor_section_", k)] for k in 1:OVERVIEW_SECTIONS]
+    scopes = Symbol[]
+    row, nb, nt = 0, 0, 0
+    for (title, section) in _editor_sections(cat)
+        if !isempty(title) && nt < OVERVIEW_SECTIONS
+            nt += 1
+            titles[nt].text[] = title
+            _place!(titles[nt], ov, row += 1, 1:OVERVIEW_COLS)
+        end
+        for (i, s) in enumerate(section)
+            nb < OVERVIEW_BUTTONS || break
+            nb += 1
+            push!(scopes, s)
+            btn = buttons[nb]
+            btn.label[] = _scope_button_label(cat, s)
+            active = cat === :ui ? _ui_scope_active(s) : cat === :plot && s === manager.widgets[:plot_style].selection[]
+            btn.buttoncolor[] = active ? RGBf(0.65, 0.78, 1.0) : RGBf(0.88, 0.92, 1.0)
+            (i - 1) % OVERVIEW_COLS == 0 && (row += 1)
+            _place!(btn, ov, row, (i - 1) % OVERVIEW_COLS + 1)
+        end
+    end
+    foreach(_park!, buttons[nb + 1:end])
+    foreach(_park!, titles[nt + 1:end])
+    _trim_rows!(ov)
+    size(ov)[1] > 1 && rowgap!(ov, EDITOR_ROWGAP)
+    manager.editor_page_scopes = scopes
+    return nothing
+end
+
+"""
     show_editor_page!(tab::Symbol, scope = nothing; page = 1)
 
 Opens a page of the editor in the tab `tab` (`:methods`, `:simulation`, `:ui` or `:labels`): the rows of `scope`
-(e.g. `:shared`, `:config`, `:x_axis`, `:presets`; in the Methods tab a method, or `ORDER_VIEW` for the drawing
-order), or for `scope = nothing` the overview of the tab (the method list in the Methods tab). `page` selects the
-page of a long scope. A no-op without an open window.
+(e.g. `:shared`, `:config`, `:x_axis_nd`, `:lines_1d`, `:presets`; in the Methods tab a method, or `ORDER_VIEW` for
+the drawing order), or for `scope = nothing` the overview of the tab (the method list in the Methods tab). In the
+Files tab, `EXPORT_SETTINGS` opens the export settings and `nothing` the Files panel; in the Plot tab,
+`STYLE_CHOOSER` opens the page of all plot styles. `page` selects the page of a
+long scope. A no-op without an open window.
 """
 function show_editor_page!(tab::Symbol, scope = nothing; page::Int = 1)
-    tab in EDITOR_TABS || throw(ArgumentError("unknown editor tab :$tab (editor tabs: $(join(EDITOR_TABS, ", ")))"))
+    (tab in EDITOR_TABS || haskey(TAB_EDITOR_PAGES, tab)) ||
+        throw(ArgumentError("unknown editor tab :$tab (editor tabs: $(join((EDITOR_TABS..., keys(TAB_EDITOR_PAGES)...), ", ")))"))
     manager.editor_view[tab] = (scope, page)
-    manager.active_tab[] === tab ? _render_editor!() : show_tab!(tab)
+    # the Files and Plot tabs switch between their panels and the editor
+    manager.active_tab[] === tab && !haskey(TAB_EDITOR_PAGES, tab) ? _render_editor!() : show_tab!(tab)
     return nothing
 end
 
 # The page entry bound to row `i`: (category, scope, key, target), or `nothing`.
 function _editor_row_binding(i::Int)
     tab = manager.active_tab[]
-    tab in EDITOR_TABS || return nothing
+    _editor_tab(tab) || return nothing
     scope, _ = get(manager.editor_view, tab, (nothing, 1))
     _editor_mode(tab, scope) === :rows || return nothing
     i > length(manager.editor_row_keys) && return nothing
@@ -1177,8 +1283,8 @@ validated. Returns whether something changed; problems are reported as warnings.
 function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
     try
         if scope === :presets
-            target[key] = String(s)  # the description (for :create_new: of the next preset saved)
-            key === :create_new || _store_preset_description!(cat, key, String(s))
+            target[key] = String(s)  # the description
+            _store_preset_description!(cat, key, String(s))
         elseif strip(s) == "default"
             val = _editor_default(cat, scope, key)
             if ismissing(val)
@@ -1198,6 +1304,11 @@ function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
             else
                 val = _parse_editor_input(s, target[key])
             end
+            if !_valid_editor_value(s, target, key, val)
+                _report(:warn, "'$key' was not changed: '$(_short(String(strip(s)), 30))' is not a valid value. " *
+                               "Use numbers, :symbols, [vectors], (tuples) or \"text\" in quotes.")
+                return false
+            end
             if cat === :ui && !_valid_ui_value(key, val)
                 _report(:warn, "'$key' was not changed: $(repr(val)) is not a valid " *
                                (key === :color_map ? "colormap (e.g. :viridis)." : "colour (e.g. :red, \"#1f77b4\" or (:blue, 0.5))."))
@@ -1215,10 +1326,29 @@ function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
     end
 end
 
+"""
+    _valid_editor_value(s, target, key, val) -> Bool
+
+Whether parsed editor input may be stored. Input that is no literal at all (e.g. `[1, 2`) comes back from the parser
+as text; that is only accepted where the value is text already (or quoted, `"…"`), not for numbers, symbols, vectors
+and other values, so a typo can't silently change a parameter's type. Function names (`reference`, `postprocess`)
+may be typed without a colon, colours and colormaps as plain text.
+"""
+function _valid_editor_value(s::AbstractString, target, key, val)
+    txt = strip(s)
+    (startswith(txt, '"') || !(val isa AbstractString || (val isa AbstractVector && any(v -> v isa AbstractString, val)))) && return true
+    old = haskey(target, key) ? target[key] : nothing
+    old isa AbstractString && return true
+    target isa ConfigFields && key in (:reference, :postprocess) && return true
+    key in (_COLOR_UI_KEYS..., :color_map) && return true   # checked by `_valid_ui_value` (`#1f77b4`, `red`, `viridis`)
+    (isnothing(old) || old === missing) && return true
+    old isa AbstractVector && !isempty(old) && all(v -> v isa AbstractString, old) && return true   # a text sweep
+    return false
+end
+
 # Status message after an edit.
 function _change_message(cat, scope, key, target)
-    scope === :presets && return key === :create_new ? "Description of the next preset set." :
-                                 "Description of preset '$key' saved."
+    scope === :presets && return "Description of preset '$key' saved."
     cat === :labels && return "Label of $key: $(_short(get(manager.labels, key, "")))"
     val = haskey(target, key) ? _short(_editor_text(target, key)) : ""
     where = "$(_scope_label(cat, scope)) → $key = $val"
@@ -1239,10 +1369,6 @@ function _editor_row_action!(cat, scope, key, target, tb)
             _status!(_change_message(cat, scope, key, target), :ok)
         elseif action === :reset
             _apply_editor_input!(cat, scope, key, target, "default", tb) || return nothing
-        else
-            save_label = cat === :simulation ? "Save Sim Preset" : "Save Presets"
-            _report(:info, "Type a description here, enter a name in the filename box and click '$save_label'.")
-            return nothing
         end
     catch e
         @warn "Failed to apply '$key'." exception=(e, catch_backtrace())
@@ -1281,15 +1407,17 @@ function _setup_editor_interactions!()
     end
     for j in 1:OVERVIEW_BUTTONS
         manager.listeners[Symbol("Editor_Page_", j)] = on(w[Symbol("editor_page_", j)].clicks) do _
-            cat = manager.active_tab[]
-            (cat in EDITOR_TABS && j <= length(manager.editor_page_scopes)) || return
-            show_editor_page!(cat, manager.editor_page_scopes[j])
+            tab = manager.active_tab[]
+            (_editor_tab(tab) && j <= length(manager.editor_page_scopes)) || return
+            scope = manager.editor_page_scopes[j]
+            tab === :plot ? _choose_plot_style!(scope) : show_editor_page!(tab, scope)
         end
     end
     manager.listeners[:Editor_Back] = on(w[:editor_back].clicks) do _
         cat = manager.active_tab[]
-        cat in EDITOR_TABS && show_editor_page!(cat)
+        _editor_tab(cat) && show_editor_page!(cat)
     end
+    manager.listeners[:Export_Settings] = on(_ -> show_editor_page!(:files, EXPORT_SETTINGS), w[:export_settings_button].clicks)
     for i in 1:EDITOR_ROWS, which in (:a, :b)
         manager.listeners[Symbol("Method_Row_", i, "_", which)] =
             on(_ -> _method_row_action!(i, which), w[Symbol("method_row_", i, "_", which)].clicks)
@@ -1314,6 +1442,39 @@ function _setup_editor_interactions!()
     end
     manager.listeners[:Editor_Methods] = on(_ -> _render_editor!(), manager.methods)
     return nothing
+end
+
+# The text of a box: what it shows, so typed text counts even if Enter was not pressed (the stored string lags behind
+# until then); the stored string if nothing is shown (it was set from code, which doesn't update the display).
+function _box_text(tb)
+    shown = String(strip(something(tb.displayed_string[], "")))
+    return isempty(shown) ? String(strip(something(tb.stored_string[], ""))) : shown
+end
+
+"""
+    _save_preset_from_ui!(kind) -> Bool
+
+Saves the simulation (`kind = :simulation`) or look (`:visual`) preset named in the Name / path box of the Files
+tab, with the text of the Description box. Reports the result in the status line and clears both boxes on success.
+"""
+function _save_preset_from_ui!(kind::Symbol)
+    w = manager.widgets
+    name, desc = _box_text(w[:export_text]), _box_text(w[:preset_desc_text])
+    if isempty(name)
+        _report(:warn, "Enter a preset name in the Name / path box.")
+        return false
+    end
+    is_sim = kind === :simulation
+    success = is_sim ? save_sim_preset(name; description = desc) : save_plot_preset(name; description = desc)
+    if !success
+        _status!("The preset '$name' was not saved (see the log).", :warn)
+        return false
+    end
+    where = is_sim ? "Simulation → Presets" : "UI → Presets"
+    _status!("Saved $(is_sim ? "simulation" : "look") preset '$(_preset_symbol(name))' (apply it under $where).", :ok)
+    Makie.reset!(w[:export_text])
+    Makie.reset!(w[:preset_desc_text])
+    return true
 end
 
 """
@@ -1424,7 +1585,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         return export_fig, export_obs
     end
     manager.listeners[:Export_Click] = on(btn_export.clicks) do _
-        raw_filename = String(strip(something(saveBox.stored_string[], "")))
+        raw_filename = _box_text(saveBox)
         isempty(raw_filename) && (raw_filename = "plot_export")
         
         name_part, ext = splitext(raw_filename)
@@ -1539,60 +1700,18 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         end
     end
 
-    # Context-sensitive: saves a simulation preset in the Simulation tab, otherwise a visual preset.
-    manager.listeners[:Save_Defs] = on(manager.widgets[:save_presets_button].clicks) do _
-        filename = String(strip(something(saveBox.stored_string[], "")))
-        if isempty(filename)
-            _report(:warn, "Please enter a preset name in the Filename box.")
-            return
-        end
-        
-        is_sim = _preset_context() === :simulation
-        registry = is_sim ? manager.sim_presets : manager.presets
-        desc = get(registry, :create_new, "")
-        # Text typed into the create_new row of a Presets page counts even if Enter was not pressed yet (then the
-        # displayed string differs from the stored one, which is always kept in sync otherwise).
-        cat = manager.active_tab[]
-        on_presets = cat in EDITOR_TABS && first(get(manager.editor_view, cat, (nothing, 1))) === :presets
-        row = on_presets ? findfirst(isequal(:create_new), manager.editor_row_keys) : nothing
-        if !isnothing(row)
-            tb = manager.widgets[Symbol("editor_row_", row, "_text")]
-            shown = strip(tb.displayed_string[])
-            if shown != strip(something(tb.stored_string[], "")) && !isempty(shown) && shown != "<empty>"
-                desc = String(shown)
-            end
-        end
-
-        success = is_sim ? save_sim_preset(filename; description = desc) :
-                           save_plot_preset(filename; description = desc)
-        if !success
-            _status!("The preset '$filename' was not saved (see the log).", :warn)
-            return
-        end
-        _status!("Saved $(is_sim ? "simulation" : "visual") preset '$(_preset_symbol(filename))'.", :ok)
-
-        registry[:create_new] = DEFAULT_PRESET_DESC
-        Makie.reset!(saveBox)
-
-        # Show the new preset in the editor (the Labels tab saves visual presets but has no Presets page)
-        if cat in (:simulation, :ui)
-            idx = findfirst(isequal(_preset_symbol(filename)), _editor_keys(cat, :presets))
-            show_editor_page!(cat, :presets; page = isnothing(idx) ? 1 : cld(idx, EDITOR_ROWS))
-        end
+    # Files tab: save / reset simulation presets (the physics) and look presets (the visual settings)
+    manager.listeners[:Save_Sim_Preset] = on(_ -> _save_preset_from_ui!(:simulation), manager.widgets[:save_sim_preset_button].clicks)
+    manager.listeners[:Save_Defs] = on(_ -> _save_preset_from_ui!(:visual), manager.widgets[:save_presets_button].clicks)
+    manager.listeners[:Reset_Sim] = on(manager.widgets[:reset_sim_button].clicks) do _
+        manager.locks[:Simulation] && return
+        reset_sim_config!()
+        _status!("Simulation reset to the bound configuration. Run Simulation to apply.", :ok)
     end
-    
-    # Context-sensitive: restores the bound simulation configuration, or the default look.
     manager.listeners[:Clear_Defs_Click] = on(manager.widgets[:clear_presets_button].clicks) do _
-        if _preset_context() === :simulation
-            manager.locks[:Simulation] && return
-            reset_sim_config!()
-            _status!("Simulation reset to the bound configuration. Run Simulation to apply.", :ok)
-        else
-            set_plot_preset!()
-            manager.triggers[:UI][] += 1
-            _status!("Look reset to the defaults.", :ok)
-        end
-        _render_editor!()
+        set_plot_preset!()
+        manager.triggers[:UI][] += 1
+        _status!("Look reset to the defaults.", :ok)
     end
 
     manager.listeners[:Anim_State_Change] = on(is_animating) do animating
@@ -1656,27 +1775,16 @@ function _setup_chain_A!(::Val{:eulerian})
     w = manager.widgets
     x_sel = w[:x_axis].selection
     y_sel = w[:y_axis].selection
-    base_obs = w[:base_plot].selection
     style_obs = w[:plot_style].selection
-    
-    base_opts = Any[menu_opt(:lines), menu_opt(:scatter), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)]
-    update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:lines_1d], force_notify=false)
 
-    manager.listeners[:Eulerian_Base_Change] = on(base_obs) do base_type
-        (isnothing(base_type) || base_type == :none) && return
-        valid_styles = get(EULERIAN_PLOT_STYLE_OPTIONS, base_type, Any[menu_opt(:lines_1d)])
-        update_menu_safe!(w[:plot_style], valid_styles; fallbacks=[:lines_1d], force_notify=false)
-        _render_editor!()  # the plot style page lists the options of the style
-    end
-    
     manager.listeners[:Eulerian_Style_Change] = on(style_obs) do _
-        _render_editor!()
+        _render_editor!()  # the UI overview highlights the pages of the active plot type
     end
 
-    manager.listeners[:Eulerian_Chain_A] = onany(manager.plot_data, base_obs, style_obs, x_sel, y_sel) do plot_data_dict, base_sel, style_sel, _x, _y
+    manager.listeners[:Eulerian_Chain_A] = onany(manager.plot_data, style_obs, x_sel, y_sel) do plot_data_dict, style_sel, _x, _y
         @with_lock :Menu_A begin
             isempty(plot_data_dict) && return
-            (isnothing(style_sel) || style_sel == :none || isnothing(base_sel) || base_sel == :none) && return
+            (isnothing(style_sel) || style_sel == :none) && return
             pd_first = first(values(plot_data_dict))
             n_params = length(pd_first.active_param_keys)
             # The swept parameters of the computed data (the bound config may already sweep others: re-run pending)
@@ -1777,14 +1885,12 @@ end
 
 The primary dropdown cascade for Lagrangian data. 
 
-Recognizes that point clouds do not have fixed Eulerian bounding boxes. It forces the base plot to `:scatter`, automatically locks the available X/Y/Z axes based strictly on the dimensionality of the scattered vectors (e.g., forcing X and Y for a 2D particle track), and explicitly injects the scalar `:time` dimension as the default animation target.
+Recognizes that point clouds do not have fixed Eulerian bounding boxes. It offers only the scatter styles matching the dimension of the particles (`_set_allowed_styles!`), automatically locks the available X/Y/Z axes based strictly on the dimensionality of the scattered vectors (e.g., forcing X and Y for a 2D particle track), and explicitly injects the scalar `:time` dimension as the default animation target.
 """
 function _setup_chain_A!(::Val{:lagrangian})
     w = manager.widgets
     
-    # Ensure the base menu is locked to Scatter when in Lagrangian mode
-    base_opts = Any[menu_opt(:scatter)]
-    update_menu_safe!(w[:base_plot], base_opts; fallbacks=[:scatter], force_notify=false)
+    manager.listeners[:Lagrangian_Style_Change] = on(_ -> _render_editor!(), w[:plot_style].selection)
 
     manager.listeners[:Lagrangian_Chain_A] = onany(manager.plot_data) do plot_data_dict
         @with_lock :Menu_A begin
@@ -1806,15 +1912,15 @@ function _setup_chain_A!(::Val{:lagrangian})
             
             update_menu_safe!(w[:x_axis], Any[menu_opt(sx)]; fallbacks=[sx], force_notify=true)
             if D == 1
-                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_1d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]; fallbacks=[:scatter_1d], force_notify=false)
+                _set_allowed_styles!(Symbol[:scatter_1d, :scatter_lines, :scatter_colors])
                 update_menu_safe!(w[:y_axis], Any[menu_opt(:none)]; fallbacks=[:none])
                 update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             elseif D == 2
-                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_2d), menu_opt(:scatter_surface)]; fallbacks=[:scatter_2d], force_notify=false)
+                _set_allowed_styles!(Symbol[:scatter_2d, :scatter_surface])
                 update_menu_safe!(w[:y_axis], Any[menu_opt(sy)]; fallbacks=[sy])
                 update_menu_safe!(w[:z_axis], Any[menu_opt(:none)]; fallbacks=[:none])
             else
-                update_menu_safe!(w[:plot_style], Any[menu_opt(:scatter_3d)]; fallbacks=[:scatter_3d], force_notify=false)
+                _set_allowed_styles!(Symbol[:scatter_3d])
                 update_menu_safe!(w[:y_axis], Any[menu_opt(sy)]; fallbacks=[sy])
                 update_menu_safe!(w[:z_axis], Any[menu_opt(sz)]; fallbacks=[sz])
             end

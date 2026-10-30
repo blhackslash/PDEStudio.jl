@@ -158,8 +158,11 @@ function _raw_value(raw, cat, scope, key)
     return r == "<empty>" ? "" : String(r)
 end
 
-# The MASTER_UI_DICT template of a UI scope; the axis scopes depend on the active plot type (see switch_ui_plot_type!).
+# The `manager.ui` / MASTER_UI_DICT scope behind a UI scope name: `x_axis`, `y_axis` and `z_axis` stand for the axis
+# variant of the active plot type (`x_axis_1d` for 1D plots, `x_axis_nd` for 2D and 3D plots, `z_axis_3d`), the
+# editor pages of the plot types (`:lines_1d`, …) for the shared `plot_style` scope.
 function _ui_template_scope(scope::Symbol)
+    haskey(STYLE_DEPENDENCIES, scope) && return :plot_style
     scope === :z_axis && return :z_axis_3d
     scope in (:x_axis, :y_axis) || return scope
     ptype = manager.active_plot_type
@@ -167,9 +170,12 @@ function _ui_template_scope(scope::Symbol)
     return Symbol(scope, one_d ? "_1d" : "_nd")
 end
 
+# The options of the axis `:x_axis`, `:y_axis` or `:z_axis` for the active plot type.
+_axis_ui(axis::Symbol) = manager.ui[_ui_template_scope(axis)]
+
 function _ui_template_value(scope::Symbol, key::Symbol)
-    haskey(manager.ui, scope) && haskey(manager.ui[scope], key) && return manager.ui[scope][key]
     template = _ui_template_scope(scope)
+    haskey(manager.ui, template) && haskey(manager.ui[template], key) && return manager.ui[template][key]
     haskey(MASTER_UI_DICT, template) && return get(MASTER_UI_DICT[template], key, nothing)
     return nothing
 end

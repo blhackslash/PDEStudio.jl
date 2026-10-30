@@ -30,14 +30,14 @@ The studio is built around a central, reactive state manager that links the live
 | File | What it holds | Created with |
 | :--- | :--- | :--- |
 | **Export CSV** | Everything: physics, look, sweep, git commits, Julia versions, bundled sources | *Export* (next to every figure/animation) |
-| **Visual Preset** | The look only (layout, axes, camera, labels, UI styles) | *Save Presets*, [`save_plot_preset`](@ref) |
-| **Simulation Preset** | The physics only (shared/method parameters, active methods, sweep, functions) | *Save Sim Preset*, [`save_sim_preset`](@ref) |
+| **Visual Preset** | The look only (layout, axes, camera, labels, UI styles) | *Files → Look → Save*, [`save_plot_preset`](@ref) |
+| **Simulation Preset** | The physics only (shared/method parameters, active methods, sweep, functions) | *Files → Simulation → Save*, [`save_sim_preset`](@ref) |
 
 Visual presets apply to any simulation; simulation presets swap the physics while the look stays as it is. See [Presets](presets.md).
 
 *   **Readable & Editable:** Keys are written as their raw backend names (`animation_FPS`, `sim_func_name`), values in Julia literal syntax (`Float64[0.2, 0.5]`, `:upwind`). Display labels never appear in files, so renaming a label does not affect saved states.
 *   **Type-Preserving Parsing:** Values are read back with the safe literal parser `str2val` into the type they were saved as (vectors, tuples, symbols, dictionaries, …). Text stays text.
-*   **Drag-and-Drop:** Drop a CSV onto the studio window (or type its path or file name into the filename box and click the load button) to recreate a saved state.
+*   **Drag-and-Drop:** Drop a CSV onto the studio window (or type its path or file name into *Files → Name / path* and click **Load CSV**) to recreate a saved state.
 
 > **Security Note:** CSV values are parsed safely; no code in a value is ever evaluated. However, an export CSV can *bundle source files* (the `sources` of a `SimulationConfig`, copied next to the export), and loading such a CSV **executes those files** to restore the solvers. Only load exports you trust. Presets never contain source files.
 
@@ -59,7 +59,7 @@ See [File Operations](file_ops.md) for the details.
 | Function | Purpose |
 | :--- | :--- |
 | [`launch_plotter`](@ref)`()` | Builds the studio window and its reactive listeners; returns the `Figure`. |
-| [`set_sim_config!`](@ref)`(config)` | Binds a `SimulationConfig` (or a CSV: `set_sim_config!("name.csv")`). Also the baseline for *Reset Simulation*. |
+| [`set_sim_config!`](@ref)`(config)` | Binds a `SimulationConfig` (or a CSV: `set_sim_config!("name.csv")`). Also the baseline for *Files → Simulation → Reset*. |
 | [`force_simulation`](@ref)`()` | Runs the bound configuration (same as clicking *Run Simulation*). |
 | [`set_plot_preset!`](@ref)`(name)` | Applies a built-in or saved visual preset; `set_plot_preset!()` restores the default look. |
 | [`save_plot_preset`](@ref)`(name)` | Saves the current look as a visual preset. |

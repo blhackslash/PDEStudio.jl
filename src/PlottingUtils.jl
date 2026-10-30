@@ -231,8 +231,8 @@ function apply_axis_limits_overrides!(ax)
     if manager.camera_locked[]
         return
     end
-    ui_x = manager.ui[:x_axis]
-    ui_y = manager.ui[:y_axis]
+    ui_x = _axis_ui(:x_axis)
+    ui_y = _axis_ui(:y_axis)
     
     try
         if haskey(ui_x, :lims) && length(ui_x[:lims]) == 2 
@@ -246,7 +246,7 @@ function apply_axis_limits_overrides!(ax)
         end
         
         if ax isa Axis3 && haskey(manager.ui, :z_axis)
-            ui_z = manager.ui[:z_axis]
+            ui_z = _axis_ui(:z_axis)
             if haskey(ui_z, :lims) && length(ui_z[:lims]) == 2 
                 lz = Float64.(ui_z[:lims])
                 if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
@@ -285,8 +285,8 @@ Handles extreme edge cases (like purely horizontal/vertical lines) by applying d
 """
 function set_axis_limits_manager!(ax::Axis, xs, us)
     
-    ui_x = manager.ui[:x_axis]
-    ui_y = manager.ui[:y_axis]
+    ui_x = _axis_ui(:x_axis)
+    ui_y = _axis_ui(:y_axis)
     
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
@@ -726,7 +726,7 @@ function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::Str
     
     gen = manager.ui[:axis_general]
     lbl = manager.ui[:labels]
-    x_ui, y_ui = manager.ui[:x_axis], manager.ui[:y_axis]
+    x_ui, y_ui = _axis_ui(:x_axis), _axis_ui(:y_axis)
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 
@@ -756,7 +756,7 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
     
     gen = manager.ui[:axis_general]
     lbl = manager.ui[:labels]
-    x_ui, y_ui, z_ui = manager.ui[:x_axis], manager.ui[:y_axis], manager.ui[:z_axis]
+    x_ui, y_ui, z_ui = _axis_ui(:x_axis), _axis_ui(:y_axis), _axis_ui(:z_axis)
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 

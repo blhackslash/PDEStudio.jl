@@ -16,7 +16,7 @@ end
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 export set_sim_preset!, save_sim_preset, save_plot_preset, reset_sim_config!
 
-# Placeholder text of the ":create_new" entry in the preset editors.
+# Placeholder description of earlier versions (a preset saved with it gets the default description).
 const DEFAULT_PRESET_DESC = "Type a description here, a name in the filename box, then click Save."
 
 # ==============================================================================
@@ -138,6 +138,7 @@ Base.@kwdef mutable struct PlotManager
     # --- reactive UI state ---
     active_axes::Observable{Vector{Int}} = Observable{Vector{Int}}(Int[])    # indices into plot_vars bound to plot axes
     method_filter::Symbol = :all                                              # methods listed by the Methods tab
+    allowed_styles::Vector{Symbol} = Symbol[]                                 # plot styles the data allows (empty: all)
     is_animating::Observable{Bool} = Observable(false)
     animation_timer::Observable{Union{Nothing, Timer}} = Observable{Union{Nothing, Timer}}(nothing)
     layout_dict::Observable{Dict{Symbol, Any}} = Observable(Dict{Symbol, Any}())   # subplot grid of the current layout
@@ -292,7 +293,6 @@ function get_base_layout_options()
     is_lag = manager.mode[] == :lagrangian
     
     return Dict{Symbol, Any}(
-        :base_plot       => is_lag ? :scatter : :lines,
         :plot_style      => is_lag ? :scatter_1d : :lines_1d,
         :compare_target  => :none, 
         :compare_columns => 2,     
@@ -409,9 +409,7 @@ function reset_manager!()
     # Set plot defaults
     set_plot_preset!()
 
-    # Initialize the default creation text and register the presets found on disk
-    manager.presets[:create_new] = DEFAULT_PRESET_DESC
-    manager.sim_presets[:create_new] = DEFAULT_PRESET_DESC
+    # Register the presets found on disk
     refresh_preset_registries!()
     return nothing
 end

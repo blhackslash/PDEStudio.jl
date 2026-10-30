@@ -18,6 +18,12 @@ const TAB_PANELS = Dict(:plot => (:layout, :plot), :methods => (:editor,), :simu
                         :ui => (:editor,), :labels => (:editor,), :files => (:files,))
 const TAB_PANEL_NAMES = (:plot, :layout, :editor, :files)
 
+# The Files tab shows its panel, or the export settings (`EXPORT_SETTINGS`, an editor page of `ui[:export]`); the
+# Plot tab shows its options, or the page of all plot styles (`STYLE_CHOOSER`).
+const EXPORT_SETTINGS = :export
+const STYLE_CHOOSER = Symbol("#styles")
+const TAB_EDITOR_PAGES = Dict(:files => EXPORT_SETTINGS, :plot => STYLE_CHOOSER)
+
 # The Methods tab lists the methods (`nothing`), shows the drawing order (`ORDER_VIEW`) or the page of a method.
 const ORDER_VIEW = Symbol("#order")
 const METHOD_FILTERS = (:active, :disabled, :all)
@@ -25,8 +31,9 @@ const METHOD_FILTERS = (:active, :disabled, :all)
 # The editor shows an overview of the pages (scopes) of its category, or one page with a row per key. Both are
 # fixed sets of widgets, bound to the selected category / scope on the fly (see `_render_editor!`).
 const EDITOR_ROWS = 12        # key rows of a page; longer scopes get ◀ ▶ pages
-const OVERVIEW_BUTTONS = 16   # page buttons of an overview (more scopes get ◀ ▶ pages)
-const OVERVIEW_COLS = 2
+const OVERVIEW_BUTTONS = 30   # page buttons of an overview (UI: 5 general + 5 axes + up to 17 plot styles)
+const OVERVIEW_COLS = 3
+const OVERVIEW_SECTIONS = 5   # titled groups of an overview (UI: General, Axes, Plot styles; plot styles: one per base plot)
 const EDITOR_ROWGAP = 4
 const SLIDER_ROWGAP = 5
 
@@ -39,10 +46,9 @@ Constructs the primary control panel inside the provided Makie `GridLayout`, top
 2. The tab content: the panel(s) of the selected tab (see `TAB_PANELS`). Every panel is built once; the panels of
    the other tabs are parked off-screen by `show_tab!`.
 3. The status line (see `_status!`).
-4. The filename / path box shared by exports, presets and CSV loading.
-5. Animation playback and camera locking.
-6. The execution triggers (Run Simulation, Apply Layout, Update Plot).
-7. The parameter and dimension sliders (rows without a choice to make are parked, see `_sync_slider_rows!`).
+4. Animation playback and camera locking.
+5. The execution triggers (Run Simulation, Apply Layout, Update Plot).
+6. The parameter and dimension sliders (rows without a choice to make are parked, see `_sync_slider_rows!`).
 
 Widgets are created once per window and never deleted or recreated (Makie does not support recreating interactive
 widgets well). It finalizes construction by injecting the persistent layout, plot and exploration caches of the
@@ -92,30 +98,23 @@ function create_controls(layout::GridLayout)
           halign = :left, valign = :top, justification = :left, tellwidth = false)
     rowsize!(layout, 3, Fixed(30))
 
-    # --- 4. FILENAME / PATH (exports, presets, CSV loading) ---
-    manager.widgets[:export_text] = Textbox(
-        layout[4, 1],
-        placeholder = "Filename for Export / Preset or Path to Load...",
-        width = nothing
-    )
-
-    # --- 5. CAMERA & ANIMATION CONTROLS ---
-    bottom_ops = layout[5, 1] = GridLayout()
+    # --- 4. CAMERA & ANIMATION CONTROLS ---
+    bottom_ops = layout[4, 1] = GridLayout()
     manager.widgets[:play_anim_button]   = Button(bottom_ops[1, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
     manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(bottom_ops, i, Relative(1/2)); end
 
-    # --- 6. EXECUTION CONTROLS ---
-    exec_layout = layout[6, 1] = GridLayout()
+    # --- 5. EXECUTION CONTROLS ---
+    exec_layout = layout[5, 1] = GridLayout()
     manager.widgets[:run_button]   = Button(exec_layout[1, 1], label="Run Simulation", buttoncolor=:lightgreen, width = nothing)
     manager.widgets[:layout_apply] = Button(exec_layout[1, 2], label="Apply Layout", buttoncolor=:lightgreen, width=nothing)
     manager.widgets[:plot_button]  = Button(exec_layout[1, 3], label="Update Plot", buttoncolor=:lightgreen, width=nothing)
     for i in 1:3; colsize!(exec_layout, i, Relative(1/3)); end
 
-    # --- 7. SLIDERS (last: only the rows with a choice to make are shown; the area keeps the height of all rows) ---
-    slider_area = layout[7, 1] = GridLayout(valign = :top, tellheight = false)
+    # --- 6. SLIDERS (last: only the rows with a choice to make are shown; the area keeps the height of all rows) ---
+    slider_area = layout[6, 1] = GridLayout(valign = :top, tellheight = false)
     build_sliders!(slider_area)
-    rowsize!(layout, 7, Fixed(ceil(Int, something(Makie.GridLayoutBase.determinedirsize(slider_area, Makie.GridLayoutBase.Row()), 0f0))))
+    rowsize!(layout, 6, Fixed(ceil(Int, something(Makie.GridLayoutBase.determinedirsize(slider_area, Makie.GridLayoutBase.Row()), 0f0))))
     _sync_slider_rows!()
 
     # Restore from the persistent cache instead of hard defaults
@@ -137,19 +136,37 @@ end
 """
     create_file_controls!(layout::GridLayout)
 
-Builds the `Files` tab: the CSV load button (CSV files can also be dropped anywhere on the window; the result is
-shown in the status line) and the export button. Both use the filename box below the tabs.
+Builds the `Files` tab: the name / path box (exports, presets, CSV loading) and the description of a new preset;
+loading a CSV (or drop a file anywhere on the window), export and its settings (an editor page of `ui[:export]`); and
+saving / resetting presets: simulation presets (the physics) and look presets (the visual settings). Presets are
+applied on the *Presets* pages of the Simulation and UI tabs. Results are shown in the status line.
 """
 function create_file_controls!(layout::GridLayout)
-    manager.widgets[:load_config_button] = Button(
-        layout[1, 1:2],
-        label="Load CSV from the filename box (or drop a file on the window)",
-        buttoncolor=:lightgray,
-        width=nothing
-    )
-    manager.widgets[:export_button] = Button(layout[2, 1], label="Export", buttoncolor=:lightblue, width=nothing)
-    Label(layout[2, 2], "Formats and size: UI → export", halign = :left, color = :gray40)
-    for i in 1:2; colsize!(layout, i, Relative(1/2)); end
+    w = manager.widgets
+    Label(layout[1, 1], "Name / path", halign = :left, fontsize = 13)
+    w[:export_text] = Textbox(layout[1, 2:3], placeholder = "file name, preset name or CSV path", width = nothing)
+    Label(layout[2, 1], "Description", halign = :left, fontsize = 13)
+    w[:preset_desc_text] = Textbox(layout[2, 2:3], placeholder = "of a preset you save (optional)", width = nothing)
+
+    w[:load_config_button]     = Button(layout[3, 1], label = "Load CSV", buttoncolor = :lightgray, width = nothing)
+    w[:export_button]          = Button(layout[3, 2], label = "Export", buttoncolor = :lightblue, width = nothing)
+    w[:export_settings_button] = Button(layout[3, 3], label = "Export settings ›", width = nothing)
+    Label(layout[4, 1:3], "CSV files can also be dropped anywhere on the window.", halign = :left, fontsize = 11,
+          color = :gray40)
+
+    Label(layout[5, 1:3], "Presets  (apply them on the Presets pages of the Simulation and UI tabs)", halign = :left,
+          font = :bold, color = :darkred)
+    Label(layout[6, 1], "Simulation", halign = :left, fontsize = 13)
+    w[:save_sim_preset_button] = Button(layout[6, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
+    w[:reset_sim_button]       = Button(layout[6, 3], label = "Reset", buttoncolor = RGBf(0.92, 0.92, 0.92), width = nothing)
+    Label(layout[7, 1], "Look", halign = :left, fontsize = 13)
+    w[:save_presets_button]  = Button(layout[7, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
+    w[:clear_presets_button] = Button(layout[7, 3], label = "Reset", buttoncolor = RGBf(0.92, 0.92, 0.92), width = nothing)
+
+    colsize!(layout, 1, Fixed(100))
+    for i in 2:3; colsize!(layout, i, Auto()); end
+    rowgap!(layout, 3, 2)    # the hint belongs to the buttons above it
+    rowgap!(layout, 4, 14)   # space before the presets
 end
 
 # ==============================================================================
@@ -186,6 +203,33 @@ function NumberBox(pos, value::Int; lo::Int, hi::Int, name::AbstractString)
     return nb
 end
 
+"""
+    StyleChoice
+
+The plot style of the Plot tab: a button showing the current plot type, which opens the page of all plot styles
+(`STYLE_CHOOSER`, see `_choose_plot_style!`). `selection` holds the plot type, so the layout watcher, presets and
+CSV files treat it like the menus it replaced (there is no separate base plot any more).
+"""
+struct StyleChoice
+    button::Button
+    selection::Observable{Symbol}
+end
+
+function StyleChoice(pos, style::Symbol)
+    sc = StyleChoice(Button(pos, label = _style_label(style) * "  ›", width = nothing), Observable(style))
+    manager.listeners[:StyleChoice_Label] = on(s -> (sc.button.label[] = _style_label(s) * "  ›"), sc.selection)
+    manager.listeners[:StyleChoice_Click] = on(_ -> show_editor_page!(:plot, STYLE_CHOOSER), sc.button.clicks)
+    return sc
+end
+
+# Sets the plot style from code (presets, CSV files, the option caches); unknown or unavailable styles are ignored.
+function _set_style!(sc::StyleChoice, val)
+    s = Symbol(val)
+    (haskey(PLOT_DIM_MAP, s) && (isempty(manager.allowed_styles) || s in manager.allowed_styles)) || return nothing
+    s == sc.selection[] || (sc.selection[] = s)
+    return nothing
+end
+
 # Sets the value of a `NumberBox` from code (presets, CSV files, the option caches).
 function _set_number!(nb::NumberBox, val)
     v = val isa Integer ? Int(val) : tryparse(Int, string(val))
@@ -199,9 +243,9 @@ end
 """
     build_layout_options!(menu_layout::GridLayout)
 
-Builds the upper half of the `Plot` tab: structural layout features applied with *Apply Layout* (base plot style,
-sizing, legend positioning and multi-column comparison modes). Plot width, height and grid columns are free numbers
-(`NumberBox`). The available plot styles depend on whether the `PlotManager` is in `:eulerian` or `:lagrangian` mode.
+Builds the upper half of the `Plot` tab: structural layout features applied with *Apply Layout* (the plot style,
+sizing, legend positioning and multi-column comparison modes). The plot style is chosen on a page of all styles
+(`StyleChoice`); plot width, height and grid columns are free numbers (`NumberBox`).
 """
 function build_layout_options!(menu_layout::GridLayout)
     cr = 1
@@ -211,32 +255,23 @@ function build_layout_options!(menu_layout::GridLayout)
     push!(gaps, 6); cr += 1
 
     compare_opts = Any[menu_opt(:none), menu_opt(:methods), menu_opt(:component)]
-    
-    base_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines), menu_opt(:scatter), menu_opt(:contour), menu_opt(:heatmap), menu_opt(:volume)] : Any[menu_opt(:scatter)]
-    
-    style_opts = manager.mode[] == :eulerian ? Any[menu_opt(:lines_1d), menu_opt(:lines_2d), menu_opt(:lines_3d)] : Any[menu_opt(:scatter_1d), menu_opt(:scatter_2d), menu_opt(:scatter_surface), menu_opt(:scatter_3d), menu_opt(:scatter_lines), menu_opt(:scatter_colors)]
 
-    # --- ROW BLOCK 1: Plot, Size, and Legend (Base) ---
-    Label(menu_layout[cr,1], "Base Plot", font=:bold, color=:teal)
+    # --- ROW BLOCK 1: Plot style, size and legend ---
+    Label(menu_layout[cr,1], "Plot Style", font=:bold, color=:teal)
     Label(menu_layout[cr,2], "Plot Width", font=:bold, color=:teal)
     Label(menu_layout[cr,3], "Legend Base", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    start_base = manager.mode[] == :eulerian ? :lines : :scatter
-    manager.widgets[:base_plot]   = Menu(menu_layout[cr,1], options = base_opts, default = frontend_key(start_base))
-    
+    manager.widgets[:plot_style]  = StyleChoice(menu_layout[cr,1], manager.mode[] == :eulerian ? :lines_1d : :scatter_1d)
     manager.widgets[:plot_width]  = NumberBox(menu_layout[cr,2], 500; lo = 50, hi = 5000, name = "Plot Width")
     manager.widgets[:legend_base] = Menu(menu_layout[cr,3], options = Any[menu_opt(:none), menu_opt(:center), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
     push!(gaps, 10); cr += 1
 
-    # --- ROW BLOCK 2: Plot, Size, and Legend (Modifiers) ---
-    Label(menu_layout[cr,1], "Plot Style", font=:bold, color=:teal)
+    # --- ROW BLOCK 2: Size and legend (modifiers) ---
     Label(menu_layout[cr,2], "Plot Height", font=:bold, color=:teal)
     Label(menu_layout[cr,3], "Legend Modifier", font=:bold, color=:darkorchid)
     push!(gaps, 2); cr += 1
 
-    start_style = manager.mode[] == :eulerian ? :lines_1d : :scatter_1d
-    manager.widgets[:plot_style]  = Menu(menu_layout[cr,1], options = style_opts, default = frontend_key(start_style))
     manager.widgets[:plot_height] = NumberBox(menu_layout[cr,2], 400; lo = 50, hi = 5000, name = "Plot Height")
     manager.widgets[:legend_add]  = Menu(menu_layout[cr,3], options = Any[menu_opt(:detached), menu_opt(:left), menu_opt(:right), menu_opt(:top), menu_opt(:bottom)])
     push!(gaps, 15); cr += 1
@@ -331,15 +366,14 @@ _slider_keys() = Symbol[[Symbol("param_$i") for i in 1:manager.max_params]; get_
     create_editor_controls!(layout::GridLayout)
 
 Builds the editor panel shared by the `Methods`, `Simulation`, `UI` and `Labels` tabs (the tab is the category; the
-Methods tab edits the simulation configuration):
+Methods tab edits the simulation configuration) and by the export settings of the `Files` tab:
 
 - a header with a back button (to the overview), the title of the page and ◀ ▶ for scopes with more keys than rows;
 - the tools of the Methods tab: which methods are listed (active / disabled / all) and the drawing order view;
-- the overview: one button per page (scope) of the category, `OVERVIEW_BUTTONS` of them;
+- the overview: one button per page (scope) of the category, `OVERVIEW_BUTTONS` of them, in titled sections;
 - a page: `EDITOR_ROWS` rows of key name, value box and an action button (on/off for `Bool` values, ↺ to restore
   the default, *Apply* for presets);
-- the method rows of the Methods tab: `EDITOR_ROWS` rows of name and two buttons (active/off and Edit, or ▲ ▼);
-- the preset buttons of the category.
+- the method rows of the Methods tab: `EDITOR_ROWS` rows of name and two buttons (active/off and Edit, or ▲ ▼).
 
 All of it is built once; `_render_editor!` binds the widgets to the selected page and parks the unused ones.
 """
@@ -372,8 +406,14 @@ function create_editor_controls!(layout::GridLayout)
         w[Symbol("editor_page_", j)] = Button(overview[(j - 1) ÷ OVERVIEW_COLS + 1, (j - 1) % OVERVIEW_COLS + 1],
                                               label = " ", width = nothing, fontsize = 12, buttoncolor = RGBf(0.88, 0.92, 1.0))
     end
+    # Section titles; built below the buttons (three rows: no overview needs more rows in total) so the measured
+    # height of the panel includes them
+    for k in 1:OVERVIEW_SECTIONS
+        w[Symbol("editor_section_", k)] = Label(overview[cld(OVERVIEW_BUTTONS, OVERVIEW_COLS) + min(k, 3), 1:OVERVIEW_COLS], " ",
+                                                halign = :left, font = :bold, color = :darkred, fontsize = 13)
+    end
     for c in 1:OVERVIEW_COLS; colsize!(overview, c, Relative(1 / OVERVIEW_COLS)); end
-    rowgap!(overview, EDITOR_ROWGAP + 2)
+    rowgap!(overview, EDITOR_ROWGAP)
 
     rows = p[:editor_rows] = body[1, 1] = GridLayout()
     for i in 1:EDITOR_ROWS
@@ -401,11 +441,5 @@ function create_editor_controls!(layout::GridLayout)
         colgap!(row, 6)
     end
     rowgap!(method_rows, EDITOR_ROWGAP)
-
-    # --- Footer: the presets of the category ---
-    preset_ops = p[:editor_footer] = layout[4, 1] = GridLayout()
-    w[:save_presets_button]  = Button(preset_ops[1, 1], label="Save Presets", buttoncolor=:lightblue, width=nothing)
-    w[:clear_presets_button] = Button(preset_ops[1, 2], label="Clear Presets", buttoncolor=:lightblue, width=nothing)
-    for i in 1:2; colsize!(preset_ops, i, Relative(1/2)); end
     rowgap!(layout, 8)
 end

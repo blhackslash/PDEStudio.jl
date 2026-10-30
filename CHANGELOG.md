@@ -31,6 +31,18 @@
 - A status line below the tabs shows the result of the last action (edits and refused values, method changes,
   presets, runs, CSV loads, exports), coloured by outcome. The load button no longer carries the load messages, and
   dropping a CSV no longer switches to the Files tab.
+- The plot style is chosen on a page of all supported styles (Plot tab → *Plot Style*), grouped by Lines, Scatter,
+  Contour, Heatmap and Volume; the separate *Base Plot* menu is gone. Lagrangian data offers the scatter styles of
+  its dimension.
+- The **Files** tab holds the Name / path box (no longer always visible), a Description box for new presets, Load
+  CSV, Export with *Export settings ›* (the former *UI → Export* page) and Save / Reset for simulation presets and
+  look presets. The editor tabs no longer have preset buttons; presets are applied on their *Presets* pages, which
+  no longer have a `create_new` row. Typed names and descriptions count without pressing Enter.
+- The **UI** overview is fixed: *General*, *Axes* (every axis variant: X/Y 1D, X/Y 2D/3D, Z 3D) and *Plot styles*
+  (one page per plot type with the options it uses), with the pages of the active plot highlighted. Every axis
+  variant keeps its own settings (`x_axis_1d`, …), so switching between 1D and 2D/3D plots no longer resets them.
+- Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in
+  the status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is still accepted.
 - The plot area keeps its titles and axis labels inside its own box, so they no longer add height to the window
   (about 140 px less).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
@@ -52,7 +64,16 @@
   from `manager.widgets` (and `manager.active_target`), as are the method widgets `:mode_button` and
   `:method_toggle` (and `manager.is_activate_mode`); `:plot_width`, `:plot_height` and `:compare_columns` are
   `NumberBox`es (`.selection` still holds the value, `.box` is the text box). The tabs are `:plot`, `:methods`,
-  `:simulation`, `:ui`, `:labels`, `:files` (no `:layout`). Scripts that drove the editor through them should use
+  `:simulation`, `:ui`, `:labels`, `:files` (no `:layout`).
+- `:base_plot` is gone (widget, layout option and `Scene, Layout` CSV row; old rows are ignored); `:plot_style` is a
+  `StyleChoice` (`.selection` holds the plot type, `.button` opens the style page).
+- UI CSV rows of the axes use the variant scopes (`UI, x_axis_nd, padding, …`); older files with `x_axis`/`y_axis`/
+  `z_axis` still load, but files written now can't be read by older versions with their axis settings.
+  `manager.ui` holds every scope permanently (`manager.ui[:x_axis]` no longer exists; `PDEStudio._axis_ui(:x_axis)`
+  gives the active variant).
+- The preset buttons are `:save_sim_preset_button`, `:reset_sim_button` (simulation), `:save_presets_button`,
+  `:clear_presets_button` (look) in the Files tab, with the description in `:preset_desc_text`; the `:create_new`
+  preset entry is gone. Scripts that drove the editor through them should use
   `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /
   `:editor_row_<i>_button`). The CSV format is unchanged.
 
