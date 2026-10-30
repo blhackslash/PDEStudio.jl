@@ -907,8 +907,11 @@ end
         for tab in PDEStudio.CONTROL_TABS
             click_button!(Symbol("tab_", tab))
             @test manager.active_tab[] === tab
+            tab_bar_bottom = minimum(w[:tab_plot].layoutobservables.computedbbox[])[2]
             for (panel, keys) in panel_widgets, k in keys
                 @test panel in PDEStudio.TAB_PANELS[tab] ? shown(k) : hidden(k)
+                # a panel never reaches into the tab bar (empty grid rows used to squeeze the editor upwards)
+                panel in PDEStudio.TAB_PANELS[tab] && @test maximum(w[k].layoutobservables.computedbbox[])[2] <= tab_bar_bottom
             end
             @test all(k -> shown(k) && w[k].layoutobservables.computedbbox[] == always_bbox[k], always)
             @test hidden(:editor_cat)

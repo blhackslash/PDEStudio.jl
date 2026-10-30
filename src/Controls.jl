@@ -10,6 +10,7 @@ const CONTROL_TABS = (:plot, :layout, :simulation, :ui, :labels, :files)
 const TAB_LABELS = Dict(:plot => "Plot", :layout => "Layout", :simulation => "Simulation", :ui => "UI",
                         :labels => "Labels", :files => "Files")
 const EDITOR_TABS = (:simulation, :ui, :labels)
+const TAB_ROWGAP = 12   # gap between the panels of a tab
 
 # The panels (widget groups) each tab shows, top to bottom. The editor panel is shared by the editor tabs.
 const TAB_PANELS = Dict(:plot => (:plot,), :layout => (:layout,), :simulation => (:editor, :methods),
@@ -46,7 +47,6 @@ function create_controls(layout::GridLayout)
 
     # --- 2. TAB CONTENT: every panel is built here, then all but the selected tab's are parked ---
     area = layout[2, 1] = GridLayout(valign = :top, tellheight = false)
-    rowgap!(area, 12)
     manager.tab_area = area
     panels = manager.panels
     empty!(panels)
@@ -65,6 +65,12 @@ function create_controls(layout::GridLayout)
 
     panels[:files] = area[1, 1] = GridLayout()
     create_file_controls!(panels[:files])
+
+    # The editor category (driven by the tabs): a menu so that the editor logic and scripts can select it like the
+    # others. No tab shows it, so it stays parked.
+    panels[:editor_category] = area[1, 1] = GridLayout()
+    manager.widgets[:editor_cat] = Menu(panels[:editor_category][1, 1],
+                                        options=[menu_opt(:simulation), menu_opt(:ui), menu_opt(:labels)], prompt="Category")
 
     # Parked panels sit in a layout outside the figure, where they can neither be seen nor clicked.
     manager.panel_park = GridLayout(1, length(panels); bbox = Rect2f(-20_000, -20_000, CONTROL_WIDTH * length(panels), 1000))
@@ -105,7 +111,7 @@ end
 
 # Height of the tallest tab: the sum of the natural heights of its panels.
 function _max_tab_height(area::GridLayout)
-    gap = Float32(area.addedrowgaps[1].x)
+    gap = Float32(TAB_ROWGAP)
     heights = map(collect(keys(TAB_PANELS))) do tab
         hs = [something(Makie.GridLayoutBase.determinedirsize(manager.panels[p], Makie.GridLayoutBase.Row()), 0f0) for p in TAB_PANELS[tab]]
         sum(hs) + gap * (length(hs) - 1)
@@ -297,8 +303,8 @@ The tab selects the category; the panel traverses the active nested dictionary s
 two dropdown menus connected to a Makie `Textbox`, enabling two-way editing of simulation parameters, axis labels and
 UI properties via `val2str` and `str2val`. The preset buttons below act on the presets of the category.
 
-The category itself is kept in the `:editor_cat` menu, which is never shown: the tabs select it (and selecting it
-switches to its tab), so the editor logic keeps a single source for the category.
+The category itself is kept in the `:editor_cat` menu (built by `create_controls`), which is never shown: the tabs
+select it (and selecting it switches to its tab), so the editor logic keeps a single source for the category.
 """
 function create_hierarchical_param_controls!(layout::GridLayout)
     drop_gl = layout[1, 1:4] = GridLayout()
@@ -313,9 +319,4 @@ function create_hierarchical_param_controls!(layout::GridLayout)
     manager.widgets[:clear_presets_button] = Button(preset_ops[1, 2], label="Clear Presets", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(preset_ops, i, Relative(1/2)); end
 
-    # The category (driven by the tabs): a menu so that the editor logic and scripts can select it like the others.
-    # It lives in its own row and is parked with the hidden panels (see `show_tab!`).
-    manager.panels[:editor_category] = layout[4, 1:4] = GridLayout()
-    manager.widgets[:editor_cat] = Menu(manager.panels[:editor_category][1, 1],
-                                        options=[menu_opt(:simulation), menu_opt(:ui), menu_opt(:labels)], prompt="Category")
 end

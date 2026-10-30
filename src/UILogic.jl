@@ -542,6 +542,9 @@ function show_tab!(tab::Symbol)
         area[i, 1] = panel
         _set_panel_visible!(panel, true)
     end
+    # An empty row would take a share of the height from the shown panels (it has no natural size).
+    Makie.GridLayoutBase.trim!(area)
+    length(shown) > 1 && rowgap!(area, TAB_ROWGAP)
 
     for t in CONTROL_TABS
         btn = get(manager.widgets, Symbol("tab_", t), nothing)
