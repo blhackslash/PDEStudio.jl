@@ -98,6 +98,11 @@ Base.@kwdef mutable struct PlotManager
     panel_park::Union{Nothing, GridLayout} = nothing                            # off-screen layout of hidden panels
     tab_area::Union{Nothing, GridLayout} = nothing                              # where the selected tab's panels go
     active_tab::Observable{Symbol} = Observable(:plot)                          # selected tab of the control panel
+    park_slots::Dict{UInt, Int} = Dict{UInt, Int}()                             # objectid => column in `panel_park`
+    editor_view::Dict{Symbol, Tuple{Union{Nothing, Symbol}, Int}} =             # category => (scope or `nothing`
+        Dict{Symbol, Tuple{Union{Nothing, Symbol}, Int}}()                      #   for the overview, page)
+    editor_row_keys::Vector{Any} = Any[]                                        # key bound to each shown editor row
+    editor_page_scopes::Vector{Symbol} = Symbol[]                               # scope of each shown overview button
     triggers::Dict{Symbol, Observable{Int}} = Dict{Symbol, Observable{Int}}()   # one trigger per tier of LOCK_HIERARCHY
     flags::Dict{Symbol, Observable{Bool}} = Dict{Symbol, Observable{Bool}}()    # "pending" flags per tier (button colours)
     locks::Dict{Symbol, Bool} = Dict{Symbol, Bool}()                            # re-entrancy guards per tier / menu chain
@@ -135,7 +140,6 @@ Base.@kwdef mutable struct PlotManager
     is_activate_mode::Observable{Bool} = Observable(true)                     # method menu activates (or deactivates)
     is_animating::Observable{Bool} = Observable(false)
     animation_timer::Observable{Union{Nothing, Timer}} = Observable{Union{Nothing, Timer}}(nothing)
-    active_target::Observable{Any} = Observable{Any}(nothing)                 # (dict, key) edited in the hierarchical editor
     layout_dict::Observable{Dict{Symbol, Any}} = Observable(Dict{Symbol, Any}())   # subplot grid of the current layout
     camera_locked::Observable{Bool} = Observable(false)
 

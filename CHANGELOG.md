@@ -15,7 +15,15 @@
   a Full HD screen). All widgets are still created once per window: the panels of the other tabs are hidden and
   parked outside the figure (hidden Makie buttons and sliders would otherwise still react to clicks). Switching tabs
   doesn't touch the plots. A window opens on the Plot tab; `PDEStudio.show_tab!` selects one from code.
-  The widget keys in `manager.widgets` are unchanged (`:editor_cat` still selects the editor category).
+- The editor has pages instead of the Scope / Parameter dropdowns: each editor tab opens on an overview with one
+  button per scope (with the number of entries), and a page lists every entry of the scope as a row (name, value box
+  and a button: on/off for Booleans, ↺ to restore the default, *Apply* for presets). Long scopes and overviews get
+  ◀ ▶ pages; ◀ Back returns to the overview. Rows and buttons are a fixed set bound to the open page.
+  `PDEStudio.show_editor_page!(:simulation, :shared)` opens a page from code.
+- Only the sliders with a choice to make are shown (unused parameter sliders and dimensions on a plot axis or not in
+  the data are hidden), and the sliders moved to the bottom of the control panel.
+- The plot area keeps its titles and axis labels inside its own box, so they no longer add height to the window
+  (about 140 px less).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
   comparison). Reorder the list under *Simulation → Config → defaults* (or in `SimulationConfig`) to override
   the automatic order; activated methods are appended. Without explicit defaults the order is still references
@@ -29,6 +37,12 @@
 - The editor's *Simulation* category lists only the active methods as scopes (activate a method to edit it).
 - CSV files (exports and simulation presets) store only the active methods and their parameters; inactive methods
   of the bound configuration are no longer written.
+
+### Breaking
+- The editor widgets `:editor_cat`, `:editor_scope`, `:editor_key`, `:editor_text` and `:editor_toggle` are gone
+  from `manager.widgets` (and `manager.active_target`). Scripts that drove the editor through them should use
+  `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /
+  `:editor_row_<i>_button`). The CSV format is unchanged.
 
 ### Fixed
 - A numerically constant field (e.g. the `Float32` initial state of a Riemann problem) made the filled contour

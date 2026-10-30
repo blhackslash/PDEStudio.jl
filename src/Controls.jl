@@ -10,10 +10,20 @@ const CONTROL_TABS = (:plot, :layout, :simulation, :ui, :labels, :files)
 const TAB_LABELS = Dict(:plot => "Plot", :layout => "Layout", :simulation => "Simulation", :ui => "UI",
                         :labels => "Labels", :files => "Files")
 const EDITOR_TABS = (:simulation, :ui, :labels)
+const TAB_ROWGAP = 12   # gap between the panels of a tab
 
 # The panels (widget groups) each tab shows, top to bottom. The editor panel is shared by the editor tabs.
 const TAB_PANELS = Dict(:plot => (:plot,), :layout => (:layout,), :simulation => (:editor, :methods),
                         :ui => (:editor,), :labels => (:editor,), :files => (:files,))
+const TAB_PANEL_NAMES = (:plot, :layout, :editor, :methods, :files)
+
+# The editor shows an overview of the pages (scopes) of its category, or one page with a row per key. Both are
+# fixed sets of widgets, bound to the selected category / scope on the fly (see `_render_editor!`).
+const EDITOR_ROWS = 12        # key rows of a page; longer scopes get ◀ ▶ pages
+const OVERVIEW_BUTTONS = 16   # page buttons of an overview (more scopes get ◀ ▶ pages)
+const OVERVIEW_COLS = 2
+const EDITOR_ROWGAP = 4
+const SLIDER_ROWGAP = 5
 
 """
     create_controls(layout::GridLayout)
@@ -24,9 +34,9 @@ Constructs the primary control panel inside the provided Makie `GridLayout`, top
 2. The tab content: the panel(s) of the selected tab (see `TAB_PANELS`). Every panel is built once; the panels of
    the other tabs are parked off-screen by `show_tab!`.
 3. The filename / path box shared by exports, presets and CSV loading.
-4. The parameter and dimension sliders.
-5. Animation playback and camera locking.
-6. The execution triggers (Run Simulation, Apply Layout, Update Plot).
+4. Animation playback and camera locking.
+5. The execution triggers (Run Simulation, Apply Layout, Update Plot).
+6. The parameter and dimension sliders (rows without a choice to make are parked, see `_sync_slider_rows!`).
 
 Widgets are created once per window and never deleted or recreated (Makie does not support recreating interactive
 widgets well). It finalizes construction by injecting the persistent layout, plot and exploration caches of the
@@ -46,7 +56,6 @@ function create_controls(layout::GridLayout)
 
     # --- 2. TAB CONTENT: every panel is built here, then all but the selected tab's are parked ---
     area = layout[2, 1] = GridLayout(valign = :top, tellheight = false)
-    rowgap!(area, 12)
     manager.tab_area = area
     panels = manager.panels
     empty!(panels)
@@ -58,7 +67,7 @@ function create_controls(layout::GridLayout)
     build_layout_options!(panels[:layout])
 
     panels[:editor] = area[1, 1] = GridLayout()
-    create_hierarchical_param_controls!(panels[:editor])
+    create_editor_controls!(panels[:editor])
 
     panels[:methods] = area[2, 1] = GridLayout()
     create_method_controls!(panels[:methods])
@@ -67,7 +76,7 @@ function create_controls(layout::GridLayout)
     create_file_controls!(panels[:files])
 
     # Parked panels sit in a layout outside the figure, where they can neither be seen nor clicked.
-    manager.panel_park = GridLayout(1, length(panels); bbox = Rect2f(-20_000, -20_000, CONTROL_WIDTH * length(panels), 1000))
+    manager.panel_park = GridLayout(1, 1; bbox = Rect2f(-200_000, -200_000, 100_000, 2000))
     manager.active_tab[] = :plot   # every window opens on the Plot tab
     show_tab!(:plot)
     # The tab content keeps the height of the tallest tab, so the controls below it never move.
@@ -80,22 +89,24 @@ function create_controls(layout::GridLayout)
         width = nothing
     )
 
-    # --- 4. SLIDERS ---
-    slider_area = layout[4, 1] = GridLayout()
-    build_sliders!(slider_area)
-
-    # --- 5. CAMERA & ANIMATION CONTROLS ---
-    bottom_ops = layout[5, 1] = GridLayout()
+    # --- 4. CAMERA & ANIMATION CONTROLS ---
+    bottom_ops = layout[4, 1] = GridLayout()
     manager.widgets[:play_anim_button]   = Button(bottom_ops[1, 1], label="Play Anim", buttoncolor=:lightyellow, width=nothing)
     manager.widgets[:lock_camera_button] = Button(bottom_ops[1, 2], label="Lock Camera", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(bottom_ops, i, Relative(1/2)); end
 
-    # --- 6. EXECUTION CONTROLS ---
-    exec_layout = layout[6, 1] = GridLayout()
+    # --- 5. EXECUTION CONTROLS ---
+    exec_layout = layout[5, 1] = GridLayout()
     manager.widgets[:run_button]   = Button(exec_layout[1, 1], label="Run Simulation", buttoncolor=:lightgreen, width = nothing)
     manager.widgets[:layout_apply] = Button(exec_layout[1, 2], label="Apply Layout", buttoncolor=:lightgreen, width=nothing)
     manager.widgets[:plot_button]  = Button(exec_layout[1, 3], label="Update Plot", buttoncolor=:lightgreen, width=nothing)
     for i in 1:3; colsize!(exec_layout, i, Relative(1/3)); end
+
+    # --- 6. SLIDERS (last: only the rows with a choice to make are shown; the area keeps the height of all rows) ---
+    slider_area = layout[6, 1] = GridLayout(valign = :top, tellheight = false)
+    build_sliders!(slider_area)
+    rowsize!(layout, 6, Fixed(ceil(Int, something(Makie.GridLayoutBase.determinedirsize(slider_area, Makie.GridLayoutBase.Row()), 0f0))))
+    _sync_slider_rows!()
 
     # Restore from the persistent cache instead of hard defaults
     apply_layout_options!(manager.layout_cache)
@@ -105,7 +116,7 @@ end
 
 # Height of the tallest tab: the sum of the natural heights of its panels.
 function _max_tab_height(area::GridLayout)
-    gap = Float32(area.addedrowgaps[1].x)
+    gap = Float32(TAB_ROWGAP)
     heights = map(collect(keys(TAB_PANELS))) do tab
         hs = [something(Makie.GridLayoutBase.determinedirsize(manager.panels[p], Makie.GridLayoutBase.Row()), 0f0) for p in TAB_PANELS[tab]]
         sum(hs) + gap * (length(hs) - 1)
@@ -250,72 +261,87 @@ Builds the always visible sliders: one per swept parameter (`max_params` of them
 `_map_parameters_to_sliders!`) and one per base dimension.
 """
 function build_sliders!(slider_layout::GridLayout)
-    slider_row = 1
-    
-    for i in 1:manager.max_params 
-        p_key = Symbol("param_$i")
-        lbl_text = Observable("Param $i:")
-        manager.widgets[Symbol("param_$(i)_label")] = lbl_text
-        
-        Label(slider_layout[slider_row, 1], lbl_text, halign=:right)
-        sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
-        manager.widgets[p_key] = sl
-        
-        # Non-numeric sweeps use index sliders; the label shows the selected value instead of the index.
-        Label(slider_layout[slider_row, 3], lift(v -> _slider_value_text(p_key, v), sl.value), halign=:left)
-        slider_row += 1
-    end
+    manager.panels[:sliders] = slider_layout
+    for (i, key) in enumerate(_slider_keys())
+        row = manager.panels[Symbol("slider_row_", key)] = slider_layout[i, 1] = GridLayout()
+        is_param = i <= manager.max_params
+        lbl_text = Observable(is_param ? "Param $i:" : "$(frontend_key(key)):")
+        manager.widgets[Symbol("$(key)_label")] = lbl_text
 
-    for p_sym in get_base_variables()
-        lbl_key = Symbol("$(p_sym)_label")
-        lbl_text = Observable("$(frontend_key(p_sym)):")
-        manager.widgets[lbl_key] = lbl_text
-        
-        Label(slider_layout[slider_row, 1], lbl_text, halign=:right)
-        sl = Slider(slider_layout[slider_row, 2], range=[0.0], startvalue=0.0, width=nothing)
-        manager.widgets[p_sym] = sl
-        
-        Label(slider_layout[slider_row, 3], lift(_fmt_value, sl.value), halign=:left)
-        slider_row += 1
+        Label(row[1, 1], lbl_text, halign=:right)
+        sl = Slider(row[1, 2], range=[0.0], startvalue=0.0, width=nothing)
+        manager.widgets[key] = sl
+        # Non-numeric sweeps use index sliders; the label shows the selected value instead of the index.
+        Label(row[1, 3], lift(v -> is_param ? _slider_value_text(key, v) : _fmt_value(v), sl.value), halign=:left)
+
+        colsize!(row, 1, Fixed(90))
+        colsize!(row, 3, Fixed(60))
     end
-    
-    colsize!(slider_layout, 1, Fixed(80))    
-    colsize!(slider_layout, 2, Relative(0.7)) 
-    colsize!(slider_layout, 3, Fixed(60))
-    rowgap!(slider_layout, 5)
+    rowgap!(slider_layout, SLIDER_ROWGAP)
 end
 
+# Widget keys of the slider rows, top to bottom: the parameter sliders, then one per base dimension.
+_slider_keys() = Symbol[[Symbol("param_$i") for i in 1:manager.max_params]; get_base_variables()]
+
 # ==============================================================================
-# --- 3. HIERARCHICAL EDITOR BUILDER ---
+# --- 3. EDITOR BUILDER ---
 # ==============================================================================
 """
-    create_hierarchical_param_controls!(layout::GridLayout)
+    create_editor_controls!(layout::GridLayout)
 
-Builds the editor panel shared by the `Simulation`, `UI` and `Labels` tabs.
+Builds the editor panel shared by the `Simulation`, `UI` and `Labels` tabs (the tab is the category):
 
-The tab selects the category; the panel traverses the active nested dictionary state (Scopes -> Parameters) with
-two dropdown menus connected to a Makie `Textbox`, enabling two-way editing of simulation parameters, axis labels and
-UI properties via `val2str` and `str2val`. The preset buttons below act on the presets of the category.
+- a header with a back button (to the overview), the title of the page and ◀ ▶ for scopes with more keys than rows;
+- the overview: one button per page (scope) of the category, `OVERVIEW_BUTTONS` of them;
+- a page: `EDITOR_ROWS` rows of key name, value box and an action button (on/off for `Bool` values, ↺ to restore
+  the default, *Apply* for presets);
+- the preset buttons of the category.
 
-The category itself is kept in the `:editor_cat` menu, which is never shown: the tabs select it (and selecting it
-switches to its tab), so the editor logic keeps a single source for the category.
+All of it is built once; `_render_editor!` binds the widgets to the selected page and parks the unused ones.
 """
-function create_hierarchical_param_controls!(layout::GridLayout)
-    drop_gl = layout[1, 1:4] = GridLayout()
-    manager.widgets[:editor_scope] = Menu(drop_gl[1, 1], options=[menu_opt(:none)], prompt="Scope")
-    manager.widgets[:editor_key]   = Menu(drop_gl[1, 2], options=[menu_opt(:none)], prompt="Parameter")
+function create_editor_controls!(layout::GridLayout)
+    w = manager.widgets
+    p = manager.panels
 
-    manager.widgets[:editor_text]   = Textbox(layout[2, 1:3], placeholder="Val / 'default'", width=nothing)
-    manager.widgets[:editor_toggle] = Button(layout[2, 4], label="Toggle", buttoncolor=:lightgray)
+    # --- Header ---
+    header = p[:editor_header] = layout[1, 1] = GridLayout()
+    p[:editor_back] = header[1, 1] = GridLayout()
+    w[:editor_back] = Button(p[:editor_back][1, 1], label = "◀ Back", width = nothing, fontsize = 12)
+    w[:editor_title] = Observable("")
+    Label(header[1, 2], w[:editor_title], font = :bold, halign = :left, tellwidth = false)
+    p[:editor_pager] = header[1, 3] = GridLayout()
+    w[:editor_prev] = Button(p[:editor_pager][1, 1], label = "◀", width = 32)
+    w[:editor_next] = Button(p[:editor_pager][1, 2], label = "▶", width = 32)
+    colsize!(header, 1, Fixed(80))
+    colsize!(header, 3, Fixed(72))
 
-    preset_ops = layout[3, 1:4] = GridLayout()
-    manager.widgets[:save_presets_button]  = Button(preset_ops[1, 1], label="Save Presets", buttoncolor=:lightblue, width=nothing)
-    manager.widgets[:clear_presets_button] = Button(preset_ops[1, 2], label="Clear Presets", buttoncolor=:lightblue, width=nothing)
+    # --- Body: the overview and the rows of a page share the cell; one of them is parked ---
+    body = p[:editor_body] = layout[2, 1] = GridLayout()
+    overview = p[:editor_overview] = body[1, 1] = GridLayout()
+    for j in 1:OVERVIEW_BUTTONS
+        w[Symbol("editor_page_", j)] = Button(overview[(j - 1) ÷ OVERVIEW_COLS + 1, (j - 1) % OVERVIEW_COLS + 1],
+                                              label = " ", width = nothing, fontsize = 12, buttoncolor = RGBf(0.88, 0.92, 1.0))
+    end
+    for c in 1:OVERVIEW_COLS; colsize!(overview, c, Relative(1 / OVERVIEW_COLS)); end
+    rowgap!(overview, EDITOR_ROWGAP + 2)
+
+    rows = p[:editor_rows] = body[1, 1] = GridLayout()
+    for i in 1:EDITOR_ROWS
+        row = p[Symbol("editor_row_", i)] = rows[i, 1] = GridLayout()
+        w[Symbol("editor_row_", i, "_label")] = Observable("")
+        Label(row[1, 1], w[Symbol("editor_row_", i, "_label")], halign = :left, fontsize = 12, tellwidth = false)
+        w[Symbol("editor_row_", i, "_text")] = Textbox(row[1, 2], placeholder = "", width = nothing, height = 26, fontsize = 13)
+        w[Symbol("editor_row_", i, "_button")] = Button(row[1, 3], label = " ", width = nothing, height = 26, fontsize = 12)
+        colsize!(row, 1, Fixed(150))
+        colsize!(row, 3, Fixed(46))
+        colgap!(row, 6)
+    end
+    rowgap!(rows, EDITOR_ROWGAP)
+
+    # --- Footer: the presets of the category ---
+    preset_ops = layout[3, 1] = GridLayout()
+    w[:save_presets_button]  = Button(preset_ops[1, 1], label="Save Presets", buttoncolor=:lightblue, width=nothing)
+    w[:clear_presets_button] = Button(preset_ops[1, 2], label="Clear Presets", buttoncolor=:lightblue, width=nothing)
     for i in 1:2; colsize!(preset_ops, i, Relative(1/2)); end
-
-    # The category (driven by the tabs): a menu so that the editor logic and scripts can select it like the others.
-    # It lives in its own row and is parked with the hidden panels (see `show_tab!`).
-    manager.panels[:editor_category] = layout[4, 1:4] = GridLayout()
-    manager.widgets[:editor_cat] = Menu(manager.panels[:editor_category][1, 1],
-                                        options=[menu_opt(:simulation), menu_opt(:ui), menu_opt(:labels)], prompt="Category")
+    rowgap!(layout, 8)
 end

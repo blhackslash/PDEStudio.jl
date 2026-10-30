@@ -4,7 +4,7 @@ using WGLMakie
 using Test
 using StaticArrays
 import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS, plot_reference_lines!, plot_HUD!
-import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS, show_tab!
+import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS, show_tab!, show_editor_page!
 
 # 1. Register the namespace so PDEStudioCore can dynamically resolve these functions
 PDEStudioCore.set_target_module!(@__MODULE__)
@@ -271,6 +271,23 @@ end
         yield()
     end
 
+    # Editor pages (Simulation / UI / Labels tabs): the row of a key on the open page, typing into it, its button,
+    # and clicking the page button of a scope on an overview
+    function editor_row(key)
+        i = findfirst(isequal(key), manager.editor_row_keys)
+        isnothing(i) && error("no row for $(repr(key)) on the editor page (rows: $(manager.editor_row_keys))")
+        w = manager.widgets
+        return (text = w[Symbol("editor_row_", i, "_text")], button = w[Symbol("editor_row_", i, "_button")])
+    end
+    type_into!(key, s) = (editor_row(key).text.stored_string[] = s; yield())
+    press_row!(key) = (editor_row(key).button.clicks[] += 1; yield())
+    function open_scope!(scope)
+        j = findfirst(isequal(scope), manager.editor_page_scopes)
+        isnothing(j) && error("no page button for $(repr(scope)) (overview: $(manager.editor_page_scopes))")
+        manager.widgets[Symbol("editor_page_", j)].clicks[] += 1
+        yield()
+    end
+
     function set_axes_for_dim!(dim)
         if dim == 1
             click_menu!(manager.widgets[:x_axis], :x)
@@ -425,18 +442,10 @@ end
         click_menu!(manager.widgets[:anim_target], :t)
         click_button!(:layout_apply)
         
-        # 5. Speed up tests & verify Hierarchical Menus!
-        click_menu!(manager.widgets[:editor_cat], :ui)
-        click_menu!(manager.widgets[:editor_scope], :export)
-        
-        # Set Duration to 1.0 second
-        click_menu!(manager.widgets[:editor_key], :animation_time)
-        manager.widgets[:editor_text].stored_string[] = "1.0"
-        
-        # Set FPS to 10
-        click_menu!(manager.widgets[:editor_key], :animation_FPS)
-        manager.widgets[:editor_text].stored_string[] = "10"
-        yield()
+        # 5. Speed up tests through the editor (UI → Export page)
+        show_editor_page!(:ui, :export)
+        type_into!(:animation_time, "1.0")   # duration 1 s
+        type_into!(:animation_FPS, "10")
 
         # 6. Test MP4 Export (by explicitly typing the extension)
         manager.widgets[:export_text].stored_string[] = export_base * ".mp4"
@@ -496,13 +505,9 @@ end
         preset_name = "my_custom_preset"
         manager.widgets[:export_text].stored_string[] = preset_name
         
-        # Navigate the hierarchical editor to add a custom preset description
-        click_menu!(manager.widgets[:editor_cat], :ui)
-        click_menu!(manager.widgets[:editor_scope], :presets)
-        click_menu!(manager.widgets[:editor_key], :create_new)
-        
-        # Type the description and trigger the sync listener
-        manager.widgets[:editor_text].stored_string[] = "A rigorous test preset for the UI pipeline"
+        # Type the description of the new preset on the UI → Presets page
+        show_editor_page!(:ui, :presets)
+        type_into!(:create_new, "A rigorous test preset for the UI pipeline")
 
         # Click Save Presets
         click_button!(:save_presets_button)
@@ -614,78 +619,81 @@ end
         set_sim_config!(SimulationConfig(shared, methods, [:upwind]; varied = create_varied_dict(:cfl => [0.2, 0.5])))
         click_button!(:run_button)
         config = manager.active_config
-        editor_text(s) = (manager.widgets[:editor_text].stored_string[] = s; yield())
 
-        # 1. The preset buttons follow the editor category
-        click_menu!(manager.widgets[:editor_cat], :simulation)
+        # 1. The Simulation tab opens on its overview: one page button per scope; the preset buttons follow the tab
+        click_button!(:tab_simulation)
         @test manager.widgets[:save_presets_button].label[] == "Save Sim Preset"
         @test manager.widgets[:clear_presets_button].label[] == "Reset Simulation"
-        scopes = [o[2] for o in manager.widgets[:editor_scope].options[]]
-        @test all(in(scopes), [:presets, :shared, :sweep, :config, :upwind])
-        @test !(:lax_friedrichs in scopes)   # inactive methods are not listed
+        @test manager.editor_page_scopes == [:presets, :shared, :sweep, :config, :upwind]   # inactive methods are not listed
+        @test manager.widgets[:editor_title][] == "Simulation"
+        @test manager.widgets[:editor_page_2].label[] == "Shared (3)"
 
-        # 2. Shared parameters (numbers are parsed, the change flags a re-run)
-        click_menu!(manager.widgets[:editor_scope], :shared)
-        click_menu!(manager.widgets[:editor_key], :N)
-        editor_text("30")
+        # 2. Shared parameters (numbers are parsed, the change flags a re-run); ↺ restores the bound configuration
+        open_scope!(:shared)
+        @test manager.editor_row_keys == [:N, :cfl, :sim_func_name]
+        @test editor_row(:N).text.displayed_string[] == "20"
+        type_into!(:N, "30")
         @test config.shared[:N] == 30
         @test manager.flags[:Simulation][] == true
-        editor_text("default")                                # back to the bound configuration
+        @test editor_row(:N).button.label[] == "↺"
+        press_row!(:N)
+        @test config.shared[:N] == 20
+        @test editor_row(:N).text.displayed_string[] == "20"
+        type_into!(:N, "25")
+        type_into!(:N, "default")                              # typing `default` does the same
         @test config.shared[:N] == 20
 
-        # 3. Text parameters stay text
-        click_menu!(manager.widgets[:editor_scope], :upwind)
-        click_menu!(manager.widgets[:editor_key], :scheme)
-        editor_text("1e3")
+        # 3. Text parameters stay text; ◀ Back returns to the overview
+        click_button!(:editor_back)
+        @test isnothing(first(manager.editor_view[:simulation]))
+        open_scope!(:upwind)
+        type_into!(:scheme, "1e3")
         @test config.methods[:upwind][:scheme] == "1e3"
-        editor_text("upwind")
+        type_into!(:scheme, "upwind")
         @test config.methods[:upwind][:scheme] == "upwind"
 
         # 4. The sweep (a single value becomes a one-value sweep)
-        click_menu!(manager.widgets[:editor_scope], :sweep)
-        click_menu!(manager.widgets[:editor_key], :cfl)
-        editor_text("[0.2, 0.4, 0.5]")
+        show_editor_page!(:simulation, :sweep)
+        type_into!(:cfl, "[0.2, 0.4, 0.5]")
         @test config.varied[:cfl] == [0.2, 0.4, 0.5]
-        editor_text("0.3")
+        type_into!(:cfl, "0.3")
         @test config.varied[:cfl] == [0.3]
-        editor_text("[0.2, 0.5]")
+        type_into!(:cfl, "[0.2, 0.5]")
 
         # 5. Active methods and functions
-        click_menu!(manager.widgets[:editor_scope], :config)
-        click_menu!(manager.widgets[:editor_key], :defaults)
-        editor_text("[:upwind, :lax_friedrichs]")
+        show_editor_page!(:simulation, :config)
+        type_into!(:defaults, "[:upwind, :lax_friedrichs]")
         @test sort(config.defaults) == [:lax_friedrichs, :upwind]
-        click_menu!(manager.widgets[:editor_key], :reference)
-        editor_text(":exact_advection_factory")
+        type_into!(:reference, ":exact_advection_factory")
         @test config.reference === :exact_advection_factory
-        editor_text("none")
+        type_into!(:reference, "none")
         @test isnothing(config.reference)
 
-        # 6. Save a simulation preset from the UI (description typed into the editor)
-        click_menu!(manager.widgets[:editor_scope], :presets)
-        click_menu!(manager.widgets[:editor_key], :create_new)
-        editor_text("Both methods, three CFL numbers")
+        # 6. Save a simulation preset from the UI (description typed into the create_new row)
+        show_editor_page!(:simulation, :presets)
+        @test editor_row(:create_new).button.label[] == " "   # nothing to apply yet
+        type_into!(:create_new, "Both methods, three CFL numbers")
         manager.widgets[:export_text].stored_string[] = "ui sim preset"
         click_button!(:save_presets_button)
         @test isfile(joinpath(sim_preset_dir(), "ui_sim_preset.csv"))
         @test manager.sim_presets[:ui_sim_preset] == "Both methods, three CFL numbers"
         @test manager.sim_presets[:create_new] == PDEStudio.DEFAULT_PRESET_DESC
+        @test :ui_sim_preset in manager.editor_row_keys       # the new preset is shown
 
         # 7. Reset Simulation restores the bound configuration, Apply loads the preset again
         click_button!(:clear_presets_button)
         @test manager.active_config.defaults == [:upwind]
-        click_menu!(manager.widgets[:editor_scope], :presets)
-        click_menu!(manager.widgets[:editor_key], :ui_sim_preset)
-        @test manager.widgets[:editor_toggle].label[] == "Apply"
-        click_button!(:editor_toggle)
+        @test editor_row(:ui_sim_preset).button.label[] == "Apply"
+        press_row!(:ui_sim_preset)
         @test sort(manager.active_config.defaults) == [:lax_friedrichs, :upwind]
         click_button!(:run_button)
         @test manager.flags[:Simulation][] == false
         @test sort(manager.methods[]) == [:lax_friedrichs, :upwind]
-        @test :lax_friedrichs in [o[2] for o in manager.widgets[:editor_scope].options[]]   # active now
+        show_editor_page!(:simulation)
+        @test :lax_friedrichs in manager.editor_page_scopes   # active now
 
-        # 8. Outside the Simulation category the buttons act on visual presets again
-        click_menu!(manager.widgets[:editor_cat], :ui)
+        # 8. Outside the Simulation tab the buttons act on visual presets again
+        click_button!(:tab_ui)
         @test manager.widgets[:save_presets_button].label[] == "Save Presets"
         @test manager.widgets[:clear_presets_button].label[] == "Clear Presets"
     end
@@ -693,7 +701,7 @@ end
     # =========================================================================
     # --- EDITOR: PRESETS SCOPE & LIVE PRESET LISTS ---
     # =========================================================================
-    @testset "Editor: Presets scope & live preset lists" begin
+    @testset "Editor: Presets pages & live preset lists" begin
         reset_plotter!()
         shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
         methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"))
@@ -701,55 +709,53 @@ end
         fig = launch_plotter()
         display(fig)
         w = manager.widgets
-        key_values() = [o[2] for o in w[:editor_key].options[]]
 
-        # 1. With a configuration bound before launching, the editor opens on Simulation → Presets
-        @test w[:editor_cat].selection[] === :simulation
-        @test w[:editor_scope].selection[] === :presets
-        @test w[:editor_key].selection[] === :create_new
+        # 1. The Presets page lists create_new first, then the presets on disk
+        click_button!(:tab_simulation)
+        @test first(manager.editor_page_scopes) === :presets
+        open_scope!(:presets)
+        @test first(manager.editor_row_keys) === :create_new
 
-        # 2. A preset saved through the API shows up while the scope stays selected
+        # 2. A preset saved through the API shows up on the open page
         save_sim_preset("api_saved"; description = "saved from the REPL")
-        @test :api_saved in key_values()
-        @test w[:editor_key].selection[] === :create_new
+        @test :api_saved in manager.editor_row_keys
 
         # 2b. The description is shown as the box's value (stored == displayed, so Makie draws it in the text colour)
-        click_menu!(w[:editor_key], :api_saved)
-        @test w[:editor_text].displayed_string[] == "saved from the REPL"
-        @test w[:editor_text].stored_string[] == w[:editor_text].displayed_string[]
+        tb = editor_row(:api_saved).text
+        @test tb.displayed_string[] == "saved from the REPL"
+        @test tb.stored_string[] == tb.displayed_string[]
         # ... editing it is written to the preset file
-        w[:editor_text].stored_string[] = "edited description"
+        type_into!(:api_saved, "edited description")
         @test manager.sim_presets[:api_saved] == "edited description"
         raw_desc = PDEStudio._read_csv(joinpath(sim_preset_dir(), "api_saved.csv"))[2]["Metadata"]["Preset"]["description"]
         @test raw_desc == "edited description"
-        # ... and a description typed under create_new counts without pressing Enter
-        click_menu!(w[:editor_key], :create_new)
-        w[:editor_text].displayed_string[] = "typed, not submitted"
+        # ... and a description typed into create_new counts without pressing Enter
+        editor_row(:create_new).text.displayed_string[] = "typed, not submitted"
         manager.widgets[:export_text].stored_string[] = "typed_only"
         click_button!(:save_presets_button)
         @test manager.sim_presets[:typed_only] == "typed, not submitted"
-        @test w[:editor_key].selection[] === :typed_only
+        @test :typed_only in manager.editor_row_keys
 
-        # 3. A file copied into the preset folder shows up when the key menu is opened
+        # 3. A file copied into the preset folder shows up when the page is opened again
         mkpath(sim_preset_dir())
         write(joinpath(sim_preset_dir(), "copied.csv"),
               "Category,Scope,Parameter,Value\nMetadata,Preset,description,copied by hand\nSimulation,Shared,N,40\n")
-        @test !(:copied in key_values())
-        w[:editor_key].is_open[] = true
-        @test :copied in key_values()
-        w[:editor_key].is_open[] = false
-        click_menu!(w[:editor_key], :copied)
-        @test w[:editor_text].displayed_string[] == "copied by hand"
-        @test w[:editor_toggle].label[] == "Apply"
+        @test !(:copied in manager.editor_row_keys)
+        click_button!(:editor_back)
+        n_files = count(f -> endswith(f, ".csv"), readdir(sim_preset_dir()))
+        @test w[:editor_page_1].label[] == "Presets ($n_files)"  # the overview counts the presets on disk
+        open_scope!(:presets)
+        @test :copied in manager.editor_row_keys
+        @test editor_row(:copied).text.displayed_string[] == "copied by hand"
+        @test editor_row(:copied).button.label[] == "Apply"
 
-        # 4. The same for visual presets under UI → Presets; the scope survives the category switch
-        click_menu!(w[:editor_cat], :ui)
-        @test w[:editor_scope].selection[] === :presets
+        # 4. The same for visual presets under UI → Presets; each tab keeps its page
+        show_editor_page!(:ui, :presets)
         save_plot_preset("api_look"; description = "look from the REPL")
-        @test :api_look in key_values()
-        click_menu!(w[:editor_cat], :simulation)
-        @test w[:editor_scope].selection[] === :presets
-        @test :api_saved in key_values() && !(:api_look in key_values())
+        @test :api_look in manager.editor_row_keys
+        click_button!(:tab_simulation)
+        @test first(manager.editor_view[:simulation]) === :presets
+        @test :api_saved in manager.editor_row_keys && !(:api_look in manager.editor_row_keys)
     end
 
     # =========================================================================
@@ -778,10 +784,8 @@ end
         @test first_method() == :upwind
 
         # 2. Reordering the list in the editor is the override; it takes effect with the next run
-        click_menu!(manager.widgets[:editor_cat], :simulation)
-        click_menu!(manager.widgets[:editor_scope], :config)
-        click_menu!(manager.widgets[:editor_key], :defaults)
-        manager.widgets[:editor_text].stored_string[] = "[:lax_friedrichs, :upwind]"
+        show_editor_page!(:simulation, :config)
+        type_into!(:defaults, "[:lax_friedrichs, :upwind]")
         @test manager.active_config.defaults == [:lax_friedrichs, :upwind]
         click_button!(:run_button)
         @test manager.methods[] == [:lax_friedrichs, :upwind]
@@ -819,11 +823,9 @@ end
         set_sim_config!(cfg)
         click_button!(:run_button)
 
-        tb = manager.widgets[:editor_text]
-        click_menu!(manager.widgets[:editor_cat], :simulation)
-        click_menu!(manager.widgets[:editor_scope], :config)
-        @test :permutation in Iterators.map(last, manager.widgets[:editor_key].options[])
-        click_menu!(manager.widgets[:editor_key], :permutation)
+        show_editor_page!(:simulation, :config)
+        @test manager.editor_row_keys == [:defaults, :permutation, :postprocess, :reference, :sources]
+        tb = editor_row(:permutation).text
 
         # 1. Only the permutation of the automatic order is shown
         @test tb.displayed_string[] == "[3, 2, 1]"
@@ -843,12 +845,10 @@ end
             @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs]
         end
 
-        # 4. `defaults` itself still shows and takes method names
-        click_menu!(manager.widgets[:editor_key], :defaults)
-        @test occursin("lax_friedrichs", tb.displayed_string[])
+        # 4. `defaults` itself still shows and takes method names (on the same page)
+        @test occursin("lax_friedrichs", editor_row(:defaults).text.displayed_string[])
 
         # 5. Activating a method appends it and refreshes the shown permutation
-        click_menu!(manager.widgets[:editor_key], :permutation)
         manager.is_activate_mode[] = true
         click_menu!(manager.widgets[:method_toggle], long_name)
         @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs, long_name]
@@ -892,27 +892,33 @@ end
 
         # Widgets of each panel (a sample) and whether they are drawn and inside the window
         panel_widgets = Dict(:plot => (:x_axis, :component), :layout => (:base_plot, :compare_link),
-                             :editor => (:editor_scope, :editor_text, :save_presets_button),
+                             :editor => (:editor_page_1, :save_presets_button),   # the editor tabs open on the overview
                              :methods => (:mode_button, :method_toggle), :files => (:load_config_button, :export_button))
         onscreen(b) = (bb = b.layoutobservables.computedbbox[]; all(minimum(bb) .>= 0))
         shown(k) = w[k].blockscene.visible[] && onscreen(w[k])
         hidden(k) = !w[k].blockscene.visible[] && !onscreen(w[k])
 
         @test manager.active_tab[] === :plot                       # a window opens on the Plot tab
-        @test hidden(:editor_cat)                                  # the category is selected by the tabs
 
         # 1. Every tab shows exactly its panels; the always visible controls stay where they are
         always = (:run_button, :layout_apply, :plot_button, :play_anim_button, :export_text)
-        always_bbox = Dict(k => w[k].layoutobservables.computedbbox[] for k in always)
+        # positions are measured from the top of the tab bar (a rebuilt plot layout may resize the window)
+        function from_top(k)
+            tab_bb = w[:tab_plot].layoutobservables.computedbbox[]
+            bb = w[k].layoutobservables.computedbbox[]
+            return round.((maximum(tab_bb)[2] - minimum(bb)[2], minimum(bb)[1] - minimum(tab_bb)[1]); digits = 2)
+        end
+        always_pos = Dict(k => from_top(k) for k in always)
         for tab in PDEStudio.CONTROL_TABS
             click_button!(Symbol("tab_", tab))
             @test manager.active_tab[] === tab
+            tab_bar_bottom = minimum(w[:tab_plot].layoutobservables.computedbbox[])[2]
             for (panel, keys) in panel_widgets, k in keys
                 @test panel in PDEStudio.TAB_PANELS[tab] ? shown(k) : hidden(k)
+                # a panel never reaches into the tab bar (empty grid rows used to squeeze the editor upwards)
+                panel in PDEStudio.TAB_PANELS[tab] && @test maximum(w[k].layoutobservables.computedbbox[])[2] <= tab_bar_bottom
             end
-            @test all(k -> shown(k) && w[k].layoutobservables.computedbbox[] == always_bbox[k], always)
-            @test hidden(:editor_cat)
-            tab in PDEStudio.EDITOR_TABS && @test w[:editor_cat].selection[] === tab
+            @test all(k -> shown(k) && from_top(k) == always_pos[k], always)
         end
 
         # 2. Clicks reach only the visible widget, never a hidden one at the same place in another tab
@@ -947,31 +953,95 @@ end
         ax = first(c for c in fig.content if c isa Axis)
         viewport_updates = Ref(0)
         obs = on(_ -> viewport_updates[] += 1, ax.scene.viewport)
-        show_tab!(:simulation)
-        w[:editor_scope].is_open[] = true
-        Makie.focus!(w[:editor_text])
+        show_editor_page!(:simulation, :shared)
+        w[:method_toggle].is_open[] = true
+        Makie.focus!(w[:editor_row_1_text])
         show_tab!(:plot)
-        @test !w[:editor_scope].is_open[] && !w[:editor_text].focused[]
+        @test !w[:method_toggle].is_open[] && !w[:editor_row_1_text].focused[]
         for tab in PDEStudio.CONTROL_TABS; show_tab!(tab); end
+        show_editor_page!(:ui, :x_axis)
+        show_editor_page!(:ui)
         @test viewport_updates[] == 0
         off(obs)
-
-        # 4. The editor category and the tab follow each other; refreshing the editor doesn't switch tabs
-        show_tab!(:plot)
-        click_menu!(w[:editor_cat], :ui)
-        @test manager.active_tab[] === :ui
-        show_tab!(:layout)
-        set_sim_config!(cfg)                                       # re-notifies the (unchanged) category
-        @test manager.active_tab[] === :layout
         @test_throws ArgumentError show_tab!(:nonsense)
+        @test_throws ArgumentError show_editor_page!(:plot)
 
-        # 5. A rebuilt window opens on the Plot tab again, with the Simulation category in the editor
-        show_tab!(:labels)
+        # 4. Editor pages: one row per key, the unused rows and buttons parked; ◀ ▶ pages for long scopes
+        many = create_param_dict(:sim_func_name => :advection_solver_1d, (Symbol("p", lpad(i, 2, '0')) => i for i in 1:14)...)
+        set_sim_config!(SimulationConfig(many, methods, [:upwind]))
+        show_editor_page!(:simulation)
+        @test shown(:editor_page_5) && hidden(:editor_page_6)  # presets, shared, sweep, config, upwind
+        @test hidden(:editor_back) && hidden(:editor_next)
+        open_scope!(:shared)
+        @test w[:editor_title][] == "Shared  (1/2)"
+        @test length(manager.editor_row_keys) == PDEStudio.EDITOR_ROWS
+        @test shown(:editor_back) && shown(:editor_next)
+        @test shown(Symbol("editor_row_", PDEStudio.EDITOR_ROWS, "_text")) && hidden(:editor_page_1)
+        click_button!(:editor_next)
+        @test w[:editor_title][] == "Shared  (2/2)"
+        @test manager.editor_row_keys == [:p13, :p14, :sim_func_name]
+        @test shown(:editor_row_3_text) && hidden(:editor_row_4_text) && hidden(:editor_row_4_button)
+        type_into!(:p14, "140")                                # rows write into the scope of the page
+        @test manager.active_config.shared[:p14] == 140
+        click_button!(:editor_next)                            # stays on the last page
+        @test w[:editor_title][] == "Shared  (2/2)"
+        click_button!(:editor_prev)
+        @test first(manager.editor_row_keys) === :p01
+        # Bool values get an on/off button
+        show_editor_page!(:ui, :x_axis)
+        @test editor_row(:log_scale).button.label[] == "off"
+        press_row!(:log_scale)
+        @test manager.ui[:x_axis][:log_scale] == true
+        @test editor_row(:log_scale).button.label[] == "on" && editor_row(:log_scale).text.displayed_string[] == "true"
+        press_row!(:log_scale)
+        @test manager.ui[:x_axis][:log_scale] == false
+        # More scopes than page buttons: the overview gets ◀ ▶ pages too
+        lots = create_method_dict((Symbol("m", lpad(i, 2, '0')) => create_param_dict(:scheme => "upwind") for i in 1:13)...)
+        set_sim_config!(SimulationConfig(shared, lots, sort!(collect(keys(lots)))))
+        show_editor_page!(:simulation)
+        @test w[:editor_title][] == "Simulation  (1/2)"
+        @test length(manager.editor_page_scopes) == PDEStudio.OVERVIEW_BUTTONS
+        click_button!(:editor_next)
+        @test manager.editor_page_scopes == [:m13]
+        @test shown(:editor_page_1) && hidden(:editor_page_2)
+        open_scope!(:m13)
+        @test manager.editor_row_keys == [:scheme]
+        # A page whose scope disappears (a deactivated method) falls back to the overview
+        set_sim_config!(cfg)
+        click_button!(:run_button)
+        show_editor_page!(:simulation, :upwind)
+        manager.is_activate_mode[] = false
+        click_menu!(w[:method_toggle], :upwind)
+        click_button!(:run_button)
+        @test manager.methods[] == [:lax_friedrichs]
+        @test isnothing(first(manager.editor_view[:simulation]))
+        @test !(:upwind in manager.editor_page_scopes)
+        manager.is_activate_mode[] = true
+        set_sim_config!(cfg)
+        click_button!(:run_button)
+
+        # 5. Slider rows: only the sliders with a choice to make are shown (no sweep, X on the plot axis here)
+        show_tab!(:plot)
+        @test shown(:t)
+        @test hidden(:param_1) && hidden(:x) && hidden(:y)
+        sweep_cfg = SimulationConfig(shared, methods, [:upwind]; varied = create_varied_dict(:cfl => [0.2, 0.5]))
+        set_sim_config!(sweep_cfg)
+        click_button!(:run_button)
+        @test shown(:param_1) && shown(:t)
+        @test maximum(w[:param_1].layoutobservables.computedbbox[])[2] > maximum(w[:t].layoutobservables.computedbbox[])[2]
+        @test all(k -> from_top(k) == always_pos[k], always)   # the rest stays put
+
+        # 6. Setting a configuration doesn't switch tabs; a rebuilt window opens on the Plot tab and the overviews
+        show_tab!(:layout)
+        set_sim_config!(cfg)
+        @test manager.active_tab[] === :layout
+        show_editor_page!(:labels, :methods)
         fig = launch_plotter()
         display(fig)
         @test manager.active_tab[] === :plot
-        @test manager.widgets[:editor_cat].selection[] === :simulation
-        @test manager.widgets[:x_axis].blockscene.visible[] && !manager.widgets[:editor_scope].blockscene.visible[]
+        @test manager.widgets[:x_axis].blockscene.visible[] && !manager.widgets[:editor_page_1].blockscene.visible[]
+        click_button!(:tab_labels)
+        @test manager.editor_page_scopes == [:components, :variables, :methods]
     end
 
     # =========================================================================
@@ -1056,14 +1126,7 @@ end
         @test manager.ui[:labels][:x_label] == ""
         @test manager.ui[:labels][:y_label] == ""
 
-        # 2. Test via the Hierarchical UI Editor
-        click_menu!(manager.widgets[:editor_cat], :ui)
-        click_menu!(manager.widgets[:editor_scope], :presets)
-        
-        # Select a dummy preset first to reset the observer state
-        click_menu!(manager.widgets[:editor_key], :publication)
-        yield()
-        
+        # 2. Test via the editor: UI → Presets, the Apply button of a preset's row
         click_menu!(manager.widgets[:base_plot], :lines)
         click_menu!(manager.widgets[:plot_style], :lines_1d)
         
@@ -1071,13 +1134,10 @@ end
         click_menu!(manager.widgets[:y_axis], :none)
         click_menu!(manager.widgets[:z_axis], :none)
         click_button!(:layout_apply)
-        # Now select :darkmode so the change event guarantees a fresh trigger
-        click_menu!(manager.widgets[:editor_key], :darkmode)
-        yield()
-        
-        @test manager.widgets[:editor_toggle].label[] == "Apply"
-        
-        click_button!(:editor_toggle)
+
+        show_editor_page!(:ui, :presets)
+        @test editor_row(:darkmode).button.label[] == "Apply"
+        press_row!(:darkmode)
         yield()
         
         @test manager.ui[:plot_style][:colors] == [:cyan, :magenta, :yellow, :white]
@@ -1149,14 +1209,12 @@ end
         @test !isempty(hud_plots) && Makie.to_color(hud_plots[1].color[]) == Makie.to_color(:red)
         manager.ui[:hud][:color] = :red
         # ... and the editor refuses to store one
-        click_menu!(manager.widgets[:editor_cat], :ui)
-        click_menu!(manager.widgets[:editor_scope], :hud)
-        click_menu!(manager.widgets[:editor_key], :color)
-        @test_logs (:warn, r"not a valid colour") (manager.widgets[:editor_text].stored_string[] = "rde")
+        show_editor_page!(:ui, :hud)
+        @test_logs (:warn, r"not a valid colour") type_into!(:color, "rde")
         @test manager.ui[:hud][:color] == :red
-        manager.widgets[:editor_text].stored_string[] = ":blue"
+        type_into!(:color, ":blue")
         @test manager.ui[:hud][:color] == :blue
-        manager.widgets[:editor_text].stored_string[] = ":red"
+        type_into!(:color, ":red")
 
         # 2. Test Reference Lines (Direct Local Call)
         ref_lines = plot_reference_lines!(ax, [-1.0, -2.0]; label="Convergence Ref")

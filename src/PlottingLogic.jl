@@ -219,6 +219,7 @@ function _handle_slider_trigger!(u_sel)
     finally
         manager.locks[:PlotData] = false
     end
+    _sync_slider_rows!()  # rows without a choice to make are parked
     return true
 end
 

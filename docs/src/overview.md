@@ -16,8 +16,8 @@ control panel is a row of tabs; below the selected tab, the controls you need al
 | **Labels** | The editor for display names of components, variables and methods. |
 | **Files** | Loading a CSV (button, or drop the file anywhere on the window) and **Export**. Details: [File Operations](file_ops.md). |
 
-*Simulation*, *UI* and *Labels* are the three categories of the editor: the tab selects the category, the editor
-below it selects scope and parameter.
+*Simulation*, *UI* and *Labels* are the three categories of the editor: the tab selects the category and opens on
+an overview with one button per page (scope); a page lists the entries of the scope as rows.
 
 ## Always Visible
 
@@ -25,8 +25,9 @@ below it selects scope and parameter.
     animation, or type a name and click **Save Presets** / **Save Sim Preset**; type a path *or just a file name*
     of a saved CSV and click the load button (or drop the CSV onto the window) to recreate a saved state (see
     [Presets](presets.md)).
-*   **Sliders:** one slider per swept parameter and per physical dimension, scaled to the values of the active
-    datasets. Text-valued sweeps (e.g. scheme names) get index sliders that display the swept value. Details:
+*   **Sliders** (at the bottom): one slider per swept parameter and per physical dimension, scaled to the values of
+    the active datasets. Only sliders with a choice to make are shown: unused parameter sliders, dimensions on a plot
+    axis and dimensions the data doesn't have are hidden. Text-valued sweeps (e.g. scheme names) get index sliders that display the swept value. Details:
     [Exploration](sliders.md).
 *   **Camera & Animation:** a one-click animation player that sweeps the chosen `Anim Target`. **Lock Camera**
     freezes the view (2D limits, or 3D azimuth, elevation and bounds) for perfectly stable video exports.
