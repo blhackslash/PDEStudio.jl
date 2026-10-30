@@ -19,7 +19,8 @@ Type a new value into a row and press Enter. Input is parsed with the safe liter
 
 *   **Text stays text:** if a parameter currently holds text, whatever you type is stored as text, even if it looks like a number or a name (`1e3`, `Float64`, `sin`). Quotes are optional. `<empty>` stands for the empty string.
 *   **The row button:** **on / off** toggles a Boolean; **↺** restores the default (like typing `default`, below); **Apply** applies a preset.
-*   **`default`:** typing `default` (or clicking ↺) restores the built-in value of a UI option, the value of the bound configuration for a simulation entry (the one *Reset Simulation* returns to), or the built-in display name of a label.
+*   **`default`:** typing `default` (or clicking ↺) restores the built-in value of a UI option, the value of the bound configuration for a simulation entry (the one *Files → Simulation → Reset* returns to), or the built-in display name of a label.
+*   **Invalid input is refused:** text that is no literal (e.g. `[1, 2` or `abc` for a number) is not stored for a parameter that isn't text, and the status line says why. To make a parameter text, quote it (`"abc"`). Colours (`#1f77b4`, `red`) and function names may be typed without quotes.
 *   **Types matter for the cache:** simulation results are stored under a hash of the parameters, and the hash includes the value's type. `Any[:a, :b]` and `[:a, :b]` (a `Vector{Symbol}`) are different values, so changing one into the other computes the simulation again. Keep the displayed format if you only want to change entries.
 
 ### 📂 The Categories
@@ -31,17 +32,20 @@ The `PDEStudioCore` configuration. Scopes:
 
 | Scope | Edits |
 | :--- | :--- |
-| **Presets** | Simulation presets: one row per preset (its description, editable) with an **Apply** button; type the description of the next preset you save into the `create_new` row (see [Presets](presets.md)). |
+| **Presets** | Simulation presets: one row per preset (its description, editable) with an **Apply** button. Presets are saved in the **Files** tab (see [Presets](presets.md)). |
 | **Shared** | `config.shared`, the parameters every run uses. |
 | **Sweep** | `config.varied`, the swept values. A single value becomes a one-value sweep; in a sweep of text values, unquoted items stay text (`[upwind, lax_friedrichs]`). The sliders are remapped immediately. (A swept key only takes effect if it exists in the shared or method parameters.) |
 | **Config** | `defaults` (the active methods, in the order they are drawn: legends, colours and the *Methods* comparison follow it, so reorder the list here to override the automatic order), `permutation` (the same order as indices, see below; both rows are on the same page), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
 
 *   **Reordering methods with `permutation`:** long method names make `defaults` tedious to reorder (`Symbol[Symbol("SSPRK3MUSCL2(EPD2)"), …]`). `permutation` shows the same order as indices into the automatic order of the active methods, i.e. references first, then alphabetical, the order in which the Methods tab lists them. With the active methods `analytic`, `lax_friedrichs` and `upwind`, the permutation `[3, 2, 1]` stands for `[:upwind, :lax_friedrichs, :analytic]`. Type a new permutation (`[1, 3, 2]` or `(1, 3, 2)`) to reorder `defaults`; it needs one index per active method. `default` restores the order of the bound configuration (or the automatic order if the active methods differ from it). Only `defaults` is stored in CSV files and presets.
 *   **Trigger Behavior:** physics changes alter the data, so any edit here turns `Run Simulation` yellow and locks the plot until you re-run. Edits are only blocked while a simulation is running.
-*   **Context-sensitive buttons:** in this tab, the preset buttons read **Save Sim Preset** and **Reset Simulation**.
 
 #### 2. UI
-The visual styles, layout templates and export settings of the renderer, plus **Presets** (the visual presets, applied with **Apply**). The *Plot Style* page lists only the options of the selected plot style.
+The look of the renderer. The overview is fixed and lists every page:
+*   **General:** *Presets* (the look presets, applied with **Apply**), *Axis General* (font sizes, legend sorting), *Labels*, *HUD*, *Outliers & Extrema*.
+*   **Axes:** one page per axis variant: *X/Y Axis (1D)* for 1D plots, *X/Y Axis (2D/3D)* for 2D and 3D plots, *Z Axis (3D)*. Each variant keeps its own settings, so switching between a 1D and a 2D plot doesn't lose them.
+*   **Plot styles:** one page per plot type with the options that type uses (colours, colormap, line width, markers, levels, …). The options are shared between the plot types that use them (e.g. one colormap for all colormap plots).
+*   The pages of the active plot (its plot type and axis variants) are highlighted. The export settings are in the **Files** tab.
 *   **Trigger Behavior:** changes trigger a visual update; options that change the drawn data (e.g. the method index of a comparison) redraw the plot.
 *   **Titles and axis labels** are set here under **UI → Labels**.
 
@@ -61,5 +65,4 @@ automatic order: references first, then alphabetical, the order the `permutation
 *   **Order ▲▼** shows the active methods in drawing order (`defaults`: legends, colours and the *Methods*
     comparison follow it), numbered from the top. **▲ / ▼** move a method; the new order is drawn after the next
     *Run Simulation* (cached results are reused). **◀ Method list** returns to the list.
-*   The title shows how many methods are active; long lists get ◀ ▶ pages. The preset buttons act on simulation
-    presets, as in the *Simulation* tab.
+*   The title shows how many methods are active; long lists get ◀ ▶ pages.

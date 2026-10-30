@@ -254,6 +254,10 @@ end
     
 # --- HELPER FUNCTIONS ---
     function click_menu!(widget, target_sym)
+        if widget isa PDEStudio.StyleChoice      # the plot style (chosen on its page, see the Control tabs tests)
+            widget.selection[] = target_sym
+            return
+        end
         options = widget.options[]
         idx = findfirst(opt -> (opt isa Tuple ? opt[2] : opt) == target_sym, options)
         
@@ -321,9 +325,7 @@ end
 
     for bp in base_plots
         @testset "$(titlecase(string(bp))) Base Plot Styles" begin
-            click_menu!(manager.widgets[:base_plot], bp)
-            click_button!(:layout_apply)
-            
+
             style_options = EULERIAN_PLOT_STYLE_OPTIONS[bp]
             
             for opt in style_options
@@ -371,7 +373,7 @@ end
         click_button!(:run_button)
 
         # 2. Base setup for a 2D Surface Plot
-        click_menu!(manager.widgets[:base_plot], :heatmap)
+
         
         click_menu!(manager.widgets[:plot_style], :heatmap_surface)
         
@@ -415,7 +417,7 @@ end
         export_base = joinpath(export_dir, "test_render")
         
         # 1. Setup a standard 2D plot (Lines) to ensure CairoMakie SVG compatibility
-        click_menu!(manager.widgets[:base_plot], :lines)
+
         click_menu!(manager.widgets[:plot_style], :lines_1d)
         
         click_menu!(manager.widgets[:x_axis], :x)
@@ -452,7 +454,7 @@ end
         click_button!(:layout_apply)
         
         # 5. Speed up tests through the editor (UI → Export page)
-        show_editor_page!(:ui, :export)
+        show_editor_page!(:files, PDEStudio.EXPORT_SETTINGS)
         type_into!(:animation_time, "1.0")   # duration 1 s
         type_into!(:animation_FPS, "10")
 
@@ -514,9 +516,8 @@ end
         preset_name = "my_custom_preset"
         manager.widgets[:export_text].stored_string[] = preset_name
         
-        # Type the description of the new preset on the UI → Presets page
-        show_editor_page!(:ui, :presets)
-        type_into!(:create_new, "A rigorous test preset for the UI pipeline")
+        # The description of the new preset (Files tab)
+        manager.widgets[:preset_desc_text].stored_string[] = "A rigorous test preset for the UI pipeline"
 
         # Click Save Presets
         click_button!(:save_presets_button)
@@ -631,8 +632,6 @@ end
 
         # 1. The Simulation tab opens on its overview: one page button per scope; the preset buttons follow the tab
         click_button!(:tab_simulation)
-        @test manager.widgets[:save_presets_button].label[] == "Save Sim Preset"
-        @test manager.widgets[:clear_presets_button].label[] == "Reset Simulation"
         @test manager.editor_page_scopes == [:presets, :shared, :sweep, :config]   # the methods have their own tab
         @test manager.widgets[:editor_title][] == "Simulation"
         @test manager.widgets[:editor_page_2].label[] == "Shared (3)"
@@ -684,20 +683,22 @@ end
         type_into!(:reference, "none")
         @test isnothing(config.reference)
 
-        # 6. Save a simulation preset from the UI (description typed into the create_new row)
-        show_editor_page!(:simulation, :presets)
-        @test editor_row(:create_new).button.label[] == " "   # nothing to apply yet
-        type_into!(:create_new, "Both methods, three CFL numbers")
+        # 6. Save a simulation preset in the Files tab (name and description boxes)
+        click_button!(:tab_files)
         manager.widgets[:export_text].stored_string[] = "ui sim preset"
-        click_button!(:save_presets_button)
+        manager.widgets[:preset_desc_text].stored_string[] = "Both methods, three CFL numbers"
+        click_button!(:save_sim_preset_button)
         @test isfile(joinpath(sim_preset_dir(), "ui_sim_preset.csv"))
         @test manager.sim_presets[:ui_sim_preset] == "Both methods, three CFL numbers"
-        @test manager.sim_presets[:create_new] == PDEStudio.DEFAULT_PRESET_DESC
-        @test :ui_sim_preset in manager.editor_row_keys       # the new preset is shown
+        @test occursin("Saved simulation preset 'ui_sim_preset'", manager.widgets[:status][])
+        @test isnothing(manager.widgets[:export_text].stored_string[])   # the boxes are cleared
+        click_button!(:save_sim_preset_button)                 # without a name: refused, reported
+        @test occursin("Enter a preset name", manager.widgets[:status][])
 
-        # 7. Reset Simulation restores the bound configuration, Apply loads the preset again
-        click_button!(:clear_presets_button)
+        # 7. Reset Simulation restores the bound configuration, Apply (Simulation → Presets) loads the preset again
+        click_button!(:reset_sim_button)
         @test manager.active_config.defaults == [:upwind]
+        show_editor_page!(:simulation, :presets)
         @test editor_row(:ui_sim_preset).button.label[] == "Apply"
         press_row!(:ui_sim_preset)
         @test sort(manager.active_config.defaults) == [:lax_friedrichs, :upwind]
@@ -707,11 +708,23 @@ end
         manager.method_filter = :active
         show_editor_page!(:methods)
         @test manager.editor_row_keys == [:lax_friedrichs, :upwind]   # active now
+        manager.method_filter = :all
 
-        # 8. Outside the Simulation tab the buttons act on visual presets again
-        click_button!(:tab_ui)
-        @test manager.widgets[:save_presets_button].label[] == "Save Presets"
-        @test manager.widgets[:clear_presets_button].label[] == "Clear Presets"
+        # 8. Values that are no literal are refused for non-text parameters (quoted text is accepted)
+        show_editor_page!(:simulation, :shared)
+        type_into!(:N, "[1, 2")
+        @test manager.active_config.shared[:N] == 20
+        @test occursin("not a valid value", manager.widgets[:status][])
+        type_into!(:N, "\"twenty\"")
+        @test manager.active_config.shared[:N] == "twenty"
+        type_into!(:N, "20")
+        show_editor_page!(:simulation, :sweep)
+        type_into!(:cfl, "[0.2, abc")                          # a numeric sweep
+        @test manager.active_config.varied[:cfl] == [0.2, 0.5]
+        show_editor_page!(:methods, :upwind)
+        type_into!(:scheme, "1e3")                             # text stays text
+        @test manager.active_config.methods[:upwind][:scheme] == "1e3"
+        type_into!(:scheme, "upwind")
     end
 
     # =========================================================================
@@ -726,11 +739,11 @@ end
         display(fig)
         w = manager.widgets
 
-        # 1. The Presets page lists create_new first, then the presets on disk
+        # 1. The Presets page lists the presets on disk
         click_button!(:tab_simulation)
         @test first(manager.editor_page_scopes) === :presets
         open_scope!(:presets)
-        @test first(manager.editor_row_keys) === :create_new
+        @test !(:create_new in manager.editor_row_keys)
 
         # 2. A preset saved through the API shows up on the open page
         save_sim_preset("api_saved"; description = "saved from the REPL")
@@ -745,11 +758,13 @@ end
         @test manager.sim_presets[:api_saved] == "edited description"
         raw_desc = PDEStudio._read_csv(joinpath(sim_preset_dir(), "api_saved.csv"))[2]["Metadata"]["Preset"]["description"]
         @test raw_desc == "edited description"
-        # ... and a description typed into create_new counts without pressing Enter
-        editor_row(:create_new).text.displayed_string[] = "typed, not submitted"
-        manager.widgets[:export_text].stored_string[] = "typed_only"
-        click_button!(:save_presets_button)
+        # ... and a name and description typed into the Files tab count without pressing Enter
+        click_button!(:tab_files)
+        manager.widgets[:export_text].displayed_string[] = "typed_only"
+        manager.widgets[:preset_desc_text].displayed_string[] = "typed, not submitted"
+        click_button!(:save_sim_preset_button)
         @test manager.sim_presets[:typed_only] == "typed, not submitted"
+        show_editor_page!(:simulation, :presets)
         @test :typed_only in manager.editor_row_keys
 
         # 3. A file copied into the preset folder shows up when the page is opened again
@@ -792,7 +807,7 @@ end
         first_method() = only(keys(manager.caches[1]))
 
         # 1. The "compare methods" subplots follow the order of `defaults`
-        click_menu!(manager.widgets[:base_plot], :lines)
+
         click_menu!(manager.widgets[:plot_style], :lines_1d)
         click_menu!(manager.widgets[:x_axis], :x)
         click_menu!(manager.widgets[:compare_target], :methods)
@@ -906,12 +921,13 @@ end
         w = manager.widgets
 
         # A sample of the widgets each tab shows (the editor tabs open on their overview / the method list)
-        tab_widgets = Dict(:plot => (:base_plot, :plot_width, :compare_link, :x_axis, :component),
-                           :methods => (:method_filter, :method_row_1_a, :save_presets_button),
-                           :simulation => (:editor_page_1, :save_presets_button), :ui => (:editor_page_1, :save_presets_button),
-                           :labels => (:editor_page_1, :save_presets_button), :files => (:load_config_button, :export_button))
+        tab_widgets = Dict(:plot => (:plot_style, :plot_width, :compare_link, :x_axis, :component),
+                           :methods => (:method_filter, :method_row_1_a),
+                           :simulation => (:editor_page_1,), :ui => (:editor_page_1,), :labels => (:editor_page_1,),
+                           :files => (:export_text, :preset_desc_text, :load_config_button, :export_button,
+                                      :save_sim_preset_button, :clear_presets_button))
         sample = unique(vcat(collect.(values(tab_widgets))...))
-        block(k) = w[k] isa PDEStudio.NumberBox ? w[k].box : w[k]
+        block(k) = w[k] isa PDEStudio.NumberBox ? w[k].box : w[k] isa PDEStudio.StyleChoice ? w[k].button : w[k]
         onscreen(b) = (bb = b.layoutobservables.computedbbox[]; all(minimum(bb) .>= 0))
         shown(k) = block(k).blockscene.visible[] && onscreen(block(k))
         hidden(k) = !block(k).blockscene.visible[] && !onscreen(block(k))
@@ -920,7 +936,7 @@ end
         @test PDEStudio.TAB_PANELS[:plot] == (:layout, :plot)      # layout and plot options share a tab
 
         # 1. Every tab shows exactly its widgets; the always visible controls stay where they are
-        always = (:run_button, :layout_apply, :plot_button, :play_anim_button, :export_text)
+        always = (:run_button, :layout_apply, :plot_button, :play_anim_button)
         # positions are measured from the top of the tab bar (a rebuilt plot layout may resize the window)
         function from_top(k)
             tab_bb = w[:tab_plot].layoutobservables.computedbbox[]
@@ -961,9 +977,8 @@ end
         @test w[:method_filter].clicks[] == clicks_before
         manager.method_filter = :all
         show_tab!(:plot)
-        w[:base_plot].is_open[] = false
         mouse_click!(center(w[:x_axis]))
-        @test w[:x_axis].is_open[] && !w[:base_plot].is_open[]
+        @test w[:x_axis].is_open[]
         w[:x_axis].is_open[] = false
 
         # 3. Switching tabs releases open menus and the keyboard focus, and never touches the plot
@@ -977,13 +992,13 @@ end
         show_tab!(:plot)
         @test !w[:editor_row_1_text].focused[]
         for tab in PDEStudio.CONTROL_TABS; show_tab!(tab); end
-        show_editor_page!(:ui, :x_axis)
+        show_editor_page!(:ui, :x_axis_1d)
         show_editor_page!(:ui)
         show_editor_page!(:methods, PDEStudio.ORDER_VIEW)
         @test viewport_updates[] == 0
         off(obs)
         @test_throws ArgumentError show_tab!(:nonsense)
-        @test_throws ArgumentError show_editor_page!(:plot)
+        @test_throws ArgumentError show_editor_page!(:nonsense)
 
         # 4. Editor pages: one row per key, the unused rows and buttons parked; ◀ ▶ pages for long scopes
         many = create_param_dict(:sim_func_name => :advection_solver_1d, (Symbol("p", lpad(i, 2, '0')) => i for i in 1:14)...)
@@ -1007,13 +1022,13 @@ end
         click_button!(:editor_prev)
         @test first(manager.editor_row_keys) === :p01
         # Bool values get an on/off button
-        show_editor_page!(:ui, :x_axis)
+        show_editor_page!(:ui, :x_axis_1d)
         @test editor_row(:log_scale).button.label[] == "off"
         press_row!(:log_scale)
-        @test manager.ui[:x_axis][:log_scale] == true
+        @test manager.ui[:x_axis_1d][:log_scale] == true
         @test editor_row(:log_scale).button.label[] == "on" && editor_row(:log_scale).text.displayed_string[] == "true"
         press_row!(:log_scale)
-        @test manager.ui[:x_axis][:log_scale] == false
+        @test manager.ui[:x_axis_1d][:log_scale] == false
 
         # 4b. Plot width, height and grid columns take any whole number in range; other input is refused
         show_tab!(:plot)
@@ -1035,8 +1050,64 @@ end
         @test w[:compare_columns].selection[] == 2
         click_button!(:layout_apply)
 
+        # 4c. The plot style is chosen on a page of all styles (grouped by base plot, the current one highlighted)
         set_sim_config!(cfg)
         click_button!(:run_button)
+        euler_styles = Set(o[2] for opts in values(EULERIAN_PLOT_STYLE_OPTIONS) for o in opts)
+        show_tab!(:plot)
+        click_button!(:layout_apply)
+        style_btn = w[:plot_style].button
+        @test style_btn.label[] == "1D Lines  ›"
+        style_btn.clicks[] += 1
+        @test manager.active_tab[] === :plot && w[:editor_title][] == "Plot style"
+        @test hidden(:x_axis) && shown(:editor_back)           # the page replaces the options
+        @test Set(manager.editor_page_scopes) == euler_styles   # (scatter_surface is a Lagrangian style)
+        @test [w[Symbol("editor_section_", k)].text[] for k in 1:5] == ["Lines", "Scatter", "Contour", "Heatmap", "Volume"]
+        j_active = findfirst(isequal(:lines_1d), manager.editor_page_scopes)
+        @test w[Symbol("editor_page_", j_active)].buttoncolor[] != w[:editor_page_2].buttoncolor[]
+        click_button!(:editor_back)                            # back without a change
+        @test w[:plot_style].selection[] === :lines_1d && shown(:x_axis)
+        style_btn.clicks[] += 1
+        j = findfirst(isequal(:scatter_lines), manager.editor_page_scopes)
+        w[Symbol("editor_page_", j)].clicks[] += 1
+        @test w[:plot_style].selection[] === :scatter_lines && shown(:x_axis)
+        @test style_btn.label[] == "Scatter Lines  ›" && manager.flags[:Layout][] == true
+        click_button!(:layout_apply)
+        @test manager.active_plot_type === :scatter_lines
+
+        # 4d. The UI overview is static: general scopes, every axis variant and every plot type
+        show_editor_page!(:ui)
+        @test [w[Symbol("editor_section_", k)].text[] for k in 1:3] == ["General", "Axes", "Plot styles"]
+        @test manager.editor_page_scopes[1:10] == [:presets, :axis_general, :labels, :hud, :outliers_extrema,
+                                                   :x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d]
+        @test Set(manager.editor_page_scopes[11:end]) == euler_styles
+        @test !(:export in manager.editor_page_scopes)        # the export settings are in the Files tab
+        open_scope!(:heatmap_flat)                             # a plot type lists the options it uses
+        @test Set(manager.editor_row_keys) == Set(PDEStudio.STYLE_DEPENDENCIES[:heatmap_flat])
+        @test w[:editor_title][] == "Heatmap Flat"
+        type_into!(:color_map, ":plasma")
+        @test manager.ui[:plot_style][:color_map] === :plasma
+        # axis variants are kept separately: 1D settings survive a 2D plot and back
+        show_editor_page!(:ui, :x_axis_1d)
+        type_into!(:padding, "0.3")
+        click_menu!(w[:plot_style], :heatmap_flat)
+        set_axes_for_dim!(2)
+        @test manager.active_plot_type === :heatmap_flat
+        @test PDEStudio._axis_ui(:x_axis) === manager.ui[:x_axis_nd]
+        click_menu!(w[:plot_style], :lines_1d)
+        set_axes_for_dim!(1)
+        @test PDEStudio._axis_ui(:x_axis) === manager.ui[:x_axis_1d] && manager.ui[:x_axis_1d][:padding] == 0.3
+        # older files and the built-in presets name the active variant `x_axis`
+        PDEStudio.set_ui_opt!(:x_axis, :padding, 0.1)
+        @test manager.ui[:x_axis_1d][:padding] == 0.1 && !haskey(manager.ui, :x_axis)
+
+        # 4e. The export settings are a page of the Files tab
+        click_button!(:tab_files)
+        click_button!(:export_settings_button)
+        @test w[:editor_title][] == "Export settings" && :animation_FPS in manager.editor_row_keys
+        @test hidden(:load_config_button)
+        click_button!(:editor_back)
+        @test shown(:load_config_button) && manager.active_tab[] === :files
 
         # 5. Slider rows: only the sliders with a choice to make are shown (no sweep, X on the plot axis here)
         show_tab!(:plot)
@@ -1087,7 +1158,6 @@ end
         @test w[:editor_title][] == "Methods  (2 of 3 active)"
         @test row_button(:upwind, :a).label[] == "active" && row_button(:analytic, :a).label[] == "off"
         @test row_button(:upwind, :b).label[] == "Edit ›"
-        @test w[:save_presets_button].label[] == "Save Sim Preset"   # the Methods tab edits the simulation
 
         # 2. The filter cycles active → disabled → all
         click_button!(:method_filter)                          # all → active
@@ -1182,7 +1252,7 @@ end
         set_sim_config!(SimulationConfig(shared, methods, [:fd]; varied = varied))
         click_button!(:run_button)
 
-        click_menu!(manager.widgets[:base_plot], :lines)
+
         click_menu!(manager.widgets[:plot_style], :lines_1d)
         click_menu!(manager.widgets[:x_axis], :x)
         click_menu!(manager.widgets[:y_axis], :none)
@@ -1237,12 +1307,11 @@ end
         
         set_plot_preset!(:heatmap)
         yield()
-        @test manager.layout_cache[:base_plot] == :heatmap
         @test manager.layout_cache[:plot_style] == :heatmap_flat
         
         set_plot_preset!(:compact3d)
         yield()
-        @test manager.ui[:z_axis][:label_offset] == 15.0
+        @test manager.ui[:z_axis_3d][:label_offset] == 15.0
         
         set_plot_preset!(:nolabels)
         yield()
@@ -1250,7 +1319,7 @@ end
         @test manager.ui[:labels][:y_label] == ""
 
         # 2. Test via the editor: UI → Presets, the Apply button of a preset's row
-        click_menu!(manager.widgets[:base_plot], :lines)
+
         click_menu!(manager.widgets[:plot_style], :lines_1d)
         
         click_menu!(manager.widgets[:x_axis], :x)
@@ -1293,7 +1362,7 @@ end
         click_button!(:run_button)
 
         # Set up a 1D Scatter plot configuration
-        click_menu!(manager.widgets[:base_plot], :scatter)
+
         click_menu!(manager.widgets[:plot_style], :scatter_1d)
         click_menu!(manager.widgets[:x_axis], :x)
         click_menu!(manager.widgets[:y_axis], :none)
@@ -1391,8 +1460,8 @@ end
         
         click_button!(:run_button)
 
-        # The UI should automatically lock the base plot to scatter for Lagrangian data
-        @test manager.widgets[:base_plot].selection[] == :scatter
+        # Lagrangian data offers only the scatter styles of its dimension (1D here)
+        @test manager.allowed_styles == [:scatter_1d, :scatter_lines, :scatter_colors]
 
         # --- Test 1D Lagrangian ---
         click_menu!(manager.widgets[:x_axis], :x)

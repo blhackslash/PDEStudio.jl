@@ -256,6 +256,7 @@ function reset_plotter!()
     empty!(manager.panels)
     empty!(manager.park_slots)
     empty!(manager.editor_view)
+    empty!(manager.allowed_styles)
     manager.panel_park = nothing
     manager.tab_area = nothing
     manager.plot_window_initialized[] = false

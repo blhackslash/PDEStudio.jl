@@ -5,7 +5,7 @@
 const LEGEND_SUPPORTED_PLOTS = (:lines_1d, :scatter_colors, :scatter_lines, :contour_colors, :contour_surface)
 const COLORBAR_SUPPORTED_PLOTS = (:heatmap_flat, :scatter_1d, :scatter_2d, :scatter_surface, :contour_f, :contour_3d, :scatter_3d, :heatmap_surface, :volume_3d, :contour_cmap, :lines_2d, :lines_3d)
 const REPLOT_OPTIONS = (:use_color_map, :line_direction, :method_index, :padding, :log_scale, :dashed_lines, :levels, :rasterization_enabled, :rasterization_quality, :legend_label)
-const LAYOUT_OPTIONS = (:base_plot, :plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
+const LAYOUT_OPTIONS = (:plot_style, :compare_target, :compare_columns, :compare_link, :legend_base, :legend_add, :plot_width, :plot_height)
 const PLOT_AXIS_OPTIONS = (:x_axis, :y_axis, :z_axis, :u_axis, :component)
 const EXPLORATION_OPTIONS = (:anim_target, :component)
 
@@ -254,73 +254,30 @@ end
 
 const MASTER_UI_DICT = create_master_ui_dict()
 
+# The UI scopes kept in `manager.ui`: the general scopes, one scope per axis variant (the renderer uses the variant of
+# the active plot type, see `_ui_template_scope`) and the plot style options shared by all plot types.
+const UI_GENERAL_SCOPES = (:axis_general, :labels, :hud, :outliers_extrema)
+const UI_AXIS_SCOPES = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d)
+const UI_SCOPES = (UI_GENERAL_SCOPES..., :export, UI_AXIS_SCOPES..., :plot_style)
+
 """
     switch_ui_plot_type!(plot_type::Symbol)
 
-Safely orchestrates the visual transition when users switch the fundamental plot dimensionality (e.g., swapping from 1D Lines to 2D Heatmaps). 
-It actively tracks the current dimensionality `PLOT_DIM_MAP[plot_type]`. If a structural shift occurs (e.g., 2D to 3D), it completely reconstructs the X, Y, and Z axis dictionaries from `MASTER_UI_DICT` to prevent 1D margins from corrupting a 3D bounding box, while deliberately preserving universal settings (like fonts and HUD points).
+Makes `plot_type` the active plot type. `manager.ui` keeps every UI scope (see `UI_SCOPES`), including one scope per
+axis variant (`x_axis_1d`, `y_axis_1d` for 1D plots, `x_axis_nd`, `y_axis_nd` for 2D and 3D plots, `z_axis_3d`), so
+axis settings survive switching between 1D and 2D/3D plots; the renderer reads the variant of the active plot type.
+Missing scopes are filled from `MASTER_UI_DICT`, existing settings are kept.
 """
 function switch_ui_plot_type!(plot_type::Symbol)
-    master = MASTER_UI_DICT
-    ui = manager.ui
     if !haskey(PLOT_DIM_MAP, plot_type)
         @warn "Unknown plot style :$plot_type ignored."
         return
     end
-
-    # Track the active state and calculate dimensionality shifts
-    old_plot_type = manager.active_plot_type
-    if old_plot_type == plot_type && !isempty(ui)
-        return 
-    end
     manager.active_plot_type = plot_type
-    
-    old_dim = haskey(PLOT_DIM_MAP, old_plot_type) ? PLOT_DIM_MAP[old_plot_type] : 0
-    new_dim = PLOT_DIM_MAP[plot_type]
-    dim_changed = old_dim != new_dim
-    
-    # Cache user's current settings before overwriting with defaults
-    cached_ui = deepcopy(ui)
-    empty!(ui)
-    
-    ui[:axis_general]       = deepcopy(master[:axis_general])
-    ui[:labels]             = deepcopy(master[:labels])
-    ui[:export]             = deepcopy(master[:export])
-    ui[:outliers_extrema]   = deepcopy(master[:outliers_extrema])
-    ui[:hud]                = deepcopy(master[:hud])
-    ui[:plot_style]         = deepcopy(master[:plot_style])
-    
-    if new_dim == 1
-        ui[:x_axis] = deepcopy(master[:x_axis_1d])
-        ui[:y_axis] = deepcopy(master[:y_axis_1d])
-    elseif new_dim == 2 && !is_surface(plot_type)
-        ui[:x_axis] = deepcopy(master[:x_axis_nd])
-        ui[:y_axis] = deepcopy(master[:y_axis_nd])
-    elseif new_dim == 3 || is_surface(plot_type)
-        ui[:x_axis] = deepcopy(master[:x_axis_nd])
-        ui[:y_axis] = deepcopy(master[:y_axis_nd])
-        ui[:z_axis] = deepcopy(master[:z_axis_3d])
+    for scope in UI_SCOPES
+        haskey(manager.ui, scope) || (manager.ui[scope] = deepcopy(MASTER_UI_DICT[scope]))
     end
-
-    # Core master templates that should never act as active overrides
-    internal_templates = (:x_axis_1d, :y_axis_1d, :x_axis_nd, :y_axis_nd, :z_axis_3d)
-
-    for (scope, dict) in cached_ui
-        scope in internal_templates && continue 
-        
-        # Only wipe the axis customizations if the dimensionality fundamentally changed
-        if dim_changed && scope in (:x_axis, :y_axis, :z_axis)
-            continue
-        end
-        
-        if haskey(ui, scope)
-            for (k, v) in dict
-                ui[scope][k] = v
-            end
-        else
-            ui[scope] = deepcopy(dict)
-        end
-    end
+    return nothing
 end
 
 """
@@ -356,10 +313,11 @@ end
 """
     set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
 
-Directly mutates the active `manager.ui` dictionary. Used exclusively as an internal routing wrapper during CSV preset parsing.
+Sets a UI option in `manager.ui`. `x_axis`, `y_axis` and `z_axis` (the names used by older CSV files and by the
+built-in presets) set the axis variant of the active plot type (see `_ui_template_scope`).
 """
 function set_ui_opt!(scope::Symbol, key::Symbol, val::Any)
-    # Directly mutates the active UI dictionary
+    scope = scope in (:x_axis, :y_axis, :z_axis) ? _ui_template_scope(scope) : scope
     if !haskey(manager.ui, scope)
         manager.ui[scope] = Dict{Symbol, Any}()
     end
@@ -407,7 +365,6 @@ end
 
 function apply_plot_preset!(::Val{:heatmap})
     apply_layout_options!(Dict(
-        :base_plot      => :heatmap,
         :plot_style     => :heatmap_flat,
         :compare_target => :methods,
         :compare_link   => :fully_coupled
