@@ -128,7 +128,7 @@ function save_plot_preset(name; description::AbstractString = "")
     haskey(PRESET_DESCRIPTIONS, sym) && @warn "'$sym' is also the name of a built-in preset, which takes precedence when applying it."
     manager.presets[sym] = _clean_description(description, "User custom preset: $sym")
     saved = save_preset_to_csv(sym, preset_dir())
-    _refresh_preset_menu!()
+    _render_editor!()
     return saved
 end
 
@@ -169,7 +169,7 @@ function save_sim_preset(name; description::AbstractString = "")
         return false
     end
     manager.sim_presets[sym] = desc
-    _refresh_preset_menu!()
+    _render_editor!()
     @info "Simulation preset saved to $path"
     return true
 end
@@ -210,7 +210,7 @@ function set_sim_preset!(name; mode::Union{Nothing, Symbol} = nothing)
     set_sim_config!(config; snapshot = false)
 
     manager.sim_presets[Symbol(splitext(basename(path))[1])] = _preset_description(raw, "Custom simulation preset")
-    _refresh_preset_menu!()
+    _render_editor!()
     @info "Applied simulation preset '$name' ($apply_mode). Press 'Run Simulation' to compute it."
     return config
 end

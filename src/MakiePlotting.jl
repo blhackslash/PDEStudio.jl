@@ -109,9 +109,7 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     # Build UI mappings immediately so CSV loading and layout triggers can use them
     _map_parameters_to_sliders!(config)
 
-    if haskey(manager.widgets, :editor_cat)
-        notify(manager.widgets[:editor_cat].selection)
-    end
+    _render_editor!()
 
     # Force the UI menu to redraw itself with the newly loaded config
     notify(manager.is_activate_mode)
@@ -155,6 +153,7 @@ function _map_parameters_to_sliders!(config::SimulationConfig)
     manager.param_map = param_map
     manager.reverse_map = reverse_map
     manager.plot_vars = Symbol[real_params; get_base_variables()]
+    _sync_slider_rows!()
     return nothing
 end
 
@@ -257,6 +256,8 @@ function reset_plotter!()
     end
     empty!(manager.widgets)  # widgets of the closed window; the caches keep their state
     empty!(manager.panels)
+    empty!(manager.park_slots)
+    empty!(manager.editor_view)
     manager.panel_park = nothing
     manager.tab_area = nothing
     manager.plot_window_initialized[] = false
@@ -276,7 +277,7 @@ function launch_plotter()
 
     master_fig = Figure()
     ctrl_layout = master_fig[1, 1] = GridLayout()
-    plot_layout = master_fig[1, 2] = GridLayout() 
+    plot_layout = master_fig[1, 2] = GridLayout(alignmode = Outside())  # titles and labels inside: no extra height for the controls
     
     create_controls(ctrl_layout)
     # A configuration bound before launching needs its slider labels and mapping on the new widgets.
