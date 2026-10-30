@@ -581,7 +581,7 @@ end
 """
     show_tab!(tab::Symbol)
 
-Selects a tab of the control panel (`:plot`, `:layout`, `:simulation`, `:ui`, `:labels`, `:files`). The panels of
+Selects a tab of the control panel (`:plot`, `:methods`, `:shared`, `:ui`, `:files`, `:advanced`). The panels of
 the tab (`TAB_PANELS`) are placed in the tab area and drawn; every other panel is hidden and parked in a layout
 outside the figure, where it can't be clicked. Widgets are never deleted or recreated. The editor tabs show the
 editor page last opened in their category (see `show_editor_page!`). A no-op
@@ -622,8 +622,12 @@ _editor_tab(tab) = tab in EDITOR_TABS ||
 function _active_editor_mode()
     tab = manager.active_tab[]
     _editor_tab(tab) || return nothing
-    return _editor_mode(tab, first(get(manager.editor_view, tab, (nothing, 1))))
+    return _editor_mode(tab, first(_view(tab)))
 end
+
+# The page (scope, page number) shown in a tab; the Shared tab has only one page.
+_default_scope(tab) = tab === :shared ? :shared : nothing
+_view(tab) = get(manager.editor_view, tab, (_default_scope(tab), 1))
 
 """
     _setup_tab_interactions!()
@@ -642,46 +646,14 @@ end
 # Editor pages
 # ------------------------------------------------------------------------------
 
-"""
-    ConfigFields(config)
-
-Editor view (`Simulation → Config`) of the method and function fields of a `SimulationConfig`: `defaults` (active
-methods), `reference`, `postprocess` and `sources`. Assignments go through the backend's normalisation; `none`
-clears a function.
-
-`permutation` is not a field: it shows the order of `defaults` as indices into their automatic order (references
-first, then alphabetical, as the method menus list them), and assigning a permutation reorders `defaults`.
-"""
-struct ConfigFields
-    config::SimulationConfig
-end
-const CONFIG_EDITOR_FIELDS = (:defaults, :permutation, :reference, :postprocess, :sources)
-Base.haskey(::ConfigFields, key) = key in CONFIG_EDITOR_FIELDS
-Base.keys(::ConfigFields) = collect(CONFIG_EDITOR_FIELDS)
-Base.getindex(p::ConfigFields, key::Symbol) =
-    key === :permutation ? _method_permutation(p.config.defaults) : getproperty(p.config, key)
-function Base.setindex!(p::ConfigFields, value, key::Symbol)
-    if key === :permutation
-        p.config.defaults = _permute_methods(p.config.defaults, value)
-        return p
-    end
-    key in (:reference, :postprocess) && (value = _function_name(value))
-    setproperty!(p.config, key, value)
-    return p
-end
-
 # The dictionary (or dictionary-like view) the editor edits for a category and scope.
 function _editor_target(cat, scope)
-    if cat === :simulation
-        scope === :presets && return manager.sim_presets
+    if cat === :simulation   # the Shared tab and the method pages of the Methods tab
         config = manager.active_config
         isnothing(config) && return nothing
         scope === :shared && return config.shared
-        scope === :sweep && return config.varied
-        scope === :config && return ConfigFields(config)
         return get(config.methods, scope, nothing)
     elseif cat === :ui
-        scope === :presets && return manager.presets
         return get(manager.ui, _ui_template_scope(scope), nothing)   # a plot type's page edits `plot_style`
     elseif cat === :labels
         return manager.labels
@@ -691,9 +663,8 @@ end
 
 _editor_display(v) = isnothing(v) ? "none" : val2str(v)
 
-# The text the editor shows for `target[key]`; a method permutation is shown as plain indices (`[3, 1, 2]`).
-_editor_text(target, key) = target isa ConfigFields && key === :permutation ? "[" * join(target[key], ", ") * "]" :
-                            _editor_display(target[key])
+# The text the editor shows for `target[key]`.
+_editor_text(target, key) = _editor_display(target[key])
 
 # Shows `s` in the editor's text box as its current (stored) value. Makie draws a displayed string that differs
 # from the stored one in the placeholder colour, so values set only through `displayed_string` looked like
@@ -719,16 +690,7 @@ function _editor_default(cat, scope, key)
     elseif cat === :simulation
         base = manager.base_config
         isnothing(base) && return missing
-        if scope === :config && key === :permutation
-            # The baseline order if it has the same methods, otherwise the automatic order
-            config = manager.active_config
-            isnothing(config) && return missing
-            current = unique(config.defaults)
-            same = Set(current) == Set(base.defaults)
-            return same ? _method_permutation(base.defaults) : collect(1:length(current))
-        end
-        target = scope === :shared ? base.shared : scope === :sweep ? base.varied :
-                 scope === :config ? ConfigFields(base) : get(base.methods, scope, nothing)
+        target = scope === :shared ? base.shared : get(base.methods, scope, nothing)
         (!isnothing(target) && haskey(target, key)) && return deepcopy(target[key])
     elseif cat === :labels
         # the built-in display name, i.e. the name without the custom label
@@ -757,36 +719,11 @@ function _parse_editor_input(s::AbstractString, old)
     return str2val(txt)
 end
 
-"""
-    _parse_sweep_input(s, old)
-
-Parses the swept values typed into `Simulation → Sweep` into a `Vector` (a single value sweeps one value). For a
-sweep of text values, unquoted items stay text: `[upwind, lax_friedrichs]`, or a single `1e3`.
-"""
-function _parse_sweep_input(s::AbstractString, old)
-    txt = strip(s)
-    text_sweep = old isa AbstractVector && !isempty(old) && all(v -> v isa AbstractString, old)
-    val = str2val(txt)
-    val isa AbstractVector && return collect(val)
-    if text_sweep
-        m = match(r"^\[(.*)\]$"s, txt)
-        isnothing(m) && return Any[_parse_editor_input(txt, "")]
-        items = filter(!isempty, strip.(split(m.captures[1], ',')))
-        return Any[_parse_editor_input(it, "") for it in items]
-    end
-    return Any[val]
-end
-
 # Flags or triggers whatever an editor change requires.
 function _after_editor_change!(cat, scope, key, target)
     if cat === :simulation
-        scope === :presets && return nothing
         manager.flags[:Simulation][] = true
-        if scope === :sweep && !isnothing(manager.active_config)
-            _map_parameters_to_sliders!(manager.active_config)
-        end
     elseif cat === :ui
-        scope === :presets && return nothing
         if key in REPLOT_OPTIONS
             manager.triggers[:Plot][] += 1
         else
@@ -805,8 +742,9 @@ function _after_editor_change!(cat, scope, key, target)
     return nothing
 end
 
-# The editor category of a tab: the Methods tab edits the simulation configuration, the Files tab the export settings.
-_data_cat(tab) = tab === :methods ? :simulation : tab === :files ? :ui : tab   # (:plot: the plot styles)
+# The editor category of a tab: the Methods and Shared tabs edit the simulation configuration, the Files tab the
+# export settings.
+_data_cat(tab) = tab in (:methods, :shared) ? :simulation : tab === :files ? :ui : tab   # (:plot: the plot styles)
 
 # The preset registry shown under `Presets` for an editor category.
 _preset_registry(cat) = cat === :simulation ? manager.sim_presets : manager.presets
@@ -823,29 +761,24 @@ const _SCOPE_LABELS = Dict(:presets => "Presets", :shared => "Shared", :sweep =>
 """
     _editor_sections(cat)
 
-The overview of an editor category: titled groups of pages (scopes). Simulation: with a bound configuration
-`Shared`, `Sweep` and `Config` (the methods have a tab of their own, the presets are in the Files tab). UI: *General*
-(fonts, labels, HUD, outliers), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type
-of the mode, each with the options that type uses). Labels: components, variables and methods. Advanced: the raw
-scopes of the `SimulationConfig` (`shared`, `varied`, the fields) and every method, active or not.
+The overview of an editor category: titled groups of pages (scopes). UI: *General* (fonts, HUD, outliers), *Labels*
+(the titles and axis labels of the plot, the display names of components, variables and methods), *Axes* (every axis variant: 1D, 2D/3D, Z) and *Plot styles* (one page per plot type
+of the mode, each with the options that type uses). Advanced: the raw scopes of the `SimulationConfig` (`shared`,
+`varied`, the fields) and the list of all methods.
 """
 function _editor_sections(cat)
-    if cat === :simulation
-        scopes = isnothing(manager.active_config) ? Symbol[] : Symbol[:shared, :sweep, :config]
-        return Pair{String, Vector{Symbol}}["" => scopes]
-    elseif cat === :ui
-        return Pair{String, Vector{Symbol}}["General" => Symbol[UI_GENERAL_SCOPES...],
+    if cat === :ui
+        general = Symbol[s for s in UI_GENERAL_SCOPES if s !== :labels]
+        return Pair{String, Vector{Symbol}}["General" => general,
+                                            "Labels" => Symbol[:labels, _LABEL_SCOPES...],
                                             "Axes" => Symbol[UI_AXIS_SCOPES...],
                                             "Plot styles" => _plot_style_scopes()]
-    elseif cat === :labels
-        return Pair{String, Vector{Symbol}}["" => Symbol[:components, :variables, :methods]]
     elseif cat === :plot
         return _plot_style_sections()
     elseif cat === :advanced
         config = manager.active_config
         isnothing(config) && return Pair{String, Vector{Symbol}}[]
-        methods = filter(m -> !(m in _RANK_0), sort_methods_robust(collect(keys(config.methods))))
-        return Pair{String, Vector{Symbol}}["Configuration" => Symbol[:shared, :sweep, :config], "Methods (all)" => methods]
+        return Pair{String, Vector{Symbol}}["" => Symbol[:shared, :sweep, :config, ADV_METHODS]]
     end
     return Pair{String, Vector{Symbol}}[]
 end
@@ -956,20 +889,27 @@ function _editor_keys(cat, scope)
     return Any[ks...]
 end
 
-_scope_label(cat, scope) = get(_SCOPE_LABELS, scope, cat === :simulation ? string(scope) : menu_opt(scope)[1])
-_key_label(cat, scope, key) = (cat === :ui || scope === :presets) && key isa Symbol ? menu_opt(key)[1] : string(key)
+_scope_label(cat, scope) = cat === :ui && scope === :labels ? "Plot" :   # the titles and axis labels of the plot
+                          get(_SCOPE_LABELS, scope, cat === :simulation ? string(scope) : menu_opt(scope)[1])
+
+# The editor category of a page: the UI tab also shows the display names (Labels: components, variables, methods).
+_scope_cat(tab, scope) = tab === :ui && scope in _LABEL_SCOPES ? :labels : _data_cat(tab)
+const _LABEL_SCOPES = (:components, :variables, :methods)
+_key_label(cat, scope, key) = cat === :ui && key isa Symbol ? menu_opt(key)[1] : string(key)
 
 # The label of a page button: the scope and (except in the static UI overview) its number of entries.
 function _scope_button_label(cat, scope)
     cat === :plot && return _style_label(scope)
-    cat === :advanced && return "$(_scope_label(:simulation, scope)) ($(length(_raw_keys(scope))))"
+    if cat === :advanced
+        scope === ADV_METHODS && return "Methods ($(isnothing(manager.active_config) ? 0 : length(manager.active_config.methods))) ›"
+        return "$(_scope_label(:simulation, scope)) ($(length(_raw_keys(scope))))"
+    end
     cat === :ui && return _scope_label(cat, scope)
     return "$(_scope_label(cat, scope)) ($(length(_editor_keys(cat, scope))))"
 end
 
-# What the button of a row does: apply a preset, toggle a Bool, or restore the default.
+# What the button of a row does: toggle a Bool, or restore the default.
 function _row_action(cat, scope, target, key)
-    scope === :presets && return :apply
     haskey(target, key) && target[key] isa Bool && return :toggle
     return :reset
 end
@@ -1008,10 +948,16 @@ function _editor_mode(tab, scope)
     if tab === :files
         scope === PRESET_LIST && return :preset_list
         scope === PRESET_FILE && return :preset_file
+        scope === RESOLUTION_SETTINGS && return :resolution
         return :rows                     # the export settings
     end
     tab === :plot && return :overview    # the plot styles
-    tab === :advanced && return isnothing(scope) ? :overview : :raw_rows
+    tab === :shared && return :rows      # the one page of the Shared tab
+    if tab === :advanced
+        isnothing(scope) && return :overview
+        scope === ADV_METHODS && return :adv_method_list
+        return :raw_rows
+    end
     if tab === :methods
         isnothing(scope) && return :method_list
         scope === ORDER_VIEW && return :method_order
@@ -1024,6 +970,11 @@ end
 function _editor_scope_valid(tab, scope)
     tab === :files && scope === PRESET_FILE && return !isnothing(_preset_rows(manager.preset_kind, manager.preset_name))
     haskey(TAB_EDITOR_PAGES, tab) && return scope in TAB_EDITOR_PAGES[tab]
+    tab === :shared && return scope === :shared && !isnothing(manager.active_config)
+    if tab === :advanced && !isnothing(scope)
+        config = manager.active_config
+        return !isnothing(config) && (scope in (:shared, :sweep, :config, ADV_METHODS) || haskey(config.methods, scope))
+    end
     isnothing(scope) && return true
     if tab === :methods
         config = manager.active_config
@@ -1338,7 +1289,7 @@ function _add_raw_key!()
     _after_raw_change!(scope, "Added $key = $(_short(_raw_text(v))) to $(_scope_label(:simulation, scope))")
 end
 
-# Advanced overview: adds an (inactive) method with no parameter overrides and opens it.
+# Advanced method list: adds an (inactive) method with no parameter overrides and opens it.
 function _add_method!()
     config = manager.active_config
     isnothing(config) && return nothing
@@ -1354,16 +1305,73 @@ function _add_method!()
     show_editor_page!(:advanced, m)
 end
 
-# Advanced: removes the open method from the configuration (and from the active methods).
-function _delete_method!()
+# Advanced: removes a method from the configuration (and from the active methods).
+function _delete_method!(m::Symbol)
     config = manager.active_config
-    m = first(get(manager.editor_view, :advanced, (nothing, 1)))
-    (isnothing(config) || isnothing(m) || !haskey(config.methods, m)) && return nothing
+    (isnothing(config) || !haskey(config.methods, m)) && return nothing
     delete!(config.methods, m)
     config.defaults = Symbol[x for x in config.defaults if x != m]
     manager.flags[:Simulation][] = true
     _status!("Method $m deleted. Run Simulation to apply.", :ok)
-    show_editor_page!(:advanced)
+    _render_editor!()
+end
+
+# --- Files tab: the resolution of the data and the references -----------------------------------------------------
+
+# Points per dimension the studio resamples to; the time dimension is coarser (see `_sync_resolution_dims!`).
+_default_resolution(dim::Symbol, is_ref::Bool) = is_ref ? (dim === :t ? 100 : 400) : (dim === :t ? 50 : 200)
+
+# The rows of the resolution page: every dimension for the data, then for the references.
+_resolution_items() = Any[[(d, false) for d in manager.allowed_dims]; [(d, true) for d in manager.allowed_dims]]
+
+function _bind_resolution_row!(i::Int, item)
+    dim, is_ref = item
+    w = manager.widgets
+    w[Symbol("editor_row_", i, "_label")][] = "$(frontend_key(dim))  ·  $(is_ref ? "reference" : "data")"
+    _show_editor_text!(w[Symbol("editor_row_", i, "_text")], string(get_resolution(dim; is_ref = is_ref)))
+    btn = w[Symbol("editor_row_", i, "_button")]
+    btn.label[] = "↺"
+    btn.buttoncolor[] = _ROW_NEUTRAL
+    return nothing
+end
+
+"""
+    _set_resolution_from_ui!(item, s)
+
+Sets the resolution (points per dimension) of the data or the references of a dimension (`set_resolution!`) from
+the Resolution page of the Files tab (`"default"` restores the default) and flags *Run Simulation*, which reloads
+the data at the new resolution (resampled representations are cached).
+"""
+function _set_resolution_from_ui!(item, s::AbstractString)
+    dim, is_ref = item
+    txt = strip(s)
+    n = txt == "default" ? _default_resolution(dim, is_ref) : tryparse(Int, txt)
+    if isnothing(n) || !(2 <= n <= 100_000)
+        _report(:warn, "The resolution is a whole number of points (2 to 100000), not '$(_short(String(txt), 20))'.")
+    else
+        set_resolution!(dim, n; is_ref = is_ref)
+        manager.flags[:Simulation][] = true
+        _status!("Resolution of $(frontend_key(dim)) ($(is_ref ? "references" : "data")): $n. Run Simulation to reload.", :ok)
+    end
+    _render_editor!()
+    return nothing
+end
+
+# --- Advanced tab: the list of all methods -----------------------------------------------------------------------
+
+_adv_method_items() = isnothing(manager.active_config) ? Symbol[] :
+                      filter(m -> !(m in _RANK_0), sort_methods_robust(collect(keys(manager.active_config.methods))))
+
+function _bind_adv_method_row!(i::Int, m::Symbol)
+    w = manager.widgets
+    active = m in manager.active_config.defaults
+    w[Symbol("method_row_", i, "_label")][] = active ? "$m  (active)" : string(m)
+    a, b = w[Symbol("method_row_", i, "_a")], w[Symbol("method_row_", i, "_b")]
+    a.label[] = "Edit ›"
+    a.buttoncolor[] = _ROW_NEUTRAL
+    b.label[] = "✕"
+    b.buttoncolor[] = RGBf(1.0, 0.85, 0.85)
+    return nothing
 end
 
 """
@@ -1379,11 +1387,10 @@ function _render_editor!()
     tab = manager.active_tab[]
     (_editor_tab(tab) && haskey(manager.panels, :editor_rows)) || return nothing
     w, p = manager.widgets, manager.panels
-    cat = _data_cat(tab)
-
-    scope, page = get(manager.editor_view, tab, (nothing, 1))
-    _editor_scope_valid(tab, scope) || ((scope, page) = (nothing, 1))
+    scope, page = _view(tab)
+    _editor_scope_valid(tab, scope) || ((scope, page) = (_default_scope(tab), 1))
     mode = _editor_mode(tab, scope)
+    cat = _scope_cat(tab, scope)
     if mode === :preset_file
         manager.preset_file_rows = something(_preset_rows(manager.preset_kind, manager.preset_name), Vector{String}[])
     end
@@ -1391,7 +1398,9 @@ function _render_editor!()
             mode === :rows ? _editor_keys(cat, scope) :
             mode === :preset_list ? _preset_items(manager.preset_kind) :
             mode === :preset_file ? Any[eachindex(manager.preset_file_rows)...] :
-            mode === :raw_rows ? _raw_keys(scope) : _method_items(mode)
+            mode === :raw_rows ? _raw_keys(scope) :
+            mode === :resolution ? _resolution_items() :
+            mode === :adv_method_list ? _adv_method_items() : _method_items(mode)
     per_page = mode === :overview ? max(OVERVIEW_BUTTONS, length(items)) : EDITOR_ROWS   # overviews are one page
     npages = max(1, cld(length(items), per_page))
     page = clamp(page, 1, npages)
@@ -1402,8 +1411,13 @@ function _render_editor!()
     config = manager.active_config
     title = if tab === :plot
         "Plot style"
+    elseif tab === :shared
+        "Shared parameters"
+    elseif mode === :resolution
+        "Resolution (points per dimension)"
     elseif tab === :advanced
-        isnothing(scope) ? "Advanced: the SimulationConfig" : "$(_scope_label(:simulation, scope))  (raw)"
+        isnothing(scope) ? "Advanced: the SimulationConfig" :
+        scope === ADV_METHODS ? "Methods (raw)" : "$(_scope_label(:simulation, scope))  (raw)"
     elseif mode === :overview
         TAB_LABELS[tab]
     elseif mode === :preset_list
@@ -1421,16 +1435,14 @@ function _render_editor!()
     end
     w[:editor_title][] = npages > 1 ? "$title  ($page/$npages)" : title
 
-    # Panel rows: header, the tools of the Methods tab, body, the add-rows of the preset file / raw pages
+    # Panel rows: header, the tools of the Methods tab, body, the add-rows of the preset file / raw / method list pages
     in_methods = mode in (:method_list, :method_order)
     raw_dict = mode === :raw_rows && scope !== :config
     _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body], p[:preset_add], p[:raw_add], p[:method_add]],
-           [true, in_methods, true, mode === :preset_file, raw_dict, tab === :advanced && mode === :overview && !isnothing(config)];
-           gap = 8)
-    raw_dict && _pack!(p[:raw_add], [p[:raw_add_row], p[:raw_delete_method]],
-                       [true, !(scope in (:shared, :sweep))]; gap = 6)
-    (mode in (:rows, :raw_rows, :preset_list, :preset_file) || tab === :plot) ?
-        _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
+           [true, in_methods, true, mode === :preset_file, raw_dict, mode === :adv_method_list]; gap = 8)
+    has_back = (mode in (:rows, :raw_rows, :preset_list, :preset_file, :resolution, :adv_method_list) || tab === :plot) &&
+               tab !== :shared
+    has_back ? _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
     npages > 1 ? _place!(p[:editor_pager], p[:editor_header], 1, 3) : _park!(p[:editor_pager])
     if in_methods
         w[:method_filter].label[] = "Show: $(manager.method_filter)"
@@ -1438,7 +1450,7 @@ function _render_editor!()
     end
 
     body_view = mode === :overview ? :editor_overview :
-                mode in (:rows, :preset_file, :raw_rows) ? :editor_rows : :method_rows
+                mode in (:rows, :preset_file, :raw_rows, :resolution) ? :editor_rows : :method_rows
     for name in (:editor_overview, :editor_rows, :method_rows)
         name === body_view || _park!(p[name])
     end
@@ -1447,13 +1459,14 @@ function _render_editor!()
     if mode === :overview
         manager.editor_row_keys = Any[]
         _render_overview!(cat)
-    elseif mode in (:rows, :preset_file, :raw_rows)
+    elseif mode in (:rows, :preset_file, :raw_rows, :resolution)
         manager.editor_page_scopes = Symbol[]
         manager.editor_row_keys = Any[page_items...]
         target = mode === :rows ? _editor_target(cat, scope) : nothing
         for (i, key) in enumerate(page_items)
             mode === :rows ? _bind_editor_row!(i, cat, scope, target, key) :
-            mode === :preset_file ? _bind_preset_file_row!(i, key) : _bind_raw_row!(i, scope, key)
+            mode === :preset_file ? _bind_preset_file_row!(i, key) :
+            mode === :resolution ? _bind_resolution_row!(i, key) : _bind_raw_row!(i, scope, key)
         end
         rows = [p[Symbol("editor_row_", i)] for i in 1:EDITOR_ROWS]
         _pack!(p[:editor_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
@@ -1462,7 +1475,8 @@ function _render_editor!()
         manager.editor_row_keys = Any[page_items...]
         for (i, m) in enumerate(page_items)
             mode === :preset_list ? _bind_preset_row!(i, manager.preset_kind, m) :
-                                    _bind_method_row!(i, mode, m, offset + i, length(items))
+            mode === :adv_method_list ? _bind_adv_method_row!(i, m) :
+                                        _bind_method_row!(i, mode, m, offset + i, length(items))
         end
         rows = [p[Symbol("method_row_", i)] for i in 1:EDITOR_ROWS]
         _pack!(p[:method_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
@@ -1512,12 +1526,13 @@ end
 """
     show_editor_page!(tab::Symbol, scope = nothing; page = 1)
 
-Opens a page of the editor in the tab `tab` (`:methods`, `:simulation`, `:ui` or `:labels`): the rows of `scope`
-(e.g. `:shared`, `:config`, `:x_axis_nd`, `:lines_1d`, `:presets`; in the Methods tab a method, or `ORDER_VIEW` for
-the drawing order), or for `scope = nothing` the overview of the tab (the method list in the Methods tab). In the
-Files tab, `EXPORT_SETTINGS` opens the export settings and `nothing` the Files panel; in the Plot tab,
-`STYLE_CHOOSER` opens the page of all plot styles. `page` selects the page of a
-long scope. A no-op without an open window.
+Opens a page of the editor in the tab `tab`: in the UI tab the rows of `scope` (e.g. `:hud`, `:x_axis_nd`,
+`:lines_1d`, `:methods` for the display names of the methods) or the overview (`scope = nothing`); the Shared tab has
+one page; in the Methods tab a method, the drawing order (`ORDER_VIEW`) or the method list (`nothing`); in the
+Advanced tab `:shared`, `:sweep`, `:config`, a method, the method list (`ADV_METHODS`) or the overview. In the Files
+tab `EXPORT_SETTINGS`, `RESOLUTION_SETTINGS`, `PRESET_LIST` or `PRESET_FILE` (with `manager.preset_kind` /
+`preset_name`), and `nothing` for the Files panel; in the Plot tab `STYLE_CHOOSER`, the page of all plot styles.
+`page` selects the page of a long list. A no-op without an open window.
 """
 function show_editor_page!(tab::Symbol, scope = nothing; page::Int = 1)
     (tab in EDITOR_TABS || haskey(TAB_EDITOR_PAGES, tab)) ||
@@ -1532,10 +1547,10 @@ end
 function _editor_row_binding(i::Int)
     tab = manager.active_tab[]
     _editor_tab(tab) || return nothing
-    scope, _ = get(manager.editor_view, tab, (nothing, 1))
+    scope, _ = _view(tab)
     _editor_mode(tab, scope) === :rows || return nothing
     i > length(manager.editor_row_keys) && return nothing
-    cat = _data_cat(tab)
+    cat = _scope_cat(tab, scope)
     target = _editor_target(cat, scope)
     isnothing(target) && return nothing
     return (cat, scope, manager.editor_row_keys[i], target)
@@ -1605,17 +1620,13 @@ end
 """
     _apply_editor_input!(cat, scope, key, target, s, tb) -> Bool
 
-Applies text typed into the value box `tb` of a row to `target[key]`: preset descriptions are stored (and written
-to the preset file), `default` restores the default (see `_editor_default`), labels are set as text, sweeps are
-parsed with `_parse_sweep_input`, everything else with the safe literal parser (`_parse_editor_input`). Colours are
-validated. Returns whether something changed; problems are reported as warnings.
+Applies text typed into the value box `tb` of a row to `target[key]`: `default` restores the default (see
+`_editor_default`), labels are set as text, everything else is parsed with the safe literal parser
+(`_parse_editor_input`, see `_valid_editor_value`). Colours are validated. Returns whether something changed; problems are reported as warnings.
 """
 function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
     try
-        if scope === :presets
-            target[key] = String(s)  # the description
-            _store_preset_description!(cat, key, String(s))
-        elseif strip(s) == "default"
+        if strip(s) == "default"
             val = _editor_default(cat, scope, key)
             if ismissing(val)
                 _report(:warn, "No default value is known for '$key'.")
@@ -1625,15 +1636,7 @@ function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
         elseif cat === :labels
             set_label!(key, String(s))
         else
-            if cat === :simulation && scope === :sweep
-                val = _parse_sweep_input(s, target[key])
-                if isempty(val)
-                    _report(:warn, "A sweep needs at least one value; '$key' was not changed.")
-                    return false
-                end
-            else
-                val = _parse_editor_input(s, target[key])
-            end
+            val = _parse_editor_input(s, target[key])
             if !_valid_editor_value(s, target, key, val)
                 _report(:warn, "'$key' was not changed: '$(_short(String(strip(s)), 30))' is not a valid value. " *
                                "Use numbers, :symbols, [vectors], (tuples) or \"text\" in quotes.")
@@ -1661,24 +1664,21 @@ end
 
 Whether parsed editor input may be stored. Input that is no literal at all (e.g. `[1, 2`) comes back from the parser
 as text; that is only accepted where the value is text already (or quoted, `"…"`), not for numbers, symbols, vectors
-and other values, so a typo can't silently change a parameter's type. Function names (`reference`, `postprocess`)
-may be typed without a colon, colours and colormaps as plain text.
+and other values, so a typo can't silently change a parameter's type. Colours and colormaps may be typed as plain
+text.
 """
 function _valid_editor_value(s::AbstractString, target, key, val)
     txt = strip(s)
     (startswith(txt, '"') || !(val isa AbstractString || (val isa AbstractVector && any(v -> v isa AbstractString, val)))) && return true
     old = haskey(target, key) ? target[key] : nothing
     old isa AbstractString && return true
-    target isa ConfigFields && key in (:reference, :postprocess) && return true
     key in (_COLOR_UI_KEYS..., :color_map) && return true   # checked by `_valid_ui_value` (`#1f77b4`, `red`, `viridis`)
     (isnothing(old) || old === missing) && return true
-    old isa AbstractVector && !isempty(old) && all(v -> v isa AbstractString, old) && return true   # a text sweep
     return false
 end
 
 # Status message after an edit.
 function _change_message(cat, scope, key, target)
-    scope === :presets && return "Description of preset '$key' saved."
     cat === :labels && return "Label of $key: $(_short(get(manager.labels, key, "")))"
     val = haskey(target, key) ? _short(_editor_text(target, key)) : ""
     where = "$(_scope_label(cat, scope)) → $key = $val"
@@ -1727,6 +1727,9 @@ function _setup_editor_interactions!()
             mode = _active_editor_mode()
             if mode === :preset_file
                 return _set_preset_value!(i, s)
+            elseif mode === :resolution
+                i <= length(manager.editor_row_keys) || return
+                return _set_resolution_from_ui!(manager.editor_row_keys[i], s)
             elseif mode === :raw_rows
                 i <= length(manager.editor_row_keys) || return
                 return _apply_raw_input!(first(manager.editor_view[:advanced]), manager.editor_row_keys[i], s)
@@ -1740,6 +1743,9 @@ function _setup_editor_interactions!()
             mode = _active_editor_mode()
             if mode === :preset_file
                 return _delete_preset_row!(i)
+            elseif mode === :resolution
+                i <= length(manager.editor_row_keys) || return
+                return _set_resolution_from_ui!(manager.editor_row_keys[i], "default")
             elseif mode === :raw_rows
                 i <= length(manager.editor_row_keys) || return
                 return _delete_raw_key!(first(manager.editor_view[:advanced]), manager.editor_row_keys[i])
@@ -1760,8 +1766,12 @@ function _setup_editor_interactions!()
     manager.listeners[:Editor_Back] = on(w[:editor_back].clicks) do _
         tab = manager.active_tab[]
         _editor_tab(tab) || return
-        _active_editor_mode() === :preset_file ? show_editor_page!(:files, PRESET_LIST) : show_editor_page!(tab)
+        mode = _active_editor_mode()
+        mode === :preset_file ? show_editor_page!(:files, PRESET_LIST) :
+        tab === :advanced && mode === :raw_rows && !(first(_view(tab)) in (:shared, :sweep, :config)) ?
+            show_editor_page!(:advanced, ADV_METHODS) : show_editor_page!(tab)
     end
+    manager.listeners[:Resolution_Page] = on(_ -> show_editor_page!(:files, RESOLUTION_SETTINGS), w[:resolution_button].clicks)
     for (name, kind) in ((:sim_presets_button, :simulation), (:look_presets_button, :visual))
         manager.listeners[Symbol("Preset_List_", kind)] = on(w[name].clicks) do _
             manager.preset_kind = kind
@@ -1771,12 +1781,20 @@ function _setup_editor_interactions!()
     end
     manager.listeners[:Preset_Add] = on(_ -> _add_preset_row!(), w[:preset_add_button].clicks)
     manager.listeners[:Raw_Add] = on(_ -> _add_raw_key!(), w[:raw_add_button].clicks)
-    manager.listeners[:Raw_Delete_Method] = on(_ -> _delete_method!(), w[:raw_delete_method].clicks)
     manager.listeners[:Method_Add] = on(_ -> _add_method!(), w[:method_add_button].clicks)
     manager.listeners[:Export_Settings] = on(_ -> show_editor_page!(:files, EXPORT_SETTINGS), w[:export_settings_button].clicks)
     for i in 1:EDITOR_ROWS, which in (:a, :b)
         manager.listeners[Symbol("Method_Row_", i, "_", which)] = on(w[Symbol("method_row_", i, "_", which)].clicks) do _
-            _active_editor_mode() === :preset_list ? _preset_row_action!(i, which) : _method_row_action!(i, which)
+            mode = _active_editor_mode()
+            if mode === :preset_list
+                _preset_row_action!(i, which)
+            elseif mode === :adv_method_list
+                i <= length(manager.editor_row_keys) || return
+                m = manager.editor_row_keys[i]
+                which === :a ? show_editor_page!(:advanced, m) : _delete_method!(m)
+            else
+                _method_row_action!(i, which)
+            end
         end
     end
     manager.listeners[:Method_Filter] = on(w[:method_filter].clicks) do _

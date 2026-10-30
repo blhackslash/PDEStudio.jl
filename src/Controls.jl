@@ -5,28 +5,34 @@
 # Width of the control panel (pixels).
 const CONTROL_WIDTH = 500
 
-# Tabs of the control panel and their button labels. The Methods tab, the three editor categories (Simulation, UI,
-# Labels) and the Advanced tab show the editor; the Methods tab edits the simulation configuration through the
-# studio's views, the Advanced tab edits the `SimulationConfig` itself.
-const CONTROL_TABS = (:plot, :methods, :simulation, :ui, :labels, :files, :advanced)
-const TAB_LABELS = Dict(:plot => "Plot", :methods => "Methods", :simulation => "Simulation", :ui => "UI",
-                        :labels => "Labels", :files => "Files", :advanced => "Advanced")
-const EDITOR_TABS = (:methods, :simulation, :ui, :labels, :advanced)
+# Tabs of the control panel and their button labels. Methods, Shared, UI and Advanced show the editor: Methods and
+# Shared edit the simulation configuration through the studio's views (the method list, the shared parameters), UI
+# the look and the display names, Advanced the `SimulationConfig` itself (sweep, fields, all methods).
+const CONTROL_TABS = (:plot, :methods, :shared, :ui, :files, :advanced)
+const TAB_LABELS = Dict(:plot => "Plot", :methods => "Methods", :shared => "Shared", :ui => "UI",
+                        :files => "Files", :advanced => "Advanced")
+const EDITOR_TABS = (:methods, :shared, :ui, :advanced)
 const TAB_ROWGAP = 12   # gap between the panels of a tab
 
 # The panels (widget groups) each tab shows, top to bottom. The editor panel is shared by the editor tabs.
-const TAB_PANELS = Dict(:plot => (:layout, :plot), :methods => (:editor,), :simulation => (:editor,),
-                        :ui => (:editor,), :labels => (:editor,), :files => (:files,), :advanced => (:editor,))
+const TAB_PANELS = Dict(:plot => (:layout, :plot), :methods => (:editor,), :shared => (:editor,),
+                        :ui => (:editor,), :files => (:files,), :advanced => (:editor,))
 const TAB_PANEL_NAMES = (:plot, :layout, :editor, :files)
 
 # The Files tab shows its panel, or one of its editor pages: the export settings (`EXPORT_SETTINGS`, `ui[:export]`),
-# the list of the simulation or look presets (`PRESET_LIST`) or the rows of a preset file (`PRESET_FILE`). The Plot
+# the resolution (`RESOLUTION_SETTINGS`), the list of the simulation or look presets (`PRESET_LIST`) or the rows of
+# a preset file (`PRESET_FILE`). The Plot
 # tab shows its options, or the page of all plot styles (`STYLE_CHOOSER`).
 const EXPORT_SETTINGS = :export
 const PRESET_LIST = Symbol("#presets")
 const PRESET_FILE = Symbol("#preset_file")
+const RESOLUTION_SETTINGS = Symbol("#resolution")
 const STYLE_CHOOSER = Symbol("#styles")
-const TAB_EDITOR_PAGES = Dict(:files => (EXPORT_SETTINGS, PRESET_LIST, PRESET_FILE), :plot => (STYLE_CHOOSER,))
+const TAB_EDITOR_PAGES = Dict(:files => (EXPORT_SETTINGS, RESOLUTION_SETTINGS, PRESET_LIST, PRESET_FILE),
+                              :plot => (STYLE_CHOOSER,))
+
+# The Advanced tab lists all methods on a page of its own (`ADV_METHODS`), with Edit and ✕.
+const ADV_METHODS = Symbol("#methods")
 
 # Types offered when a key is added in the Advanced tab (`auto`: the literal as typed).
 const RAW_VALUE_TYPES = (:auto, :Int, :Float64, :Bool, :String, :Symbol, :Tuple,
@@ -38,10 +44,10 @@ const METHOD_FILTERS = (:active, :disabled, :all)
 
 # The editor shows an overview of the pages (scopes) of its category, or one page with a row per key. Both are
 # fixed sets of widgets, bound to the selected category / scope on the fly (see `_render_editor!`).
-const EDITOR_ROWS = 12        # key rows of a page; longer scopes get ◀ ▶ pages
+const EDITOR_ROWS = 16        # key rows of a page (the height of the Plot tab); longer scopes get ◀ ▶ pages
 const OVERVIEW_BUTTONS = 30   # page buttons of an overview (UI: 5 general + 5 axes + up to 17 plot styles)
 const OVERVIEW_COLS = 3
-const OVERVIEW_SECTIONS = 5   # titled groups of an overview (UI: General, Axes, Plot styles; plot styles: one per base plot)
+const OVERVIEW_SECTIONS = 5   # titled groups of an overview (UI: General, Labels, Axes, Plot styles; plot styles: one per base plot)
 const EDITOR_ROWGAP = 4
 const SLIDER_ROWGAP = 5
 
@@ -50,7 +56,7 @@ const SLIDER_ROWGAP = 5
 
 Constructs the primary control panel inside the provided Makie `GridLayout`, top to bottom:
 
-1. The tab bar (`Plot`, `Methods`, `Simulation`, `UI`, `Labels`, `Files`, `Advanced`).
+1. The tab bar (`Plot`, `Methods`, `Shared`, `UI`, `Files`, `Advanced`).
 2. The tab content: the panel(s) of the selected tab (see `TAB_PANELS`). Every panel is built once; the panels of
    the other tabs are parked off-screen by `show_tab!`.
 3. The status line (see `_status!`).
@@ -149,8 +155,8 @@ end
     create_file_controls!(layout::GridLayout)
 
 Builds the `Files` tab: the name / path box (exports, presets, CSV loading) and the description of a new preset;
-loading a CSV (or drop a file anywhere on the window), export and its settings (an editor page of `ui[:export]`); and
-the presets: save / reset the simulation (the physics) and the look (the visual settings), and *Presets ›*, the list
+loading a CSV (or drop a file anywhere on the window), export and its settings (an editor page of `ui[:export]`); the
+resolution of the data and the references (an editor page, see `_set_resolution_from_ui!`); and the presets: save / reset the simulation (the physics) and the look (the visual settings), and *Presets ›*, the list
 of the saved presets with *Apply* and *Edit ›* (the rows of the preset file). Results are shown in the status line.
 """
 function create_file_controls!(layout::GridLayout)
@@ -166,21 +172,23 @@ function create_file_controls!(layout::GridLayout)
     w[:export_settings_button] = Button(layout[3, 4], label = "Settings ›", width = nothing)
     Label(layout[4, 1:4], "CSV files can also be dropped anywhere on the window.", halign = :left, fontsize = 11,
           color = :gray40)
+    Label(layout[5, 1], "Data", halign = :left, fontsize = 13)
+    w[:resolution_button] = Button(layout[5, 2:3], label = "Resolution ›", width = nothing)
 
-    Label(layout[5, 1:4], "Presets", halign = :left, font = :bold, color = :darkred)
+    Label(layout[6, 1:4], "Presets", halign = :left, font = :bold, color = :darkred)
     neutral = RGBf(0.92, 0.92, 0.92)
-    Label(layout[6, 1], "Simulation", halign = :left, fontsize = 13)
-    w[:save_sim_preset_button] = Button(layout[6, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
-    w[:reset_sim_button]       = Button(layout[6, 3], label = "Reset", buttoncolor = neutral, width = nothing)
-    w[:sim_presets_button]     = Button(layout[6, 4], label = "Presets ›", width = nothing)
-    Label(layout[7, 1], "Look", halign = :left, fontsize = 13)
-    w[:save_presets_button]  = Button(layout[7, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
-    w[:clear_presets_button] = Button(layout[7, 3], label = "Reset", buttoncolor = neutral, width = nothing)
-    w[:look_presets_button]  = Button(layout[7, 4], label = "Presets ›", width = nothing)
+    Label(layout[7, 1], "Simulation", halign = :left, fontsize = 13)
+    w[:save_sim_preset_button] = Button(layout[7, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
+    w[:reset_sim_button]       = Button(layout[7, 3], label = "Reset", buttoncolor = neutral, width = nothing)
+    w[:sim_presets_button]     = Button(layout[7, 4], label = "Presets ›", width = nothing)
+    Label(layout[8, 1], "Look", halign = :left, fontsize = 13)
+    w[:save_presets_button]  = Button(layout[8, 2], label = "Save", buttoncolor = :lightblue, width = nothing)
+    w[:clear_presets_button] = Button(layout[8, 3], label = "Reset", buttoncolor = neutral, width = nothing)
+    w[:look_presets_button]  = Button(layout[8, 4], label = "Presets ›", width = nothing)
 
     colsize!(layout, 1, Fixed(100))
     rowgap!(layout, 3, 2)    # the hint belongs to the buttons above it
-    rowgap!(layout, 4, 14)   # space before the presets
+    rowgap!(layout, 5, 14)   # space before the presets
 end
 
 # ==============================================================================
@@ -360,7 +368,7 @@ the `Files` tab (export settings, presets):
 - the item rows: `EDITOR_ROWS` rows of name and two buttons (Methods tab: active/off and Edit, or ▲ ▼; Files tab:
   Apply and Edit of a preset);
 - rows that add an entry: to a preset file (category and scope, key, value), to a configuration scope in the
-  Advanced tab (key, type, value; plus deleting a method) and a method (Advanced overview).
+  Advanced tab (key, type, value) and a method (Advanced method list).
 
 All of it is built once; `_render_editor!` binds the widgets to the selected page and parks the unused ones.
 """
@@ -393,10 +401,9 @@ function create_editor_controls!(layout::GridLayout)
         w[Symbol("editor_page_", j)] = Button(overview[(j - 1) ÷ OVERVIEW_COLS + 1, (j - 1) % OVERVIEW_COLS + 1],
                                               label = " ", width = nothing, fontsize = 12, buttoncolor = RGBf(0.88, 0.92, 1.0))
     end
-    # Section titles; built below the buttons (three rows: no overview needs more rows in total) so the measured
-    # height of the panel includes them
+    # Section titles; built below the buttons so the measured height of the panel includes them
     for k in 1:OVERVIEW_SECTIONS
-        w[Symbol("editor_section_", k)] = Label(overview[cld(OVERVIEW_BUTTONS, OVERVIEW_COLS) + min(k, 3), 1:OVERVIEW_COLS], " ",
+        w[Symbol("editor_section_", k)] = Label(overview[cld(OVERVIEW_BUTTONS, OVERVIEW_COLS) + k, 1:OVERVIEW_COLS], " ",
                                                 halign = :left, font = :bold, color = :darkred, fontsize = 13)
     end
     for c in 1:OVERVIEW_COLS; colsize!(overview, c, Relative(1 / OVERVIEW_COLS)); end
@@ -429,28 +436,25 @@ function create_editor_controls!(layout::GridLayout)
     end
     rowgap!(method_rows, EDITOR_ROWGAP)
 
-    # --- Rows that add entries; all built in one row (at most one is shown), parked unless their page is open ---
+    # --- Rows that add entries; built in the row of the tools (a page shows at most one of them, never with the
+    #     tools), so the measured height counts one; `_render_editor!` packs the shown one below the body ---
     neutral = RGBf(0.92, 0.92, 0.92)
     # a row of a preset file
-    preset_add = p[:preset_add] = layout[4, 1] = GridLayout()
+    preset_add = p[:preset_add] = layout[2, 1] = GridLayout()
     w[:preset_add_scope] = Textbox(preset_add[1, 1], placeholder = "Category, Scope", width = nothing, fontsize = 12)
     w[:preset_add_key]   = Textbox(preset_add[1, 2], placeholder = "key", width = nothing, fontsize = 12)
     w[:preset_add_value] = Textbox(preset_add[1, 3], placeholder = "value", width = nothing, fontsize = 12)
     w[:preset_add_button] = Button(preset_add[1, 4], label = "Add", buttoncolor = :lightblue, width = nothing)
     colsize!(preset_add, 1, Relative(0.32)); colsize!(preset_add, 4, Fixed(46))
-    # a key of a raw configuration scope (Advanced), with its type; and deleting a method
-    raw_add = p[:raw_add] = layout[4, 1] = GridLayout()
-    raw_add_row = p[:raw_add_row] = raw_add[1, 1] = GridLayout()
+    # a key of a raw configuration scope (Advanced), with its type
+    raw_add_row = p[:raw_add] = layout[2, 1] = GridLayout()
     w[:raw_add_key]   = Textbox(raw_add_row[1, 1], placeholder = "new key", width = nothing, fontsize = 12)
     w[:raw_add_type]  = Menu(raw_add_row[1, 2], options = Any[(string(t), t) for t in RAW_VALUE_TYPES], fontsize = 12)
     w[:raw_add_value] = Textbox(raw_add_row[1, 3], placeholder = "value", width = nothing, fontsize = 12)
     w[:raw_add_button] = Button(raw_add_row[1, 4], label = "Add", buttoncolor = :lightblue, width = nothing)
     colsize!(raw_add_row, 1, Relative(0.28)); colsize!(raw_add_row, 2, Fixed(120)); colsize!(raw_add_row, 4, Fixed(46))
-    p[:raw_delete_method] = raw_add[2, 1] = GridLayout()
-    w[:raw_delete_method] = Button(p[:raw_delete_method][1, 1], label = "Delete this method", buttoncolor = RGBf(1.0, 0.8, 0.8),
-                                   width = nothing)
-    # a method (Advanced overview)
-    method_add = p[:method_add] = layout[4, 1] = GridLayout()
+    # a method (Advanced method list)
+    method_add = p[:method_add] = layout[2, 1] = GridLayout()
     w[:method_add_name]   = Textbox(method_add[1, 1], placeholder = "name of a new method", width = nothing, fontsize = 12)
     w[:method_add_button] = Button(method_add[1, 2], label = "Add method", buttoncolor = neutral, width = nothing)
     colsize!(method_add, 2, Fixed(110))
