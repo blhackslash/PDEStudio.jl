@@ -97,6 +97,43 @@ function _store_preset_description!(cat, name, desc::AbstractString)
     end
 end
 
+# The folder and registry of the simulation (`kind = :simulation`) or look (`:visual`) presets.
+_preset_kind_dir(kind::Symbol) = kind === :simulation ? sim_preset_dir() : preset_dir()
+_preset_kind_registry(kind::Symbol) = kind === :simulation ? manager.sim_presets : manager.presets
+
+"""
+    _preset_rows(kind, name) -> Union{Nothing, Vector{Vector{String}}}
+
+The rows `[Category, Scope, Parameter, Value]` of a preset file, as written (the values unparsed), or `nothing` if the
+preset has no file (the built-in look presets).
+"""
+function _preset_rows(kind::Symbol, name)
+    path = _preset_file(_preset_kind_dir(kind), name)
+    isnothing(path) && return nothing
+    return [String[String(coalesce(getproperty(row, c), "")) for c in (:Category, :Scope, :Parameter, :Value)]
+            for row in CSV.Rows(path)]
+end
+
+"""
+    _write_preset_rows!(kind, name, rows) -> Bool
+
+Writes the rows `[Category, Scope, Parameter, Value]` back to the file of a preset (atomically) and refreshes its
+description in the preset list. Returns `false` if the preset has no file.
+"""
+function _write_preset_rows!(kind::Symbol, name, rows::AbstractVector)
+    path = _preset_file(_preset_kind_dir(kind), name)
+    isnothing(path) && return false
+    out = _CSVRows()
+    for r in rows
+        push!(out.cats, r[1]); push!(out.scopes, r[2]); push!(out.params, r[3]); push!(out.vals, r[4])
+    end
+    tmp = path * ".tmp"
+    _write_rows(tmp, out)
+    mv(tmp, path; force = true)   # a failed write leaves the preset as it was
+    _preset_kind_registry(kind)[Symbol(name)] = _preset_description(last(_read_csv(path)), "Custom disk preset")
+    return true
+end
+
 """
     refresh_preset_registries!()
 

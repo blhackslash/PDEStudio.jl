@@ -43,6 +43,14 @@
   variant keeps its own settings (`x_axis_1d`, …), so switching between 1D and 2D/3D plots no longer resets them.
 - Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in
   the status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is still accepted.
+- **Advanced** tab: edits the `SimulationConfig` directly (shared, varied, the fields and every method, active or
+  not). Values are Julia literals with their types, parsed strictly; ✕ deletes a key; new keys are added with a type
+  (`auto`, `Int`, `Float64`, `Bool`, `String`, `Symbol`, `Tuple`, vectors); methods can be added and deleted.
+- All presets are in the Files tab: *Presets ›* lists the simulation or look presets with *Apply* and *Edit ›*, a
+  page of the rows of the preset file (edit values, ✕ delete rows, add rows); written to the file right away. The
+  Presets pages of the Simulation and UI tabs are gone.
+- The Plot tab lists one option per row (name on the left) instead of the three-column grid. The control panel is
+  500 px wide; the tabs are as wide as their labels.
 - The plot area keeps its titles and axis labels inside its own box, so they no longer add height to the window
   (about 140 px less).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
@@ -73,7 +81,9 @@
   gives the active variant).
 - The preset buttons are `:save_sim_preset_button`, `:reset_sim_button` (simulation), `:save_presets_button`,
   `:clear_presets_button` (look) in the Files tab, with the description in `:preset_desc_text`; the `:create_new`
-  preset entry is gone. Scripts that drove the editor through them should use
+  preset entry is gone.
+- The Simulation and UI overviews have no *Presets* page (`show_editor_page!(:simulation, :presets)`); use the
+  Files tab (`show_editor_page!(:files, PDEStudio.PRESET_LIST)` with `manager.preset_kind`). Scripts that drove the editor through them should use
   `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /
   `:editor_row_<i>_button`). The CSV format is unchanged.
 

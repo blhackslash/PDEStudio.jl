@@ -28,11 +28,11 @@ Type a new value into a row and press Enter. Input is parsed with the safe liter
 The tab selects which part of the studio you edit.
 
 #### 1. Simulation
-The `PDEStudioCore` configuration. Scopes:
+The `PDEStudioCore` configuration, with conveniences (text stays text, single values become sweeps, the
+`permutation` view). Scopes (the presets are in the **Files** tab, the methods in the **Methods** tab):
 
 | Scope | Edits |
 | :--- | :--- |
-| **Presets** | Simulation presets: one row per preset (its description, editable) with an **Apply** button. Presets are saved in the **Files** tab (see [Presets](presets.md)). |
 | **Shared** | `config.shared`, the parameters every run uses. |
 | **Sweep** | `config.varied`, the swept values. A single value becomes a one-value sweep; in a sweep of text values, unquoted items stay text (`[upwind, lax_friedrichs]`). The sliders are remapped immediately. (A swept key only takes effect if it exists in the shared or method parameters.) |
 | **Config** | `defaults` (the active methods, in the order they are drawn: legends, colours and the *Methods* comparison follow it, so reorder the list here to override the automatic order), `permutation` (the same order as indices, see below; both rows are on the same page), `reference` and `postprocess` (function names; `none` clears one), `sources`. |
@@ -42,10 +42,10 @@ The `PDEStudioCore` configuration. Scopes:
 
 #### 2. UI
 The look of the renderer. The overview is fixed and lists every page:
-*   **General:** *Presets* (the look presets, applied with **Apply**), *Axis General* (font sizes, legend sorting), *Labels*, *HUD*, *Outliers & Extrema*.
+*   **General:** *Axis General* (font sizes, legend sorting), *Labels*, *HUD*, *Outliers & Extrema*.
 *   **Axes:** one page per axis variant: *X/Y Axis (1D)* for 1D plots, *X/Y Axis (2D/3D)* for 2D and 3D plots, *Z Axis (3D)*. Each variant keeps its own settings, so switching between a 1D and a 2D plot doesn't lose them.
 *   **Plot styles:** one page per plot type with the options that type uses (colours, colormap, line width, markers, levels, …). The options are shared between the plot types that use them (e.g. one colormap for all colormap plots).
-*   The pages of the active plot (its plot type and axis variants) are highlighted. The export settings are in the **Files** tab.
+*   The pages of the active plot (its plot type and axis variants) are highlighted. The look presets and the export settings are in the **Files** tab.
 *   **Trigger Behavior:** changes trigger a visual update; options that change the drawn data (e.g. the method index of a comparison) redraw the plot.
 *   **Titles and axis labels** are set here under **UI → Labels**.
 
@@ -66,3 +66,22 @@ automatic order: references first, then alphabetical, the order the `permutation
     comparison follow it), numbered from the top. **▲ / ▼** move a method; the new order is drawn after the next
     *Run Simulation* (cached results are reused). **◀ Method list** returns to the list.
 *   The title shows how many methods are active; long lists get ◀ ▶ pages.
+
+### 🧰 The Advanced Tab
+
+The **Advanced** tab edits the `SimulationConfig` directly, bypassing every convenience of the other tabs. Its
+overview lists *Configuration* (`Shared` = `config.shared`, `Sweep` = `config.varied`, `Config` = the fields) and
+*Methods (all)*, every method of `config.methods`, active or not.
+*   **Values are Julia literals with their type**, shown exactly as stored: `20`, `0.5`, `"upwind"` (text is
+    quoted), `:symbol`, `Float64[0.2, 0.5]`, `(500,)`, `nothing`. What you type is parsed the same way and stored
+    as it is: no text fallback (unquoted text is refused), no single-value sweeps (a sweep must be a vector), no
+    `permutation` view.
+*   **✕ deletes a key** from `shared`, `varied` or a method (the fields of `Config` can't be deleted).
+*   **Adding a key:** the row below the entries takes the name, the **type** (`auto` reads the literal as typed;
+    `Int`, `Float64`, `Bool`, `String`, `Symbol`, `Tuple` and vectors of `Float64`, `Int`, `Symbol` or `String`
+    convert the text, so `[a, b]` with `Vector{Symbol}` gives `[:a, :b]`) and the value.
+*   **Methods:** *Add method* on the overview creates an (inactive) method without overrides and opens it;
+    *Delete this method* on a method's page removes it from the configuration and from the active methods.
+*   Every change sets the `Run Simulation` lock: the configuration changed, so everything is computed again (results
+    with unchanged parameters are reused from the cache).
+

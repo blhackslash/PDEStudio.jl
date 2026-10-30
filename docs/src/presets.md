@@ -8,7 +8,7 @@ A study usually has two independent halves: *how it looks* (layout, axes, colors
 | **Ignores** | Everything in the *Simulation* category | Everything visual, and source files |
 | **Folder** | `<save path>/Presets/` | `<save path>/Presets/Simulation/` |
 | **Save** | *Files → Look → Save* · [`save_plot_preset`](@ref) | *Files → Simulation → Save* · [`save_sim_preset`](@ref) |
-| **Apply** | *UI → Presets* + **Apply** · [`set_plot_preset!`](@ref) | *Simulation → Presets* + **Apply** · [`set_sim_preset!`](@ref) |
+| **Apply** | *Files → Look → Presets ›* + **Apply** · [`set_plot_preset!`](@ref) | *Files → Simulation → Presets ›* + **Apply** · [`set_sim_preset!`](@ref) |
 | **Reset** | *Files → Look → Reset* · `set_plot_preset!()` | *Files → Simulation → Reset* · [`reset_sim_config!`](@ref) |
 
 Both are ordinary studio CSV files, so they can be versioned, shared and written by hand. Full exports (the CSV next to every exported figure) contain both halves; see [File Operations](file_ops.md).
@@ -18,9 +18,10 @@ Both are ordinary studio CSV files, so they can be versioned, shared and written
 1.  Open the **Files** tab and type a name into the **Name / path** box (`Coarse Grid` is stored as `coarse_grid.csv`).
 2.  *Optional:* type a description into the **Description** box.
 3.  Click **Save** in the *Simulation* row (the physics) or the *Look* row (the visual settings). The status line confirms it.
-4.  To apply a preset, open the **Presets** page (one row per preset, showing its description) and click the preset's **Apply** button. Applying a simulation preset sets the `Run Simulation` lock; click it to compute.
+4.  To apply a preset, click **Presets ›** in its row (one line per preset with its description) and the preset's **Apply** button. Applying a simulation preset sets the `Run Simulation` lock; click it to compute.
+5.  **Edit ›** opens the rows of the preset file (`Category, Scope, Parameter, Value`; the built-in look presets have no file): change a value, delete a row with ✕, or add one at the bottom (`Category, Scope` — a simulation preset may give just the scope, e.g. `Shared` — key and value, written as in the file). Changes are written to the file right away.
 
-Preset files you copy into the folders appear the next time you open the *Presets* page.
+Preset files you copy into the folders appear the next time you open *Presets ›*.
 
 ## From Code
 
