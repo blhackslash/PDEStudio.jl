@@ -22,6 +22,15 @@
   `PDEStudio.show_editor_page!(:simulation, :shared)` opens a page from code.
 - Only the sliders with a choice to make are shown (unused parameter sliders and dimensions on a plot axis or not in
   the data are hidden), and the sliders moved to the bottom of the control panel.
+- The Layout and Plot tabs are one **Plot** tab (layout options above, plot options below). Plot width, plot height
+  and grid columns are number boxes for any value (50–5000 px, 1–12 columns) instead of fixed menus.
+- **Methods** tab (in place of the Mode button and the method dropdown): every method with an *active / off* button,
+  a *Show: active / disabled / all* filter, *Edit ›* for its parameters (inactive methods too) and an *Order ▲▼*
+  view of the active methods in drawing order with ▲ ▼ to move them. The Simulation overview no longer lists the
+  methods.
+- A status line below the tabs shows the result of the last action (edits and refused values, method changes,
+  presets, runs, CSV loads, exports), coloured by outcome. The load button no longer carries the load messages, and
+  dropping a CSV no longer switches to the Files tab.
 - The plot area keeps its titles and axis labels inside its own box, so they no longer add height to the window
   (about 140 px less).
 - The order of `defaults` is kept and used as the display order (legend entries, colours, the *Methods*
@@ -40,7 +49,10 @@
 
 ### Breaking
 - The editor widgets `:editor_cat`, `:editor_scope`, `:editor_key`, `:editor_text` and `:editor_toggle` are gone
-  from `manager.widgets` (and `manager.active_target`). Scripts that drove the editor through them should use
+  from `manager.widgets` (and `manager.active_target`), as are the method widgets `:mode_button` and
+  `:method_toggle` (and `manager.is_activate_mode`); `:plot_width`, `:plot_height` and `:compare_columns` are
+  `NumberBox`es (`.selection` still holds the value, `.box` is the text box). The tabs are `:plot`, `:methods`,
+  `:simulation`, `:ui`, `:labels`, `:files` (no `:layout`). Scripts that drove the editor through them should use
   `PDEStudio.show_editor_page!` and the rows (`manager.editor_row_keys`, widgets `:editor_row_<i>_text` /
   `:editor_row_<i>_button`). The CSV format is unchanged.
 

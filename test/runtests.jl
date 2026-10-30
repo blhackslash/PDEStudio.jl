@@ -281,6 +281,15 @@ end
     end
     type_into!(key, s) = (editor_row(key).text.stored_string[] = s; yield())
     press_row!(key) = (editor_row(key).button.clicks[] += 1; yield())
+    # Methods tab: press the active/off button of a method (every method listed)
+    function toggle_method!(m)
+        manager.method_filter = :all
+        show_editor_page!(:methods)
+        i = findfirst(isequal(m), manager.editor_row_keys)
+        isnothing(i) && error("$(repr(m)) is not listed (methods: $(manager.editor_row_keys))")
+        manager.widgets[Symbol("method_row_", i, "_a")].clicks[] += 1
+        yield()
+    end
     function open_scope!(scope)
         j = findfirst(isequal(scope), manager.editor_page_scopes)
         isnothing(j) && error("no page button for $(repr(scope)) (overview: $(manager.editor_page_scopes))")
@@ -624,7 +633,7 @@ end
         click_button!(:tab_simulation)
         @test manager.widgets[:save_presets_button].label[] == "Save Sim Preset"
         @test manager.widgets[:clear_presets_button].label[] == "Reset Simulation"
-        @test manager.editor_page_scopes == [:presets, :shared, :sweep, :config, :upwind]   # inactive methods are not listed
+        @test manager.editor_page_scopes == [:presets, :shared, :sweep, :config]   # the methods have their own tab
         @test manager.widgets[:editor_title][] == "Simulation"
         @test manager.widgets[:editor_page_2].label[] == "Shared (3)"
 
@@ -635,6 +644,8 @@ end
         type_into!(:N, "30")
         @test config.shared[:N] == 30
         @test manager.flags[:Simulation][] == true
+        @test manager.widgets[:status][] == "Shared → N = 30. Run Simulation to apply."   # the status line reports it
+        @test manager.widgets[:status_color][] == PDEStudio.STATUS_COLORS[:ok]
         @test editor_row(:N).button.label[] == "↺"
         press_row!(:N)
         @test config.shared[:N] == 20
@@ -643,10 +654,10 @@ end
         type_into!(:N, "default")                              # typing `default` does the same
         @test config.shared[:N] == 20
 
-        # 3. Text parameters stay text; ◀ Back returns to the overview
+        # 3. Text parameters stay text (method parameters are edited in the Methods tab); ◀ Back returns to the overview
         click_button!(:editor_back)
         @test isnothing(first(manager.editor_view[:simulation]))
-        open_scope!(:upwind)
+        show_editor_page!(:methods, :upwind)
         type_into!(:scheme, "1e3")
         @test config.methods[:upwind][:scheme] == "1e3"
         type_into!(:scheme, "upwind")
@@ -658,6 +669,10 @@ end
         @test config.varied[:cfl] == [0.2, 0.4, 0.5]
         type_into!(:cfl, "0.3")
         @test config.varied[:cfl] == [0.3]
+        type_into!(:cfl, "[]")                                 # refused, and the status line says why
+        @test config.varied[:cfl] == [0.3]
+        @test occursin("at least one value", manager.widgets[:status][])
+        @test manager.widgets[:status_color][] == PDEStudio.STATUS_COLORS[:warn]
         type_into!(:cfl, "[0.2, 0.5]")
 
         # 5. Active methods and functions
@@ -689,8 +704,9 @@ end
         click_button!(:run_button)
         @test manager.flags[:Simulation][] == false
         @test sort(manager.methods[]) == [:lax_friedrichs, :upwind]
-        show_editor_page!(:simulation)
-        @test :lax_friedrichs in manager.editor_page_scopes   # active now
+        manager.method_filter = :active
+        show_editor_page!(:methods)
+        @test manager.editor_row_keys == [:lax_friedrichs, :upwind]   # active now
 
         # 8. Outside the Simulation tab the buttons act on visual presets again
         click_button!(:tab_ui)
@@ -793,8 +809,7 @@ end
         @test first_method() == :lax_friedrichs
 
         # 3. Activating a method appends it; a saved preset keeps the order
-        manager.is_activate_mode[] = true
-        click_menu!(manager.widgets[:method_toggle], :analytic)
+        toggle_method!(:analytic)
         @test manager.active_config.defaults == [:lax_friedrichs, :upwind, :analytic]
         @test save_sim_preset("ordered")
         manager.active_config.defaults = [:upwind]
@@ -848,10 +863,10 @@ end
         # 4. `defaults` itself still shows and takes method names (on the same page)
         @test occursin("lax_friedrichs", editor_row(:defaults).text.displayed_string[])
 
-        # 5. Activating a method appends it and refreshes the shown permutation
-        manager.is_activate_mode[] = true
-        click_menu!(manager.widgets[:method_toggle], long_name)
+        # 5. Activating a method appends it and the permutation follows
+        toggle_method!(long_name)
         @test manager.active_config.defaults == [:analytic, :upwind, :lax_friedrichs, long_name]
+        show_editor_page!(:simulation, :config)
         @test tb.displayed_string[] == "[1, 3, 2, 4]"
         tb.stored_string[] = "[4, 3, 2, 1]"
         @test manager.active_config.defaults == [long_name, :upwind, :lax_friedrichs, :analytic]
@@ -861,8 +876,8 @@ end
         tb.stored_string[] = "default"
         @test manager.active_config.defaults == [:analytic, :lax_friedrichs, :upwind, long_name]
         @test tb.displayed_string[] == "[1, 2, 3, 4]"
-        manager.is_activate_mode[] = false
-        click_menu!(manager.widgets[:method_toggle], long_name)
+        toggle_method!(long_name)
+        show_editor_page!(:simulation, :config)
         tb.stored_string[] = "default"
         @test manager.active_config.defaults == [:upwind, :lax_friedrichs, :analytic]
 
@@ -890,22 +905,26 @@ end
         click_button!(:run_button)
         w = manager.widgets
 
-        # Widgets of each panel (a sample) and whether they are drawn and inside the window
-        panel_widgets = Dict(:plot => (:x_axis, :component), :layout => (:base_plot, :compare_link),
-                             :editor => (:editor_page_1, :save_presets_button),   # the editor tabs open on the overview
-                             :methods => (:mode_button, :method_toggle), :files => (:load_config_button, :export_button))
+        # A sample of the widgets each tab shows (the editor tabs open on their overview / the method list)
+        tab_widgets = Dict(:plot => (:base_plot, :plot_width, :compare_link, :x_axis, :component),
+                           :methods => (:method_filter, :method_row_1_a, :save_presets_button),
+                           :simulation => (:editor_page_1, :save_presets_button), :ui => (:editor_page_1, :save_presets_button),
+                           :labels => (:editor_page_1, :save_presets_button), :files => (:load_config_button, :export_button))
+        sample = unique(vcat(collect.(values(tab_widgets))...))
+        block(k) = w[k] isa PDEStudio.NumberBox ? w[k].box : w[k]
         onscreen(b) = (bb = b.layoutobservables.computedbbox[]; all(minimum(bb) .>= 0))
-        shown(k) = w[k].blockscene.visible[] && onscreen(w[k])
-        hidden(k) = !w[k].blockscene.visible[] && !onscreen(w[k])
+        shown(k) = block(k).blockscene.visible[] && onscreen(block(k))
+        hidden(k) = !block(k).blockscene.visible[] && !onscreen(block(k))
 
         @test manager.active_tab[] === :plot                       # a window opens on the Plot tab
+        @test PDEStudio.TAB_PANELS[:plot] == (:layout, :plot)      # layout and plot options share a tab
 
-        # 1. Every tab shows exactly its panels; the always visible controls stay where they are
+        # 1. Every tab shows exactly its widgets; the always visible controls stay where they are
         always = (:run_button, :layout_apply, :plot_button, :play_anim_button, :export_text)
         # positions are measured from the top of the tab bar (a rebuilt plot layout may resize the window)
         function from_top(k)
             tab_bb = w[:tab_plot].layoutobservables.computedbbox[]
-            bb = w[k].layoutobservables.computedbbox[]
+            bb = block(k).layoutobservables.computedbbox[]
             return round.((maximum(tab_bb)[2] - minimum(bb)[2], minimum(bb)[1] - minimum(tab_bb)[1]); digits = 2)
         end
         always_pos = Dict(k => from_top(k) for k in always)
@@ -913,10 +932,10 @@ end
             click_button!(Symbol("tab_", tab))
             @test manager.active_tab[] === tab
             tab_bar_bottom = minimum(w[:tab_plot].layoutobservables.computedbbox[])[2]
-            for (panel, keys) in panel_widgets, k in keys
-                @test panel in PDEStudio.TAB_PANELS[tab] ? shown(k) : hidden(k)
+            for k in sample
+                @test k in tab_widgets[tab] ? shown(k) : hidden(k)
                 # a panel never reaches into the tab bar (empty grid rows used to squeeze the editor upwards)
-                panel in PDEStudio.TAB_PANELS[tab] && @test maximum(w[k].layoutobservables.computedbbox[])[2] <= tab_bar_bottom
+                k in tab_widgets[tab] && @test maximum(block(k).layoutobservables.computedbbox[])[2] <= tab_bar_bottom
             end
             @test all(k -> shown(k) && from_top(k) == always_pos[k], always)
         end
@@ -930,37 +949,37 @@ end
             e.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.release)
             e.mouseposition[] = (0.0, 0.0)
         end
-        show_tab!(:simulation)
-        mode_pos = center(w[:mode_button])
-        mode_before = manager.is_activate_mode[]
-        mouse_click!(mode_pos)
-        @test manager.is_activate_mode[] != mode_before            # the visible button reacts …
-        w[:mode_button].clicks[] += 1                              # (a second mouse click now would be a double click)
-        @test manager.is_activate_mode[] == mode_before
-        show_tab!(:layout)
-        clicks_before = w[:mode_button].clicks[]
-        mouse_click!(mode_pos)                                     # … the parked one doesn't
-        @test w[:mode_button].clicks[] == clicks_before
-        @test manager.is_activate_mode[] == mode_before
-        w[:base_plot].is_open[] = false
+        show_tab!(:methods)
+        filter_pos = center(w[:method_filter])
+        filter_before = manager.method_filter
+        mouse_click!(filter_pos)
+        @test manager.method_filter != filter_before               # the visible button reacts …
+        show_tab!(:files)
+        sleep(0.5)                                                 # (not a double click)
+        clicks_before = w[:method_filter].clicks[]
+        mouse_click!(filter_pos)                                   # … the parked one doesn't
+        @test w[:method_filter].clicks[] == clicks_before
+        manager.method_filter = :all
         show_tab!(:plot)
+        w[:base_plot].is_open[] = false
         mouse_click!(center(w[:x_axis]))
-        @test w[:x_axis].is_open[]
-        @test !w[:base_plot].is_open[]                             # same place in the Layout tab
+        @test w[:x_axis].is_open[] && !w[:base_plot].is_open[]
         w[:x_axis].is_open[] = false
 
         # 3. Switching tabs releases open menus and the keyboard focus, and never touches the plot
         ax = first(c for c in fig.content if c isa Axis)
         viewport_updates = Ref(0)
         obs = on(_ -> viewport_updates[] += 1, ax.scene.viewport)
+        w[:x_axis].is_open[] = true
         show_editor_page!(:simulation, :shared)
-        w[:method_toggle].is_open[] = true
+        @test !w[:x_axis].is_open[]
         Makie.focus!(w[:editor_row_1_text])
         show_tab!(:plot)
-        @test !w[:method_toggle].is_open[] && !w[:editor_row_1_text].focused[]
+        @test !w[:editor_row_1_text].focused[]
         for tab in PDEStudio.CONTROL_TABS; show_tab!(tab); end
         show_editor_page!(:ui, :x_axis)
         show_editor_page!(:ui)
+        show_editor_page!(:methods, PDEStudio.ORDER_VIEW)
         @test viewport_updates[] == 0
         off(obs)
         @test_throws ArgumentError show_tab!(:nonsense)
@@ -970,8 +989,8 @@ end
         many = create_param_dict(:sim_func_name => :advection_solver_1d, (Symbol("p", lpad(i, 2, '0')) => i for i in 1:14)...)
         set_sim_config!(SimulationConfig(many, methods, [:upwind]))
         show_editor_page!(:simulation)
-        @test shown(:editor_page_5) && hidden(:editor_page_6)  # presets, shared, sweep, config, upwind
-        @test hidden(:editor_back) && hidden(:editor_next)
+        @test shown(:editor_page_4) && hidden(:editor_page_5)  # presets, shared, sweep, config
+        @test hidden(:editor_back) && hidden(:editor_next) && hidden(:method_filter)
         open_scope!(:shared)
         @test w[:editor_title][] == "Shared  (1/2)"
         @test length(manager.editor_row_keys) == PDEStudio.EDITOR_ROWS
@@ -995,28 +1014,27 @@ end
         @test editor_row(:log_scale).button.label[] == "on" && editor_row(:log_scale).text.displayed_string[] == "true"
         press_row!(:log_scale)
         @test manager.ui[:x_axis][:log_scale] == false
-        # More scopes than page buttons: the overview gets ◀ ▶ pages too
-        lots = create_method_dict((Symbol("m", lpad(i, 2, '0')) => create_param_dict(:scheme => "upwind") for i in 1:13)...)
-        set_sim_config!(SimulationConfig(shared, lots, sort!(collect(keys(lots)))))
-        show_editor_page!(:simulation)
-        @test w[:editor_title][] == "Simulation  (1/2)"
-        @test length(manager.editor_page_scopes) == PDEStudio.OVERVIEW_BUTTONS
-        click_button!(:editor_next)
-        @test manager.editor_page_scopes == [:m13]
-        @test shown(:editor_page_1) && hidden(:editor_page_2)
-        open_scope!(:m13)
-        @test manager.editor_row_keys == [:scheme]
-        # A page whose scope disappears (a deactivated method) falls back to the overview
-        set_sim_config!(cfg)
-        click_button!(:run_button)
-        show_editor_page!(:simulation, :upwind)
-        manager.is_activate_mode[] = false
-        click_menu!(w[:method_toggle], :upwind)
-        click_button!(:run_button)
-        @test manager.methods[] == [:lax_friedrichs]
-        @test isnothing(first(manager.editor_view[:simulation]))
-        @test !(:upwind in manager.editor_page_scopes)
-        manager.is_activate_mode[] = true
+
+        # 4b. Plot width, height and grid columns take any whole number in range; other input is refused
+        show_tab!(:plot)
+        width_box = w[:plot_width].box
+        width_box.stored_string[] = "abc"
+        @test w[:plot_width].selection[] == manager.layout_cache[:plot_width]
+        @test occursin("Plot Width", w[:status][]) && w[:status_color][] == PDEStudio.STATUS_COLORS[:warn]
+        @test width_box.displayed_string[] == string(w[:plot_width].selection[])   # the old value is shown again
+        width_box.stored_string[] = "20"                       # below the minimum
+        @test w[:plot_width].selection[] != 20
+        width_box.stored_string[] = "650"
+        @test w[:plot_width].selection[] == 650 && manager.flags[:Layout][] == true
+        w[:compare_columns].box.stored_string[] = "7"          # more than the old menu offered
+        @test w[:compare_columns].selection[] == 7
+        click_button!(:layout_apply)
+        @test manager.layout_cache[:plot_width] == 650 && manager.layout_cache[:compare_columns] == 7
+        PDEStudio.apply_layout_options!(Dict{Symbol, Any}(:plot_width => 480, :compare_columns => 2))   # presets / CSV files
+        @test w[:plot_width].selection[] == 480 && w[:plot_width].box.displayed_string[] == "480"
+        @test w[:compare_columns].selection[] == 2
+        click_button!(:layout_apply)
+
         set_sim_config!(cfg)
         click_button!(:run_button)
 
@@ -1032,9 +1050,9 @@ end
         @test all(k -> from_top(k) == always_pos[k], always)   # the rest stays put
 
         # 6. Setting a configuration doesn't switch tabs; a rebuilt window opens on the Plot tab and the overviews
-        show_tab!(:layout)
+        show_tab!(:files)
         set_sim_config!(cfg)
-        @test manager.active_tab[] === :layout
+        @test manager.active_tab[] === :files
         show_editor_page!(:labels, :methods)
         fig = launch_plotter()
         display(fig)
@@ -1042,6 +1060,111 @@ end
         @test manager.widgets[:x_axis].blockscene.visible[] && !manager.widgets[:editor_page_1].blockscene.visible[]
         click_button!(:tab_labels)
         @test manager.editor_page_scopes == [:components, :variables, :methods]
+    end
+
+    # =========================================================================
+    # --- METHODS TAB: LIST, FILTER, EDIT, DRAWING ORDER ---
+    # =========================================================================
+    @testset "Methods tab" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        shared = create_param_dict(:cfl => 0.5, :N => 20, :sim_func_name => :advection_solver_1d)
+        methods = create_method_dict(:upwind => create_param_dict(:scheme => "upwind"),
+                                     :lax_friedrichs => create_param_dict(:scheme => "lax_friedrichs"),
+                                     :analytic => create_param_dict())
+        cfg = SimulationConfig(shared, methods, [:upwind, :lax_friedrichs]; reference = :exact_advection_factory)
+        set_sim_config!(cfg)
+        click_button!(:run_button)
+        w = manager.widgets
+        row_button(m, which) = w[Symbol("method_row_", findfirst(isequal(m), manager.editor_row_keys), "_", which)]
+        row_label(m) = w[Symbol("method_row_", findfirst(isequal(m), manager.editor_row_keys), "_label")][]
+
+        # 1. The list: every method in the automatic order, with its state
+        manager.method_filter = :all
+        click_button!(:tab_methods)
+        @test manager.editor_row_keys == [:analytic, :lax_friedrichs, :upwind]
+        @test w[:editor_title][] == "Methods  (2 of 3 active)"
+        @test row_button(:upwind, :a).label[] == "active" && row_button(:analytic, :a).label[] == "off"
+        @test row_button(:upwind, :b).label[] == "Edit ›"
+        @test w[:save_presets_button].label[] == "Save Sim Preset"   # the Methods tab edits the simulation
+
+        # 2. The filter cycles active → disabled → all
+        click_button!(:method_filter)                          # all → active
+        @test manager.method_filter === :active && manager.editor_row_keys == [:lax_friedrichs, :upwind]
+        @test w[:method_filter].label[] == "Show: active"
+        click_button!(:method_filter)
+        @test manager.editor_row_keys == [:analytic]
+        click_button!(:method_filter)
+        @test manager.method_filter === :all
+
+        # 3. Activating appends to the drawing order and flags a run; deactivating removes the method
+        row_button(:analytic, :a).clicks[] += 1
+        @test manager.active_config.defaults == [:upwind, :lax_friedrichs, :analytic]
+        @test manager.flags[:Simulation][] == true
+        @test row_button(:analytic, :a).label[] == "active"
+        @test w[:status][] == "analytic activated. Run Simulation to apply."
+        row_button(:lax_friedrichs, :a).clicks[] += 1
+        @test manager.active_config.defaults == [:upwind, :analytic]
+        row_button(:lax_friedrichs, :a).clicks[] += 1
+        @test manager.active_config.defaults == [:upwind, :analytic, :lax_friedrichs]
+
+        # 4. Edit opens the parameters of a method, also of an inactive one; ◀ Back returns to the list
+        row_button(:upwind, :b).clicks[] += 1
+        @test w[:editor_title][] == "upwind" && manager.editor_row_keys == [:scheme]
+        @test !w[:method_filter].blockscene.visible[]          # the tools belong to the list
+        click_button!(:editor_back)
+        @test manager.editor_row_keys == [:analytic, :lax_friedrichs, :upwind]
+
+        # 5. The drawing order: active methods in `defaults` order, moved with ▲ ▼
+        click_button!(:method_order)
+        @test w[:editor_title][] == "Drawing order (top first)"
+        @test manager.editor_row_keys == [:upwind, :analytic, :lax_friedrichs]
+        @test row_label(:analytic) == "2.  analytic"
+        @test w[:method_order].label[] == "◀ Method list"
+        row_button(:lax_friedrichs, :a).clicks[] += 1          # ▲
+        @test manager.active_config.defaults == [:upwind, :lax_friedrichs, :analytic]
+        row_button(:upwind, :a).clicks[] += 1                  # ▲ on the first: nothing happens
+        row_button(:analytic, :b).clicks[] += 1                # ▼ on the last: nothing happens
+        @test manager.active_config.defaults == [:upwind, :lax_friedrichs, :analytic]
+        row_button(:upwind, :b).clicks[] += 1                  # ▼
+        @test manager.editor_row_keys == [:lax_friedrichs, :upwind, :analytic]
+        @test occursin("position 2", w[:status][])
+        # … the order is the drawing order after the next run
+        click_button!(:run_button)
+        @test manager.methods[] == [:lax_friedrichs, :upwind, :analytic]
+        show_editor_page!(:simulation, :config)
+        @test editor_row(:permutation).text.displayed_string[] == "[2, 3, 1]"   # automatic order: analytic, lax_friedrichs, upwind
+        click_button!(:tab_methods)
+        @test first(manager.editor_view[:methods]) === PDEStudio.ORDER_VIEW   # the tab keeps its view
+        click_button!(:method_order)
+        @test isnothing(first(manager.editor_view[:methods]))
+
+        # 6. Long lists get pages; the page of a method that no longer exists falls back to the list
+        lots = create_method_dict((Symbol("m", lpad(i, 2, '0')) => create_param_dict(:scheme => "upwind") for i in 1:13)...)
+        set_sim_config!(SimulationConfig(shared, lots, sort!(collect(keys(lots)))))
+        show_editor_page!(:methods)
+        @test w[:editor_title][] == "Methods  (13 of 13 active)  (1/2)"
+        @test length(manager.editor_row_keys) == PDEStudio.EDITOR_ROWS
+        click_button!(:editor_next)
+        @test manager.editor_row_keys == [:m13]
+        @test w[:method_row_1_a].blockscene.visible[] && !w[:method_row_2_a].blockscene.visible[]
+        show_editor_page!(:methods, :m13)
+        @test manager.editor_row_keys == [:scheme]
+        set_sim_config!(cfg)
+        @test isnothing(first(manager.editor_view[:methods]))
+        @test :upwind in manager.editor_row_keys
+
+        # 7. Without methods nothing runs, and the status line says why
+        manager.method_filter = :active
+        show_editor_page!(:methods)
+        for m in copy(manager.editor_row_keys)
+            row_button(m, :a).clicks[] += 1
+        end
+        @test isempty(manager.active_config.defaults)
+        click_button!(:run_button)
+        @test occursin("No methods selected", w[:status][]) && w[:status_color][] == PDEStudio.STATUS_COLORS[:warn]
+        manager.method_filter = :all
     end
 
     # =========================================================================

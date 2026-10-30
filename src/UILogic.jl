@@ -124,6 +124,10 @@ function apply_options!(cache::AbstractDict, option_keys::Tuple, new_options::Di
         val = get(new_options, k, get(new_options, string(k), nothing))
         if !isnothing(val) && haskey(manager.widgets, k)
             widget = manager.widgets[k]
+            if widget isa NumberBox
+                _set_number!(widget, val)
+                continue
+            end
             opts = widget.options[]
             isempty(opts) && continue
             
@@ -253,7 +257,6 @@ It establishes the state machine watching for structural or numeric changes, bin
 """
 function setup_ui_interactions!(master_fig::Figure, plot_layout::GridLayout, mode::Val{T}) where T
     _setup_run_and_drop_interactions!(master_fig)
-    _setup_method_interactions!()
     _setup_editor_interactions!()
     _setup_export_interactions!(master_fig, plot_layout)
     _setup_button_state_machine!()
@@ -351,23 +354,24 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     run_btn  = manager.widgets[:run_button]
     path_box = manager.widgets[:export_text]
 
+    # The result of a load is reported in the status line (and by the colour of the load button).
     function _handle_load(path)
-        show_tab!(:files)  # the load button reports the result (a file may have been dropped on another tab)
         local structural
         try
             structural = load_and_apply_csv!(path)
         catch e
             @error "Failed to load $path" exception = (e, catch_backtrace())
-            load_btn.label[] = "Loading failed (see log). Load CSV from Path Below / Drag & Drop Here"
+            _status!("Loading $(basename(path)) failed: $(_short(sprint(showerror, e), 80))", :error)
             load_btn.buttoncolor[] = :lightcoral
             return
         end
         if structural
             load_btn.buttoncolor[] = :orange
             run_btn.buttoncolor[] = :orange
-            load_btn.label[] = "Structural limits changed! \nClicking 'Run Simulation' will completely reset the backend. \nSave current settings as a preset if you want to keep them."
+            _status!("$(basename(path)) changes the dimensions or slider count: Run Simulation rebuilds the window " *
+                     "(save a preset first to keep the current settings).", :warn)
         else
-            load_btn.label[] = "CSV successfully loaded! Press 'Run Simulation' to apply it."
+            _status!("Loaded $(basename(path)). Run Simulation to apply it.", :ok)
             load_btn.buttoncolor[] = :lightgreen
             notify(manager.flags[:Simulation])  # recolours the Run button (it may still be orange from a staged file)
         end
@@ -385,12 +389,12 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
         path = strip(something(path_box.stored_string[], ""))
         if isempty(path)
-            @warn "Please enter a path or filename in the textbox below first."
+            _report(:warn, "Enter a path or file name in the filename box first.")
             return
         end
         found = find_config_csv(path)
         if isnothing(found)
-            @warn "CSV file '$path' not found."
+            _report(:warn, "CSV file '$path' not found.")
             return
         end
         _handle_load(found)
@@ -429,65 +433,53 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     end
 end
 
+# ------------------------------------------------------------------------------
+# Status line
+# ------------------------------------------------------------------------------
+
+const STATUS_COLORS = Dict(:info => RGBf(0.25, 0.25, 0.25), :ok => RGBf(0.0, 0.45, 0.15),
+                           :warn => RGBf(0.8, 0.4, 0.0), :error => RGBf(0.8, 0.1, 0.1))
+const STATUS_LINE_CHARS = 76   # characters per line of the status line (two lines)
+
 """
-    _setup_method_interactions!()
+    _status!(msg, level = :info)
 
-Handles the "Activate/Deactivate" method toggles. It intercepts clicks, updates the active methods (`defaults`) of the `SimulationConfig`, and instantly flags the `:Simulation` lock to require a fresh backend numerical evaluation.
+Shows `msg` in the status line below the tabs (`level`: `:info`, `:ok`, `:warn` or `:error`, which sets the colour).
+Long messages are wrapped at a space and shortened to two lines. A no-op without an open window.
 """
-function _setup_method_interactions!()
-    mode_btn = manager.widgets[:mode_button]
-    menu_mth = manager.widgets[:method_toggle]
-    is_activate_mode = manager.is_activate_mode
-    
-    # A helper function to manually sync the menu directly from the config
-    function sync_menu()
-        config = manager.active_config
-        isnothing(config) && return 
-        
-        staged = config.defaults
-        raw_method_names = filter(k -> k != :shared, collect(keys(config.methods)))
-        opts = is_activate_mode[] ? filter(m -> !(m in staged), raw_method_names) : copy(staged)
-
-        opts_sorted = sort_methods_robust(opts)
-        new_opts = isempty(opts) ? Any[menu_opt(:none)] : Any[("Methods...", :none); menu_opt.(opts_sorted)]
-        update_menu_safe!(menu_mth, new_opts)
-    end
-
-    manager.listeners[:Menu_Sync] = on(is_activate_mode) do _
-        @with_lock :Menu_Sync begin
-            sync_menu()
-        end
-    end
-
-    manager.listeners[:Mode_Click] = on(mode_btn.clicks) do _
-        is_activate_mode[] = !is_activate_mode[]
-        mode_btn.label[] = is_activate_mode[] ? "Mode: Activate" : "Mode: Deact."
-        mode_btn.buttoncolor[] = is_activate_mode[] ? :lightgreen : :lightcoral
-    end
-
-    manager.listeners[:Method_Toggle] = on(menu_mth.selection) do sel
-        (isnothing(sel) || sel === :none || sel == "-") && return
-        
-        config = manager.active_config
-        isnothing(config) && return
-        
-        new_staged = copy(config.defaults)
-        if is_activate_mode[]
-            sel in new_staged || push!(new_staged, sel)   # appended: `defaults` keeps the display order
-        else
-            filter!(x -> x != sel, new_staged)
-        end
-        
-        config.defaults = new_staged
-        manager.flags[:Simulation][] = true
-        menu_mth.i_selected[] = 1
-        _render_editor!()  # the editor may be showing `defaults` or `permutation`, which just changed
-        
-        @with_lock :Menu_Sync begin
-            sync_menu()
-        end
-    end
+function _status!(msg::AbstractString, level::Symbol = :info)
+    w = manager.widgets
+    haskey(w, :status) || return nothing
+    w[:status_color][] = get(STATUS_COLORS, level, STATUS_COLORS[:info])
+    w[:status][] = _wrap_status(replace(String(msg), '\n' => ' '))
+    return nothing
 end
+
+# Breaks a message into at most two lines of `STATUS_LINE_CHARS` (Makie's own word wrap centres the text).
+function _wrap_status(text::String)
+    n = STATUS_LINE_CHARS
+    length(text) <= n && return text
+    cut = something(findlast(' ', first(text, n + 1)), n + 1)
+    line1, rest = rstrip(first(text, cut - 1)), lstrip(text[nextind(text, 0, cut):end])
+    length(rest) > n && (rest = first(rest, n - 1) * "…")
+    return line1 * "\n" * rest
+end
+
+# Logs a message and shows it in the status line.
+function _report(level::Symbol, msg::AbstractString)
+    if level === :error
+        @error msg
+    elseif level === :warn
+        @warn msg
+    else
+        @info msg
+    end
+    _status!(msg, level)
+    return nothing
+end
+
+# Shortens a value for a status message.
+_short(s::AbstractString, n::Int = 40) = length(s) > n ? first(s, n - 1) * "…" : s
 
 # ------------------------------------------------------------------------------
 # Fixed widgets: placing, hiding and parking
@@ -613,7 +605,7 @@ function show_tab!(tab::Symbol)
 
     manager.active_tab[] === tab || (manager.active_tab[] = tab)
     if tab in EDITOR_TABS
-        _update_preset_buttons!(tab)
+        _update_preset_buttons!(_data_cat(tab))
         _render_editor!()
     end
     return nothing
@@ -776,9 +768,7 @@ function _after_editor_change!(cat, scope, key, target)
     if cat === :simulation
         scope === :presets && return nothing
         manager.flags[:Simulation][] = true
-        if scope === :config && key in (:defaults, :permutation)
-            notify(manager.is_activate_mode)  # refresh the method menu
-        elseif scope === :sweep && !isnothing(manager.active_config)
+        if scope === :sweep && !isnothing(manager.active_config)
             _map_parameters_to_sliders!(manager.active_config)
         end
     elseif cat === :ui
@@ -795,8 +785,6 @@ function _after_editor_change!(cat, scope, key, target)
             haskey(manager.widgets, lbl_key) && (manager.widgets[lbl_key][] = manager.labels[key] * ":")
         elseif scope === :components
             notify(manager.widgets[:u_axis].selection)
-        elseif scope === :methods
-            notify(manager.is_activate_mode)
         end
         manager.triggers[:UI][] += 1
     end
@@ -813,7 +801,10 @@ function _update_preset_buttons!(cat)
 end
 
 # The preset buttons act on simulation presets in the Simulation tab and on visual presets otherwise.
-_preset_context() = manager.active_tab[] === :simulation ? :simulation : :visual
+_preset_context() = _data_cat(manager.active_tab[]) === :simulation ? :simulation : :visual
+
+# The editor category of a tab: the Methods tab edits the simulation configuration.
+_data_cat(tab) = tab === :methods ? :simulation : tab
 
 # The preset registry shown under `Presets` for an editor category.
 _preset_registry(cat) = cat === :simulation ? manager.sim_presets : manager.presets
@@ -826,8 +817,8 @@ const _SCOPE_LABELS = Dict(:presets => "Presets", :shared => "Shared", :sweep =>
     _editor_scopes(cat)
 
 The pages (scopes) of an editor category, in overview order. Simulation: `Presets`, and with a bound configuration
-`Shared`, `Sweep`, `Config` and every active method (activate a method to edit it; inactive ones stay in
-`config.methods`). UI: `Presets` and every UI style scope. Labels: components, variables and methods.
+`Shared`, `Sweep` and `Config` (the methods have a tab of their own). UI: `Presets` and every UI style scope.
+Labels: components, variables and methods.
 """
 function _editor_scopes(cat)
     if cat === :simulation
@@ -835,9 +826,6 @@ function _editor_scopes(cat)
         config = manager.active_config
         isnothing(config) && return scopes
         append!(scopes, (:shared, :sweep, :config))
-        for m in sort_methods_robust(filter(m -> haskey(config.methods, m), manager.methods[]))
-            m in _RANK_0 || push!(scopes, m)  # reserved scope names
-        end
         return scopes
     elseif cat === :ui
         return Symbol[:presets; sort!(collect(keys(manager.ui)))]
@@ -937,37 +925,129 @@ function _bind_editor_row!(i::Int, cat, scope, target, key)
     return nothing
 end
 
+# What the editor shows for a tab and scope: the overview, the rows of a page, or the method list / drawing order of
+# the Methods tab.
+function _editor_mode(tab, scope)
+    if tab === :methods
+        isnothing(scope) && return :method_list
+        scope === ORDER_VIEW && return :method_order
+        return :rows
+    end
+    return isnothing(scope) ? :overview : :rows
+end
+
+# Whether `scope` is (still) a page of the tab, e.g. not a method that was removed.
+function _editor_scope_valid(tab, scope)
+    isnothing(scope) && return true
+    if tab === :methods
+        config = manager.active_config
+        isnothing(config) && return false
+        return scope === ORDER_VIEW || haskey(config.methods, scope)
+    end
+    return scope in _editor_scopes(tab)
+end
+
+"""
+    _method_items(mode)
+
+The methods listed by the Methods tab: every method of the configuration in the automatic order (references first,
+then alphabetical, like the `permutation` key), filtered by `manager.method_filter` (`:active`, `:disabled` or
+`:all`); in the drawing order view (`mode = :method_order`) the active methods (`defaults`) in their order.
+"""
+function _method_items(mode)
+    config = manager.active_config
+    isnothing(config) && return Symbol[]
+    active = Symbol[Symbol(m) for m in unique(config.defaults)]
+    mode === :method_order && return active
+    ms = filter(m -> !(m in _RANK_0), sort_methods_robust(collect(keys(config.methods))))
+    manager.method_filter === :active && return filter(in(active), ms)
+    manager.method_filter === :disabled && return filter(!in(active), ms)
+    return ms
+end
+
+const _ROW_GREEN = RGBf(0.56, 0.93, 0.56)
+const _ROW_GREY = RGBf(0.83, 0.83, 0.83)
+const _ROW_NEUTRAL = RGBf(0.92, 0.92, 0.92)
+const _ROW_FAINT = RGBf(0.97, 0.97, 0.97)
+
+# Binds method row `i`: name, active/off and Edit (list), or position and ▲ ▼ (drawing order of `n` methods).
+function _bind_method_row!(i::Int, mode, m::Symbol, pos::Int, n::Int)
+    w = manager.widgets
+    a, b = w[Symbol("method_row_", i, "_a")], w[Symbol("method_row_", i, "_b")]
+    if mode === :method_list
+        active = m in manager.active_config.defaults
+        w[Symbol("method_row_", i, "_label")][] = string(m)
+        a.label[] = active ? "active" : "off"
+        a.buttoncolor[] = active ? _ROW_GREEN : _ROW_GREY
+        b.label[] = "Edit ›"
+        b.buttoncolor[] = _ROW_NEUTRAL
+    else
+        w[Symbol("method_row_", i, "_label")][] = "$pos.  $m"
+        a.label[] = "▲"
+        b.label[] = "▼"
+        a.buttoncolor[] = pos == 1 ? _ROW_FAINT : _ROW_NEUTRAL
+        b.buttoncolor[] = pos == n ? _ROW_FAINT : _ROW_NEUTRAL
+    end
+    return nothing
+end
+
 """
     _render_editor!()
 
-Binds the editor widgets to the page selected in the active editor tab (`manager.editor_view[category]`): the
-overview (one button per scope, see `_editor_scopes`) or the rows of a scope (one per key, see `_editor_keys`),
-`EDITOR_ROWS` per page. Unused buttons and rows are parked. A scope that no longer exists (e.g. a deactivated method)
-falls back to the overview. A no-op outside the editor tabs, so it can be called after any change.
+Binds the editor widgets to the page selected in the active editor tab (`manager.editor_view[tab]`): the overview
+(one button per scope, see `_editor_scopes`), the rows of a scope (one per key, see `_editor_keys`) or, in the
+Methods tab, the method list or the drawing order (see `_method_items`); `EDITOR_ROWS` rows (`OVERVIEW_BUTTONS`
+buttons) per page. Unused buttons and rows are parked. A scope that no longer exists falls back to the overview.
+A no-op outside the editor tabs, so it can be called after any change.
 """
 function _render_editor!()
-    cat = manager.active_tab[]
-    (cat in EDITOR_TABS && haskey(manager.panels, :editor_rows)) || return nothing
+    tab = manager.active_tab[]
+    (tab in EDITOR_TABS && haskey(manager.panels, :editor_rows)) || return nothing
     w, p = manager.widgets, manager.panels
+    cat = _data_cat(tab)
 
-    scopes = _editor_scopes(cat)
-    scope, page = get(manager.editor_view, cat, (nothing, 1))
-    (isnothing(scope) || scope in scopes) || ((scope, page) = (nothing, 1))
-    items = isnothing(scope) ? scopes : _editor_keys(cat, scope)
-    per_page = isnothing(scope) ? OVERVIEW_BUTTONS : EDITOR_ROWS
+    scope, page = get(manager.editor_view, tab, (nothing, 1))
+    _editor_scope_valid(tab, scope) || ((scope, page) = (nothing, 1))
+    mode = _editor_mode(tab, scope)
+    items = mode === :overview ? _editor_scopes(cat) :
+            mode === :rows ? _editor_keys(cat, scope) : _method_items(mode)
+    per_page = mode === :overview ? OVERVIEW_BUTTONS : EDITOR_ROWS
     npages = max(1, cld(length(items), per_page))
     page = clamp(page, 1, npages)
-    manager.editor_view[cat] = (scope, page)
-    page_items = items[(page - 1) * per_page + 1:min(page * per_page, length(items))]
+    manager.editor_view[tab] = (scope, page)
+    offset = (page - 1) * per_page
+    page_items = items[offset + 1:min(offset + per_page, length(items))]
 
-    title = isnothing(scope) ? TAB_LABELS[cat] : _scope_label(cat, scope)
+    config = manager.active_config
+    title = if mode === :overview
+        TAB_LABELS[tab]
+    elseif mode === :rows
+        _scope_label(cat, scope)
+    elseif mode === :method_order
+        "Drawing order (top first)"
+    else
+        isnothing(config) ? "Methods" : "Methods  ($(length(unique(config.defaults))) of $(length(config.methods)) active)"
+    end
     w[:editor_title][] = npages > 1 ? "$title  ($page/$npages)" : title
-    isnothing(scope) ? _park!(p[:editor_back]) : _place!(p[:editor_back], p[:editor_header], 1, 1)
-    npages > 1 ? _place!(p[:editor_pager], p[:editor_header], 1, 3) : _park!(p[:editor_pager])
 
-    if isnothing(scope)
-        _park!(p[:editor_rows])
-        _place!(p[:editor_overview], p[:editor_body], 1, 1)
+    # Panel rows: header, the tools of the Methods tab, body, preset buttons
+    in_methods = mode in (:method_list, :method_order)
+    _pack!(p[:editor], [p[:editor_header], p[:editor_tools], p[:editor_body], p[:editor_footer]],
+           [true, in_methods, true, true]; gap = 8)
+    mode === :rows ? _place!(p[:editor_back], p[:editor_header], 1, 1) : _park!(p[:editor_back])
+    npages > 1 ? _place!(p[:editor_pager], p[:editor_header], 1, 3) : _park!(p[:editor_pager])
+    if in_methods
+        w[:method_filter].label[] = "Show: $(manager.method_filter)"
+        w[:method_order].label[] = mode === :method_order ? "◀ Method list" : "Order ▲▼"
+    end
+
+    body_view = mode === :overview ? :editor_overview : mode === :rows ? :editor_rows : :method_rows
+    for name in (:editor_overview, :editor_rows, :method_rows)
+        name === body_view || _park!(p[name])
+    end
+    _place!(p[body_view], p[:editor_body], 1, 1)
+
+    if mode === :overview
         manager.editor_page_scopes = Symbol[page_items...]
         manager.editor_row_keys = Any[]
         buttons = [w[Symbol("editor_page_", j)] for j in 1:OVERVIEW_BUTTONS]
@@ -976,9 +1056,7 @@ function _render_editor!()
         end
         _pack!(p[:editor_overview], buttons, [j <= length(page_items) for j in 1:OVERVIEW_BUTTONS];
                ncols = OVERVIEW_COLS, gap = EDITOR_ROWGAP + 2)
-    else
-        _park!(p[:editor_overview])
-        _place!(p[:editor_rows], p[:editor_body], 1, 1)
+    elseif mode === :rows
         manager.editor_page_scopes = Symbol[]
         manager.editor_row_keys = Any[page_items...]
         target = _editor_target(cat, scope)
@@ -987,33 +1065,105 @@ function _render_editor!()
         end
         rows = [p[Symbol("editor_row_", i)] for i in 1:EDITOR_ROWS]
         _pack!(p[:editor_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
+    else
+        manager.editor_page_scopes = Symbol[]
+        manager.editor_row_keys = Any[page_items...]
+        for (i, m) in enumerate(page_items)
+            _bind_method_row!(i, mode, m, offset + i, length(items))
+        end
+        rows = [p[Symbol("method_row_", i)] for i in 1:EDITOR_ROWS]
+        _pack!(p[:method_rows], rows, [i <= length(page_items) for i in 1:EDITOR_ROWS]; gap = EDITOR_ROWGAP)
     end
     return nothing
 end
 
 """
-    show_editor_page!(cat::Symbol, scope = nothing; page = 1)
+    show_editor_page!(tab::Symbol, scope = nothing; page = 1)
 
-Opens a page of the editor: the tab of the category (`:simulation`, `:ui` or `:labels`) with the rows of `scope`
-(e.g. `:shared`, `:config`, a method, `:x_axis`, `:presets`), or the overview of the category for `scope = nothing`.
-`page` selects the page of a scope with more keys than rows. A no-op without an open window.
+Opens a page of the editor in the tab `tab` (`:methods`, `:simulation`, `:ui` or `:labels`): the rows of `scope`
+(e.g. `:shared`, `:config`, `:x_axis`, `:presets`; in the Methods tab a method, or `ORDER_VIEW` for the drawing
+order), or for `scope = nothing` the overview of the tab (the method list in the Methods tab). `page` selects the
+page of a long scope. A no-op without an open window.
 """
-function show_editor_page!(cat::Symbol, scope = nothing; page::Int = 1)
-    cat in EDITOR_TABS || throw(ArgumentError("unknown editor category :$cat (categories: $(join(EDITOR_TABS, ", ")))"))
-    manager.editor_view[cat] = (scope, page)
-    manager.active_tab[] === cat ? _render_editor!() : show_tab!(cat)
+function show_editor_page!(tab::Symbol, scope = nothing; page::Int = 1)
+    tab in EDITOR_TABS || throw(ArgumentError("unknown editor tab :$tab (editor tabs: $(join(EDITOR_TABS, ", ")))"))
+    manager.editor_view[tab] = (scope, page)
+    manager.active_tab[] === tab ? _render_editor!() : show_tab!(tab)
     return nothing
 end
 
 # The page entry bound to row `i`: (category, scope, key, target), or `nothing`.
 function _editor_row_binding(i::Int)
-    cat = manager.active_tab[]
-    cat in EDITOR_TABS || return nothing
-    scope, _ = get(manager.editor_view, cat, (nothing, 1))
-    (isnothing(scope) || i > length(manager.editor_row_keys)) && return nothing
+    tab = manager.active_tab[]
+    tab in EDITOR_TABS || return nothing
+    scope, _ = get(manager.editor_view, tab, (nothing, 1))
+    _editor_mode(tab, scope) === :rows || return nothing
+    i > length(manager.editor_row_keys) && return nothing
+    cat = _data_cat(tab)
     target = _editor_target(cat, scope)
     isnothing(target) && return nothing
     return (cat, scope, manager.editor_row_keys[i], target)
+end
+
+"""
+    _set_method_active!(m, active) -> Bool
+
+Activates (appends to `defaults`, the drawing order) or deactivates a method of the bound configuration and flags
+*Run Simulation*. Returns whether something changed.
+"""
+function _set_method_active!(m::Symbol, active::Bool)
+    config = manager.active_config
+    isnothing(config) && return false
+    defaults = Symbol[Symbol(x) for x in unique(config.defaults)]
+    if active
+        m in defaults && return false
+        push!(defaults, m)
+    else
+        m in defaults || return false
+        filter!(!=(m), defaults)
+    end
+    config.defaults = defaults
+    manager.flags[:Simulation][] = true
+    _status!("$m $(active ? "activated" : "deactivated"). Run Simulation to apply.", :ok)
+    return true
+end
+
+"""
+    _move_method!(m, step) -> Bool
+
+Moves an active method `step` places in the drawing order (`defaults`; -1 is up) and flags *Run Simulation*.
+Returns whether it moved.
+"""
+function _move_method!(m::Symbol, step::Int)
+    config = manager.active_config
+    isnothing(config) && return false
+    defaults = Symbol[Symbol(x) for x in unique(config.defaults)]
+    i = findfirst(isequal(m), defaults)
+    j = isnothing(i) ? 0 : i + step
+    1 <= j <= length(defaults) || return false
+    defaults[i], defaults[j] = defaults[j], defaults[i]
+    config.defaults = defaults
+    manager.flags[:Simulation][] = true
+    _status!("$m moved to position $j. Run Simulation to apply the order.", :ok)
+    return true
+end
+
+# The buttons of method row `i`: active/off or Edit in the list, ▲ or ▼ in the drawing order.
+function _method_row_action!(i::Int, which::Symbol)
+    manager.active_tab[] === :methods || return nothing
+    manager.locks[:Simulation] && return nothing
+    scope, _ = get(manager.editor_view, :methods, (nothing, 1))
+    mode = _editor_mode(:methods, scope)
+    (mode in (:method_list, :method_order) && i <= length(manager.editor_row_keys)) || return nothing
+    m = manager.editor_row_keys[i]
+    if mode === :method_list
+        which === :b && return show_editor_page!(:methods, m)
+        _set_method_active!(m, !(m in manager.active_config.defaults))
+    else
+        _move_method!(m, which === :a ? -1 : 1)
+    end
+    _render_editor!()
+    return nothing
 end
 
 """
@@ -1032,7 +1182,7 @@ function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
         elseif strip(s) == "default"
             val = _editor_default(cat, scope, key)
             if ismissing(val)
-                @warn "No default value is known for '$key'."
+                _report(:warn, "No default value is known for '$key'.")
                 return false
             end
             cat === :labels ? set_label!(key, string(val)) : (target[key] = val)
@@ -1042,25 +1192,37 @@ function _apply_editor_input!(cat, scope, key, target, s::AbstractString, tb)
             if cat === :simulation && scope === :sweep
                 val = _parse_sweep_input(s, target[key])
                 if isempty(val)
-                    @warn "A sweep needs at least one value; '$key' was not changed."
+                    _report(:warn, "A sweep needs at least one value; '$key' was not changed.")
                     return false
                 end
             else
                 val = _parse_editor_input(s, target[key])
             end
             if cat === :ui && !_valid_ui_value(key, val)
-                @warn "'$key' was not changed: $(repr(val)) is not a valid " *
-                      (key === :color_map ? "colormap (e.g. :viridis)." : "colour (e.g. :red, \"#1f77b4\" or (:blue, 0.5)).")
+                _report(:warn, "'$key' was not changed: $(repr(val)) is not a valid " *
+                               (key === :color_map ? "colormap (e.g. :viridis)." : "colour (e.g. :red, \"#1f77b4\" or (:blue, 0.5))."))
                 return false
             end
             target[key] = val
         end
         _after_editor_change!(cat, scope, key, target)
+        _status!(_change_message(cat, scope, key, target), :ok)
         return true
     catch e
         @warn "Failed to apply parameter '$key': $(s)" exception=(e, catch_backtrace())
+        _status!("'$key' was not changed: $(_short(sprint(showerror, e), 90))", :warn)
         return false
     end
+end
+
+# Status message after an edit.
+function _change_message(cat, scope, key, target)
+    scope === :presets && return key === :create_new ? "Description of the next preset set." :
+                                 "Description of preset '$key' saved."
+    cat === :labels && return "Label of $key: $(_short(get(manager.labels, key, "")))"
+    val = haskey(target, key) ? _short(_editor_text(target, key)) : ""
+    where = "$(_scope_label(cat, scope)) → $key = $val"
+    return cat === :simulation ? "$where. Run Simulation to apply." : where
 end
 
 # The button of a row: apply a preset, toggle a Bool, or restore the default.
@@ -1068,19 +1230,23 @@ function _editor_row_action!(cat, scope, key, target, tb)
     action = _row_action(cat, scope, target, key)
     try
         if action === :apply
-            cat === :simulation ? set_sim_preset!(key) : set_plot_preset!(key)
+            ok = cat === :simulation ? !isnothing(set_sim_preset!(key)) : set_plot_preset!(key) !== false
+            ok ? _status!("Applied preset '$key'." * (cat === :simulation ? " Run Simulation to compute it." : ""), :ok) :
+                 _status!("Preset '$key' could not be applied (see the log).", :warn)
         elseif action === :toggle
             target[key] = !target[key]
             _after_editor_change!(cat, scope, key, target)
+            _status!(_change_message(cat, scope, key, target), :ok)
         elseif action === :reset
             _apply_editor_input!(cat, scope, key, target, "default", tb) || return nothing
         else
             save_label = cat === :simulation ? "Save Sim Preset" : "Save Presets"
-            @info "Type a description here, enter a name in the filename box and click '$save_label'."
+            _report(:info, "Type a description here, enter a name in the filename box and click '$save_label'.")
             return nothing
         end
     catch e
         @warn "Failed to apply '$key'." exception=(e, catch_backtrace())
+        _status!("Failed to apply '$key': $(_short(sprint(showerror, e), 90))", :error)
     end
     _render_editor!()
     return nothing
@@ -1091,7 +1257,8 @@ end
 
 Connects the fixed editor widgets: the page buttons of the overview open a scope, ◀ Back returns to the overview,
 ◀ ▶ turn pages, and each row writes its value box into the dictionary of the page (`_apply_editor_input!`) or runs
-its button (`_editor_row_action!`). Rows and buttons look up what they are bound to when used, so rebinding a page
+its button (`_editor_row_action!`). In the Methods tab the method rows activate, edit or move a method
+(`_method_row_action!`), and the tools switch the listed methods and the drawing order view. Rows and buttons look up what they are bound to when used, so rebinding a page
 needs no new listeners. The editor is redrawn when the active methods change.
 """
 function _setup_editor_interactions!()
@@ -1122,6 +1289,19 @@ function _setup_editor_interactions!()
     manager.listeners[:Editor_Back] = on(w[:editor_back].clicks) do _
         cat = manager.active_tab[]
         cat in EDITOR_TABS && show_editor_page!(cat)
+    end
+    for i in 1:EDITOR_ROWS, which in (:a, :b)
+        manager.listeners[Symbol("Method_Row_", i, "_", which)] =
+            on(_ -> _method_row_action!(i, which), w[Symbol("method_row_", i, "_", which)].clicks)
+    end
+    manager.listeners[:Method_Filter] = on(w[:method_filter].clicks) do _
+        k = findfirst(isequal(manager.method_filter), METHOD_FILTERS)
+        manager.method_filter = METHOD_FILTERS[mod1(something(k, 0) + 1, length(METHOD_FILTERS))]
+        show_editor_page!(:methods)
+    end
+    manager.listeners[:Method_Order] = on(w[:method_order].clicks) do _
+        scope, _ = get(manager.editor_view, :methods, (nothing, 1))
+        show_editor_page!(:methods, scope === ORDER_VIEW ? nothing : ORDER_VIEW)
     end
     for (name, step) in ((:editor_prev, -1), (:editor_next, 1))
         manager.listeners[Symbol("Editor_Page_Turn_", step)] = on(w[name].clicks) do _
@@ -1155,10 +1335,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         
         if is_locked
             extract_and_store_camera_state!(plot_layout)
-            @info "Camera locked to current view."
+            _report(:info, "Camera locked to the current view.")
         else
             manager.camera_cache = Dict{Symbol, Any}()
-            @info "Camera unlocked. Will auto-scale on next data update."
+            _report(:info, "Camera unlocked: the view scales with the next data update.")
         end
     end
 
@@ -1186,13 +1366,13 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
     function check_selection_validity(target_name)
         if isnothing(target_name) || target_name == :none
-            @warn "Export Error: No target selected."
+            _report(:warn, "Export Error: No target selected.")
             return false 
         end
         
         idx = findfirst(isequal(target_name), manager.plot_vars)
         if !isnothing(idx) && idx in manager.active_axes[]
-            @warn "Cannot animate an active plot axis."
+            _report(:warn, "Cannot animate an active plot axis.")
             return false 
         end
         
@@ -1201,11 +1381,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             return false
         end
         if !(widget isa Makie.Slider)
-            @warn "Only Sliders can be animated."
+            _report(:warn, "Only Sliders can be animated.")
             return false 
         end
         if length(widget.range[]) < 2
-            @warn "Slider has no range to animate."
+            _report(:warn, "Slider has no range to animate.")
             return false 
         end
         return true
@@ -1307,7 +1487,8 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 
                 metadata = Dict("Save Type" => "Animation", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_path, metadata) 
-                @info "Pristine Animation Saved Successfully."
+                @info "Animation saved: $fname"
+                _status!("Animation saved: $fname", :ok)
                 
             # --- STATIC FRAME EXPORT ---
             elseif !isempty(formats)
@@ -1329,9 +1510,10 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
                 
                 metadata = Dict("Save Type" => "Static Frame", "Timestamp" => string(Dates.now()), "Project Root" => pwd())
                 save_params_to_csv(base_name, save_dir, metadata)
+                _status!("Exported $base_name ($(join(formats, ", "))) to $save_dir", :ok)
                 
             else
-                @warn "No valid static formats selected and no animation extension provided. Export bypassed."
+                _report(:warn, "No valid static formats selected and no animation extension provided. Export bypassed.")
             end
             
             # 3. SHUT DOWN EXPORT LISTENERS
@@ -1339,6 +1521,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
             
         catch e
             @error "Export Failed" exception=(e, catch_backtrace())
+            _status!("Export failed: $(_short(sprint(showerror, e), 90))", :error)
         finally
             manager.is_exporting = false
             
@@ -1360,7 +1543,7 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
     manager.listeners[:Save_Defs] = on(manager.widgets[:save_presets_button].clicks) do _
         filename = String(strip(something(saveBox.stored_string[], "")))
         if isempty(filename)
-            @warn "Please enter a preset name in the Filename box."
+            _report(:warn, "Please enter a preset name in the Filename box.")
             return
         end
         
@@ -1382,7 +1565,11 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
 
         success = is_sim ? save_sim_preset(filename; description = desc) :
                            save_plot_preset(filename; description = desc)
-        success || return
+        if !success
+            _status!("The preset '$filename' was not saved (see the log).", :warn)
+            return
+        end
+        _status!("Saved $(is_sim ? "simulation" : "visual") preset '$(_preset_symbol(filename))'.", :ok)
 
         registry[:create_new] = DEFAULT_PRESET_DESC
         Makie.reset!(saveBox)
@@ -1399,10 +1586,13 @@ function _setup_export_interactions!(master_fig::Figure, plot_layout::GridLayout
         if _preset_context() === :simulation
             manager.locks[:Simulation] && return
             reset_sim_config!()
+            _status!("Simulation reset to the bound configuration. Run Simulation to apply.", :ok)
         else
             set_plot_preset!()
             manager.triggers[:UI][] += 1
+            _status!("Look reset to the defaults.", :ok)
         end
+        _render_editor!()
     end
 
     manager.listeners[:Anim_State_Change] = on(is_animating) do animating
