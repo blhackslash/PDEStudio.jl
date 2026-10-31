@@ -110,6 +110,14 @@ function PDEStudio._open_upload_picker(screen::WGLMakie.Screen)
     return true
 end
 
+# A `Uint8Array` from the browser: Bonito decodes it to bytes at the top level of a message, but leaves it as the raw
+# MsgPack extension (type 0x12) inside the nested `{files: [{name, data}]}`.
+_bytes(data::AbstractVector{UInt8}) = Vector{UInt8}(data)
+function _bytes(data::Bonito.MsgPack.Extension)
+    data.type == 0x12 || throw(ArgumentError("expected the bytes of a file (Uint8Array), got MsgPack extension $(data.type)"))
+    return Vector{UInt8}(data.data)
+end
+
 # Messages of the upload channel: `{files: [{name, data}]}`, `{cancelled: true}` or `{error: text}`.
 function _handle_message(msg)
     msg isa AbstractDict || return nothing
@@ -117,7 +125,7 @@ function _handle_message(msg)
         if haskey(msg, "error")
             PDEStudio._report(:warn, "Not uploaded: $(msg["error"])")
         elseif haskey(msg, "files")
-            PDEStudio.receive_upload!([String(f["name"]) => Vector{UInt8}(f["data"]) for f in msg["files"]])
+            PDEStudio.receive_upload!([String(f["name"]) => _bytes(f["data"]) for f in msg["files"]])
         else
             PDEStudio._status!("No file chosen.", :info)
         end

@@ -949,6 +949,11 @@ end
         @test !isnothing(ext)
         ext._handle_message(Dict("files" => [Dict("name" => "plain.csv", "data" => bytes(plain_csv))]))
         @test manager.active_config.shared[:N] == 40
+        # in a real browser message the bytes stay a raw MsgPack extension (Uint8Array, 0x12) inside `files`
+        set_sim_config!(fn_file)
+        ext._handle_message(Dict("files" => [Dict("name" => "plain.csv",
+                                                  "data" => WGLMakie.Bonito.MsgPack.Extension(0x12, bytes(plain_csv)))]))
+        @test manager.active_config.shared[:N] == 40
         ext._handle_message(Dict("cancelled" => true))
         @test status() == "No file chosen."
         ext._handle_message(Dict("error" => "big.csv is larger than 20 MB."))
