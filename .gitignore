@@ -35,3 +35,6 @@ Manifest.toml
 *.gif
 
 docs/build/
+
+# Browser tests (test/browser): npm packages
+node_modules/
