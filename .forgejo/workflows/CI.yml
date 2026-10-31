@@ -1,42 +1,28 @@
-name: CI
-
-on:
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
-  
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
-
 jobs:
   test:
     name: Julia ${{ matrix.version }}
-    runs-on: xeon-julia
+    runs-on: xeon
+    container:
+      image: forge.blackslash.win/pascal/julia-ci:${{ matrix.version }}
     strategy:
       fail-fast: false
       matrix:
-        version:
-          - '1.12'
-          - '1'
+        version: ['1.12', '1']
 
     steps:
       - uses: actions/checkout@v4
-      # 1. Install virtual display server for GLMakie headless testing
-      - name: Install Xvfb
-        run: apt-get update && apt-get install -y xvfb
 
-      - name: Install the browser test tools
+      - name: Install browser test dependencies
         working-directory: test/browser
         run: |
           npm ci --no-audit --no-fund
-          npx playwright-core install --with-deps chromium
+          # no-op when the image already has the matching browser
+          npx playwright-core install chromium
 
       - uses: https://github.com/julia-actions/julia-buildpkg@v1
         with:
           ignore-no-cache: true
-      
-      # 3. Wrap the runtest action in xvfb-run; the browser tests must run (not be skipped) here
+
       - uses: https://github.com/julia-actions/julia-runtest@v1
         env:
           PDESTUDIO_BROWSER_TESTS: "true"
