@@ -16,8 +16,6 @@ end
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 export set_sim_preset!, save_sim_preset, save_plot_preset, reset_sim_config!
 
-# Placeholder text of the ":create_new" entry in the preset editors.
-const DEFAULT_PRESET_DESC = "Type a description here, a name in the filename box, then click Save."
 
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---
@@ -94,6 +92,15 @@ Base.@kwdef mutable struct PlotManager
     # --- UI dictionaries, widgets and the trigger hierarchy ---
     ui::Dict{Symbol, Dict{Symbol, Any}} = Dict{Symbol, Dict{Symbol, Any}}()     # active UI style scopes
     widgets::Dict{Symbol, Any} = Dict{Symbol, Any}()                            # Makie blocks of the open window
+    panels::Dict{Symbol, GridLayout} = Dict{Symbol, GridLayout}()               # widget groups of the control tabs
+    panel_park::Union{Nothing, GridLayout} = nothing                            # off-screen layout of hidden panels
+    tab_area::Union{Nothing, GridLayout} = nothing                              # where the selected tab's panels go
+    active_tab::Observable{Symbol} = Observable(:plot)                          # selected tab of the control panel
+    park_slots::Dict{UInt, Int} = Dict{UInt, Int}()                             # objectid => column in `panel_park`
+    editor_view::Dict{Symbol, Tuple{Union{Nothing, Symbol}, Int}} =             # category => (scope or `nothing`
+        Dict{Symbol, Tuple{Union{Nothing, Symbol}, Int}}()                      #   for the overview, page)
+    editor_row_keys::Vector{Any} = Any[]                                        # key bound to each shown editor row
+    editor_page_scopes::Vector{Symbol} = Symbol[]                               # scope of each shown overview button
     triggers::Dict{Symbol, Observable{Int}} = Dict{Symbol, Observable{Int}}()   # one trigger per tier of LOCK_HIERARCHY
     flags::Dict{Symbol, Observable{Bool}} = Dict{Symbol, Observable{Bool}}()    # "pending" flags per tier (button colours)
     locks::Dict{Symbol, Bool} = Dict{Symbol, Bool}()                            # re-entrancy guards per tier / menu chain
@@ -128,10 +135,15 @@ Base.@kwdef mutable struct PlotManager
 
     # --- reactive UI state ---
     active_axes::Observable{Vector{Int}} = Observable{Vector{Int}}(Int[])    # indices into plot_vars bound to plot axes
-    is_activate_mode::Observable{Bool} = Observable(true)                     # method menu activates (or deactivates)
+    method_filter::Symbol = :all                                              # methods listed by the Methods tab
+    allowed_styles::Vector{Symbol} = Symbol[]                                 # plot styles the data allows (empty: all)
+    pending_code_load::String = ""                                            # file that runs code, waiting for a second Load
+    source_failures::Vector{String} = String[]                                # bundled sources that failed in the last load
+    preset_kind::Symbol = :simulation                                         # presets listed in the Files tab
+    preset_name::Symbol = Symbol("")                                          # preset file open in the Files tab
+    preset_file_rows::Vector{Vector{String}} = Vector{String}[]               # its rows [Category, Scope, Parameter, Value]
     is_animating::Observable{Bool} = Observable(false)
     animation_timer::Observable{Union{Nothing, Timer}} = Observable{Union{Nothing, Timer}}(nothing)
-    active_target::Observable{Any} = Observable{Any}(nothing)                 # (dict, key) edited in the hierarchical editor
     layout_dict::Observable{Dict{Symbol, Any}} = Observable(Dict{Symbol, Any}())   # subplot grid of the current layout
     camera_locked::Observable{Bool} = Observable(false)
 
@@ -284,7 +296,6 @@ function get_base_layout_options()
     is_lag = manager.mode[] == :lagrangian
     
     return Dict{Symbol, Any}(
-        :base_plot       => is_lag ? :scatter : :lines,
         :plot_style      => is_lag ? :scatter_1d : :lines_1d,
         :compare_target  => :none, 
         :compare_columns => 2,     
@@ -330,12 +341,13 @@ function simulation_trigger()
         active_methods = curr_config.defaults
 
         if isempty(active_methods)
-            @warn "No methods selected. Please activate at least one method to run."
+            _report(:warn, "No methods selected. Activate at least one method (Methods tab) to run.")
             return
         end
 
         @info "Running dynamic calculations directly from active config..."
-        run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
+        elapsed = @elapsed run_all_simulations(curr_config; calculate_stats = true, force_overwrite = false)
+        _status!("Simulation finished in $(round(elapsed, digits = 1)) s ($(length(active_methods)) methods).", :ok)
 
         if manager.methods[] != active_methods   # order matters: it is the legend / comparison order
             manager.methods[] = copy(active_methods)
@@ -400,9 +412,7 @@ function reset_manager!()
     # Set plot defaults
     set_plot_preset!()
 
-    # Initialize the default creation text and register the presets found on disk
-    manager.presets[:create_new] = DEFAULT_PRESET_DESC
-    manager.sim_presets[:create_new] = DEFAULT_PRESET_DESC
+    # Register the presets found on disk
     refresh_preset_registries!()
     return nothing
 end

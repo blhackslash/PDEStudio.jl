@@ -43,7 +43,7 @@ end
 
 function _clean_description(desc::AbstractString, default::AbstractString)
     d = strip(desc)
-    return (isempty(d) || d == DEFAULT_PRESET_DESC) ? String(default) : String(d)
+    return isempty(d) ? String(default) : String(d)
 end
 
 function _scan_presets!(registry::Dict{Symbol, String}, dir::AbstractString)
@@ -63,38 +63,41 @@ function _scan_presets!(registry::Dict{Symbol, String}, dir::AbstractString)
     return registry
 end
 
-"""
-    _store_preset_description!(cat, name, desc)
+# The folder and registry of the simulation (`kind = :simulation`) or look (`:visual`) presets.
+_preset_kind_dir(kind::Symbol) = kind === :simulation ? sim_preset_dir() : preset_dir()
+_preset_kind_registry(kind::Symbol) = kind === :simulation ? manager.sim_presets : manager.presets
 
-Writes a new description into the `Metadata, Preset, description` row of an existing preset file (visual presets
-for `cat === :ui`, simulation presets otherwise), so a description edited in the studio survives a restart. Built-in
-presets and presets without a file keep the description in memory only. Returns `true` if a file was updated.
 """
-function _store_preset_description!(cat, name, desc::AbstractString)
-    dir = cat === :simulation ? sim_preset_dir() : preset_dir()
-    path = _preset_file(dir, name)
+    _preset_rows(kind, name) -> Union{Nothing, Vector{Vector{String}}}
+
+The rows `[Category, Scope, Parameter, Value]` of a preset file, as written (the values unparsed), or `nothing` if the
+preset has no file (the built-in look presets).
+"""
+function _preset_rows(kind::Symbol, name)
+    path = _preset_file(_preset_kind_dir(kind), name)
+    isnothing(path) && return nothing
+    return [String[String(coalesce(getproperty(row, c), "")) for c in (:Category, :Scope, :Parameter, :Value)]
+            for row in CSV.Rows(path)]
+end
+
+"""
+    _write_preset_rows!(kind, name, rows) -> Bool
+
+Writes the rows `[Category, Scope, Parameter, Value]` back to the file of a preset (atomically) and refreshes its
+description in the preset list. Returns `false` if the preset has no file.
+"""
+function _write_preset_rows!(kind::Symbol, name, rows::AbstractVector)
+    path = _preset_file(_preset_kind_dir(kind), name)
     isnothing(path) && return false
-    try
-        rows = _CSVRows()
-        found = false
-        for row in CSV.Rows(path)
-            vals = String[String(coalesce(getproperty(row, c), "")) for c in (:Category, :Scope, :Parameter, :Value)]
-            if vals[1] == "Metadata" && vals[2] == "Preset" && vals[3] == "description"
-                vals[4] = String(desc)
-                found = true
-            end
-            push!(rows.cats, vals[1]); push!(rows.scopes, vals[2]); push!(rows.params, vals[3]); push!(rows.vals, vals[4])
-        end
-        if !found
-            pushfirst!(rows.cats, "Metadata"); pushfirst!(rows.scopes, "Preset")
-            pushfirst!(rows.params, "description"); pushfirst!(rows.vals, String(desc))
-        end
-        _write_rows(path, rows)
-        return true
-    catch e
-        @warn "Could not store the description of preset '$name' in $path." exception = (e, catch_backtrace())
-        return false
+    out = _CSVRows()
+    for r in rows
+        push!(out.cats, r[1]); push!(out.scopes, r[2]); push!(out.params, r[3]); push!(out.vals, r[4])
     end
+    tmp = path * ".tmp"
+    _write_rows(tmp, out)
+    mv(tmp, path; force = true)   # a failed write leaves the preset as it was
+    _preset_kind_registry(kind)[Symbol(name)] = _preset_description(last(_read_csv(path)), "Custom disk preset")
+    return true
 end
 
 """
@@ -121,14 +124,14 @@ can be applied to any simulation with [`set_plot_preset!`](@ref). Returns `true`
 """
 function save_plot_preset(name; description::AbstractString = "")
     sym = _preset_symbol(name)
-    if sym === :create_new || isempty(string(sym))
+    if isempty(string(sym))
         @warn "Please choose a different preset name."
         return false
     end
     haskey(PRESET_DESCRIPTIONS, sym) && @warn "'$sym' is also the name of a built-in preset, which takes precedence when applying it."
     manager.presets[sym] = _clean_description(description, "User custom preset: $sym")
     saved = save_preset_to_csv(sym, preset_dir())
-    _refresh_preset_menu!()
+    _render_editor!()
     return saved
 end
 
@@ -151,7 +154,7 @@ function save_sim_preset(name; description::AbstractString = "")
         return false
     end
     sym = _preset_symbol(name)
-    if sym === :create_new || isempty(string(sym))
+    if isempty(string(sym))
         @warn "Please choose a different preset name."
         return false
     end
@@ -169,7 +172,7 @@ function save_sim_preset(name; description::AbstractString = "")
         return false
     end
     manager.sim_presets[sym] = desc
-    _refresh_preset_menu!()
+    _render_editor!()
     @info "Simulation preset saved to $path"
     return true
 end
@@ -181,7 +184,7 @@ Applies the simulation preset `<save path>/Presets/Simulation/<name>.csv` to the
 a re-run. Two modes exist:
 
 - `:replace`: the preset defines the whole simulation (shared parameters, methods, active methods, sweep, functions).
-  Presets saved with [`save_sim_preset`](@ref) (or the *Save Sim Preset* button) use this mode.
+  Presets saved with [`save_sim_preset`](@ref) (or *Files → Simulation → Save*) use this mode.
 - `:patch`: only the entries in the file change; everything else of the bound configuration is kept. This is the
   default for hand-written files without a `Metadata, Preset, mode` row, e.g. a two-line "high resolution" preset.
 
@@ -210,7 +213,7 @@ function set_sim_preset!(name; mode::Union{Nothing, Symbol} = nothing)
     set_sim_config!(config; snapshot = false)
 
     manager.sim_presets[Symbol(splitext(basename(path))[1])] = _preset_description(raw, "Custom simulation preset")
-    _refresh_preset_menu!()
+    _render_editor!()
     @info "Applied simulation preset '$name' ($apply_mode). Press 'Run Simulation' to compute it."
     return config
 end

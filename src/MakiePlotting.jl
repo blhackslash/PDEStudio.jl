@@ -109,12 +109,8 @@ function set_sim_config!(config::SimulationConfig; snapshot::Bool = true)
     # Build UI mappings immediately so CSV loading and layout triggers can use them
     _map_parameters_to_sliders!(config)
 
-    if haskey(manager.widgets, :editor_cat)
-        notify(manager.widgets[:editor_cat].selection)
-    end
+    _render_editor!()
 
-    # Force the UI menu to redraw itself with the newly loaded config
-    notify(manager.is_activate_mode)
     return config
 end
 
@@ -155,20 +151,21 @@ function _map_parameters_to_sliders!(config::SimulationConfig)
     manager.param_map = param_map
     manager.reverse_map = reverse_map
     manager.plot_vars = Symbol[real_params; get_base_variables()]
+    _sync_slider_rows!()
     return nothing
 end
 
 """
     find_config_csv(name::AbstractString)
 
-Locates a configuration CSV by file name: an existing path is returned as is; otherwise the working directory,
+Locates a configuration file (CSV, or a Julia file given with its `.jl` extension) by file name: an existing path is returned as is; otherwise the working directory,
 `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (one level of subfolders each) are searched.
 Returns the path or `nothing`.
 """
 function find_config_csv(name::AbstractString)
     candidate = strip(name)
     isfile(candidate) && return String(candidate)
-    filename = endswith(lowercase(candidate), ".csv") ? String(candidate) : candidate * ".csv"
+    filename = any(ext -> endswith(lowercase(candidate), ext), (".csv", ".jl")) ? String(candidate) : candidate * ".csv"
     isfile(filename) && return filename
 
     save_root = get_save_path()
@@ -194,18 +191,21 @@ function find_config_csv(name::AbstractString)
 end
 
 """
-    set_sim_config!(csv_name::AbstractString)
+    set_sim_config!(file::AbstractString)
 
-A convenience wrapper that locates a CSV (a path, or a file name searched for with `find_config_csv`) and applies it via `load_and_apply_csv!`.
-Returns `true` if the file changes structural UI limits (the change is staged until *Run Simulation*), `false` otherwise, and `nothing` if no file was found.
+Loads a configuration from a file: a CSV (exports, presets; applied with `load_and_apply_csv!`) or a Julia file
+whose last expression is the `SimulationConfig` (or a function returning it; run with `load_config_file!`, which
+**executes its code**). `file` is a path or a file name searched for with `find_config_csv` (a name without
+extension means a CSV). Returns `true` if the file changes structural UI limits (the change is staged until *Run
+Simulation*), `false` otherwise, and `nothing` if no file was found.
 """
-function set_sim_config!(csv_name::AbstractString)
-    filepath = find_config_csv(csv_name)
+function set_sim_config!(file::AbstractString)
+    filepath = find_config_csv(file)
     if isnothing(filepath)
-        @warn "CSV file '$csv_name' not found."
+        @warn "Configuration file '$file' not found."
         return nothing
     end
-    return load_and_apply_csv!(filepath)
+    return endswith(lowercase(filepath), ".jl") ? load_config_file!(filepath) : load_and_apply_csv!(filepath)
 end
 
 """
@@ -256,6 +256,12 @@ function reset_plotter!()
         k === :Simulation || delete!(manager.listeners, k)  # switched off above
     end
     empty!(manager.widgets)  # widgets of the closed window; the caches keep their state
+    empty!(manager.panels)
+    empty!(manager.park_slots)
+    empty!(manager.editor_view)
+    empty!(manager.allowed_styles)
+    manager.panel_park = nothing
+    manager.tab_area = nothing
     manager.plot_window_initialized[] = false
 
     @info "Plotter state completely cleared!"
@@ -273,7 +279,7 @@ function launch_plotter()
 
     master_fig = Figure()
     ctrl_layout = master_fig[1, 1] = GridLayout()
-    plot_layout = master_fig[1, 2] = GridLayout() 
+    plot_layout = master_fig[1, 2] = GridLayout(alignmode = Outside())  # titles and labels inside: no extra height for the controls
     
     create_controls(ctrl_layout)
     # A configuration bound before launching needs its slider labels and mapping on the new widgets.
@@ -296,7 +302,7 @@ end
 
 Bootstraps the top-level trigger listeners responsible for layout management. 
 
-This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing base plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
+This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing the plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
 """
 function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     if manager.plot_window_initialized[]; return; end

@@ -4,7 +4,7 @@
 """
     _handle_layout_trigger!(rebuild_func::Function)
 
-Safely resolves layout-altering UI interactions (like adding subplots for comparisons or changing the base plot geometry). 
+Safely resolves layout-altering UI interactions (like adding subplots for comparisons or changing the plot style). 
 
 If a valid `SimulationConfig` is active, it triggers a background data cache refresh via `update_plot_data_collection!` before invoking the provided `rebuild_func` (which destroys the old Makie layout and rebuilds the grid and primitives).
 """
@@ -219,6 +219,7 @@ function _handle_slider_trigger!(u_sel)
     finally
         manager.locks[:PlotData] = false
     end
+    _sync_slider_rows!()  # rows without a choice to make are parked
     return true
 end
 

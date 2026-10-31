@@ -9,6 +9,7 @@ makedocs(
     warnonly = [:missing_docs, :cross_references],
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", "false") == "true",
+        canonical = "https://blhackslash.github.io/PDEStudio.jl/",
         assets = String[],
     ),
     pages = [
@@ -16,17 +17,19 @@ makedocs(
         "Control Panel" => "overview.md",
         "File Operations" => "file_ops.md",
         "Presets" => "presets.md",
-        "Advanced Editors" => "editors.md",
-        "Rendering" => "rendering.md",
+        "Editors" => "editors.md",
+        "Rendering" => [
+            "Plot & Layout Options" => "rendering.md",
+            "Lines" => "render/lines.md",
+            "Scatter" => "render/scatter.md",
+            "Contour" => "render/contour.md",
+            "Heatmap" => "render/heatmap.md",
+            "Volume" => "render/volume.md",
+        ],
         "Exploration" => "sliders.md",
         "API Reference" => "api.md",
     ],
 )
-format = Documenter.HTML(
-    prettyurls = get(ENV, "CI", "false") == "true",
-    canonical = "https://blhackslash.github.io/PDEStudio.jl/",
-    assets = String[],
-),
 
 deploydocs(
     repo = "github.com/blhackslash/PDEStudio.jl.git",

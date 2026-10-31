@@ -1,6 +1,9 @@
-# Base Plot: Volume
+# Plot Styles: Volume
 
-The `Volume` base plot is dedicated purely to dense 3D Eulerian grids. It utilizes ray-marching algorithms to render scalar fields as semi-transparent, cloudy volumes in true 3D space, allowing you to see through outer layers into the core of the data tensor.
+*The Volume styles are chosen with **Plot Style** in the Plot tab; their options are on the page of each style under
+**UI → Plot styles**. Options such as the colormap are shared by all styles that use them.*
+
+The *Volume* family is dedicated purely to dense 3D Eulerian grids. It utilizes ray-marching algorithms to render scalar fields as semi-transparent, cloudy volumes in true 3D space, allowing you to see through outer layers into the core of the data tensor.
 
 ## 3D Cloud Volume (`:volume_3d`)
 The only style in the Volume family, this is the most computationally demanding primitive in the studio. It automatically links to the global Colorbar system to provide a reference for the volumetric density.

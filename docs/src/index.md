@@ -2,7 +2,7 @@
 
 **PDEStudio.jl** is an interactive, Makie-driven graphical frontend for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations.
 
-It is built directly on top of its numerical backend **PDEStudioCore.jl** (reexported, so `using PDEStudio` is enough) and turns its simulation data into responsive 1D, 2D and 3D visualizations. It features a hierarchical editor, CSV-based presets for both the look and the physics of a study, and a rendering engine that handles Eulerian grids and Lagrangian particle systems.
+It is built directly on top of its numerical backend **PDEStudioCore.jl** (reexported, so `using PDEStudio` is enough) and turns its simulation data into responsive 1D, 2D and 3D visualizations. It features a tabbed control panel with editors for the physics and the look (and an *Advanced* tab for the raw `SimulationConfig`), CSV-based presets for both the look and the physics of a study, and a rendering engine that handles Eulerian grids and Lagrangian particle systems.
 
 PDE simulations often have to run on servers. There are two ways to work with remote machines:
 
@@ -17,7 +17,7 @@ PDE simulations often have to run on servers. There are two ways to work with re
 The studio is built around a central, reactive state manager that links the live simulation data to the Makie render loop.
 
 *   **Eulerian & Lagrangian Support:** Rendering primitives adapt to the data: grid-based heatmaps, surfaces and volumes, or point-based scatter plots. Data stored in the other representation is converted on the fly.
-*   **Hierarchical Editor:** Shared parameters, method parameters, the parameter sweep, the active methods, UI styles, export settings and display names, all in one Category → Scope → Parameter editor (see [Advanced Editors](editors.md)).
+*   **Editors:** the shared parameters (*Shared*), the methods with their parameters and drawing order (*Methods*), the look and the display names (*UI*), presets, export settings and resolution (*Files*) and the raw `SimulationConfig`: sweep, fields, all methods (*Advanced*); one row per entry (see [Editors](editors.md)).
 *   **Dynamic Layouts:** Multi-plot comparisons (methods, components, time steps or any swept parameter), linked or decoupled axes and detached legends.
 *   **Any Sweep:** Swept parameters can be numbers or anything else (scheme names, tuples, …); non-numeric sweeps get index sliders that display the swept value.
 
@@ -30,16 +30,16 @@ The studio is built around a central, reactive state manager that links the live
 | File | What it holds | Created with |
 | :--- | :--- | :--- |
 | **Export CSV** | Everything: physics, look, sweep, git commits, Julia versions, bundled sources | *Export* (next to every figure/animation) |
-| **Visual Preset** | The look only (layout, axes, camera, labels, UI styles) | *Save Presets*, [`save_plot_preset`](@ref) |
-| **Simulation Preset** | The physics only (shared/method parameters, active methods, sweep, functions) | *Save Sim Preset*, [`save_sim_preset`](@ref) |
+| **Look (visual) Preset** | The look only (layout, axes, camera, labels, UI styles) | *Files → Look → Save*, [`save_plot_preset`](@ref) |
+| **Simulation Preset** | The physics only (shared/method parameters, active methods, sweep, functions) | *Files → Simulation → Save*, [`save_sim_preset`](@ref) |
 
 Visual presets apply to any simulation; simulation presets swap the physics while the look stays as it is. See [Presets](presets.md).
 
 *   **Readable & Editable:** Keys are written as their raw backend names (`animation_FPS`, `sim_func_name`), values in Julia literal syntax (`Float64[0.2, 0.5]`, `:upwind`). Display labels never appear in files, so renaming a label does not affect saved states.
 *   **Type-Preserving Parsing:** Values are read back with the safe literal parser `str2val` into the type they were saved as (vectors, tuples, symbols, dictionaries, …). Text stays text.
-*   **Drag-and-Drop:** Drop a CSV onto the studio window (or type its path or file name into the filename box and click the load button) to recreate a saved state.
+*   **Loading:** Drop a CSV (or a Julia configuration file) onto the studio window, choose it with *Files → Browse…*, or type its path or file name into *Files → Name / path* and click **Load** to recreate a saved state.
 
-> **Security Note:** CSV values are parsed safely; no code in a value is ever evaluated. However, an export CSV can *bundle source files* (the `sources` of a `SimulationConfig`, copied next to the export), and loading such a CSV **executes those files** to restore the solvers. Only load exports you trust. Presets never contain source files.
+> **Security Note:** CSV values are parsed safely; no code in a value is ever evaluated. However, an export CSV can *bundle source files* (the `sources` of a `SimulationConfig`, copied next to the export), and loading such a CSV **executes those files** to restore the solvers, as does loading a Julia configuration file (`set_sim_config!("config.jl")`). Only load files you trust; the studio asks for a second click before it runs code. Presets never contain source files.
 
 ---
 
@@ -59,7 +59,7 @@ See [File Operations](file_ops.md) for the details.
 | Function | Purpose |
 | :--- | :--- |
 | [`launch_plotter`](@ref)`()` | Builds the studio window and its reactive listeners; returns the `Figure`. |
-| [`set_sim_config!`](@ref)`(config)` | Binds a `SimulationConfig` (or a CSV: `set_sim_config!("name.csv")`). Also the baseline for *Reset Simulation*. |
+| [`set_sim_config!`](@ref)`(config)` | Binds a `SimulationConfig` (or a CSV: `set_sim_config!("name.csv")`). Also the baseline for *Files → Simulation → Reset*. |
 | [`force_simulation`](@ref)`()` | Runs the bound configuration (same as clicking *Run Simulation*). |
 | [`set_plot_preset!`](@ref)`(name)` | Applies a built-in or saved visual preset; `set_plot_preset!()` restores the default look. |
 | [`save_plot_preset`](@ref)`(name)` | Saves the current look as a visual preset. |
@@ -68,7 +68,7 @@ See [File Operations](file_ops.md) for the details.
 | [`reset_sim_config!`](@ref)`()` | Restores the configuration last bound with `set_sim_config!`. |
 | [`set_mode!`](@ref)`(:eulerian / :lagrangian)` | Switches between grid and particle rendering. |
 | [`set_allowed_dims!`](@ref)`(dims)`, [`set_max_params!`](@ref)`(n)` | Structural limits: the physical dimensions and the number of parameter sliders. |
-| [`set_resolution!`](@ref)`(dim, n)` | Display resolution of a dimension (data is resampled for display). |
+| [`set_resolution!`](@ref)`(dim, n)` | Display resolution of a dimension (data is resampled for display; also *Files → Resolution ›*). |
 | [`reset_plotter!`](@ref)`()`, [`reset_manager!`](@ref)`()` | Closes the window / resets the whole studio without restarting Julia. |
 
 ---
@@ -141,4 +141,4 @@ end
 # julia> @plot "Euler2D_Shock"
 ```
 
-If the configuration file is listed in the config's `sources` (`SimulationConfig(...; sources = [path])`), every export copies it next to the exported CSV (`<name>_source_1.jl`, …). Loading that CSV later runs the copy (its last expression should be the `SimulationConfig`) and so recreates the experiment, solvers included. Afterwards the configuration keeps pointing at the original file while it exists (later runs pick up your edits) and falls back to the bundled copy otherwise.
+Simpler: load the configuration file itself with `set_sim_config!("Configs/Euler2D_Shock.jl")` (or *Files → Browse…*); it is added to the config's `sources`. Every export copies the `sources` into `<name>_sources/` next to the exported CSV, and loading that CSV later runs the copies and so recreates the experiment, solvers included. Afterwards the configuration keeps pointing at the original files while they exist (later runs pick up your edits) and falls back to the bundled copies otherwise. How to write configuration files that reload reliably: [File Operations](file_ops.md#Config-Files-and-Bundled-Sources).

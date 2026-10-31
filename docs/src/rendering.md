@@ -1,18 +1,19 @@
 ## Deep Dive: Rendering Configuration
 
-The red-titled sections—**Layout Options** and **Plot Options**—are the visual engine room of PDEStudio. These panels define exactly how your high-dimensional simulation tensors are sliced, projected, and compared on the screen. 
+The two red-titled sections of the **Plot** tab—**Layout options** and **Plot options**—are the visual engine room of PDEStudio. These panels define exactly how your high-dimensional simulation tensors are sliced, projected, and compared on the screen. 
 
 ### 🏗️ Layout Options (Structural Geometry)
 
 The Layout Options section dictates the physical structure of the Makie grid. Because changes here require destroying and rebuilding plot axes and legends, modifying these settings will turn the **Apply Layout** button yellow, signaling that a structural rebuild is required.
 
-#### 1. Base Plot & Plot Style
-*   **Base Plot:** Defines the core geometry (e.g., `Lines`, `Heatmap`, `Scatter`, `Volume`). This dropdown automatically adapts based on whether your backend is in Eulerian (mesh) or Lagrangian (particle) mode.
-*   **Plot Style:** Offers specific modifiers for your base plot (e.g., switching a heatmap from `Flat` to `Surface`, or changing 1D lines to `Scatter Lines`).
+#### 1. Plot Style
+*   **Plot Style:** the button shows the current plot type and opens a page with every supported style, grouped by geometry (*Lines*, *Scatter*, *Contour*, *Heatmap*, *Volume*); the current one is highlighted, a click chooses another (◀ Back keeps it). The page adapts to the mode: Lagrangian (particle) data offers the scatter styles matching the dimension of the particles.
+*   **Plot Width / Plot Height:** the size of each subplot in pixels, any whole number from 50 to 5000 (type it and press Enter; other input is refused with a message in the status line).
 
 #### 2. The Comparison Engine
 Instead of constantly tweaking sliders to compare states, you can unroll your dimensions across a multi-column grid.
 *   **Compare Target:** You can compare *almost anything* side-by-side. You can unroll different **Methods** (e.g., comparing an Upwind solver vs. a WENO solver), split vector **Components** into separate plots, compare **Time** steps, or compare across any **Varied Parameter** (e.g., different grid resolutions `N`, or text-valued sweeps such as scheme names; each subplot is titled with its value).
+*   **Grid Columns:** the number of subplots per row of a comparison, any whole number from 1 to 12.
 *   **At most 12 subplots:** comparisons over time or over long sweeps show up to 12 evenly spaced values (always including the first and the last), so a run with hundreds of time steps does not create hundreds of axes. The compared variable's slider is disabled while the comparison is active.
 *   **Compare Link (Coupling):** When comparing multiple plots, this dropdown dictates how they share visual limits:
     *   *Fully Coupled:* All subplots share the exact same X/Y/Z axis limits and a single global Colorbar. Perfect for 1-to-1 visual comparisons.
@@ -25,7 +26,7 @@ Instead of constantly tweaking sliders to compare states, you can unroll your di
 While Layout dictates *how* things are drawn, Plot Options dictate *what* is drawn. Changes made here are instantly resolved via the **Update Plot** button without needing to rebuild the layout.
 
 #### 1. The X $\rightarrow$ Y $\rightarrow$ Z Hierarchy
-The independent axes cascade strictly from left to right. This prevents mathematically impossible plots (like plotting X versus X).
+The independent axes cascade strictly from top to bottom (X, then Y, then Z). This prevents mathematically impossible plots (like plotting X versus X).
 *   When you select an **X-Axis**, that variable is removed from the available options for Y and Z.
 *   Selecting a **Y-Axis** further restricts the available options for Z.
 *   *Auto-Correction:* If you change your Plot Style from a 3D volume down to a 1D line plot, the studio will automatically detect the incompatibility, disable the Y and Z axis selectors, and reset the plot to prevent the engine from crashing.

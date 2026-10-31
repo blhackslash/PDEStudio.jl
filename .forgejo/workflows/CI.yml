@@ -31,12 +31,25 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
+      # 2. Node, playwright-core and Chromium for the browser tests (test/browser: the studio served with WGLMakie).
+      #    Playwright's Chromium build plus the system libraries it needs (apt), so it works on Debian and Ubuntu images.
+      - uses: https://github.com/actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the browser test tools
+        working-directory: test/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
+
       - uses: https://github.com/julia-actions/julia-buildpkg@v1
         with:
           ignore-no-cache: true
       
-      # 2. Wrap the runtest action in xvfb-run
+      # 3. Wrap the runtest action in xvfb-run; the browser tests must run (not be skipped) here
       - uses: https://github.com/julia-actions/julia-runtest@v1
+        env:
+          PDESTUDIO_BROWSER_TESTS: "true"
         with:
           prefix: xvfb-run
           coverage: false

@@ -1,13 +1,4 @@
 """
-    allMethodNames(config::SimulationConfig)
-
-Returns a list of all method names defined within the active `SimulationConfig`, sorted strictly by priority using `sort_methods_robust`.
-"""
-function allMethodNames(config::SimulationConfig)
-    return sort_methods_robust(collect(keys(config.methods)))
-end
-
-"""
     sort_methods_robust(methods::AbstractVector)
 
 Sorts method names, guaranteeing that analytical baselines or exact reference solutions are evaluated and drawn first.
@@ -18,25 +9,6 @@ ensuring they appear at the bottom of Z-index stacks (behind numerical overlays)
 function sort_methods_robust(methods::AbstractVector)
     syms = Symbol[Symbol(m) for m in methods]
     return sort(syms, by = m -> (is_reference_method(m) ? 0 : 1, string(m)))
-end
-
-# The display order of `methods` as a permutation `p` of their automatic order: `methods == sort_methods_robust(methods)[p]`.
-function _method_permutation(methods::AbstractVector)
-    ms = unique(Symbol[Symbol(m) for m in methods])
-    canon = sort_methods_robust(ms)
-    return Int[findfirst(isequal(m), canon) for m in ms]
-end
-
-# Reorders `methods` by a permutation `p` of their automatic order (the inverse of `_method_permutation`).
-function _permute_methods(methods::AbstractVector, p)
-    canon = sort_methods_robust(unique(Symbol[Symbol(m) for m in methods]))
-    perm = p isa Integer && !(p isa Bool) ? [p] : p
-    (perm isa Union{AbstractVector, Tuple} && all(i -> i isa Integer && !(i isa Bool), perm)) ||
-        throw(ArgumentError("a permutation is a list of indices, e.g. [2, 1, 3]; got $(repr(p))"))
-    perm = Int[i for i in perm]
-    (length(perm) == length(canon) && isperm(perm)) ||
-        throw(ArgumentError("expected a permutation of 1:$(length(canon)) (one index per active method), got $(repr(p))"))
-    return canon[perm]
 end
 
 # ------------------------------------------------------------------------------
@@ -70,7 +42,7 @@ end
 # Export formats
 # ------------------------------------------------------------------------------
 
-# Extensions typed into the filename box: an animation format records an animation, a static format exports exactly
+# Extensions typed into the Name / path box of the Files tab: an animation format records an animation, a static format exports exactly
 # that format, anything else is part of the name.
 const ANIMATION_EXPORT_FORMATS = ("mp4", "gif", "webm", "mkv")
 const STATIC_EXPORT_FORMATS = ("png", "pdf", "svg", "eps", "jpg", "jpeg")
@@ -224,15 +196,15 @@ end
 """
     apply_axis_limits_overrides!(ax)
 
-Overrides Makie's automatic axis scaling with rigid, user-defined boundary limits set via the hierarchical UI editor. Bypassed if the global Camera Lock is actively tracking a manual pan/zoom state.
+Overrides Makie's automatic axis scaling with rigid, user-defined boundary limits set on the axis pages of the UI tab (`lims`). Bypassed if the global Camera Lock is actively tracking a manual pan/zoom state.
 """
 function apply_axis_limits_overrides!(ax)
     
     if manager.camera_locked[]
         return
     end
-    ui_x = manager.ui[:x_axis]
-    ui_y = manager.ui[:y_axis]
+    ui_x = _axis_ui(:x_axis)
+    ui_y = _axis_ui(:y_axis)
     
     try
         if haskey(ui_x, :lims) && length(ui_x[:lims]) == 2 
@@ -246,7 +218,7 @@ function apply_axis_limits_overrides!(ax)
         end
         
         if ax isa Axis3 && haskey(manager.ui, :z_axis)
-            ui_z = manager.ui[:z_axis]
+            ui_z = _axis_ui(:z_axis)
             if haskey(ui_z, :lims) && length(ui_z[:lims]) == 2 
                 lz = Float64.(ui_z[:lims])
                 if lz[1] < lz[2]; zlims!(ax, lz[1], lz[2]); end
@@ -285,8 +257,8 @@ Handles extreme edge cases (like purely horizontal/vertical lines) by applying d
 """
 function set_axis_limits_manager!(ax::Axis, xs, us)
     
-    ui_x = manager.ui[:x_axis]
-    ui_y = manager.ui[:y_axis]
+    ui_x = _axis_ui(:x_axis)
+    ui_y = _axis_ui(:y_axis)
     
     raw_xlims = _safe_extrema(xs)
     raw_ylims = _safe_extrema(us)
@@ -726,7 +698,7 @@ function set_axis_styles!(ax::Axis, def_x::String, def_y::String, def_title::Str
     
     gen = manager.ui[:axis_general]
     lbl = manager.ui[:labels]
-    x_ui, y_ui = manager.ui[:x_axis], manager.ui[:y_axis]
+    x_ui, y_ui = _axis_ui(:x_axis), _axis_ui(:y_axis)
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 
@@ -756,7 +728,7 @@ function set_axis_styles!(ax::Axis3, def_x::String, def_y::String, def_z::String
     
     gen = manager.ui[:axis_general]
     lbl = manager.ui[:labels]
-    x_ui, y_ui, z_ui = manager.ui[:x_axis], manager.ui[:y_axis], manager.ui[:z_axis]
+    x_ui, y_ui, z_ui = _axis_ui(:x_axis), _axis_ui(:y_axis), _axis_ui(:z_axis)
 
     ax.xlabel = lbl[:x_label] == "default" ? def_x : lbl[:x_label] 
     ax.ylabel = lbl[:y_label] == "default" ? def_y : lbl[:y_label] 

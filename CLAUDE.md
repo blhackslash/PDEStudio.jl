@@ -2,7 +2,7 @@
 
 Makie-based interactive frontend for PDE simulations run with PDEStudioCore.jl (which it
 reexports): an interactive plotter for Eulerian and Lagrangian data in 1–3 D, a
-hierarchical editor for the simulation config, visual and simulation presets, CSV
+tabbed control panel with editor pages for the simulation config (and a raw `SimulationConfig` editor), visual and simulation presets, CSV
 config files, and static/animated exports. Works with GLMakie (local) or WGLMakie +
 Bonito (served from a compute node); CairoMakie is used for exports.
 
@@ -13,7 +13,14 @@ julia --project -e 'using Pkg; Pkg.test()'                 # full suite (needs t
 julia --project=test -e 'using Pkg; Pkg.instantiate()'      # once
 julia -t 8 --project=test test/runtests.jl                  # same suite, faster to iterate
 julia --project=docs docs/make.jl                           # docs (instantiate docs env first)
+(cd test/browser && npm ci)                                 # once: playwright-core for the browser tests
 ```
+
+The suite ends with browser tests (`test/browser/`): the studio served with WGLMakie, driven in headless
+Chromium by `upload.js` (real clicks, file chooser, drops). They run when node, `test/browser/node_modules` and a
+Chromium (`chromium` on the PATH, `PDESTUDIO_CHROMIUM`, or Playwright's) are there, and are skipped otherwise;
+`PDESTUDIO_BROWSER_TESTS=true` (set in CI) makes them required, `false` skips them. Playwright's `evaluate` counts
+as a user gesture in the page, which matters for anything gated on user activation (file pickers).
 
 The window is invisible in the container. To check what a change looks like, export a
 frame (or `save("x.png", fig)`) and view the PNG with the Read tool; don't claim a visual
@@ -24,11 +31,12 @@ fix without having looked at the result.
 | Path | Contents |
 |:-----|:---------|
 | `src/PDEStudio.jl` | Module, plot caches, `PlotManager` (the single `manager`), `LOCK_HIERARCHY`, `@with_lock` |
-| `src/UILogic.jl`, `src/Controls.jl`, `src/UIStyles.jl` | Window layout, menus, sliders, editor, styles |
+| `src/UILogic.jl`, `src/Controls.jl`, `src/UIStyles.jl` | Window layout, tabs and editor pages (fixed widgets, parked off-screen when hidden), menus, sliders, styles |
 | `src/PlottingLogic.jl`, `src/MakiePlotting.jl`, `src/Render.jl`, `src/PlottingUtils.jl` | Building and updating plots, render primitives (lines, heatmap, contour, scatter, volume) |
 | `src/DataHandler.jl` | Loading sweep data from PDEStudioCore into `PlotSweepData` |
 | `src/ConfigIO.jl` | CSV config read/write, provenance (git commit, package versions), exports |
 | `src/Presets.jl` | Visual and simulation presets (stored under `<save path>/Presets/`) |
+| `ext/PDEStudioWGLMakieExt.jl` | Browser uploads (Browse… picker, drag & drop) via the Bonito session of each WGLMakie screen; `receive_upload!` in `src/UILogic.jl` does the rest |
 
 ## Reactive architecture (read before touching UI code)
 
@@ -45,7 +53,8 @@ fix without having looked at the result.
 - Listeners are stored in `manager.listeners` (one per key) or `main_render_observers`;
   reuse those so they're replaced and cleaned up on rebuilds rather than stacking up.
 - Keep the frontend backend-agnostic: no GLMakie- or WGLMakie-only calls in `src/`
-  (only `Makie`/`CairoMakie`).
+  (only `Makie`/`CairoMakie`); backend-specific code goes into a package extension
+  (`ext/`) behind a hook with a generic fallback in `src/` (e.g. `_open_upload_picker(screen) = false`).
 
 ## Conventions
 
@@ -62,5 +71,5 @@ fix without having looked at the result.
 - Tests and experiments use a temporary save path (`set_save_path!(mktempdir())`).
 - Every export needs a docstring; docs build with `checkdocs = :exports` (warnings only for
   missing docs and cross references, but don't add new ones). UI changes: update the
-  matching page in `docs/src/gui/` or `docs/src/render/`.
+  matching page in `docs/src/` (the plot styles: `docs/src/render/`).
 - Commit subjects: short and imperative, describing the user-visible change.
