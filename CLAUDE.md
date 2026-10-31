@@ -13,7 +13,14 @@ julia --project -e 'using Pkg; Pkg.test()'                 # full suite (needs t
 julia --project=test -e 'using Pkg; Pkg.instantiate()'      # once
 julia -t 8 --project=test test/runtests.jl                  # same suite, faster to iterate
 julia --project=docs docs/make.jl                           # docs (instantiate docs env first)
+(cd test/browser && npm ci)                                 # once: playwright-core for the browser tests
 ```
+
+The suite ends with browser tests (`test/browser/`): the studio served with WGLMakie, driven in headless
+Chromium by `upload.js` (real clicks, file chooser, drops). They run when node, `test/browser/node_modules` and a
+Chromium (`chromium` on the PATH, `PDESTUDIO_CHROMIUM`, or Playwright's) are there, and are skipped otherwise;
+`PDESTUDIO_BROWSER_TESTS=true` (set in CI) makes them required, `false` skips them. Playwright's `evaluate` counts
+as a user gesture in the page, which matters for anything gated on user activation (file pickers).
 
 The window is invisible in the container. To check what a change looks like, export a
 frame (or `save("x.png", fig)`) and view the PNG with the Read tool; don't claim a visual

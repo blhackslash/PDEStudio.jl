@@ -1722,3 +1722,6 @@ end
     end
     reset_plotter!()
 end
+
+# The studio in a real browser (needs node, playwright-core and Chromium; skipped otherwise, see the file)
+include("browser/browser_tests.jl")
