@@ -154,24 +154,26 @@ end
 """
     create_file_controls!(layout::GridLayout)
 
-Builds the `Files` tab: the name / path box (exports, presets, CSV loading) and the description of a new preset;
-loading a CSV (or drop a file anywhere on the window), export and its settings (an editor page of `ui[:export]`); the
+Builds the `Files` tab: the name / path box (exports, presets, loading; *Browse…* opens the system's file dialog)
+and the description of a new preset; loading a CSV or a Julia configuration file (or drop it anywhere on the window;
+files that run code need a second click), export and its settings (an editor page of `ui[:export]`); the
 resolution of the data and the references (an editor page, see `_set_resolution_from_ui!`); and the presets: save / reset the simulation (the physics) and the look (the visual settings), and *Presets ›*, the list
 of the saved presets with *Apply* and *Edit ›* (the rows of the preset file). Results are shown in the status line.
 """
 function create_file_controls!(layout::GridLayout)
     w = manager.widgets
     Label(layout[1, 1], "Name / path", halign = :left, fontsize = 13)
-    w[:export_text] = Textbox(layout[1, 2:4], placeholder = "file name, preset name or CSV path", width = nothing)
+    w[:export_text] = Textbox(layout[1, 2:3], placeholder = "file name, preset name or path", width = nothing)
+    w[:browse_button] = Button(layout[1, 4], label = "Browse…", width = nothing)
     Label(layout[2, 1], "Description", halign = :left, fontsize = 13)
     w[:preset_desc_text] = Textbox(layout[2, 2:4], placeholder = "of a preset you save (optional)", width = nothing)
 
     Label(layout[3, 1], "File", halign = :left, fontsize = 13)
-    w[:load_config_button]     = Button(layout[3, 2], label = "Load CSV", buttoncolor = :lightgray, width = nothing)
+    w[:load_config_button]     = Button(layout[3, 2], label = "Load", buttoncolor = :lightgray, width = nothing)
     w[:export_button]          = Button(layout[3, 3], label = "Export", buttoncolor = :lightblue, width = nothing)
     w[:export_settings_button] = Button(layout[3, 4], label = "Settings ›", width = nothing)
-    Label(layout[4, 1:4], "CSV files can also be dropped anywhere on the window.", halign = :left, fontsize = 11,
-          color = :gray40)
+    Label(layout[4, 1:4], "Load: a CSV, or a Julia file returning a SimulationConfig (runs its code). Files can also be dropped.",
+          halign = :left, fontsize = 11, color = :gray40)
     Label(layout[5, 1], "Data", halign = :left, fontsize = 13)
     w[:resolution_button] = Button(layout[5, 2:3], label = "Resolution ›", width = nothing)
 

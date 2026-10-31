@@ -332,11 +332,115 @@ function _setup_button_state_machine!()
 end
 
 """
+    _request_load(path)
+
+Loads a configuration file from the Files tab (Load, drop, Browse…). A file that runs code (a Julia file, or a CSV
+with bundled sources) needs a second request for the same file: the first one only shows a warning in the status
+line.
+"""
+function _request_load(path::AbstractString)
+    if _load_runs_code(path) && manager.pending_code_load != path
+        manager.pending_code_load = path
+        what = endswith(lowercase(path), ".jl") ? "is Julia code" : "bundles source files"
+        _status!("$(basename(path)) $what that will be executed. Only load files you trust: click Load again to run it.", :warn)
+        haskey(manager.widgets, :load_config_button) && (manager.widgets[:load_config_button].buttoncolor[] = :orange)
+        return nothing
+    end
+    manager.pending_code_load = ""
+    _handle_load(path)
+end
+
+# Loads a CSV or a Julia configuration file and reports the result (status line, colour of the load button).
+function _handle_load(path::AbstractString)
+    w = manager.widgets
+    load_btn, run_btn = w[:load_config_button], w[:run_button]
+    local structural
+    try
+        structural = endswith(lowercase(path), ".jl") ? load_config_file!(path) : load_and_apply_csv!(path)
+    catch e
+        @error "Failed to load $path" exception = (e, catch_backtrace())
+        msg = e isa LoadError ? sprint(showerror, e.error) : sprint(showerror, e)
+        _status!("Loading $(basename(path)) failed: $(_short(first(split(msg, '\n')), 90))", :error)
+        load_btn.buttoncolor[] = :lightcoral
+        return nothing
+    end
+    if structural
+        load_btn.buttoncolor[] = :orange
+        run_btn.buttoncolor[] = :orange
+        _status!("$(basename(path)) changes the dimensions or slider count: Run Simulation rebuilds the window " *
+                 "(save a preset first to keep the current settings).", :warn)
+    else
+        # a failing bundled source has its own warning in the status line; keep it visible
+        isempty(manager.source_failures) && _status!("Loaded $(basename(path)). Run Simulation to apply it.", :ok)
+        load_btn.buttoncolor[] = :lightgreen
+        notify(manager.flags[:Simulation])  # recolours the Run button (it may still be orange from a staged file)
+    end
+    return nothing
+end
+
+"""
+    FILE_DIALOG
+
+The function *Browse…* calls to choose a file: it returns a path, `""` if nothing was chosen, or `nothing` if no
+dialog could be shown. By default `_system_file_dialog`; replaceable, e.g. in tests or for another dialog package.
+"""
+const FILE_DIALOG = Ref{Function}(() -> _system_file_dialog())
+
+"""
+    _system_file_dialog() -> Union{String, Nothing}
+
+Opens the operating system's file dialog with the command-line tools it brings: `osascript` on macOS, PowerShell on
+Windows, `zenity` or `kdialog` on Linux. Returns the chosen path, `""` if the dialog was cancelled, or `nothing` (with
+a status message) if there is no dialog: no tool found, or the studio runs in a browser (WGLMakie), where a dialog
+would open on the machine running Julia instead of in front of you.
+"""
+function _system_file_dialog()
+    backend = Makie.current_backend()
+    if !ismissing(backend) && !isnothing(backend) && nameof(backend) === :WGLMakie
+        _status!("No file dialog in the browser (it would open on the machine running Julia): type the path or drop the file.", :warn)
+        return nothing
+    end
+    prompt = "Open a PDEStudio configuration (CSV or Julia file)"
+    cmd = if Sys.isapple()
+        `osascript -e "POSIX path of (choose file with prompt \"$prompt\")"`
+    elseif Sys.iswindows()
+        `powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; \$d = New-Object System.Windows.Forms.OpenFileDialog; \$d.Title = '$prompt'; \$d.Filter = 'Configurations (*.csv;*.jl)|*.csv;*.jl|All files (*.*)|*.*'; if (\$d.ShowDialog() -eq 'OK') { \$d.FileName }"`
+    elseif !isnothing(Sys.which("zenity"))
+        `zenity --file-selection --title=$prompt --file-filter=$("Configurations | *.csv *.jl") --file-filter=$("All files | *")`
+    elseif !isnothing(Sys.which("kdialog"))
+        `kdialog --title $prompt --getopenfilename $(pwd()) $("*.csv *.jl")`
+    else
+        _status!("No file dialog found (on Linux it needs zenity or kdialog): type the path or drop the file.", :warn)
+        return nothing
+    end
+    return String(strip(read(ignorestatus(cmd), String)))   # cancelling exits with an error status and no output
+end
+
+# Browse…: chooses a file with `FILE_DIALOG` (in a task, so the window keeps drawing) and loads it like the Load button.
+function _browse_for_config()
+    path = try
+        FILE_DIALOG[]()
+    catch e
+        @error "The file dialog failed" exception = (e, catch_backtrace())
+        _status!("The file dialog failed: $(_short(sprint(showerror, e), 80))", :error)
+        nothing
+    end
+    isnothing(path) && return nothing
+    if isempty(path)
+        _status!("No file chosen.", :info)
+        return nothing
+    end
+    _show_editor_text!(manager.widgets[:export_text], path)
+    _request_load(path)
+end
+
+"""
     _setup_run_and_drop_interactions!(master_fig::Figure)
 
-Connects the drag-and-drop file listener and the *Load CSV* button (a path, or a file name searched for in the usual
-folders) to the CSV loader. 
-Also handles the staging logic: if a loaded CSV contains structural changes (like an increase in allowed dimensions or
+Connects the drag-and-drop file listener, the *Load* button (a path, or a file name searched for in the usual
+folders) and *Browse…* (the file dialog) to the loaders (`_request_load`: CSV or Julia configuration files; files that
+run code need a second click).
+Also handles the staging logic: if a loaded file contains structural changes (like an increase in allowed dimensions or
 parameter sliders), it temporarily stores the configuration, turns the execution buttons orange, and completely
 rebuilds the UI via `launch_plotter()` upon the next "Run" click.
 """
@@ -345,51 +449,32 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
     run_btn  = manager.widgets[:run_button]
     path_box = manager.widgets[:export_text]
 
-    # The result of a load is reported in the status line (and by the colour of the load button).
-    function _handle_load(path)
-        local structural
-        try
-            structural = load_and_apply_csv!(path)
-        catch e
-            @error "Failed to load $path" exception = (e, catch_backtrace())
-            _status!("Loading $(basename(path)) failed: $(_short(sprint(showerror, e), 80))", :error)
-            load_btn.buttoncolor[] = :lightcoral
+    manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
+        isempty(files) && return
+        path = files[1]
+        if !any(ext -> endswith(lowercase(path), ext), (".csv", ".jl"))
+            _report(:warn, "Only CSV and Julia (.jl) configuration files can be loaded, not $(basename(path)).")
             return
         end
-        if structural
-            load_btn.buttoncolor[] = :orange
-            run_btn.buttoncolor[] = :orange
-            _status!("$(basename(path)) changes the dimensions or slider count: Run Simulation rebuilds the window " *
-                     "(save a preset first to keep the current settings).", :warn)
-        else
-            _status!("Loaded $(basename(path)). Run Simulation to apply it.", :ok)
-            load_btn.buttoncolor[] = :lightgreen
-            notify(manager.flags[:Simulation])  # recolours the Run button (it may still be orange from a staged file)
-        end
-    end
-
-    manager.listeners[:Drag_Drop] = on(events(master_fig.scene).dropped_files) do files
-        if !isempty(files) && endswith(lowercase(files[1]), ".csv")
-            path = files[1]
-            path_box.stored_string[] = path
-            path_box.displayed_string[] = path
-            _handle_load(path)
-        end
+        _show_editor_text!(path_box, path)
+        _request_load(path)
     end
 
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
         path = _box_text(path_box)
         if isempty(path)
-            _report(:warn, "Enter a path or file name in the Name / path box first.")
+            _report(:warn, "Enter a path or file name in the Name / path box first (or use Browse…).")
             return
         end
         found = find_config_csv(path)
         if isnothing(found)
-            _report(:warn, "CSV file '$path' not found.")
+            _report(:warn, "Configuration file '$path' not found.")
             return
         end
-        _handle_load(found)
+        _request_load(found)
     end
+
+    manager.listeners[:Browse_Click] = on(_ -> (@async _browse_for_config()), manager.widgets[:browse_button].clicks)
 
     manager.listeners[:Run_Click] = on(run_btn.clicks) do _
         

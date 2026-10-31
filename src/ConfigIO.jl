@@ -208,11 +208,34 @@ _keysyms(d) = Dict{Symbol, Any}(Symbol(k) => v for (k, v) in d)
 # ------------------------------------------------------------------------------
 
 """
+    _include_as(mod, file, as)
+
+Runs the code of `file` in `mod` as if it were the file `as`: `@__DIR__` and relative `include`s resolve next to
+`as`. Used to run the snapshot of a source file bundled with an export at the place of its original, so it finds the
+files it includes there while that folder exists. (Sets the task-local source path that `Base.include` uses.)
+"""
+function _include_as(mod::Module, file::AbstractString, as::AbstractString)
+    tls = task_local_storage()
+    previous = get(tls, :SOURCE_PATH, nothing)
+    tls[:SOURCE_PATH] = as
+    try
+        return Base.include_string(mod, read(file, String), as)
+    finally
+        isnothing(previous) ? delete!(tls, :SOURCE_PATH) : (tls[:SOURCE_PATH] = previous)
+    end
+end
+
+"""
     _run_bundled_sources(parsed, filepath)
 
-Includes the source files bundled with an exported CSV into the target module (this executes their code).
-Returns `(config, bundled, origins)`: the `SimulationConfig` returned by the last file (or `nothing`), the absolute
-paths of the bundled copies (`""` for missing files) and the original paths they were copied from (if recorded).
+Includes the source files bundled with an exported CSV into the target module (this executes their code). Each
+bundled copy runs as if it were its original (relative `include`s and `@__DIR__` resolve there) while the original's
+folder exists, otherwise from the bundle folder; a missing copy is replaced by its original if that still exists.
+
+A source that fails doesn't abort the load: the error is reported (log and status line) and the parameters come
+from the CSV, so the solver functions must then be defined some other way (e.g. by loading their package).
+Returns `(config, bundled, origins)`: the `SimulationConfig` returned by the last file if every file ran (otherwise
+`nothing`), the absolute paths of the bundled copies (`""` for missing files) and the original paths (if recorded).
 """
 function _run_bundled_sources(parsed::Dict, filepath::AbstractString)
     meta = get(get(parsed, "Metadata", Dict()), "General", Dict())
@@ -220,27 +243,42 @@ function _run_bundled_sources(parsed::Dict, filepath::AbstractString)
     names isa AbstractString && (names = isempty(names) ? String[] : [names])
     (names isa AbstractVector && !isempty(names)) || return nothing, String[], String[]
     origins = get(meta, "source_origins", String[])
+    origins = origins isa AbstractString ? [origins] : origins
     origins = origins isa AbstractVector ? String[string(o) for o in origins] : String[]
 
     dir = dirname(abspath(filepath))
     bundled = String[]
     last_result = nothing
-    all_found = true
-    for name in names
-        candidates = (joinpath(dir, basename(string(name))), string(name))
+    failures = manager.source_failures
+    for (i, name) in enumerate(names)
+        origin = i <= length(origins) ? origins[i] : ""
+        # bundled as `<export>_sources/<file>`, by earlier versions as `<export>_source_<i>.jl` next to the CSV
+        candidates = unique([joinpath(dir, string(name)), joinpath(dir, basename(string(name))), string(name)])
         idx = findfirst(isfile, candidates)
-        if isnothing(idx)
-            @warn "Bundled source missing: $(candidates[1])"
+        copy = isnothing(idx) ? "" : abspath(candidates[idx])
+        if isempty(copy) && !(!isempty(origin) && isfile(origin))
+            push!(failures, "$(basename(string(name))): missing")
             push!(bundled, "")
-            all_found = false
             continue
         end
-        path = abspath(candidates[idx])
-        @info "Executing bundled source: $(basename(path))"
-        last_result = Base.include(get_target_module(), path)
-        push!(bundled, path)
+        runs_as = !isempty(origin) && isdir(dirname(origin)) ? origin : copy
+        file = isempty(copy) ? origin : copy
+        @info "Executing bundled source: $(basename(file))" * (runs_as == file ? "" : " (as $runs_as)")
+        try
+            last_result = _include_as(get_target_module(), file, runs_as)
+        catch e
+            @error "Running the bundled source $(basename(file)) failed" exception = (e, catch_backtrace())
+            msg = e isa LoadError ? sprint(showerror, e.error) : sprint(showerror, e)
+            push!(failures, "$(basename(file)): $(_short(first(split(msg, '\n')), 70))")
+            last_result = nothing
+        end
+        push!(bundled, copy)
     end
-    config = all_found && last_result isa SimulationConfig ? last_result : nothing
+    if !isempty(failures)
+        _status!("Source files of $(basename(filepath)) failed; the parameters come from the CSV, define the solvers " *
+                 "before running. ($(join(failures, "; ")))", :warn)
+    end
+    config = isempty(failures) && last_result isa SimulationConfig ? last_result : nothing
     return config, bundled, origins
 end
 
@@ -267,6 +305,63 @@ end
 # ------------------------------------------------------------------------------
 
 """
+    load_config_file!(path::AbstractString) -> Bool
+
+Runs a Julia configuration file and binds the configuration it returns: its last expression is a `SimulationConfig`,
+or a function without arguments that returns one. The file runs in the target module (`set_target_module!`) and is
+added to the configuration's `sources`, so exports bundle it. Returns `true` if the configuration needs more
+parameter sliders than the open window has (the change is staged until *Run Simulation*), `false` otherwise.
+
+!!! warning
+    This **executes the file's code**: only load files you trust. A CSV without bundled sources only holds values
+    and never runs code.
+
+A file that loads reliably, also from the snapshot bundled with an export, includes its helpers relative to
+`@__DIR__` (or loads them as packages) and uses no absolute paths; see the documentation (*File Operations*).
+"""
+function load_config_file!(path::AbstractString)
+    file = abspath(path)
+    empty!(manager.source_failures)
+    @warn "Executing $(basename(file)): loading a .jl file runs its code. Only load files you trust (CSV files without bundled sources never run code)."
+    result = Base.include(get_target_module(), file)
+    result isa Function && (result = Base.invokelatest(result))
+    result isa SimulationConfig ||
+        throw(ArgumentError("$(basename(file)) must end with a SimulationConfig (or a function without arguments " *
+                            "that returns one); it returned $(result === nothing ? "nothing" : "a $(typeof(result))")."))
+    any(src -> isfile(src) && samefile(src, file), result.sources) || (result.sources = String[result.sources...; file])
+
+    new_max = max(manager.max_params, length(result.varied))
+    if new_max != manager.max_params
+        if !manager.is_open
+            manager.max_params = new_max
+        else
+            manager.csv_cache = (dims = manager.allowed_dims, max_params = new_max, parsed = Dict{String, Any}(),
+                                 raw = nothing, config = result, sources = result.sources)
+            @info "More parameter sliders needed! Configuration staged; press 'Run Simulation' to rebuild the studio."
+            return true
+        end
+    end
+    manager.csv_cache = nothing
+    _bind_loaded_config!(result)
+    return false
+end
+
+"""
+    _load_runs_code(path) -> Bool
+
+Whether loading the file executes code: a Julia file, or a CSV with bundled source files.
+"""
+function _load_runs_code(path::AbstractString)
+    endswith(lowercase(path), ".jl") && return true
+    names = try
+        get(get(get(first(_read_csv(path)), "Metadata", Dict()), "General", Dict()), "bundled_sources", nothing)
+    catch
+        nothing
+    end
+    return !(isnothing(names) || isempty(names))
+end
+
+"""
     load_and_apply_csv!(filepath::AbstractString)
 
 Reads a configuration CSV from disk and applies it.
@@ -278,6 +373,7 @@ until *Run Simulation* if the open window has to be rebuilt. Returns `true` if s
 function load_and_apply_csv!(filepath::AbstractString)
     @info "Loading configuration from CSV: $filepath"
     manager.csv_cache = nothing  # a newer file replaces a staged one
+    empty!(manager.source_failures)
     parsed, raw = _read_csv(filepath)
     bundled_config, bundled, origins = _run_bundled_sources(parsed, filepath)
     sources = isnothing(bundled_config) ? filter(!isempty, bundled) :
@@ -594,12 +690,19 @@ function save_params_to_csv(base_filename::AbstractString, save_dir::AbstractStr
 
         config = manager.active_config
         if !isnothing(config) && !isempty(config.sources)
+            # The sources are copied into `<name>_sources/` under their own file names, so a bundled file that
+            # includes another bundled one (`include("solvers.jl")`) still finds it when the originals are gone.
             bundled_names, origins = String[], String[]
-            for (i, src_path) in enumerate(config.sources)
+            bundle_dir = "$(basename(base_filename))_sources"
+            for src_path in config.sources
                 if isfile(src_path)
-                    bundled_name = "$(basename(base_filename))_source_$i.jl"
+                    name = basename(src_path)
+                    while joinpath(bundle_dir, name) in bundled_names   # two sources with the same file name
+                        name = "$(length(bundled_names) + 1)_$name"
+                    end
+                    bundled_name = joinpath(bundle_dir, name)
                     dst_path = joinpath(csv_dir, bundled_name)
-                    mkpath(csv_dir)
+                    mkpath(dirname(dst_path))
                     abspath(src_path) == abspath(dst_path) || cp(src_path, dst_path; force = true)
                     push!(bundled_names, bundled_name)
                     push!(origins, abspath(src_path))

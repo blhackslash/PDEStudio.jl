@@ -783,6 +783,120 @@ end
     end
 
     # =========================================================================
+    # --- LOADING: JULIA CONFIG FILES, BUNDLED SOURCES, THE FILE DIALOG ---
+    # =========================================================================
+    @testset "Loading Julia config files & bundled sources" begin
+        reset_plotter!()
+        fig = launch_plotter()
+        display(fig)
+        w = manager.widgets
+        root = mktempdir()
+        status() = replace(w[:status][], '\n' => ' ')        # the status line wraps long messages
+        function wait_status(pred; timeout = 10)
+            t0 = time()
+            while !pred(status()) && time() - t0 < timeout; sleep(0.05); end
+            return pred(status())
+        end
+
+        # A config folder: the config includes a helper next to it (relative path) and ends with the configuration
+        orig = joinpath(root, "orig")
+        function write_config(dir; list_helper = false)
+            mkpath(dir)
+            write(joinpath(dir, "helper.jl"), "helper_N() = 24\n")
+            write(joinpath(dir, "config.jl"), """
+                include("helper.jl")
+                SimulationConfig(create_param_dict(:N => helper_N(), :cfl => 0.5, :sim_func_name => :advection_solver_1d),
+                                 create_method_dict(:upwind => create_param_dict(:scheme => "upwind")), [:upwind];
+                                 sources = $(list_helper ? "[joinpath(@__DIR__, \"helper.jl\")]" : "String[]"))
+                """)
+            return joinpath(dir, "config.jl")
+        end
+        cfg_file = write_config(orig)
+
+        # 1. set_sim_config!(file.jl) runs the file and binds what it returns; the file joins the sources
+        @test (@test_logs (:warn, r"runs its code") match_mode=:any set_sim_config!(cfg_file)) == false
+        @test manager.active_config.shared[:N] == 24
+        @test any(src -> samefile(src, cfg_file), manager.active_config.sources)
+        # a function returning the configuration works too; anything else is refused
+        fn_file = joinpath(root, "fn_config.jl")
+        write(fn_file, "() -> SimulationConfig(create_param_dict(:N => 30, :sim_func_name => :advection_solver_1d), " *
+                       "create_method_dict(:upwind => create_param_dict(:scheme => \"upwind\")), [:upwind])\n")
+        set_sim_config!(fn_file)
+        @test manager.active_config.shared[:N] == 30
+        bad_file = joinpath(root, "bad.jl")
+        write(bad_file, "1 + 1\n")
+        @test_throws ArgumentError set_sim_config!(bad_file)
+
+        # 2. In the Files tab a file that runs code needs a second click (the first one only warns)
+        click_button!(:tab_files)
+        w[:export_text].stored_string[] = cfg_file
+        click_button!(:load_config_button)
+        @test occursin("click Load again", status()) && manager.active_config.shared[:N] == 30
+        click_button!(:load_config_button)
+        @test manager.active_config.shared[:N] == 24 && occursin("Loaded config.jl", status())
+
+        # 3. Exports bundle the sources under their own names; reloading runs them at the original place
+        PDEStudio.save_params_to_csv("exp", root, Dict{String, Any}())
+        csv = joinpath(root, "exp.csv")
+        @test isfile(joinpath(root, "exp_sources", "config.jl"))
+        @test PDEStudio._load_runs_code(csv)
+        set_sim_config!(fn_file)
+        set_sim_config!(csv)
+        @test manager.active_config.shared[:N] == 24 && isempty(manager.source_failures)
+
+        # ... without the original folder the bundled config can't find its helper: the load still works, the
+        # parameters come from the CSV and the status line says why
+        rm(orig; recursive = true)
+        set_sim_config!(fn_file)
+        @test_logs (:error, r"failed") match_mode=:any set_sim_config!(csv)
+        @test !isempty(manager.source_failures) && occursin("helper.jl", manager.source_failures[1])
+        @test manager.active_config.shared[:N] == 24
+        @test occursin("define the solvers", status())
+
+        # ... with the helper listed in the sources it is bundled too, and the bundle works on its own
+        cfg_file = write_config(orig; list_helper = true)
+        set_sim_config!(cfg_file)
+        PDEStudio.save_params_to_csv("exp2", root, Dict{String, Any}())
+        @test isfile(joinpath(root, "exp2_sources", "helper.jl"))
+        rm(orig; recursive = true)
+        set_sim_config!(fn_file)
+        set_sim_config!(joinpath(root, "exp2.csv"))
+        @test isempty(manager.source_failures) && manager.active_config.shared[:N] == 24
+
+        # 4. Dropping a CSV without sources loads it right away; other files are refused
+        plain_csv = joinpath(root, "plain.csv")
+        write(plain_csv, "Category,Scope,Parameter,Value\nSimulation,Shared,N,40\nSimulation,Shared,sim_func_name,:advection_solver_1d\n")
+        @test !PDEStudio._load_runs_code(plain_csv)
+        events(fig.scene).dropped_files[] = [plain_csv]
+        @test manager.active_config.shared[:N] == 40
+        events(fig.scene).dropped_files[] = [joinpath(root, "notes.txt")]
+        @test occursin("Only CSV and Julia", status())
+
+        # 5. Browse… asks FILE_DIALOG (the system dialog by default) and loads the chosen file
+        default_dialog = PDEStudio.FILE_DIALOG[]
+        try
+            PDEStudio.FILE_DIALOG[] = () -> ""
+            click_button!(:browse_button)
+            @test wait_status(==("No file chosen."))
+            PDEStudio.FILE_DIALOG[] = () -> fn_file             # Julia code: warns first
+            click_button!(:browse_button)
+            @test wait_status(s -> occursin("click Load again", s))
+            @test w[:export_text].displayed_string[] == fn_file
+            click_button!(:load_config_button)
+            @test manager.active_config.shared[:N] == 30
+            PDEStudio.FILE_DIALOG[] = () -> error("no display")
+            click_button!(:browse_button)
+            @test wait_status(s -> occursin("file dialog failed", s))
+        finally
+            PDEStudio.FILE_DIALOG[] = default_dialog
+        end
+        # without zenity/kdialog (as in CI) the system dialog explains what to do instead
+        if !Sys.isapple() && !Sys.iswindows() && isnothing(Sys.which("zenity")) && isnothing(Sys.which("kdialog"))
+            @test isnothing(PDEStudio._system_file_dialog()) && occursin("No file dialog found", status())
+        end
+    end
+
+    # =========================================================================
     # --- METHOD ORDER FOLLOWS `defaults` ---
     # =========================================================================
     @testset "Method order follows defaults" begin
