@@ -2,8 +2,6 @@
 # Browse… and drag & drop. Needs node, `npm ci` in test/browser and a Chromium (on the PATH as `chromium`, in
 # PDESTUDIO_CHROMIUM, or Playwright's own: `npx playwright-core install chromium`).
 # PDESTUDIO_BROWSER_TESTS: `auto` (default) runs them if all of that is there, `true` requires them (CI), `false` skips.
-using Sockets: Sockets, getsockname
-
 const BROWSER_DIR = @__DIR__
 
 function _browser_test_setup()
@@ -20,13 +18,6 @@ function _browser_test_setup()
     reason = "missing " * join(missing, ", ")
     mode == "true" && error("Browser tests required (PDESTUDIO_BROWSER_TESTS=true), but $reason.")
     return nothing, reason
-end
-
-function _free_port()
-    server = Sockets.listen(Sockets.localhost, 0)
-    port = Int(getsockname(server)[2])
-    close(server)
-    return port
 end
 
 @testset "PDEStudio: Browser (WGLMakie)" begin
@@ -81,8 +72,8 @@ end
             mv(joinpath(dir, "state.tmp"), joinpath(dir, "state.json"); force = true)
         end
 
-        port = _free_port()
-        server = WGLMakie.Bonito.Server(WGLMakie.Bonito.App(() -> fig), "127.0.0.1", port)
+        server = WGLMakie.Bonito.Server(WGLMakie.Bonito.App(() -> fig), "127.0.0.1", 0)   # 0: any free port
+        port = server.port
         running = Ref(true)
         poller = @async while running[]
             try
