@@ -27,9 +27,9 @@ If the file needs more parameter sliders or other physical dimensions than the o
 The **Name / path** box is also the gateway for saving your work. Exports land in `<save path>/figures` (static frames; with the export option `create_savefolder`, in a subfolder per name) and `<save path>/animations`. A path in the name (`study/run_1`, or an absolute path) is honoured.
 
 **The Direct Format Trick:**
-By default, **Export** saves the figure in every format listed in the export setting `save_formats` (*Files → Export settings*, usually `png`). Typing an extension into the filename bypasses that list:
+By default, **Export** saves the figure in every format listed in the export setting `save_formats` (*Files → Settings ›*, usually `png`). Typing an extension into the filename bypasses that list:
 *   **Static formats** (`png`, `jpg`, `jpeg`, `pdf`, `svg`, `eps`): `my_figure.svg` exports exactly that one file.
-*   **Animations** (`mp4`, `webm`, `mkv`, `gif`): select a variable in the **Anim Target** dropdown (e.g. `t`), type `my_video.mp4` and click Export. The studio locks the camera and records the target's whole slider range (duration and frame rate: `animation_time` and `animation_FPS` in *Files → Export settings*).
+*   **Animations** (`mp4`, `webm`, `mkv`, `gif`): select a variable in the **Anim Target** dropdown (e.g. `t`), type `my_video.mp4` and click Export. The studio locks the camera and records the target's whole slider range (duration and frame rate: `animation_time` and `animation_FPS` in *Files → Settings ›*).
 *   **Anything else** is part of the name: `run_dt0.5` exports `run_dt0.5.png` (and the other listed formats).
 
 > **Note:** All exports are pristine. The studio renders a fresh copy of the plot for the export, so UI artifacts (slider handles, unapplied states) never appear in your files.

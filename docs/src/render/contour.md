@@ -1,6 +1,9 @@
-# Base Plot: Contour
+# Plot Styles: Contour
 
-The `Contour` base plot family is designed for visualizing topological gradients and scalar fields across 2D grids and 3D volumes. By extracting mathematical isolines or isosurfaces, these plots allow you to clearly identify regions of equal value within dense Eulerian datasets.
+*The Contour styles are chosen with **Plot Style** in the Plot tab; their options are on the page of each style under
+**UI → Plot styles**. Options such as the colormap are shared by all styles that use them.*
+
+The *Contour* family is designed for visualizing topological gradients and scalar fields across 2D grids and 3D volumes. By extracting mathematical isolines or isosurfaces, these plots allow you to clearly identify regions of equal value within dense Eulerian datasets.
 
 ## Shared Options
 Because all contour styles rely on mathematical discretization, they share the following core property:

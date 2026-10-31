@@ -1,6 +1,9 @@
-# Base Plot: Heatmap
+# Plot Styles: Heatmap
 
-The `Heatmap` base plot is the standard for visualizing dense 2D Eulerian data. Rather than extracting discrete isolines, it colors every single cell in the mathematical grid based on its scalar value, providing a complete and continuous view of the domain. Because heatmaps are completely opaque, they require isolating a single numerical method via the `:method_index`.
+*The Heatmap styles are chosen with **Plot Style** in the Plot tab; their options are on the page of each style under
+**UI → Plot styles**. Options such as the colormap are shared by all styles that use them.*
+
+The *Heatmap* family is the standard for visualizing dense 2D Eulerian data. Rather than extracting discrete isolines, it colors every single cell in the mathematical grid based on its scalar value, providing a complete and continuous view of the domain. Because heatmaps are completely opaque, they require isolating a single numerical method via the `:method_index`.
 
 ## Heatmap Flat (`:heatmap_flat`)
 A traditional 2D orthographic projection of the grid. It is heavily optimized for fast rendering of massive matrices and seamlessly integrates with the Colorbar system.

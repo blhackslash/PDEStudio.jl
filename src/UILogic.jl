@@ -1,4 +1,4 @@
-const _RANK_0 = (:none, :shared, :presets, :sweep, :config, :create_new)
+const _RANK_0 = (:none, :shared, :sweep, :config)   # structural menu entries; also reserved Advanced scope names
 
 """
     menu_option_rank(opt::Tuple)
@@ -6,7 +6,7 @@ const _RANK_0 = (:none, :shared, :presets, :sweep, :config, :create_new)
 Custom sorting algorithm for Makie dropdown menus. 
 
 # Hierarchy
-1. **Rank 0:** Structural fallbacks (e.g., `:none`, "Methods..."), reserved default keys (like `:shared` or `:presets`), and any keys strictly belonging to the active simulation parameter array (`manager.plot_vars`).
+1. **Rank 0:** Structural fallbacks (e.g., `:none`), reserved names (`:shared`, `:sweep`, `:config`), and any keys strictly belonging to the active simulation parameter array (`manager.plot_vars`).
 2. **Rank 1:** Mathematical baselines. Strings containing keywords like "analytic", "reference", or "exact" are floated to the top of standard data options.
 3. **Rank 2:** Standard alphabetical sorting for everything else.
 """
@@ -89,18 +89,6 @@ function update_menu_safe!(menu_widget, new_options; fallbacks=Any[], force_noti
     if (options_changed && !selection_changed) || force_notify
         notify(menu_widget.selection)
     end
-end
-
-# Selects the option with the given value (re-notifying if it is already selected). Returns `false` if there is none.
-function _select_menu_value!(menu_widget, value)
-    idx = findfirst(o -> o isa Tuple && length(o) > 1 && isequal(o[2], value), menu_widget.options[])
-    isnothing(idx) && return false
-    if menu_widget.i_selected[] == idx
-        notify(menu_widget.selection)
-    else
-        menu_widget.i_selected[] = idx
-    end
-    return true
 end
 
 """
@@ -746,11 +734,9 @@ end
 # export settings.
 _data_cat(tab) = tab in (:methods, :shared) ? :simulation : tab === :files ? :ui : tab   # (:plot: the plot styles)
 
-# The preset registry shown under `Presets` for an editor category.
-_preset_registry(cat) = cat === :simulation ? manager.sim_presets : manager.presets
 
 # Display names of the fixed scopes; UI scopes and keys use their frontend names, simulation keys their exact names.
-const _SCOPE_LABELS = Dict(:presets => "Presets", :shared => "Shared", :sweep => "Sweep", :config => "Config",
+const _SCOPE_LABELS = Dict(:shared => "Shared", :sweep => "Sweep", :config => "Config",
                            :components => "Components", :variables => "Variables", :methods => "Methods",
                            :export => "Export settings",
                            :x_axis_1d => "X Axis (1D)", :y_axis_1d => "Y Axis (1D)", :x_axis_nd => "X Axis (2D/3D)",
@@ -850,15 +836,11 @@ end
 """
     _editor_keys(cat, scope)
 
-The keys of an editor page, in row order. Presets: the presets found on disk (the preset folders are rescanned, so
-files copied there show up). The page of a plot type lists the options that type uses (`STYLE_DEPENDENCIES`). Labels
-get their built-in display name if they have none yet.
+The keys of an editor page, in row order (sorted). The page of a plot type lists the options that type uses
+(`STYLE_DEPENDENCIES`). Labels get their built-in display name if they have none yet.
 """
 function _editor_keys(cat, scope)
-    if scope === :presets
-        refresh_preset_registries!()  # picks up preset files added on disk
-        return Any[sort!(filter(!=(:create_new), collect(keys(_preset_registry(cat)))))...]
-    elseif cat === :labels
+    if cat === :labels
         raw_keys = Symbol[]
         if scope === :components
             c_max = 1
@@ -1031,7 +1013,7 @@ end
 # --- Files tab: presets -------------------------------------------------------------------------------------------
 
 # The saved presets of a kind (`:simulation`, `:visual`), sorted.
-_preset_items(kind::Symbol) = sort!(filter(!=(:create_new), collect(keys(_preset_kind_registry(kind)))))
+_preset_items(kind::Symbol) = sort!(collect(keys(_preset_kind_registry(kind))))
 
 # Binds item row `i` to a preset: name and description, Apply and Edit (built-in presets have no file to edit).
 function _bind_preset_row!(i::Int, kind::Symbol, name::Symbol)
@@ -2144,7 +2126,7 @@ end
 
 The primary dropdown cascade for Eulerian data. 
 
-When a base plot style (e.g., `:heatmap`) is selected, it immediately populates the style modifier menu (e.g., `:heatmap_surface`, `:heatmap_flat`). It then queries the underlying tensor's dimensions and filters the available Animation, Compare, and X/Y/Z Axis dropdown targets to ensure users cannot attempt to animate non-existent physical domains.
+When the plot style changes (or new data arrives), it queries the underlying tensor's dimensions and filters the available Animation, Compare, and X/Y/Z Axis dropdown targets to ensure users cannot attempt to animate non-existent physical domains.
 """
 function _setup_chain_A!(::Val{:eulerian})
     w = manager.widgets

@@ -299,7 +299,7 @@ end
 
 Bootstraps the top-level trigger listeners responsible for layout management. 
 
-This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing base plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
+This function establishes the core reactive loop that detects when structural changes are needed (e.g., adding comparison columns or changing the plot styles). It handles safely destroying the old sub-layout, preserving the user's camera angles, and injecting the new plot primitives.
 """
 function setup_plot_window!(master_fig::Figure, plot_layout::GridLayout)
     if manager.plot_window_initialized[]; return; end

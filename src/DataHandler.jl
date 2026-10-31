@@ -56,28 +56,6 @@ function validate_plot_dimensions(sim_data::AbstractSimData)
 end
 
 """
-    get_active_slider_indices(sim_data::AbstractSimData)
-
-Generates a boolean mask mapping which fixed UI sliders should be enabled based on the loaded dataset's actual dimensions.
-"""
-function get_active_slider_indices(sim_data::AbstractSimData)
-    allowed = manager.allowed_dims
-    actual = sim_data.domain.dim_keys
-    return [dim in actual for dim in allowed]
-end
-
-"""
-    map_sliders_to_tensor(sim_data::AbstractSimData)
-
-Maps the physical UI slider layout to the arbitrary internal dimension indices of the underlying simulation tensor.
-"""
-function map_sliders_to_tensor(sim_data::AbstractSimData)
-    allowed = manager.allowed_dims
-    actual = sim_data.domain.dim_keys
-    return ntuple(d -> findfirst(==(actual[d]), allowed), length(actual))
-end
-
-"""
     _get_first_valid(pd::PlotSweepData)
 
 Safely extracts the first non-`nothing` simulation object from a multi-dimensional sweep data array.

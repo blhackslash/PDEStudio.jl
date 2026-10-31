@@ -16,8 +16,6 @@ end
 export launch_plotter, set_sim_config!, reset_plotter!, reset_manager!, set_mode!, set_allowed_dims!, set_max_params!, set_plot_preset!, force_simulation, set_resolution!
 export set_sim_preset!, save_sim_preset, save_plot_preset, reset_sim_config!
 
-# Placeholder description of earlier versions (a preset saved with it gets the default description).
-const DEFAULT_PRESET_DESC = "Type a description here, a name in the filename box, then click Save."
 
 # ==============================================================================
 # --- GLOBAL LOCK HIERARCHY ---

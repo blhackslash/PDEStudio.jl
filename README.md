@@ -8,7 +8,7 @@
 
 **PDEStudio.jl** is a highly interactive, Makie-driven graphical frontend engineered for the real-time visualization and exploration of Partial Differential Equation (PDE) simulations. It serves as the visual counterpart to the autonomous numerical backend, [PDEStudioCore.jl](https://github.com/blhackslash/PDEStudioCore.jl).
 
-The studio seamlessly handles both Eulerian grids and Lagrangian particle systems, dynamically adapting its primitives to support 1D, 2D, and 3D visualization. It features a hierarchical UI editor, robust CSV serialization for state preservation, and an independent export pipeline for publication-quality static frames and animations.
+The studio seamlessly handles both Eulerian grids and Lagrangian particle systems, dynamically adapting its primitives to support 1D, 2D, and 3D visualization. It features a tabbed control panel (plot and layout options, methods, shared parameters, the look, files and presets, and an advanced editor for the raw configuration), robust CSV serialization for state preservation, and an independent export pipeline for publication-quality static frames and animations.
 
 Because PDE simulations often require dedicated compute servers, `PDEStudio.jl` supports two primary deployment strategies:
 *   **Local Exploration (`GLMakie`):** Run the autonomous `PDEStudioCore` backend headlessly on a server, transfer the resulting serialized data, and explore it locally with maximum performance.
@@ -104,16 +104,16 @@ methods = create_method_dict(
 )
 
 # Parameter sweeps: Test both methods across different CFL limits
-varied_params = create_varied_dict(
+varied = create_varied_dict(
     :cfl => [0.3, 0.5, 0.8, 1.0]
 )
 
-# 3. Create the Configuration
-config = SimulationConfig(           # Pass the function name
+# 3. Create the Configuration: shared parameters, all methods, the active methods (`defaults`) and the sweep
+config = SimulationConfig(
     shared_params,
     methods,
     [:upwind, :lax_friedrichs];
-    varied_params = varied_params
+    varied = varied,
 )
 
 # 4. Run the Pipeline (optional, is run by the Studio automatically)

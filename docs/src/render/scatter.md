@@ -1,6 +1,9 @@
-# Base Plot: Scatter
+# Plot Styles: Scatter
 
-The `Scatter` base plot is the most versatile rendering class in the studio, acting as the primary bridge between Eulerian meshes and Lagrangian particle clouds. Instead of drawing continuous shapes, it plots discrete data points at explicit mathematical coordinates. 
+*The Scatter styles are chosen with **Plot Style** in the Plot tab; their options are on the page of each style under
+**UI → Plot styles**. Options such as the colormap are shared by all styles that use them.*
+
+The *Scatter* family is the most versatile rendering class in the studio, acting as the primary bridge between Eulerian meshes and Lagrangian particle clouds. Instead of drawing continuous shapes, it plots discrete data points at explicit mathematical coordinates. 
 
 ## Shared Marker Options
 Because every scatter plot relies on discrete geometry, they uniformly support the following structural modifiers:

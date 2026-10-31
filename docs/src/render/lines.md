@@ -1,6 +1,9 @@
-# Base Plot: Lines
+# Plot Styles: Lines
 
-The `Lines` base plot is the fundamental rendering class for continuous, connected data. It is highly optimized for Eulerian meshes and is the default starting point for 1D visualizations. Instead of plotting discrete dots, it traces the continuous mathematical shape of your data over the physical domain.
+*The Lines styles are chosen with **Plot Style** in the Plot tab; their options are on the page of each style under
+**UI → Plot styles**. Options such as the colormap are shared by all styles that use them.*
+
+The *Lines* family is the fundamental rendering class for continuous, connected data. It is highly optimized for Eulerian meshes and is the default starting point for 1D visualizations. Instead of plotting discrete dots, it traces the continuous mathematical shape of your data over the physical domain.
 
 ## Shared Options
 Regardless of the dimensionality of the line plot, the following styling option is universally supported:
