@@ -158,14 +158,14 @@ end
 """
     find_config_csv(name::AbstractString)
 
-Locates a configuration CSV by file name: an existing path is returned as is; otherwise the working directory,
+Locates a configuration file (CSV, or a Julia file given with its `.jl` extension) by file name: an existing path is returned as is; otherwise the working directory,
 `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (one level of subfolders each) are searched.
 Returns the path or `nothing`.
 """
 function find_config_csv(name::AbstractString)
     candidate = strip(name)
     isfile(candidate) && return String(candidate)
-    filename = endswith(lowercase(candidate), ".csv") ? String(candidate) : candidate * ".csv"
+    filename = any(ext -> endswith(lowercase(candidate), ext), (".csv", ".jl")) ? String(candidate) : candidate * ".csv"
     isfile(filename) && return filename
 
     save_root = get_save_path()
@@ -191,18 +191,21 @@ function find_config_csv(name::AbstractString)
 end
 
 """
-    set_sim_config!(csv_name::AbstractString)
+    set_sim_config!(file::AbstractString)
 
-A convenience wrapper that locates a CSV (a path, or a file name searched for with `find_config_csv`) and applies it via `load_and_apply_csv!`.
-Returns `true` if the file changes structural UI limits (the change is staged until *Run Simulation*), `false` otherwise, and `nothing` if no file was found.
+Loads a configuration from a file: a CSV (exports, presets; applied with `load_and_apply_csv!`) or a Julia file
+whose last expression is the `SimulationConfig` (or a function returning it; run with `load_config_file!`, which
+**executes its code**). `file` is a path or a file name searched for with `find_config_csv` (a name without
+extension means a CSV). Returns `true` if the file changes structural UI limits (the change is staged until *Run
+Simulation*), `false` otherwise, and `nothing` if no file was found.
 """
-function set_sim_config!(csv_name::AbstractString)
-    filepath = find_config_csv(csv_name)
+function set_sim_config!(file::AbstractString)
+    filepath = find_config_csv(file)
     if isnothing(filepath)
-        @warn "CSV file '$csv_name' not found."
+        @warn "Configuration file '$file' not found."
         return nothing
     end
-    return load_and_apply_csv!(filepath)
+    return endswith(lowercase(filepath), ".jl") ? load_config_file!(filepath) : load_and_apply_csv!(filepath)
 end
 
 """

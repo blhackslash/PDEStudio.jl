@@ -137,6 +137,8 @@ Base.@kwdef mutable struct PlotManager
     active_axes::Observable{Vector{Int}} = Observable{Vector{Int}}(Int[])    # indices into plot_vars bound to plot axes
     method_filter::Symbol = :all                                              # methods listed by the Methods tab
     allowed_styles::Vector{Symbol} = Symbol[]                                 # plot styles the data allows (empty: all)
+    pending_code_load::String = ""                                            # file that runs code, waiting for a second Load
+    source_failures::Vector{String} = String[]                                # bundled sources that failed in the last load
     preset_kind::Symbol = :simulation                                         # presets listed in the Files tab
     preset_name::Symbol = Symbol("")                                          # preset file open in the Files tab
     preset_file_rows::Vector{Vector{String}} = Vector{String}[]               # its rows [Category, Scope, Parameter, Value]

@@ -37,9 +37,9 @@ Visual presets apply to any simulation; simulation presets swap the physics whil
 
 *   **Readable & Editable:** Keys are written as their raw backend names (`animation_FPS`, `sim_func_name`), values in Julia literal syntax (`Float64[0.2, 0.5]`, `:upwind`). Display labels never appear in files, so renaming a label does not affect saved states.
 *   **Type-Preserving Parsing:** Values are read back with the safe literal parser `str2val` into the type they were saved as (vectors, tuples, symbols, dictionaries, …). Text stays text.
-*   **Drag-and-Drop:** Drop a CSV onto the studio window (or type its path or file name into *Files → Name / path* and click **Load CSV**) to recreate a saved state.
+*   **Loading:** Drop a CSV (or a Julia configuration file) onto the studio window, choose it with *Files → Browse…*, or type its path or file name into *Files → Name / path* and click **Load** to recreate a saved state.
 
-> **Security Note:** CSV values are parsed safely; no code in a value is ever evaluated. However, an export CSV can *bundle source files* (the `sources` of a `SimulationConfig`, copied next to the export), and loading such a CSV **executes those files** to restore the solvers. Only load exports you trust. Presets never contain source files.
+> **Security Note:** CSV values are parsed safely; no code in a value is ever evaluated. However, an export CSV can *bundle source files* (the `sources` of a `SimulationConfig`, copied next to the export), and loading such a CSV **executes those files** to restore the solvers, as does loading a Julia configuration file (`set_sim_config!("config.jl")`). Only load files you trust; the studio asks for a second click before it runs code. Presets never contain source files.
 
 ---
 
@@ -141,4 +141,4 @@ end
 # julia> @plot "Euler2D_Shock"
 ```
 
-If the configuration file is listed in the config's `sources` (`SimulationConfig(...; sources = [path])`), every export copies it next to the exported CSV (`<name>_source_1.jl`, …). Loading that CSV later runs the copy (its last expression should be the `SimulationConfig`) and so recreates the experiment, solvers included. Afterwards the configuration keeps pointing at the original file while it exists (later runs pick up your edits) and falls back to the bundled copy otherwise.
+Simpler: load the configuration file itself with `set_sim_config!("Configs/Euler2D_Shock.jl")` (or *Files → Browse…*); it is added to the config's `sources`. Every export copies the `sources` into `<name>_sources/` next to the exported CSV, and loading that CSV later runs the copies and so recreates the experiment, solvers included. Afterwards the configuration keeps pointing at the original files while they exist (later runs pick up your edits) and falls back to the bundled copies otherwise. How to write configuration files that reload reliably: [File Operations](file_ops.md#Config-Files-and-Bundled-Sources).

@@ -29,6 +29,11 @@ screen (the plot area keeps its titles and axis labels inside its own box).
   `reference`, `postprocess`, `sources`) and the list of all methods. Values are typed Julia literals, parsed
   strictly; ✕ deletes a key; keys are added with a type (`auto`, `Int`, `Float64`, `Bool`, `String`, `Symbol`,
   `Tuple`, vectors); methods are added and deleted.
+- **Julia configuration files** load like CSV files (`set_sim_config!("config.jl")`, *Files → Load*, drop): the
+  last expression is the `SimulationConfig` or a function returning it; the file is added to `sources`. Loading
+  code (a `.jl` file or a CSV with bundled sources) needs a second click on *Load* and shows a warning.
+- **Files → Browse…** opens the system's file dialog (AppleScript, PowerShell, `zenity` or `kdialog`; not in a
+  browser). `PDEStudio.FILE_DIALOG[]` can be replaced.
 - **Editor pages:** one row per entry (name, value, a button: on/off for Booleans, ↺ to restore the default), 16
   rows per page with ◀ ▶ for longer lists, ◀ Back to the overview; `PDEStudio.show_editor_page!` opens a page from
   code.
@@ -40,6 +45,11 @@ screen (the plot area keeps its titles and axis labels inside its own box).
   no longer resets them; `manager.ui` always holds every UI scope.
 - Editor input that is no literal (`[1, 2`, `abc`) is refused for parameters that aren't text, with a message in the
   status line, instead of silently turning the parameter into text; quoted text (`"abc"`) is accepted.
+- Bundled sources are more robust: exports copy them into `<name>_sources/` under their own file names (so bundled
+  files include each other), each copy runs as if it were its original while that folder exists (relative includes
+  and `@__DIR__` resolve there), and a failing copy no longer aborts the load (the parameters come from the CSV; the
+  status line names the error). Older exports (`<name>_source_<i>.jl`) still load. The docs describe how to write
+  configuration files that reload reliably (*File Operations*).
 - Load results are reported in the status line (the load button only changes colour); dropping a CSV no longer
   switches tabs.
 
