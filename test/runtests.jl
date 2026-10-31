@@ -3,6 +3,12 @@ using GLMakie
 using WGLMakie
 using Test
 using StaticArrays
+
+# A screen with a browser file picker, like WGLMakie's (Browse… opens it instead of FILE_DIALOG)
+struct PickerScreen <: Makie.MakieScreen
+    opened::Base.RefValue{Int}
+end
+PDEStudio._open_upload_picker(s::PickerScreen) = (s.opened[] += 1; true)
 import PDEStudio: manager, EulerianPlotCache, LagrangianPlotCache, PLOT_DIM_MAP, menu_opt, EULERIAN_PLOT_STYLE_OPTIONS, plot_reference_lines!, plot_HUD!
 import PDEStudio: preset_dir, sim_preset_dir, MAX_COMPARE_PLOTS, show_tab!, show_editor_page!
 
@@ -890,10 +896,65 @@ end
         finally
             PDEStudio.FILE_DIALOG[] = default_dialog
         end
-        # without zenity/kdialog (as in CI) the system dialog explains what to do instead
+        # without zenity/kdialog (as in CI) the system dialog explains what to do instead, and without a desktop too
         if !Sys.isapple() && !Sys.iswindows() && isnothing(Sys.which("zenity")) && isnothing(Sys.which("kdialog"))
             @test isnothing(PDEStudio._system_file_dialog()) && occursin("No file dialog found", status())
         end
+        if Sys.islinux()
+            withenv("DISPLAY" => nothing, "WAYLAND_DISPLAY" => nothing) do
+                @test isnothing(PDEStudio._system_file_dialog()) && occursin("no desktop", status())
+            end
+        end
+
+        # 6. Uploads from a browser are stored under `<save path>/Uploads/<name>/` and loaded like the Load button
+        bytes(file) = read(file)
+        up_csv = PDEStudio.receive_upload!(["plain.csv" => bytes(plain_csv)])
+        @test up_csv == joinpath(PDEStudio.upload_dir(), "plain", "plain.csv") && isfile(up_csv)
+        @test manager.active_config.shared[:N] == 40 && w[:export_text].displayed_string[] == up_csv
+        # a CSV with its bundled sources (chosen together, so they sit next to it): asks first, then runs them
+        set_sim_config!(fn_file)
+        exp2_files = ["exp2.csv" => bytes(joinpath(root, "exp2.csv"));
+                      [f => bytes(joinpath(root, "exp2_sources", f)) for f in readdir(joinpath(root, "exp2_sources"))]]
+        up_exp2 = PDEStudio.receive_upload!(exp2_files)
+        @test occursin("click Load again", status()) && manager.active_config.shared[:N] == 30
+        click_button!(:load_config_button)
+        @test isempty(manager.source_failures) && manager.active_config.shared[:N] == 24
+        # a Julia file with the helper it includes: the file nobody mentions is the configuration
+        cfg_file = write_config(orig)
+        @test PDEStudio.receive_upload!(["helper.jl" => bytes(joinpath(orig, "helper.jl")),
+                                         "config.jl" => bytes(cfg_file)]) == joinpath(PDEStudio.upload_dir(), "config", "config.jl")
+        set_sim_config!(fn_file)
+        click_button!(:load_config_button)
+        @test manager.active_config.shared[:N] == 24
+        # no single configuration, or a name with a path: refused or reduced to the file name
+        @test isnothing(PDEStudio.receive_upload!(["a.jl" => UInt8[], "b.jl" => UInt8[]]))
+        @test occursin("Upload one configuration", status())
+        @test isnothing(PDEStudio.receive_upload!(Pair{String, Vector{UInt8}}[])) && occursin("Nothing was uploaded", status())
+        @test PDEStudio.receive_upload!(["../../evil/x.csv" => bytes(plain_csv)]) == joinpath(PDEStudio.upload_dir(), "x", "x.csv")
+
+        # 7. Browse… in a browser opens its picker instead of FILE_DIALOG (a screen that has one)
+        picker = PickerScreen(Ref(0))
+        push!(fig.scene.current_screens, picker)
+        try
+            PDEStudio.FILE_DIALOG[] = () -> error("FILE_DIALOG must not be called")
+            PDEStudio._browse_for_config()
+            @test picker.opened[] == 1 && !occursin("file dialog failed", status())
+        finally
+            filter!(s -> s !== picker, fig.scene.current_screens)
+            PDEStudio.FILE_DIALOG[] = default_dialog
+        end
+
+        # 8. The WGLMakie extension turns the browser's messages into uploads
+        ext = Base.get_extension(PDEStudio, :PDEStudioWGLMakieExt)
+        @test !isnothing(ext)
+        ext._handle_message(Dict("files" => [Dict("name" => "plain.csv", "data" => bytes(plain_csv))]))
+        @test manager.active_config.shared[:N] == 40
+        ext._handle_message(Dict("cancelled" => true))
+        @test status() == "No file chosen."
+        ext._handle_message(Dict("error" => "big.csv is larger than 20 MB."))
+        @test occursin("Not uploaded: big.csv", status())
+        # a WGLMakie screen that no browser shows yet has no picker: Browse… falls back to FILE_DIALOG
+        @test !PDEStudio._open_upload_picker(WGLMakie.Screen())
     end
 
     # =========================================================================

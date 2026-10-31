@@ -381,23 +381,26 @@ end
 """
     FILE_DIALOG
 
-The function *Browse…* calls to choose a file: it returns a path, `""` if nothing was chosen, or `nothing` if no
-dialog could be shown. By default `_system_file_dialog`; replaceable, e.g. in tests or for another dialog package.
+The function *Browse…* calls to choose a file when the window isn't shown in a browser: it returns a path, `""` if
+nothing was chosen, or `nothing` if no dialog could be shown. By default `_system_file_dialog`; replaceable, e.g. in
+tests or for another dialog package. In a browser (WGLMakie) *Browse…* opens the browser's file picker instead and
+uploads the file (`receive_upload!`).
 """
 const FILE_DIALOG = Ref{Function}(() -> _system_file_dialog())
+
+_has_desktop() = Sys.isapple() || Sys.iswindows() || haskey(ENV, "DISPLAY") || haskey(ENV, "WAYLAND_DISPLAY")
 
 """
     _system_file_dialog() -> Union{String, Nothing}
 
 Opens the operating system's file dialog with the command-line tools it brings: `osascript` on macOS, PowerShell on
 Windows, `zenity` or `kdialog` on Linux. Returns the chosen path, `""` if the dialog was cancelled, or `nothing` (with
-a status message) if there is no dialog: no tool found, or the studio runs in a browser (WGLMakie), where a dialog
-would open on the machine running Julia instead of in front of you.
+a status message) if there is no dialog: no desktop or no tool found.
 """
 function _system_file_dialog()
-    backend = Makie.current_backend()
-    if !ismissing(backend) && !isnothing(backend) && nameof(backend) === :WGLMakie
-        _status!("No file dialog in the browser (it would open on the machine running Julia): type the path or drop the file.", :warn)
+    if !_has_desktop()
+        _status!("No file dialog: the computer running Julia has no desktop. Type the path, or open the studio in a " *
+                 "browser (WGLMakie) to upload the file.", :warn)
         return nothing
     end
     prompt = "Open a PDEStudio configuration (CSV or Julia file)"
@@ -416,8 +419,66 @@ function _system_file_dialog()
     return String(strip(read(ignorestatus(cmd), String)))   # cancelling exits with an error status and no output
 end
 
+# Implemented by the WGLMakie extension for its screens (one per browser session showing the window):
+# `_open_upload_picker` opens the browser's file picker (`false` if the screen can't), `_connect_browser_upload!`
+# connects the picker and drag & drop to `receive_upload!` once per session.
+_open_upload_picker(screen) = false
+_connect_browser_upload!(screen) = nothing
+
+"""
+    upload_dir() -> String
+
+Folder for files uploaded from a browser (`<save path>/Uploads`).
+"""
+upload_dir() = joinpath(get_save_path(), "Uploads")
+
+const MAX_UPLOAD_BYTES = 20 * 1024^2
+
+"""
+    receive_upload!(files) -> Union{String, Nothing}
+
+Stores files uploaded from a browser (*Browse…* or drag & drop with WGLMakie; `files` are `name => bytes` pairs) on
+the computer running Julia and loads the configuration among them like the *Load* button: the CSV, or without a CSV
+the Julia file that none of the other files mentions by name (the others are the helpers it includes). The files go together into `upload_dir()/<configuration name>/` (files of an earlier upload with
+the same name are replaced), so the source files uploaded with a CSV, or the helpers a Julia file includes relative to
+`@__DIR__`, are found next to it. Returns the stored path of the configuration, or `nothing` (with a status message)
+if the files contain no single configuration.
+"""
+function receive_upload!(files::AbstractVector)
+    names = [basename(replace(String(first(f)), '\\' => '/')) for f in files]   # never a path from the browser
+    if isempty(files) || any(n -> n in ("", ".", ".."), names)
+        _report(:warn, "Nothing was uploaded.")
+        return nothing
+    end
+    ext(n) = lowercase(splitext(n)[2])
+    csvs = findall(n -> ext(n) == ".csv", names)
+    # without a CSV: the Julia file none of the other files mentions (those are the helpers it includes)
+    mentioned(i) = any(j -> j != i && occursin(names[i], String(copy(last(files[j])))), eachindex(files))
+    jls = filter(i -> ext(names[i]) == ".jl" && !mentioned(i), eachindex(names))
+    main = length(csvs) == 1 ? only(csvs) : isempty(csvs) && length(jls) == 1 ? only(jls) : nothing
+    if isnothing(main)
+        _report(:warn, "Upload one configuration: a CSV (with its source files, if any) or a Julia file (with the " *
+                       "files it includes); got $(join(names, ", ")).")
+        return nothing
+    end
+    dir = joinpath(upload_dir(), splitext(names[main])[1])
+    mkpath(dir)
+    for (name, f) in zip(names, files)
+        write(joinpath(dir, name), last(f))
+    end
+    path = joinpath(dir, names[main])
+    @info "Uploaded $(join(names, ", ")) to $dir"
+    _show_editor_text!(manager.widgets[:export_text], path)
+    _request_load(path)
+    return path
+end
+
 # Browse…: chooses a file with `FILE_DIALOG` (in a task, so the window keeps drawing) and loads it like the Load button.
 function _browse_for_config()
+    fig = manager.master_fig
+    if !isnothing(fig)   # shown in a browser: its file picker uploads the file (the newest session first)
+        any(_open_upload_picker, Iterators.reverse(fig.scene.current_screens)) && return nothing
+    end
     path = try
         FILE_DIALOG[]()
     catch e
@@ -458,6 +519,11 @@ function _setup_run_and_drop_interactions!(master_fig::Figure)
         end
         _show_editor_text!(path_box, path)
         _request_load(path)
+    end
+
+    # Browsers showing the window (WGLMakie) get the upload picker and drag & drop once their session is ready.
+    manager.listeners[:Browser_Upload] = on(events(master_fig.scene).tick) do _
+        foreach(_connect_browser_upload!, master_fig.scene.current_screens)
     end
 
     manager.listeners[:Load_Click] = on(load_btn.clicks) do _
