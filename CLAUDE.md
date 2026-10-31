@@ -29,6 +29,7 @@ fix without having looked at the result.
 | `src/DataHandler.jl` | Loading sweep data from PDEStudioCore into `PlotSweepData` |
 | `src/ConfigIO.jl` | CSV config read/write, provenance (git commit, package versions), exports |
 | `src/Presets.jl` | Visual and simulation presets (stored under `<save path>/Presets/`) |
+| `ext/PDEStudioWGLMakieExt.jl` | Browser uploads (Browse… picker, drag & drop) via the Bonito session of each WGLMakie screen; `receive_upload!` in `src/UILogic.jl` does the rest |
 
 ## Reactive architecture (read before touching UI code)
 
@@ -45,7 +46,8 @@ fix without having looked at the result.
 - Listeners are stored in `manager.listeners` (one per key) or `main_render_observers`;
   reuse those so they're replaced and cleaned up on rebuilds rather than stacking up.
 - Keep the frontend backend-agnostic: no GLMakie- or WGLMakie-only calls in `src/`
-  (only `Makie`/`CairoMakie`).
+  (only `Makie`/`CairoMakie`); backend-specific code goes into a package extension
+  (`ext/`) behind a hook with a generic fallback in `src/` (e.g. `_open_upload_picker(screen) = false`).
 
 ## Conventions
 

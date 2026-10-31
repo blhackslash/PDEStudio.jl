@@ -16,7 +16,7 @@ Simulations that already exist on disk (same parameters, same hash) are loaded i
 
 ### 📂 Loading a Saved State
 
-In the **Files** tab, choose the file with **Browse…** (the system's file dialog), type its path into the **Name / path** box and click **Load**, or drop it anywhere onto the window; the status line reports the result. A bare file name is enough: the studio searches the working directory, `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (each including one level of subfolders; a name without extension means a CSV). The same works from code: `set_sim_config!("my_run.csv")`, `set_sim_config!("configs/euler2d.jl")`.
+In the **Files** tab, choose the file with **Browse…** (the system's file dialog; in a browser, an upload), type its path into the **Name / path** box and click **Load**, or drop it anywhere onto the window; the status line reports the result. A bare file name is enough: the studio searches the working directory, `<save path>/figures`, `<save path>/animations`, the preset folders and `./Experiments` (each including one level of subfolders; a name without extension means a CSV). The same works from code: `set_sim_config!("my_run.csv")`, `set_sim_config!("configs/euler2d.jl")`.
 
 Two kinds of files can be loaded:
 
@@ -27,7 +27,9 @@ Two kinds of files can be loaded:
 
 The load button turns **green** when the file was read; press *Run Simulation* to compute and show it.
 
-**File dialog:** *Browse…* uses the tools the operating system brings: AppleScript on macOS, PowerShell on Windows, `zenity` or `kdialog` on Linux (install one of them if the status line says that no dialog was found). In a browser (WGLMakie) there is no dialog, because it would open on the machine running Julia; type the path or drop the file instead. `PDEStudio.FILE_DIALOG[]` can be replaced by any function returning a path.
+**File dialog:** *Browse…* uses the tools the operating system brings: AppleScript on macOS, PowerShell on Windows, `zenity` or `kdialog` on Linux (GNOME, KDE and most desktops install one of them; otherwise install `zenity`, or type the path or drop the file). `PDEStudio.FILE_DIALOG[]` can be replaced by any function returning a path.
+
+**In a browser (WGLMakie):** *Browse…* opens the browser's own file picker, and files can be dropped onto the studio; both **upload** the file to the computer running Julia, so a studio served from a remote compute node loads configurations from your own computer. The files are stored under `<save path>/Uploads/<name>/` and loaded like the *Load* button (files that run code ask for the second click). Choose (or drop) the files that belong together at once: a CSV **with the files of its `<name>_sources/` folder**, or a Julia file with the helpers it includes relative to `@__DIR__`; they are stored next to each other, where the loader finds them. Uploads are limited to 20 MB per file. If the browser doesn't open the picker right away (it only does so shortly after a click), a small panel asks for one more click on *Choose file…*.
 
 If the file needs more parameter sliders or other physical dimensions than the open window has, the buttons turn **orange**: the configuration is staged, and the next click on *Run Simulation* rebuilds the whole window with the new limits, applies the file and runs it. (Save your current look as a preset first if you want to keep it.) Without an open window, the limits are applied directly.
 

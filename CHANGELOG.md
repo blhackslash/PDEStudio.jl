@@ -32,8 +32,12 @@ screen (the plot area keeps its titles and axis labels inside its own box).
 - **Julia configuration files** load like CSV files (`set_sim_config!("config.jl")`, *Files → Load*, drop): the
   last expression is the `SimulationConfig` or a function returning it; the file is added to `sources`. Loading
   code (a `.jl` file or a CSV with bundled sources) needs a second click on *Load* and shows a warning.
-- **Files → Browse…** opens the system's file dialog (AppleScript, PowerShell, `zenity` or `kdialog`; not in a
-  browser). `PDEStudio.FILE_DIALOG[]` can be replaced.
+- **Files → Browse…** opens the system's file dialog (AppleScript, PowerShell, `zenity` or `kdialog`).
+  `PDEStudio.FILE_DIALOG[]` can be replaced.
+- **Uploads in the browser (WGLMakie):** *Browse…* opens the browser's file picker and files dropped onto the studio
+  are uploaded to the computer running Julia (`<save path>/Uploads/<name>/`, a CSV together with its source files)
+  and loaded, so a studio on a remote node loads configurations from your own computer (WGLMakie package
+  extension).
 - **Editor pages:** one row per entry (name, value, a button: on/off for Booleans, ↺ to restore the default), 16
   rows per page with ◀ ▶ for longer lists, ◀ Back to the overview; `PDEStudio.show_editor_page!` opens a page from
   code.
