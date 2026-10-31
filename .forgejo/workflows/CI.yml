@@ -21,7 +21,6 @@ jobs:
           - '1'
 
     steps:
-      - uses: actions/checkout@v4
 
       # 1. Install virtual display server for GLMakie headless testing
       - name: Install Xvfb
