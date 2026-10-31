@@ -23,7 +23,7 @@ jobs:
     steps:
       # 1. Install virtual display server for GLMakie headless testing
       - name: Install Xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: apt-get update && apt-get install -y xvfb
 
       - name: Install the browser test tools
         working-directory: test/browser
